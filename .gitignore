@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.env
+
+# Docker
+docker-compose.override.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 上传文件
+backend/uploads/
+backend/app/uploads/
+
+# 前端临时/测试页面
+frontend/test.html
+frontend/test-vue.html
+frontend/diag.html
+frontend/clean.html
+frontend/minimal.html

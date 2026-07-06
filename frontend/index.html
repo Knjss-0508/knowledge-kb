@@ -1,0 +1,524 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>答疑中台 - 知识库管理</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#f0f2f5;color:#1d2129}
+    .hd{background:#fff;height:52px;display:flex;align-items:center;padding:0 28px;border-bottom:1px solid #e5e6eb;position:sticky;top:0;z-index:100}
+    .hd h1{font-size:17px;font-weight:600}.hd .sub{font-size:12px;color:#86909c;margin-left:8px;background:#f2f3f5;padding:2px 8px;border-radius:4px}
+    .mn{padding:20px 28px;max-width:1400px;margin:0 auto}
+    .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+    .card{background:#fff;border-radius:10px;padding:18px 20px;border:1px solid #e5e6eb}
+    .card .lb{font-size:12px;color:#86909c;margin-bottom:6px}
+    .card .vl{font-size:26px;font-weight:700}
+    .vl.bl{color:#3370ff}.vl.gn{color:#00b42a}.vl.og{color:#ff7d00}.vl.gy{color:#86909c}
+    .bar{background:#fff;border-radius:10px;padding:14px 18px;margin-bottom:14px;border:1px solid #e5e6eb;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .bar .tt{font-size:14px;font-weight:600;margin-right:auto}
+    .inp{padding:6px 10px;border:1px solid #e5e6eb;border-radius:6px;font-size:12px;outline:none}
+    .inp:focus{border-color:#3370ff}
+    select.inp{appearance:auto}
+    .btn{display:inline-flex;align-items:center;justify-content:center;padding:5px 12px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:all .15s}
+    .bp{background:#3370ff;color:#fff}.bp:hover{background:#2460e6}
+    .bs{background:#fff;color:#00b42a;border-color:#00b42a}
+    .bw{background:#fff;color:#ff7d00;border-color:#ff7d00}
+    .br{background:#fff;color:#f53f3f;border-color:#f53f3f}
+    .bd{background:#fff;color:#4e5969;border-color:#e5e6eb}
+    .bsm{padding:3px 8px;font-size:11px}
+    .tw{background:#fff;border-radius:10px;border:1px solid #e5e6eb;overflow:hidden}
+    table{width:100%;border-collapse:collapse}
+    th{background:#f7f8fa;padding:10px 14px;text-align:left;font-size:12px;font-weight:500;color:#86909c;border-bottom:1px solid #e5e6eb}
+    td{padding:12px 14px;font-size:12px;border-bottom:1px solid #f2f3f5}
+    tr:hover td{background:#fafbfc}
+    .tg{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:500}
+    .tg-d{background:#f2f3f5;color:#86909c}.tg-r{background:#fff7e8;color:#ff7d00}.tg-p{background:#e8ffea;color:#00b42a}.tg-x{background:#fff0f0;color:#f53f3f}.tg-l{background:#e8f3ff;color:#3370ff}
+    .mask{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding-top:30px;overflow-y:auto}
+    .dlg{background:#fff;border-radius:12px;width:860px;max-height:calc(100vh - 60px);display:flex;flex-direction:column;box-shadow:0 12px 48px rgba(0,0,0,.12)}
+    .dlg-h{padding:18px 22px 14px;border-bottom:1px solid #e5e6eb;display:flex;align-items:center;justify-content:space-between}
+    .dlg-h h3{font-size:15px;font-weight:600}
+    .dlg-x{width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:6px;cursor:pointer;color:#86909c;font-size:17px;border:none;background:none}
+    .dlg-x:hover{background:#f2f3f5}
+    .dlg-b{padding:18px 22px;overflow-y:auto;flex:1}
+    .dlg-f{padding:14px 22px;border-top:1px solid #e5e6eb;display:flex;justify-content:flex-end;gap:8px}
+    .sec{margin-bottom:22px}
+    .sec-t{font-size:14px;font-weight:600;color:#1d2129;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid #f2f3f5}
+    .row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px}
+    .fg{margin-bottom:14px}
+    .fl{display:block;font-size:12px;font-weight:500;color:#1d2129;margin-bottom:5px}
+    .fl .req{color:#f53f3f}
+    .fi{width:100%;padding:7px 10px;border:1px solid #e5e6eb;border-radius:6px;font-size:12px;color:#1d2129;outline:none}
+    .fi:focus{border-color:#3370ff;box-shadow:0 0 0 2px rgba(51,112,255,.08)}
+    textarea.fi{resize:vertical;line-height:1.6}
+    .rg{display:flex;gap:0}
+    .rb{padding:5px 14px;font-size:12px;border:1px solid #e5e6eb;cursor:pointer;background:#fff;color:#4e5969}
+    .rb:first-child{border-radius:6px 0 0 6px}.rb:last-child{border-radius:0 6px 6px 0}.rb:not(:first-child){border-left:none}
+    .rb.on{background:#3370ff;color:#fff;border-color:#3370ff;z-index:1;position:relative}
+    .tl{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+    .ti{display:inline-flex;align-items:center;gap:3px;padding:3px 7px;background:#f2f3f5;border-radius:4px;font-size:11px}
+    .ti .rx{cursor:pointer;color:#c9cdd4}.ti .rx:hover{color:#f53f3f}
+    /* 块样式 */
+    .blk{padding:10px;margin-bottom:8px;background:#fafbfc;border:1px solid #e5e6eb;border-radius:8px}
+    .blk-h{display:flex;gap:8px;align-items:flex-start}
+    .blk-tag{font-size:10px;color:#fff;padding:2px 6px;border-radius:4px;white-space:nowrap;flex-shrink:0;margin-top:2px}
+    .blk-body{flex:1;display:flex;flex-direction:column;gap:5px}
+    .blk-rm{width:24px;height:24px;border:none;background:none;color:#c9cdd4;cursor:pointer;font-size:15px;flex-shrink:0;border-radius:4px;margin-top:2px}
+    .blk-rm:hover{color:#f53f3f;background:#fff0f0}
+    .blk-acts{display:flex;gap:6px;margin-top:6px}
+    .blk-act{display:inline-flex;align-items:center;gap:3px;padding:3px 8px;background:#f0f5ff;color:#3370ff;border:1px solid #bedaff;border-radius:4px;font-size:10px;cursor:pointer}
+    .blk-act.vi{background:#f5f0ff;color:#722ed1;border-color:#d3adf7}
+    .blk-act:hover{opacity:.8}
+    .child{margin-top:6px;padding:8px;background:#fff;border:1px solid #e5e6eb;border-radius:6px}
+    .child-h{display:flex;gap:8px;align-items:flex-start}
+    .upload-zone{display:flex;align-items:center;justify-content:center;gap:6px;padding:14px;border:2px dashed #dcdfe6;border-radius:8px;cursor:pointer;color:#86909c;transition:all .2s}
+    .upload-zone:hover{border-color:#3370ff;color:#3370ff;background:#f0f5ff}
+    .img-preview{width:72px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e5e6eb;flex-shrink:0}
+    .vid-preview{width:72px;height:54px;max-width:72px;max-height:54px;border-radius:6px;border:1px solid #e5e6eb;background:#000;flex-shrink:0}
+    .img-thumb-wrap{position:relative;width:72px;height:54px;max-width:72px;max-height:54px;min-width:72px;min-height:54px;flex-shrink:0;border-radius:6px;overflow:hidden;border:1px solid #e5e6eb;cursor:pointer}.img-thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block}.img-thumb-wrap .img-mask{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600;letter-spacing:2px;opacity:0;transition:opacity .2s;pointer-events:none;border-radius:6px}.img-thumb-wrap:hover .img-mask{opacity:1}
+    .img-thumb:hover{box-shadow:0 2px 12px rgba(0,0,0,.15)}
+    .vid-thumb-wrap{position:relative;width:96px;height:54px;max-width:96px;max-height:54px;min-width:96px;min-height:54px;flex-shrink:0;border-radius:6px;overflow:hidden;border:1px solid #e5e6eb;cursor:pointer;background:#1d2129}.vid-thumb-wrap video{width:100%;height:100%;object-fit:cover;display:block}.vid-thumb-wrap .vid-mask{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;font-weight:700;opacity:0;transition:opacity .2s;pointer-events:none;border-radius:6px}.vid-thumb-wrap:hover .vid-mask{opacity:1}
+
+    .full-preview{position:fixed;top:0;left:0;right:0;bottom:0;z-index:3000;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;cursor:pointer}
+    .full-preview img{max-width:90vw;max-height:90vh;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,.3)}
+  </style>
+</head>
+<body>
+<div id="app">
+  <div class="hd"><h1>答疑中台</h1><span class="sub">知识库管理</span></div>
+  <div class="mn">
+    <div class="cards">
+      <div class="card"><div class="lb">全部知识</div><div class="vl bl">{{stats.total}}</div></div>
+      <div class="card"><div class="lb">已发布</div><div class="vl gn">{{stats.published}}</div></div>
+      <div class="card"><div class="lb">待审核</div><div class="vl og">{{stats.review}}</div></div>
+      <div class="card"><div class="lb">草稿</div><div class="vl gy">{{stats.draft}}</div></div>
+    </div>
+    <div class="bar">
+      <span class="tt">知识列表</span>
+      <select class="inp" style="width:110px" v-model="f.status" @change="load"><option value="">全部状态</option><option value="draft">草稿</option><option value="review">待审核</option><option value="published">已发布</option><option value="deprecated">已废弃</option></select>
+      <select class="inp" style="width:110px" v-model="f.layer" @change="load"><option value="">全部层级</option><option value="L1">L1 基础</option><option value="L2">L2 案例</option><option value="L3">L3 动态</option></select>
+      <input class="inp" style="width:160px" v-model="f.kw" placeholder="搜索标题..." @keyup.enter="load">
+      <button class="btn bd" @click="load">刷新</button>
+      <button class="btn bp" @click="openNew">+ 新建知识</button>
+    </div>
+    <div class="tw">
+      <table>
+        <thead><tr><th style="width:130px">ID</th><th>标题</th><th style="width:70px">层级</th><th style="width:80px">状态</th><th style="width:70px">创建人</th><th style="width:220px;text-align:right">操作</th></tr></thead>
+        <tbody>
+          <tr v-for="r in list" :key="r.id">
+            <td style="font-family:monospace;color:#86909c">{{r.id}}</td>
+            <td style="font-weight:500">{{r.title}}</td>
+            <td><span class="tg tg-l">{{r.layer}}</span></td>
+            <td><span class="tg" :class="{'tg-d':r.status==='draft','tg-r':r.status==='review','tg-p':r.status==='published','tg-x':r.status==='deprecated'}">{{sl(r.status)}}</span></td>
+            <td style="color:#86909c">{{r.created_by}}</td>
+            <td style="text-align:right">
+              <button class="btn bd bsm" @click="openEdit(r)">编辑</button>
+              <button class="btn bw bsm" v-if="r.status==='draft'" @click="act(r,'submit-review')">提交审核</button>
+              <button class="btn bs bsm" v-if="r.status==='review'" @click="act(r,'approve')">通过</button>
+              <button class="btn br bsm" v-if="r.status!=='deprecated'" @click="act(r,'deprecate')">废弃</button>
+            </td>
+          </tr>
+          <tr v-if="!list.length"><td colspan="6" style="text-align:center;padding:40px;color:#c9cdd4">暂无数据</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 编辑弹窗 -->
+  <div class="mask" v-if="dlg" @click.self="dlg=false">
+    <div class="dlg">
+      <div class="dlg-h"><h3>{{eid?'编辑知识':'新建知识'}}</h3><button class="dlg-x" @click="closeDlg">&times;</button></div>
+      <div class="dlg-b">
+        <div class="sec">
+          <div class="sec-t">知识信息</div>
+          <div class="row">
+            <div class="fg"><label class="fl"><span class="req">*</span> 标题</label><input class="fi" v-model="fm.title" placeholder="输入知识标题"></div>
+            <div class="fg"><label class="fl"><span class="req">*</span> 知识层级</label><div class="rg"><div class="rb" :class="{on:fm.layer==='L1'}" @click="fm.layer='L1'">L1 基础</div><div class="rb" :class="{on:fm.layer==='L2'}" @click="fm.layer='L2'">L2 案例</div><div class="rb" :class="{on:fm.layer==='L3'}" @click="fm.layer='L3'">L3 动态</div></div></div>
+            <div class="fg"><label class="fl">所属分类</label><select class="fi" v-model="fm.cat"><option value="">未分类</option><option v-for="c in cats" :key="c.id" :value="c.id">{{c.name}}</option></select></div>
+          </div>
+          <div class="row">
+            <div class="fg"><label class="fl">创建人</label><input class="fi" v-model="fm.by" placeholder="你的名字"></div>
+            <div class="fg"><label class="fl">适用场景</label><input class="fi" v-model="ns" placeholder="输入后回车" @keyup.enter="addS"><div class="tl" v-if="fm.scenes.length"><span class="ti" v-for="(s,i) in fm.scenes" :key="i">{{s}}<span class="rx" @click="fm.scenes.splice(i,1)">&times;</span></span></div></div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="sec-t">知识内容</div>
+          <div v-for="(b,bi) in fm.blocks" :key="bi" class="blk">
+            <div class="blk-h">
+              <span class="blk-tag" style="background:#86909c">文本</span>
+              <div class="blk-body">
+                <textarea class="fi" v-model="b.value" rows="3" placeholder="输入文本内容..."></textarea>
+                <div class="blk-acts">
+                  <span class="blk-act" @click="addImg(b)">📷 插入图片</span>
+                  <span class="blk-act vi" @click="addVid(b)">🎬 插入视频</span>
+                </div>
+                <!-- 子模块 -->
+                <div v-for="(ch,ci) in b.children" :key="ci" class="child">
+                  <div class="child-h">
+                    <span class="blk-tag" :style="{background:ch.type==='image'?'#3370ff':'#722ed1'}">{{ch.type==='image'?'图片':'视频'}}</span>
+                    <div class="blk-body">
+                    <!-- 已关联 -->
+                      <div v-if="ch.media_id" style="display:flex;gap:8px;align-items:flex-start">
+                        <div v-if="ch.type==='image'" class="img-thumb-wrap" @click="showFull(mediaUrl(ch.media_id))">
+                          <img :src="mediaUrl(ch.media_id)" @error="$event.target.style.display='none'">
+                          <div class="img-mask">预览</div>
+                        </div>
+                        <div v-else class="vid-thumb-wrap" @click="showFull(mediaUrl(ch.media_id), true)">
+                          <video :src="mediaUrl(ch.media_id)" muted preload="metadata" controlsList="nodownload nofullscreen noremoteplayback" disablePictureInPicture style="pointer-events:none"></video>
+                          <div class="vid-mask">▶</div>
+                        </div>
+                        <div style="flex:1;display:flex;flex-direction:column;gap:3px;min-width:0">
+                          <input class="fi" v-model="ch.alt" :placeholder="ch.type==='image'?'图片标题':'视频标题'" style="font-size:11px;padding:4px 6px">
+                          <input class="fi" v-model="ch.caption" :placeholder="ch.type==='image'?'图片说明':'视频说明'" style="font-size:11px;padding:4px 6px">
+                          <span style="font-size:10px;color:#00b42a">已关联</span>
+                        </div>
+                      </div>
+                      <!-- 上传中/有预览 -->
+                      <div v-else-if="ch.preview" style="display:flex;gap:8px;align-items:flex-start">
+                        <div v-if="ch.type==='image'" class="img-thumb-wrap">
+                          <img :src="ch.preview" @error="$event.target.style.display='none'">
+                          <div class="img-mask">{{ch.uploading?'上传中':'预览'}}</div>
+                        </div>
+                        <div v-else class="vid-thumb-wrap">
+                          <video :src="ch.preview" muted preload="metadata"></video>
+                          <div class="vid-mask">{{ch.uploading?'上传中':'▶'}}</div>
+                        </div>
+                        <div style="flex:1;display:flex;flex-direction:column;gap:3px;min-width:0">
+                          <input class="fi" v-model="ch.alt" :placeholder="ch.type==='image'?'图片标题':'视频标题'" style="font-size:11px;padding:4px 6px">
+                          <input class="fi" v-model="ch.caption" :placeholder="ch.type==='image'?'图片说明':'视频说明'" style="font-size:11px;padding:4px 6px">
+                          <span v-if="ch.uploading" style="font-size:10px;color:#3370ff">上传中...</span>
+                          <span v-else style="font-size:10px;color:#ff7d00">待上传</span>
+                        </div>
+                      </div>
+                      <!-- 空白：上传区 -->
+                      <div v-else>
+                        <label class="upload-zone" :data-ch-ref="bi+':'+ci">
+                          <span style="font-size:18px">{{ch.type==='image'?'📷':'🎬'}}</span>
+                          <span style="font-size:12px">点击选择{{ch.type==='image'?'图片':'视频'}}，或 Ctrl+V 粘贴</span>
+                          <input type="file" :accept="ch.type==='image'?'image/*':'video/*'" style="display:none" @change="pickFile($event,ch)">
+                        </label>
+                        <div style="display:flex;gap:5px">
+                          <input class="fi" v-model="ch.alt" placeholder="图片标题" style="font-size:11px;padding:4px 6px;flex:1">
+                          <input class="fi" v-model="ch.caption" placeholder="图片说明" style="font-size:11px;padding:4px 6px;flex:1">
+                        </div>
+                      </div>
+                    </div>
+                    <button class="blk-rm" @click="b.children.splice(ci,1)">&times;</button>
+                  </div>
+                </div>
+              </div>
+              <button class="blk-rm" @click="fm.blocks.splice(bi,1)">&times;</button>
+            </div>
+          </div>
+          <button class="btn bd bsm" @click="addBlock" style="margin-top:4px">+ 文本</button>
+        </div>
+      </div>
+      <div class="dlg-f">
+        <button class="btn bd" @click="closeDlg">取消</button>
+        <button class="btn bp" @click="save" :disabled="saving">{{saving?'保存中...':'保存'}}</button>
+      </div>
+    </div>
+  </div>
+    <!-- 点击全屏预览 -->
+    <div v-if="full.show" class="full-preview" @click="full.show=false">
+      <video v-if="full.isVideo" :src="full.src" controls autoplay @click.stop style="max-width:90vw;max-height:90vh;border-radius:8px"></video>
+      <img v-else :src="full.src">
+    </div>
+  </div>
+  <script src="lib/vue.global.prod.js"></script>
+<script>
+var API='http://localhost:8001/api/v1';
+var BASE='http://localhost:8001';
+
+Vue.createApp({
+  data: function() {
+    return {
+      list: [],
+      cats: [],
+      stats: {total:0, published:0, review:0, draft:0},
+      f: {status:'', layer:'', kw:''},
+      dlg: false,
+      eid: '',
+      saving: false,
+      ns: '',
+      fm: {title:'', layer:'L1', cat:'', by:'', scenes:[], blocks:[{type:'text', value:'', children:[]}]}, full:{show:false, src:'', isVideo:false}
+    }
+  },
+  methods: {
+    load: function() {
+      var self = this;
+      var p = new URLSearchParams();
+      if (self.f.status) p.set('status', self.f.status);
+      if (self.f.layer) p.set('layer', self.f.layer);
+      if (self.f.kw) p.set('keyword', self.f.kw);
+      fetch(API + '/knowledge?' + p)
+        .then(function(r) { return r.json(); })
+        .then(function(d) { self.list = Array.isArray(d) ? d : []; })
+        .catch(function(e) { console.error('load error:', e); });
+    },
+    loadStats: function() {
+      var self = this;
+      fetch(API + '/knowledge?size=100')
+        .then(function(r) { return r.json(); })
+        .then(function(all) {
+          if (!Array.isArray(all)) return;
+          self.stats.total = all.length;
+          self.stats.published = all.filter(function(i){return i.status==='published'}).length;
+          self.stats.review = all.filter(function(i){return i.status==='review'}).length;
+          self.stats.draft = all.filter(function(i){return i.status==='draft'}).length;
+        })
+        .catch(function(){});
+    },
+    loadCats: function() {
+      var self = this;
+      fetch(API + '/categories')
+        .then(function(r) { return r.json(); })
+        .then(function(d) { self.cats = Array.isArray(d) ? d : []; })
+        .catch(function(){});
+    },
+    sl: function(s) {
+      return {draft:'草稿', review:'待审核', published:'已发布', deprecated:'已废弃'}[s] || s;
+    },
+    closeDlg: function() {var self = this;self.dlg = false;},
+    openNew: function() {
+      this.eid = '';
+      this.fm = {title:'', layer:'L1', cat:'', by:'', scenes:[], blocks:[{type:'text', value:'', children:[]}]};
+      this.ns = '';
+      this.dlg = true;
+      this.loadCats();
+    },
+    openEdit: function(r) {
+      var self = this;
+      self.eid = r.id;
+      var blocks = [];
+      var mediaList = Array.isArray(r.media) ? r.media.slice() : [];
+      var mediaByFile = {};
+      mediaList.forEach(function(m) { if (m && m.filename) mediaByFile[m.filename] = m; });
+      var contentBlocks = [];
+      if (r.content && r.content.blocks && r.content.blocks.length) {
+        contentBlocks = r.content.blocks;
+      } else if (r.content && Array.isArray(r.content.blocks)) {
+        contentBlocks = r.content.blocks;
+      }
+      if (contentBlocks.length) {
+        var mediaIdx = 0;
+        var attachChild = function(type, src, blockAlt, blockCaption) {
+          var m = mediaByFile[src] || mediaList[mediaIdx] || null;
+          mediaIdx += 1;
+          var id = '';
+          var alt = blockAlt || '';
+          var caption = blockCaption || '';
+          var preview = '';
+          if (m) {
+            id = m.filename || '';
+            if (!alt) alt = m.alt || '';
+            if (!caption) caption = m.caption || '';
+            preview = m.filename ? (BASE + '/uploads/' + m.filename) : '';
+          } else if (src) {
+            id = src;
+            preview = BASE + '/uploads/' + src;
+          }
+          return {type: type, media_id: id, alt: alt, caption: caption, file: null, preview: preview, uploading: false, _saved: !!id};
+        };
+        var last = null;
+        contentBlocks.forEach(function(b) {
+          if (b.type === 'text') {
+            var nb = {type:'text', value: b.value||'', children:[]};
+            blocks.push(nb);
+            last = nb;
+          } else if (b.type === 'image' || b.type === 'video') {
+            var child = attachChild(b.type, b.media_id || '', b.alt || '', b.caption || '');
+            if (last) {
+              last.children.push(child);
+            } else {
+              var wrapper = {type:'text', value:'', children:[child]};
+              blocks.push(wrapper);
+              last = wrapper;
+            }
+          }
+        });
+      }
+      if (!blocks.length) blocks = [{type:'text', value:'', children:[]}];
+      self.fm = {
+        title: r.title,
+        layer: r.layer,
+        cat: r.category_id || '',
+        by: r.created_by,
+        scenes: r.applicable_scenes ? r.applicable_scenes.slice() : [],
+        blocks: blocks
+      };
+      self.ns = '';
+      self.dlg = true;
+    },
+    addS: function() {
+      if (this.ns.trim()) {
+        this.fm.scenes.push(this.ns.trim());
+        this.ns = '';
+      }
+    },
+    addBlock: function() {
+      this.fm.blocks.push({type:'text', value:'', children:[]});
+    },
+    addImg: function(b) {
+      b.children.push({type:'image', media_id:'', alt:'', caption:'', file:null, preview:''});
+    },
+    addVid: function(b) {
+      b.children.push({type:'video', media_id:'', alt:'', caption:'', file:null, preview:''});
+    },
+    pickFile: function(e, ch) {
+      var file = e.target.files[0];
+      if (!file) return;
+      ch.preview = URL.createObjectURL(file);
+      if (!ch.alt) ch.alt = file.name;
+      ch.uploading = true;
+      this.uploadSingle(ch, file);
+      e.target.value = '';
+    },
+    uploadSingle: function(ch, file) {
+      var self = this;
+      var fd = new FormData();
+      fd.append('file', file);
+      fd.append('media_type', ch.type);
+      fd.append('alt', ch.alt || file.name || 'image');
+      fd.append('caption', ch.caption || '');
+      var kid = self.eid;
+      if (!kid) {
+        var body = {title: self.fm.title || '未命名', content: {blocks: []}, layer: self.fm.layer, category_id: self.fm.cat || null, applicable_scenes: self.fm.scenes, created_by: self.fm.by || 'system'};
+        fetch(API + '/knowledge', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+          .then(function(r) { return r.json(); })
+          .then(function(res) { self.eid = res.id; self.doUpload(res.id, fd, ch); })
+          .catch(function(e) { ch.uploading = false; alert('保存失败: ' + e.message); });
+      } else {
+        self.doUpload(kid, fd, ch);
+      }
+    },
+    doUpload: function(kid, fd, ch) {
+      var self = this;
+      fetch(API + '/knowledge/' + kid + '/media', {method: 'POST', body: fd})
+        .then(function(r) { return r.json(); })
+        .then(function(json) { ch.media_id = json.filename || json.file_path; ch.uploading = false; ch.file = null; })
+        .catch(function(e) { ch.uploading = false; ch.preview = ''; if (ch.media_id) { self.deleteMedia(self.eid, ch.media_id); ch.media_id = ''; } alert('图片上传失败: ' + e.message); });
+    },
+    deleteMedia: function(kid, mediaId) {
+      if (!kid || !mediaId) return;
+      var fileRef = String(mediaId).replace(/^\/uploads\//i, '');
+      fetch(API + '/knowledge/' + kid + '/media/' + fileRef, {method: 'DELETE'}).catch(function(){});
+    },
+    save: function() {
+      if (!this.fm.title) { alert('请输入标题'); return; }
+      this.saving = true;
+      var self = this;
+      var cBlocks = [];
+      this.fm.blocks.forEach(function(b) {
+        var hasMedia = b.children && b.children.some(function(ch) { return ch.media_id; });
+        if (b.value && b.value.trim()) cBlocks.push({type:'text', value:b.value});
+        if (hasMedia && b.children) b.children.forEach(function(ch) {
+          if (ch.media_id) cBlocks.push({type:ch.type, media_id:ch.media_id, alt:ch.alt||'', caption:ch.caption||''});
+        });
+      });
+      var body = {
+        title: this.fm.title,
+        content: {blocks: cBlocks},
+        layer: this.fm.layer,
+        category_id: this.fm.cat || null,
+        applicable_scenes: this.fm.scenes,
+        created_by: this.fm.by || 'system'
+      };
+      var method = this.eid ? 'PATCH' : 'POST';
+      var url = this.eid ? (API + '/knowledge/' + this.eid) : (API + '/knowledge');
+      fetch(url, {method:method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+          var kid = self.eid || res.id;
+          var uploads = [];
+          self.fm.blocks.forEach(function(b) {
+            if (b.children) b.children.forEach(function(ch) {
+              if (ch.file && !ch.media_id) uploads.push(ch);
+            });
+          });
+          function uploadNext(idx) {
+            if (idx >= uploads.length) { self.dlg = false; self.load(); self.saving = false; return; }
+            var ch = uploads[idx];
+            var fd = new FormData();
+            fd.append('file', ch.file);
+            fd.append('media_type', ch.type);
+            fd.append('alt', ch.alt || ch.file.name);
+            fd.append('caption', ch.caption || '');
+            fetch(API + '/knowledge/' + kid + '/media', {method:'POST', body:fd})
+              .then(function(r) { return r.json(); })
+              .then(function(json) { ch.media_id = json.filename; ch.file = null; uploadNext(idx + 1); })
+              .catch(function() { uploadNext(idx + 1); });
+          }
+          uploadNext(0);
+        })
+        .catch(function(e) { alert('保存失败: ' + e.message); self.saving = false; });
+    },
+    mediaUrl: function(id) { return BASE + '/uploads/' + id; },
+    showFull: function(src, isVideo) { this.full = {show:true, src:src, isVideo:!!isVideo}; }, act: function(r, action) {
+      var self = this;
+      fetch(API + '/knowledge/' + r.id + '/' + action, {method:'POST'})
+        .then(function() { self.load(); })
+        .catch(function(e) { console.error(e); });
+    }
+  },
+    mounted: function() {
+      var self = this;
+      self.load();
+      self.loadCats();
+      self._hoverTarget = null;
+      document.addEventListener('mouseover', function(e) {
+        var zone = e.target.closest('.upload-zone');
+        if (zone) {
+          self._hoverTarget = zone.getAttribute('data-ch-ref');
+        } else {
+          var childEl = e.target.closest('.child');
+          if (!childEl) self._hoverTarget = null;
+        }
+      });
+      // 全局粘贴监听（支持图片和视频）
+      document.addEventListener('paste', function(e) {
+        if (!self.dlg) return;
+        var items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        for (var i = 0; i < items.length; i++) {
+          var item = items[i];
+          var isImage = item.type.indexOf('image') !== -1;
+          var isVideo = item.type.indexOf('video') !== -1;
+          if (!isImage && !isVideo) continue;
+          var file = item.getAsFile();
+          if (!file) return;
+          e.preventDefault();
+          var preview = URL.createObjectURL(file);
+          var fileType = isImage ? 'image' : 'video';
+          // 悬停在上传区：替换那个模块
+          if (self._hoverTarget) {
+            var parts = self._hoverTarget.split(':');
+            var bi = parseInt(parts[0]), ci = parseInt(parts[1]);
+            if (self.fm.blocks[bi] && self.fm.blocks[bi].children[ci]) {
+              var ch = self.fm.blocks[bi].children[ci];
+              ch.type = fileType;
+              ch.preview = preview;
+              ch.uploading = true;
+              ch.media_id = '';
+              if (!ch.alt) ch.alt = file.name;
+              self.uploadSingle(ch, file);
+              self._hoverTarget = null;
+              return;
+            }
+          }
+          // 否则在末尾新建模块并立即上传
+          var last = self.fm.blocks[self.fm.blocks.length - 1];
+          if (!last || last.value || (last.children && last.children.length)) {
+            last = {type:'text', value:'', children:[]};
+            self.fm.blocks.push(last);
+          }
+          var newCh = {type:fileType, media_id:'', alt:file.name, caption:'', file:null, preview:preview, uploading:true, _saved:false};
+          last.children.push(newCh);
+          self.uploadSingle(newCh, file);
+          return;
+        }
+      });
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
