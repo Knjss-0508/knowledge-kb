@@ -1,5 +1,6 @@
-﻿import uuid
+import uuid
 import os
+import string
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
@@ -23,6 +24,30 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 ALLOWED_IMAGE = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 ALLOWED_VIDEO = {"video/mp4", "video/webm", "video/quicktime"}
+
+ALPHA = string.ascii_uppercase  # A-Z
+
+
+def _generate_knowledge_id(db: Session) -> str:
+    """生成 A-00001 格式的知识ID，按字母+数字递增，最高 Z-99999"""
+    all_ids = [row[0] for row in db.query(Knowledge.id).all()]
+    valid_ids = []
+    for kid in all_ids:
+        if len(kid) == 7 and kid[1] == '-' and kid[0] in ALPHA and kid[2:].isdigit():
+            valid_ids.append(kid)
+    if not valid_ids:
+        return "A-00001"
+    valid_ids.sort(key=lambda x: (x[0], int(x[2:])))
+    last = valid_ids[-1]
+    letter_idx = ALPHA.index(last[0])
+    num = int(last[2:]) + 1
+    if num > 99999:
+        letter_idx += 1
+        num = 1
+    if letter_idx >= len(ALPHA):
+        raise ValueError("知识ID已达上限 Z-99999")
+    return f"{ALPHA[letter_idx]}-{num:05d}"
+
 
 
 def _normalize_content(raw):
@@ -94,7 +119,7 @@ def _to_response(item: Knowledge) -> dict:
 @router.post("", response_model=KnowledgeResponse, status_code=201, summary="创建知识条目", description="新建一条知识条目，初始状态为草稿(draft)")
 def create_knowledge(body: KnowledgeCreate, db: Session = Depends(get_db)):
     item = Knowledge(
-        id=f"k-{uuid.uuid4().hex[:12]}",
+        id=_generate_knowledge_id(db),
         title=body.title,
         subtitles=body.subtitles or [],
         content=_normalize_content(body.content),
@@ -334,7 +359,7 @@ def delete_media(knowledge_id: str, media_file: str, db: Session = Depends(get_d
 @router.post("/candidates", response_model=KnowledgeResponse, status_code=201, summary="提交候选知识")
 def submit_candidate(body: CandidateSubmit, db: Session = Depends(get_db)):
     item = Knowledge(
-        id=f"k-{uuid.uuid4().hex[:12]}",
+        id=_generate_knowledge_id(db),
         title=body.title,
         content=_normalize_content(body.content),
         layer=KnowledgeLayer.L2,
