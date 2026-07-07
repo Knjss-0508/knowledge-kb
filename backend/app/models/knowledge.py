@@ -27,6 +27,7 @@ class Knowledge(Base):
 
     id = Column(String(64), primary_key=True)
     title = Column(String(256), nullable=False, index=True)
+    subtitles = Column(JSON, default=list, nullable=True)
     content = Column(JSON, nullable=False, default=dict)
     # content blocks 支持三种类型:
     # {"type":"text", "value":"文本内容"}

@@ -73,6 +73,7 @@ def _to_response(item: Knowledge) -> dict:
     return {
         "id": item.id,
         "title": item.title,
+        "subtitles": item.subtitles or [],
         "content": item.content,
         "layer": item.layer.value,
         "category_id": item.category_id,
@@ -95,6 +96,7 @@ def create_knowledge(body: KnowledgeCreate, db: Session = Depends(get_db)):
     item = Knowledge(
         id=f"k-{uuid.uuid4().hex[:12]}",
         title=body.title,
+        subtitles=body.subtitles or [],
         content=_normalize_content(body.content),
         layer=KnowledgeLayer(body.layer),
         category_id=body.category_id,

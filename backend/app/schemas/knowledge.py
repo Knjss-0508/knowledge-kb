@@ -42,6 +42,7 @@ class MediaResponse(BaseModel):
 
 class KnowledgeCreate(BaseModel):
     title: str = Field(..., max_length=256, description="知识标题")
+    subtitles: list[str] = Field(default=[], description="副标题列表，可多条")
     content: Any = Field(..., description="知识内容，支持富文本: 纯字符串 或 {blocks:[...]} 结构")
     layer: str = Field(..., pattern=r"^L[1-3]$", description="知识层级: L1=基础知识 L2=案例知识 L3=动态知识")
     category_id: Optional[str] = Field(None, description="所属分类ID")
@@ -51,6 +52,7 @@ class KnowledgeCreate(BaseModel):
 
 class KnowledgeUpdate(BaseModel):
     title: Optional[str] = Field(None, description="知识标题")
+    subtitles: Optional[list[str]] = Field(None, description="副标题列表")
     content: Optional[Any] = Field(None, description="知识内容")
     layer: Optional[str] = Field(None, description="知识层级")
     category_id: Optional[str] = Field(None, description="所属分类ID")
@@ -61,6 +63,7 @@ class KnowledgeUpdate(BaseModel):
 class KnowledgeResponse(BaseModel):
     id: str = Field(description="知识条目ID")
     title: str = Field(description="知识标题")
+    subtitles: list[str] = Field(default=[], description="副标题列表")
     content: Any = Field(description="知识内容")
     layer: str = Field(description="知识层级")
     category_id: Optional[str] = Field(None, description="所属分类ID")

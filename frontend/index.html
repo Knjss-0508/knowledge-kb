@@ -135,6 +135,14 @@
             <div class="fg"><label class="fl"><span class="req">*</span> 知识层级</label><div class="rg"><div class="rb" :class="{on:fm.layer==='L1'}" @click="fm.layer='L1'">L1 基础</div><div class="rb" :class="{on:fm.layer==='L2'}" @click="fm.layer='L2'">L2 案例</div><div class="rb" :class="{on:fm.layer==='L3'}" @click="fm.layer='L3'">L3 动态</div></div></div>
             <div class="fg"><label class="fl">所属分类</label><select class="fi" v-model="fm.cat"><option value="">未分类</option><option v-for="c in cats" :key="c.id" :value="c.id">{{c.name}}</option></select></div>
           </div>
+          <div class="fg" style="margin-bottom:14px">
+            <label class="fl">副标题 <span style="font-weight:400;color:#86909c;font-size:11px">（选填，可添加多条）</span></label>
+            <div v-for="(sub,i) in fm.subtitles" :key="i" style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
+              <input class="fi" v-model="fm.subtitles[i]" placeholder="输入副标题" style="flex:1">
+              <button class="blk-rm" @click="fm.subtitles.splice(i,1)" style="margin-top:0">&times;</button>
+            </div>
+            <button class="btn bd bsm" @click="fm.subtitles.push('')">+ 副标题</button>
+          </div>
           <div class="row">
             <div class="fg"><label class="fl">创建人</label><input class="fi" v-model="fm.by" placeholder="你的名字"></div>
             <div class="fg"><label class="fl">适用场景</label><input class="fi" v-model="ns" placeholder="输入后回车" @keyup.enter="addS"><div class="tl" v-if="fm.scenes.length"><span class="ti" v-for="(s,i) in fm.scenes" :key="i">{{s}}<span class="rx" @click="fm.scenes.splice(i,1)">&times;</span></span></div></div>
@@ -240,7 +248,7 @@ Vue.createApp({
       eid: '',
       saving: false,
       ns: '',
-      fm: {title:'', layer:'L1', cat:'', by:'', scenes:[], blocks:[{type:'text', value:'', children:[]}]}, full:{show:false, src:'', isVideo:false}
+      fm: {title:'', subtitles:[], layer:'L1', cat:'', by:'', scenes:[], blocks:[{type:'text', value:'', children:[]}]}, full:{show:false, src:'', isVideo:false}
     }
   },
   methods: {
@@ -281,7 +289,7 @@ Vue.createApp({
     closeDlg: function() {var self = this;self.dlg = false;},
     openNew: function() {
       this.eid = '';
-      this.fm = {title:'', layer:'L1', cat:'', by:'', scenes:[], blocks:[{type:'text', value:'', children:[]}]};
+      this.fm = {title:'', subtitles:[], layer:'L1', cat:'', by:'', scenes:[], blocks:[{type:'text', value:'', children:[]}]};
       this.ns = '';
       this.dlg = true;
       this.loadCats();
@@ -340,6 +348,7 @@ Vue.createApp({
       if (!blocks.length) blocks = [{type:'text', value:'', children:[]}];
       self.fm = {
         title: r.title,
+        subtitles: r.subtitles ? r.subtitles.slice() : [],
         layer: r.layer,
         cat: r.category_id || '',
         by: r.created_by,
@@ -382,7 +391,7 @@ Vue.createApp({
       fd.append('caption', ch.caption || '');
       var kid = self.eid;
       if (!kid) {
-        var body = {title: self.fm.title || '未命名', content: {blocks: []}, layer: self.fm.layer, category_id: self.fm.cat || null, applicable_scenes: self.fm.scenes, created_by: self.fm.by || 'system'};
+        var body = {title: self.fm.title || '未命名', subtitles: (self.fm.subtitles || []).filter(function(s) { return s && s.trim(); }), content: {blocks: []}, layer: self.fm.layer, category_id: self.fm.cat || null, applicable_scenes: self.fm.scenes, created_by: self.fm.by || 'system'};
         fetch(API + '/knowledge', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
           .then(function(r) { return r.json(); })
           .then(function(res) { self.eid = res.id; self.doUpload(res.id, fd, ch); })
@@ -417,6 +426,7 @@ Vue.createApp({
       });
       var body = {
         title: this.fm.title,
+        subtitles: this.fm.subtitles.filter(function(s) { return s && s.trim(); }),
         content: {blocks: cBlocks},
         layer: this.fm.layer,
         category_id: this.fm.cat || null,
