@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>曼哈顿 - 答疑中台</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f0f2f5;color:#1d2129;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+    .box{width:500px;background:#fff;border:1px solid #e5e6eb;border-radius:10px;padding:28px;box-shadow:0 12px 36px rgba(0,0,0,.08)}
+    h1{font-size:22px;margin-bottom:8px}
+    .sub{font-size:13px;color:#86909c;line-height:1.6;margin-bottom:22px}
+    .btn{width:100%;height:38px;border:none;border-radius:6px;background:#3370ff;color:#fff;font-size:14px;font-weight:600;cursor:pointer;margin-bottom:12px}
+    .btn:hover{background:#2460e6}.btn:disabled{background:#a9c1ff;cursor:not-allowed}
+    .btn.bd{background:#fff;color:#3370ff;border:1px solid #3370ff}
+    label{display:block;font-size:13px;font-weight:600;margin:14px 0 8px}
+    textarea{width:100%;height:128px;resize:vertical;border:1px solid #dcdfe6;border-radius:6px;padding:10px;font-size:12px;line-height:1.5;outline:none}
+    textarea:focus{border-color:#3370ff;box-shadow:0 0 0 2px rgba(51,112,255,.08)}
+    .msg{min-height:20px;margin-top:10px;font-size:12px;color:#86909c;line-height:1.5}
+    .err{color:#f53f3f}.ok{color:#00b42a}
+    .progress{display:none;margin-top:16px}
+    .progress.on{display:block}
+    .progress-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:8px;font-size:12px;color:#4e5969}
+    .bar{height:10px;background:#eef1f6;border-radius:999px;overflow:hidden}
+    .fill{height:100%;width:0;background:#3370ff;border-radius:999px;transition:width .25s ease}
+    .counts{margin-top:8px;font-size:12px;color:#86909c;line-height:1.7}
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>曼哈顿</h1>
+    <div class="sub">提交 Cookie 后，系统会低频抓取适用类目、适用品牌、适用机型并保存到本地。之后前端只读取本地缓存。</div>
+    <label>曼哈顿 Cookie</label>
+    <textarea id="cookie" placeholder="粘贴 nmht.zhuanspirit.com 登录后的 Cookie 字符串"></textarea>
+    <button id="submitBtn" class="btn bd" onclick="submitCookie()">验证并更新本地数据</button>
+    <div id="progress" class="progress">
+      <div class="progress-head">
+        <span id="progressText">等待开始</span>
+        <span id="progressPct">0%</span>
+      </div>
+      <div class="bar"><div id="progressFill" class="fill"></div></div>
+      <div id="counts" class="counts"></div>
+    </div>
+    <div id="msg" class="msg"></div>
+  </div>
+  <script>
+    var API=window.location.origin + '/api/v1';
+    var pollTimer=null;
+
+    function setMsg(t, cls){
+      var el=document.getElementById('msg');
+      el.className='msg '+(cls||'');
+      el.textContent=t||'';
+    }
+
+    function jsonOrError(r){
+      return r.json().then(function(d){
+        if(!r.ok) throw new Error(d.detail||'请求失败');
+        return d;
+      });
+    }
+
+    function renderProgress(s){
+      s=s||{};
+      var pct=Math.max(0, Math.min(100, Number(s.percent)||0));
+      document.getElementById('progress').className='progress on';
+      document.getElementById('progressText').textContent=s.message||'正在更新...';
+      document.getElementById('progressPct').textContent=pct+'%';
+      document.getElementById('progressFill').style.width=pct+'%';
+      var c=s.counts||{};
+      var parts=[];
+      if(c.categories!==undefined) parts.push('类目 '+c.categories+' 个');
+      if(c.brand_groups!==undefined) parts.push('品牌分组 '+c.brand_groups+' 个');
+      if(c.brands!==undefined) parts.push('品牌 '+c.brands+' 个');
+      if(c.models!==undefined) parts.push('机型 '+c.models+' 个');
+      if(s.total) parts.push('进度 '+(s.current||0)+'/'+s.total);
+      document.getElementById('counts').textContent=parts.join('，');
+      if(s.stage==='error'){
+        setMsg(s.error||'更新失败', 'err');
+        document.getElementById('submitBtn').disabled=false;
+        clearInterval(pollTimer);
+      }
+      if(s.stage==='done'){
+        setMsg('更新完成，正在进入后台...', 'ok');
+        clearInterval(pollTimer);
+        setTimeout(function(){location.href=window.location.origin + '/app';}, 800);
+      }
+    }
+
+    function pollStatus(){
+      fetch(API+'/manhattan/cache/refresh/status')
+        .then(jsonOrError)
+        .then(renderProgress)
+        .catch(function(e){
+          clearInterval(pollTimer);
+          document.getElementById('submitBtn').disabled=false;
+          setMsg(e.message, 'err');
+        });
+    }
+
+    function submitCookie(){
+      var cookie=document.getElementById('cookie').value.trim();
+      var btn=document.getElementById('submitBtn');
+      if(!cookie){setMsg('请先粘贴 Cookie。','err');return;}
+      btn.disabled=true;
+      setMsg('正在验证 Cookie...');
+      renderProgress({message:'正在验证 Cookie...',percent:2});
+      fetch(API+'/manhattan/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:cookie})})
+        .then(jsonOrError)
+        .then(function(){
+          setMsg('验证成功，正在启动更新...');
+          return fetch(API+'/manhattan/cache/refresh',{method:'POST'}).then(jsonOrError);
+        })
+        .then(function(d){
+          renderProgress(d.status);
+          clearInterval(pollTimer);
+          pollTimer=setInterval(pollStatus, 1000);
+          pollStatus();
+        })
+        .catch(function(e){
+          btn.disabled=false;
+          setMsg(e.message,'err');
+        });
+    }
+  </script>
+</body>
+</html>

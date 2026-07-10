@@ -6,6 +6,16 @@
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#f0f2f5;color:#1d2129}
+    .layout{display:flex;min-height:100vh}
+    .side{width:210px;background:#061b2d;color:#b8c6d8;flex-shrink:0;display:flex;flex-direction:column}
+    .brand{height:52px;display:flex;align-items:center;padding:0 18px;color:#fff;font-size:16px;font-weight:700;border-bottom:1px solid rgba(255,255,255,.08)}
+    .nav{padding:12px 0;flex:1}
+    .nav-item{height:38px;display:flex;align-items:center;padding:0 20px;font-size:13px;cursor:pointer;border-left:3px solid transparent}
+    .nav-item:hover{background:rgba(255,255,255,.06);color:#fff}
+    .nav-item.on{background:#1683ff;color:#fff;border-left-color:#58b5ff}
+    .side-foot{padding:14px 18px;border-top:1px solid rgba(255,255,255,.08);font-size:12px}
+    .logout{margin-top:8px;color:#8bbcff;cursor:pointer}
+    .main{flex:1;min-width:0}
     .hd{background:#fff;height:52px;display:flex;align-items:center;padding:0 28px;border-bottom:1px solid #e5e6eb;position:sticky;top:0;z-index:100}
     .hd h1{font-size:17px;font-weight:600}.hd .sub{font-size:12px;color:#86909c;margin-left:8px;background:#f2f3f5;padding:2px 8px;border-radius:4px}
     .mn{padding:20px 28px;max-width:1400px;margin:0 auto}
@@ -16,6 +26,12 @@
     .vl.bl{color:#3370ff}.vl.gn{color:#00b42a}.vl.og{color:#ff7d00}.vl.gy{color:#86909c}
     .bar{background:#fff;border-radius:10px;padding:14px 18px;margin-bottom:14px;border:1px solid #e5e6eb;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
     .bar .tt{font-size:14px;font-weight:600;margin-right:auto}
+    .filter-tabs{background:#fff;border:1px solid #e5e6eb;border-radius:10px;margin-bottom:14px;padding:12px 18px;display:grid;gap:10px}
+    .tab-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .tab-label{font-size:12px;font-weight:600;color:#4e5969;width:58px;flex-shrink:0}
+    .tab-btn{height:28px;padding:0 12px;border:1px solid transparent;border-radius:6px;background:#f7f8fa;color:#4e5969;font-size:12px;cursor:pointer}
+    .tab-btn:hover{background:#eef3ff;color:#3370ff}
+    .tab-btn.on{background:#3370ff;color:#fff;border-color:#3370ff;font-weight:600}
     .inp{padding:6px 10px;border:1px solid #e5e6eb;border-radius:6px;font-size:12px;outline:none}
     .inp:focus{border-color:#3370ff}
     select.inp{appearance:auto}
@@ -27,6 +43,7 @@
     .bd{background:#fff;color:#4e5969;border-color:#e5e6eb}
     .bsm{padding:3px 8px;font-size:11px}
     .tw{background:#fff;border-radius:10px;border:1px solid #e5e6eb;overflow:hidden}
+    .user-form{background:#fff;border:1px solid #e5e6eb;border-radius:10px;padding:18px;margin-bottom:14px;display:grid;grid-template-columns:1fr 1fr 160px auto;gap:12px;align-items:end}
     table{width:100%;border-collapse:collapse}
     th{background:#f7f8fa;padding:10px 14px;text-align:left;font-size:12px;font-weight:500;color:#86909c;border-bottom:1px solid #e5e6eb}
     td{padding:12px 14px;font-size:12px;border-bottom:1px solid #f2f3f5}
@@ -49,6 +66,7 @@
     .fl .req{color:#f53f3f}
     .fi{width:100%;padding:7px 10px;border:1px solid #e5e6eb;border-radius:6px;font-size:12px;color:#1d2129;outline:none}
     .fi:focus{border-color:#3370ff;box-shadow:0 0 0 2px rgba(51,112,255,.08)}
+    .fi:disabled{background:#f7f8fa;color:#4e5969;cursor:default}
     textarea.fi{resize:vertical;line-height:1.6}
     .rg{display:flex;gap:0}
     .rb{padding:5px 14px;font-size:12px;border:1px solid #e5e6eb;cursor:pointer;background:#fff;color:#4e5969}
@@ -57,6 +75,30 @@
     .tl{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
     .ti{display:inline-flex;align-items:center;gap:3px;padding:3px 7px;background:#f2f3f5;border-radius:4px;font-size:11px}
     .ti .rx{cursor:pointer;color:#c9cdd4}.ti .rx:hover{color:#f53f3f}
+    .ms{position:relative}
+    .ms-box{min-height:32px;width:100%;display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:5px 34px 5px 8px;border:1px solid #e5e6eb;border-radius:6px;background:#fff;cursor:text;font-size:12px;position:relative}
+    .ms-box:focus-within{border-color:#3370ff;box-shadow:0 0 0 2px rgba(51,112,255,.08)}
+    .view-only .ms-box{cursor:default;background:#f7f8fa}
+    .view-only .ms-clear,.view-only .ms-tag-x{display:none}
+    .ms-ph{color:#c9cdd4}
+    .ms-tag{display:inline-flex;align-items:center;gap:3px;max-width:120px;padding:2px 6px;background:#f2f3f5;border-radius:4px;color:#4e5969;font-size:11px;white-space:nowrap}
+    .ms-tag-text{overflow:hidden;text-overflow:ellipsis}
+    .ms-tag-x{color:#86909c;font-size:13px;line-height:1;cursor:pointer}
+    .ms-tag-x:hover{color:#f53f3f}
+    .ms-clear{position:absolute;right:7px;top:50%;transform:translateY(-50%);width:20px;height:20px;display:flex;align-items:center;justify-content:center;border-radius:50%;color:#c9cdd4;font-size:16px;line-height:1;cursor:pointer}
+    .ms-clear:hover{background:#f2f3f5;color:#4e5969}
+    .ms-menu{position:absolute;top:36px;left:0;right:0;z-index:1200;max-height:210px;overflow:auto;background:#fff;border:1px solid #e5e6eb;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.1);padding:4px}
+    .ms-opt{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 7px;border-radius:4px;font-size:12px;cursor:pointer}
+    .ms-opt:hover{background:#f7f8fa}
+    .ms-opt.on{background:#e8f3ff;color:#1d2129;font-weight:600}
+    .ms-opt-check{color:#1683ff;font-size:16px;line-height:1}
+    .ms-empty{padding:10px 8px;color:#c9cdd4;font-size:12px}
+    .ms-inline-input{min-width:48px;flex:1;height:22px;border:none;outline:none;font-size:12px;background:transparent}
+    .ms-inline-input:disabled{cursor:default;color:#4e5969}
+    .ms-all{height:34px;display:flex;align-items:center;justify-content:center;background:#1683ff;color:#fff;border-radius:4px;margin-bottom:4px;font-size:13px;font-weight:600;cursor:pointer}
+    .ms-all:hover{background:#0f74df}
+    .ms-more{padding:8px;color:#86909c;font-size:12px;border-top:1px solid #f2f3f5}
+    .hint{font-size:11px;color:#86909c;margin-top:4px;line-height:1.4}
     /* 块样式 */
     .blk{padding:10px;margin-bottom:8px;background:#fafbfc;border:1px solid #e5e6eb;border-radius:8px}
     .blk-h{display:flex;gap:8px;align-items:flex-start}
@@ -84,8 +126,23 @@
 </head>
 <body>
 <div id="app">
-  <div class="hd"><h1>答疑中台</h1><span class="sub">知识库管理</span></div>
-  <div class="mn">
+  <div class="layout" v-if="ready">
+  <aside class="side">
+    <div class="brand">答疑中台</div>
+    <div class="nav">
+      <div class="nav-item" :class="{on:view==='knowledge'}" @click="view='knowledge'">知识库管理</div>
+      <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='users'}" @click="openUsers">账号管理</div>
+    </div>
+    <div class="side-foot">
+      <div>{{currentUser.username}}</div>
+      <div>{{roleLabel(currentUser.role)}}</div>
+      <div class="logout" v-if="can('password:reset_self')" @click="resetMyPassword">修改密码</div>
+      <div class="logout" @click="logout">退出登录</div>
+    </div>
+  </aside>
+  <main class="main">
+  <div class="hd"><h1>{{view==='users'?'账号管理':'答疑中台'}}</h1><span class="sub">{{view==='users'?'创建和查看后台账号':'知识库管理'}}</span></div>
+  <div class="mn" v-if="view==='knowledge'">
     <div class="cards">
       <div class="card"><div class="lb">全部知识</div><div class="vl bl">{{stats.total}}</div></div>
       <div class="card"><div class="lb">已发布</div><div class="vl gn">{{stats.published}}</div></div>
@@ -94,11 +151,20 @@
     </div>
     <div class="bar">
       <span class="tt">知识列表</span>
-      <select class="inp" style="width:110px" v-model="f.status" @change="load"><option value="">全部状态</option><option value="draft">草稿</option><option value="review">待审核</option><option value="published">已发布</option><option value="deprecated">已废弃</option></select>
-      <select class="inp" style="width:110px" v-model="f.layer" @change="load"><option value="">全部层级</option><option value="L1">L1 基础</option><option value="L2">L2 案例</option><option value="L3">L3 动态</option></select>
+      <button class="btn bd" v-if="dev.showManhattanUpdate && can('account:manage')" @click="goManhattanLogin">更新曼哈顿数据</button>
       <input class="inp" style="width:160px" v-model="f.kw" placeholder="搜索标题..." @keyup.enter="load">
       <button class="btn bd" @click="load">刷新</button>
-      <button class="btn bp" @click="openNew">+ 新建知识</button>
+      <button class="btn bp" v-if="can('knowledge:create')" @click="openNew">+ 新建知识</button>
+    </div>
+    <div class="filter-tabs">
+      <div class="tab-row">
+        <span class="tab-label">状态</span>
+        <button class="tab-btn" v-for="tab in statusTabs()" :key="tab.value || 'all-status'" :class="{on:f.status===tab.value}" @click="setFilter('status', tab.value)">{{tab.label}}</button>
+      </div>
+      <div class="tab-row">
+        <span class="tab-label">分类</span>
+        <button class="tab-btn" v-for="tab in layerTabs()" :key="tab.value || 'all-layer'" :class="{on:f.layer===tab.value}" @click="setFilter('layer', tab.value)">{{tab.label}}</button>
+      </div>
     </div>
     <div class="tw">
       <table>
@@ -111,10 +177,11 @@
             <td><span class="tg" :class="{'tg-d':r.status==='draft','tg-r':r.status==='review','tg-p':r.status==='published','tg-x':r.status==='deprecated'}">{{sl(r.status)}}</span></td>
             <td style="color:#86909c">{{r.created_by}}</td>
             <td style="text-align:right">
-              <button class="btn bd bsm" @click="openEdit(r)">编辑</button>
-              <button class="btn bw bsm" v-if="r.status==='draft'" @click="act(r,'submit-review')">提交审核</button>
-              <button class="btn bs bsm" v-if="r.status==='review'" @click="act(r,'approve')">通过</button>
-              <button class="btn br bsm" v-if="r.status!=='deprecated'" @click="act(r,'deprecate')">废弃</button>
+              <button class="btn bd bsm" v-if="can('knowledge:view')" @click="openView(r)">查看</button>
+              <button class="btn bd bsm" v-if="can('knowledge:create')" @click="openEdit(r)">编辑</button>
+              <button class="btn bw bsm" v-if="can('knowledge:submit') && r.status==='draft'" @click="act(r,'submit-review')">提交审核</button>
+              <button class="btn bs bsm" v-if="can('knowledge:approve') && r.status==='review'" @click="act(r,'approve')">审核发布</button>
+              <button class="btn br bsm" v-if="can('knowledge:deprecate') && r.status!=='deprecated'" @click="act(r,'deprecate')">废弃</button>
             </td>
           </tr>
           <tr v-if="!list.length"><td colspan="6" style="text-align:center;padding:40px;color:#c9cdd4">暂无数据</td></tr>
@@ -122,30 +189,54 @@
       </table>
     </div>
   </div>
+  <div class="mn" v-if="view==='users' && isSuperAdmin()">
+    <div class="user-form">
+      <div><label class="fl">账号</label><input class="fi" v-model="newUser.username" placeholder="输入账号"></div>
+      <div><label class="fl">初始密码</label><input class="fi" v-model="newUser.password" placeholder="默认 123456"></div>
+      <div><label class="fl">角色</label><select class="fi" v-model="newUser.role"><option v-for="r in roles" :key="r.value" :value="r.value">{{r.label}}</option></select></div>
+      <button class="btn bp" @click="createUser">创建账号</button>
+    </div>
+    <div class="tw">
+      <table>
+        <thead><tr><th>账号</th><th style="width:180px">角色</th><th style="width:100px">状态</th><th style="width:180px">创建时间</th><th style="width:300px;text-align:right">操作</th></tr></thead>
+        <tbody>
+          <tr v-for="u in users" :key="u.id"><td>{{u.username}}</td><td><select class="inp" v-model="u.role" @change="updateUser(u,{role:u.role})"><option v-for="r in roles" :key="r.value" :value="r.value">{{r.label}}</option></select></td><td>{{u.is_active?'启用':'禁用'}}</td><td>{{u.created_at || '-'}}</td><td style="text-align:right"><button class="btn bd bsm" @click="resetUserPassword(u)">重置密码</button><button class="btn bw bsm" @click="updateUser(u,{is_active:!u.is_active})">{{u.is_active?'禁用':'启用'}}</button></td></tr>
+          <tr v-if="!users.length"><td colspan="5" style="text-align:center;padding:40px;color:#c9cdd4">暂无账号</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  </main>
+  </div>
 
   <!-- 编辑弹窗 -->
   <div class="mask" v-if="dlg" @click.self="dlg=false">
-    <div class="dlg">
-      <div class="dlg-h"><h3>{{eid?'编辑知识':'新建知识'}}</h3><button class="dlg-x" @click="closeDlg">&times;</button></div>
+    <div class="dlg" :class="{'view-only':viewOnly}">
+      <div class="dlg-h"><h3>{{viewOnly?'查看知识':(eid?'编辑知识':'新建知识')}}</h3><button class="dlg-x" @click="closeDlg">&times;</button></div>
       <div class="dlg-b">
         <div class="sec">
           <div class="sec-t">知识信息</div>
           <div class="row">
-            <div class="fg"><label class="fl"><span class="req">*</span> 标题</label><input class="fi" v-model="fm.title" placeholder="输入知识标题"></div>
-            <div class="fg"><label class="fl"><span class="req">*</span> 知识层级</label><div class="rg"><div class="rb" :class="{on:fm.layer==='L1'}" @click="fm.layer='L1'">L1 基础</div><div class="rb" :class="{on:fm.layer==='L2'}" @click="fm.layer='L2'">L2 案例</div><div class="rb" :class="{on:fm.layer==='L3'}" @click="fm.layer='L3'">L3 动态</div></div></div>
-            <div class="fg"><label class="fl">所属分类</label><select class="fi" v-model="fm.cat"><option value="">未分类</option><option v-for="c in cats" :key="c.id" :value="c.id">{{c.name}}</option></select></div>
+            <div class="fg"><label class="fl"><span class="req">*</span> 标题</label><input class="fi" v-model="fm.title" :disabled="viewOnly" placeholder="输入知识标题"></div>
+            <div class="fg"><label class="fl"><span class="req">*</span> 知识层级</label><div class="rg"><div class="rb" :class="{on:fm.layer==='L1'}" @click="!viewOnly && (fm.layer='L1')">L1 基础</div><div class="rb" :class="{on:fm.layer==='L2'}" @click="!viewOnly && (fm.layer='L2')">L2 案例</div><div class="rb" :class="{on:fm.layer==='L3'}" @click="!viewOnly && (fm.layer='L3')">L3 动态</div></div></div>
+            <div class="fg"><label class="fl">所属分类</label><select class="fi" v-model="fm.cat" :disabled="viewOnly" @change="onKnowledgeCategoryChange"><option value="">未分类</option><option v-for="c in cats" :key="c.id" :value="c.id">{{c.name}}</option></select></div>
           </div>
           <div class="fg" style="margin-bottom:14px">
             <label class="fl">副标题 <span style="font-weight:400;color:#86909c;font-size:11px">（选填，可添加多条）</span></label>
             <div v-for="(sub,i) in fm.subtitles" :key="i" style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
-              <input class="fi" v-model="fm.subtitles[i]" placeholder="输入副标题" style="flex:1">
-              <button class="blk-rm" @click="fm.subtitles.splice(i,1)" style="margin-top:0">&times;</button>
+              <input class="fi" v-model="fm.subtitles[i]" :disabled="viewOnly" placeholder="输入副标题" style="flex:1">
+              <button class="blk-rm" v-if="!viewOnly" @click="fm.subtitles.splice(i,1)" style="margin-top:0">&times;</button>
             </div>
-            <button class="btn bd bsm" @click="fm.subtitles.push('')">+ 副标题</button>
+            <button class="btn bd bsm" v-if="!viewOnly" @click="fm.subtitles.push('')">+ 副标题</button>
           </div>
           <div class="row">
-            <div class="fg"><label class="fl">创建人</label><input class="fi" v-model="fm.by" placeholder="你的名字"></div>
-            <div class="fg"><label class="fl">适用场景</label><input class="fi" v-model="ns" placeholder="输入后回车" @keyup.enter="addS"><div class="tl" v-if="fm.scenes.length"><span class="ti" v-for="(s,i) in fm.scenes" :key="i">{{s}}<span class="rx" @click="fm.scenes.splice(i,1)">&times;</span></span></div></div>
+            <div class="fg"><label class="fl">创建人</label><input class="fi" v-model="fm.by" :disabled="viewOnly" placeholder="你的名字"></div>
+            <div class="fg"><label class="fl">适用场景</label><input class="fi" v-if="!viewOnly" v-model="ns" placeholder="输入后回车" @keyup.enter="addS"><div class="tl" v-if="fm.scenes.length"><span class="ti" v-for="(s,i) in fm.scenes" :key="i">{{s}}<span class="rx" v-if="!viewOnly" @click="fm.scenes.splice(i,1)">&times;</span></span></div></div>
+          </div>
+          <div class="row" v-if="showManhattanFields()">
+            <div class="fg"><label class="fl">适用类目</label><div class="ms"><div class="ms-box" @click="focusMultiInput('categoryInput','applicableCategories')"><span class="ms-tag" v-for="v in fm.applicableCategories" :key="v"><span class="ms-tag-text">{{selectedLabel('applicableCategories',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('applicableCategories',v)">&times;</span></span><input ref="categoryInput" class="ms-inline-input" v-model="categoryKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.applicableCategories.length?'':'请选择类目'" @focus="!viewOnly && (drop='applicableCategories')"><span class="ms-clear" @click.stop="clearMultiSelect('applicableCategories')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='applicableCategories'"><div class="ms-all" @click="selectAllVisible('applicableCategories', filteredApplicableCategories())">全选</div><div class="ms-empty" v-if="optErr.applicableCategories">{{optErr.applicableCategories}}</div><div class="ms-empty" v-else-if="!option.applicableCategories.length">暂无数据</div><div class="ms-opt" :class="{on:isSelected('applicableCategories',optValue(o))}" v-for="o in filteredApplicableCategories()" :key="optKey(o)" @click="toggleSelected('applicableCategories',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('applicableCategories',optValue(o))">✓</span></div></div></div><div class="hint" v-if="optErr.applicableCategories">{{optErr.applicableCategories}}</div></div>
+            <div class="fg"><label class="fl">适用品牌</label><div class="ms"><div class="ms-box" @click="focusMultiInput('brandInput','brands')"><span class="ms-tag" v-for="v in fm.brands" :key="v"><span class="ms-tag-text">{{selectedLabel('brands',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('brands',v)">&times;</span></span><input ref="brandInput" class="ms-inline-input" v-model="brandKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.brands.length?'':'请选择品牌'" @focus="!viewOnly && (drop='brands')"><span class="ms-clear" @click.stop="clearMultiSelect('brands')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='brands'"><div class="ms-all" @click="selectAllVisible('brands', filteredBrands())">全选</div><div class="ms-empty" v-if="optErr.brands">{{optErr.brands}}</div><div class="ms-empty" v-else-if="!option.brands.length">请先选择类目</div><div class="ms-opt" :class="{on:isSelected('brands',optValue(o))}" v-for="o in filteredBrands()" :key="optKey(o)" @click="toggleSelected('brands',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('brands',optValue(o))">✓</span></div></div></div><div class="hint" v-if="optErr.brands">{{optErr.brands}}</div></div>
+            <div class="fg"><label class="fl">适用机型</label><div class="ms"><div class="ms-box" @click="focusMultiInput('modelInput','models')"><span class="ms-tag" v-for="v in fm.models" :key="v"><span class="ms-tag-text">{{selectedLabel('models',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('models',v)">&times;</span></span><input ref="modelInput" class="ms-inline-input" v-model="modelKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.models.length?'':'请选择机型'" @focus="!viewOnly && (drop='models')"><span class="ms-clear" @click.stop="clearMultiSelect('models')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='models'"><div class="ms-all" @click="selectAllVisible('models', visibleModels())">全选</div><div class="ms-empty" v-if="optErr.models">{{optErr.models}}</div><div class="ms-empty" v-else-if="!option.models.length">请先选择类目/品牌</div><div class="ms-opt" :class="{on:isSelected('models',optValue(o))}" v-for="o in visibleModels()" :key="optKey(o)" @click="toggleSelected('models',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('models',optValue(o))">✓</span></div><div class="ms-more" v-if="hiddenModelCount() > 0">还有 {{hiddenModelCount()}} 个机型，请搜索缩小范围</div></div></div><div class="hint" v-if="optErr.models">{{optErr.models}}</div></div>
           </div>
         </div>
         <div class="sec">
@@ -154,8 +245,8 @@
             <div class="blk-h">
               <span class="blk-tag" style="background:#86909c">文本</span>
               <div class="blk-body">
-                <textarea class="fi" v-model="b.value" rows="3" placeholder="输入文本内容..."></textarea>
-                <div class="blk-acts">
+                <textarea class="fi" v-model="b.value" :disabled="viewOnly" rows="3" placeholder="输入文本内容..."></textarea>
+                <div class="blk-acts" v-if="!viewOnly">
                   <span class="blk-act" @click="addImg(b)">📷 插入图片</span>
                   <span class="blk-act vi" @click="addVid(b)">🎬 插入视频</span>
                 </div>
@@ -175,8 +266,8 @@
                           <div class="vid-mask">▶</div>
                         </div>
                         <div style="flex:1;display:flex;flex-direction:column;gap:3px;min-width:0">
-                          <input class="fi" v-model="ch.alt" :placeholder="ch.type==='image'?'图片标题':'视频标题'" style="font-size:11px;padding:4px 6px">
-                          <input class="fi" v-model="ch.caption" :placeholder="ch.type==='image'?'图片说明':'视频说明'" style="font-size:11px;padding:4px 6px">
+                          <input class="fi" v-model="ch.alt" :disabled="viewOnly" :placeholder="ch.type==='image'?'图片标题':'视频标题'" style="font-size:11px;padding:4px 6px">
+                          <input class="fi" v-model="ch.caption" :disabled="viewOnly" :placeholder="ch.type==='image'?'图片说明':'视频说明'" style="font-size:11px;padding:4px 6px">
                           <span style="font-size:10px;color:#00b42a">已关联</span>
                         </div>
                       </div>
@@ -191,38 +282,38 @@
                           <div class="vid-mask">{{ch.uploading?'上传中':'▶'}}</div>
                         </div>
                         <div style="flex:1;display:flex;flex-direction:column;gap:3px;min-width:0">
-                          <input class="fi" v-model="ch.alt" :placeholder="ch.type==='image'?'图片标题':'视频标题'" style="font-size:11px;padding:4px 6px">
-                          <input class="fi" v-model="ch.caption" :placeholder="ch.type==='image'?'图片说明':'视频说明'" style="font-size:11px;padding:4px 6px">
+                          <input class="fi" v-model="ch.alt" :disabled="viewOnly" :placeholder="ch.type==='image'?'图片标题':'视频标题'" style="font-size:11px;padding:4px 6px">
+                          <input class="fi" v-model="ch.caption" :disabled="viewOnly" :placeholder="ch.type==='image'?'图片说明':'视频说明'" style="font-size:11px;padding:4px 6px">
                           <span v-if="ch.uploading" style="font-size:10px;color:#3370ff">上传中...</span>
                           <span v-else style="font-size:10px;color:#ff7d00">待上传</span>
                         </div>
                       </div>
                       <!-- 空白：上传区 -->
                       <div v-else>
-                        <label class="upload-zone" :data-ch-ref="bi+':'+ci">
+                        <label class="upload-zone" v-if="!viewOnly" :data-ch-ref="bi+':'+ci">
                           <span style="font-size:18px">{{ch.type==='image'?'📷':'🎬'}}</span>
                           <span style="font-size:12px">点击选择{{ch.type==='image'?'图片':'视频'}}，或 Ctrl+V 粘贴</span>
                           <input type="file" :accept="ch.type==='image'?'image/*':'video/*'" style="display:none" @change="pickFile($event,ch)">
                         </label>
                         <div style="display:flex;gap:5px">
-                          <input class="fi" v-model="ch.alt" placeholder="图片标题" style="font-size:11px;padding:4px 6px;flex:1">
-                          <input class="fi" v-model="ch.caption" placeholder="图片说明" style="font-size:11px;padding:4px 6px;flex:1">
+                          <input class="fi" v-model="ch.alt" :disabled="viewOnly" placeholder="图片标题" style="font-size:11px;padding:4px 6px;flex:1">
+                          <input class="fi" v-model="ch.caption" :disabled="viewOnly" placeholder="图片说明" style="font-size:11px;padding:4px 6px;flex:1">
                         </div>
                       </div>
                     </div>
-                    <button class="blk-rm" @click="b.children.splice(ci,1)">&times;</button>
+                    <button class="blk-rm" v-if="!viewOnly" @click="b.children.splice(ci,1)">&times;</button>
                   </div>
                 </div>
               </div>
-              <button class="blk-rm" @click="fm.blocks.splice(bi,1)">&times;</button>
+              <button class="blk-rm" v-if="!viewOnly" @click="fm.blocks.splice(bi,1)">&times;</button>
             </div>
           </div>
-          <button class="btn bd bsm" @click="addBlock" style="margin-top:4px">+ 文本</button>
+          <button class="btn bd bsm" v-if="!viewOnly" @click="addBlock" style="margin-top:4px">+ 文本</button>
         </div>
       </div>
       <div class="dlg-f">
-        <button class="btn bd" @click="closeDlg">取消</button>
-        <button class="btn bp" @click="save" :disabled="saving">{{saving?'保存中...':'保存'}}</button>
+        <button class="btn bd" @click="closeDlg">{{viewOnly?'关闭':'取消'}}</button>
+        <button class="btn bp" v-if="!viewOnly" @click="save" :disabled="saving">{{saving?'保存中...':'保存'}}</button>
       </div>
     </div>
   </div>
@@ -234,38 +325,158 @@
   </div>
   <script src="lib/vue.global.prod.js"></script>
 <script>
-var API='http://localhost:8001/api/v1';
-var BASE='http://localhost:8001';
+var API=window.location.origin + '/api/v1';
+var BASE=window.location.origin;
 
 Vue.createApp({
   data: function() {
     return {
+      ready: false,
+      view: 'knowledge',
+      token: localStorage.getItem('kb_token') || '',
+      currentUser: {},
+      users: [],
+      roles: [],
+      newUser: {username:'', password:'123456', role:'visitor'},
       list: [],
       cats: [],
       stats: {total:0, published:0, review:0, draft:0},
       f: {status:'', layer:'', kw:''},
       dlg: false,
+      viewOnly: false,
       eid: '',
       saving: false,
       ns: '',
-      fm: {title:'', subtitles:[], layer:'L1', cat:'', by:'', scenes:[], blocks:[{type:'text', value:'', children:[]}]}, full:{show:false, src:'', isVideo:false}
+      drop: '',
+      categoryKw: '',
+      brandKw: '',
+      modelKw: '',
+      dev: {keys:'', showManhattanUpdate:false},
+      mh: {loggedIn:false, source:''},
+      mhCache: {updated_at:null, applicable_categories:[], brands_by_category:{}, models:[]},
+      option: {applicableCategories:[], brands:[], models:[]},
+      optErr: {applicableCategories:'', brands:'', models:''},
+      fm: {title:'', subtitles:[], layer:'L1', cat:'', by:'', scenes:[], applicableCategories:[], brands:[], models:[], blocks:[{type:'text', value:'', children:[]}]}, full:{show:false, src:'', isVideo:false}
     }
   },
   methods: {
+    authHeaders: function(extra) {
+      var headers = extra || {};
+      if (this.token) headers.Authorization = 'Bearer ' + this.token;
+      return headers;
+    },
+    checkAuth: function() {
+      var self = this;
+      if (!self.token) { location.href = BASE + '/login'; return; }
+      fetch(API + '/auth/me', {headers:self.authHeaders()})
+        .then(function(r) { if (!r.ok) throw new Error('login required'); return r.json(); })
+        .then(function(u) { self.currentUser = u; if (u.role === 'visitor') self.f.status = 'published'; self.ready = true; self.loadRoles(); self.load(); self.loadStats(); self.loadCats(); self.loadManhattanSession(); self.loadManhattanOptions(); })
+        .catch(function() { localStorage.removeItem('kb_token'); localStorage.removeItem('kb_user'); location.href = BASE + '/login'; });
+    },
+    isSuperAdmin: function() {
+      return this.currentUser && this.currentUser.role === 'super_admin';
+    },
+    can: function(permission) {
+      var perms = (this.currentUser && this.currentUser.permissions) || [];
+      return perms.indexOf('*') !== -1 || perms.indexOf(permission) !== -1;
+    },
+    roleLabel: function(role) {
+      var found = (this.roles || []).find(function(r) { return r.value === role; });
+      return found ? found.label : (this.currentUser.role_label || role || '');
+    },
+    statusTabs: function() {
+      if (this.currentUser && this.currentUser.role === 'visitor') return [{label:'已发布', value:'published'}];
+      return [
+        {label:'全部状态', value:''},
+        {label:'草稿', value:'draft'},
+        {label:'待审核', value:'review'},
+        {label:'已发布', value:'published'},
+        {label:'已废弃', value:'deprecated'}
+      ];
+    },
+    layerTabs: function() {
+      return [
+        {label:'全部分类', value:''},
+        {label:'L1 基础', value:'L1'},
+        {label:'L2 案例', value:'L2'},
+        {label:'L3 动态', value:'L3'}
+      ];
+    },
+    setFilter: function(key, value) {
+      this.f[key] = value;
+      this.load();
+    },
+    logout: function() {
+      fetch(API + '/auth/logout', {method:'DELETE', headers:this.authHeaders()}).catch(function(){});
+      localStorage.removeItem('kb_token');
+      localStorage.removeItem('kb_user');
+      location.href = BASE + '/login';
+    },
+    openUsers: function() {
+      this.view = 'users';
+      this.loadRoles();
+      this.loadUsers();
+    },
+    loadRoles: function() {
+      var self = this;
+      fetch(API + '/auth/roles', {headers:self.authHeaders()})
+        .then(function(r) { return r.json(); })
+        .then(function(d) { self.roles = Array.isArray(d) ? d : []; })
+        .catch(function(){});
+    },
+    loadUsers: function() {
+      var self = this;
+      fetch(API + '/auth/users', {headers:self.authHeaders()})
+        .then(function(r) { if (!r.ok) return r.json().then(function(e){throw new Error(e.detail || '加载失败')}); return r.json(); })
+        .then(function(d) { self.users = Array.isArray(d) ? d : []; })
+        .catch(function(e) { alert(e.message); });
+    },
+    createUser: function() {
+      var self = this;
+      if (!self.newUser.username) { alert('请输入账号'); return; }
+      fetch(API + '/auth/users', {method:'POST', headers:self.authHeaders({'Content-Type':'application/json'}), body:JSON.stringify(self.newUser)})
+        .then(function(r) { if (!r.ok) return r.json().then(function(e){throw new Error(e.detail || '创建失败')}); return r.json(); })
+        .then(function() { self.newUser = {username:'', password:'123456', role:'visitor'}; self.loadUsers(); })
+        .catch(function(e) { alert(e.message); });
+    },
+    updateUser: function(user, patch) {
+      var self = this;
+      fetch(API + '/auth/users/' + user.id, {method:'PATCH', headers:self.authHeaders({'Content-Type':'application/json'}), body:JSON.stringify(patch)})
+        .then(function(r) { if (!r.ok) return r.json().then(function(e){throw new Error(e.detail || '更新失败')}); return r.json(); })
+        .then(function() { self.loadUsers(); })
+        .catch(function(e) { alert(e.message); self.loadUsers(); });
+    },
+    resetUserPassword: function(user) {
+      var pwd = prompt('请输入新密码', '123456');
+      if (!pwd) return;
+      fetch(API + '/auth/users/' + user.id + '/reset-password', {method:'POST', headers:this.authHeaders({'Content-Type':'application/json'}), body:JSON.stringify({password:pwd})})
+        .then(function(r) { if (!r.ok) return r.json().then(function(e){throw new Error(e.detail || '重置失败')}); return r.json(); })
+        .then(function() { alert('密码已重置'); })
+        .catch(function(e) { alert(e.message); });
+    },
+    resetMyPassword: function() {
+      var pwd = prompt('请输入新密码', '123456');
+      if (!pwd) return;
+      fetch(API + '/auth/me/reset-password', {method:'POST', headers:this.authHeaders({'Content-Type':'application/json'}), body:JSON.stringify({password:pwd})})
+        .then(function(r) { if (!r.ok) return r.json().then(function(e){throw new Error(e.detail || '修改失败')}); return r.json(); })
+        .then(function() { alert('密码已修改，请重新登录'); localStorage.removeItem('kb_token'); location.href = BASE + '/login'; })
+        .catch(function(e) { alert(e.message); });
+    },
     load: function() {
       var self = this;
       var p = new URLSearchParams();
-      if (self.f.status) p.set('status', self.f.status);
+      if (self.currentUser.role === 'visitor') p.set('status', 'published');
+      else if (self.f.status) p.set('status', self.f.status);
       if (self.f.layer) p.set('layer', self.f.layer);
       if (self.f.kw) p.set('keyword', self.f.kw);
-      fetch(API + '/knowledge?' + p)
+      fetch(API + '/knowledge?' + p, {headers:self.authHeaders()})
         .then(function(r) { return r.json(); })
         .then(function(d) { self.list = Array.isArray(d) ? d : []; })
         .catch(function(e) { console.error('load error:', e); });
     },
     loadStats: function() {
       var self = this;
-      fetch(API + '/knowledge?size=100')
+      fetch(API + '/knowledge?size=100', {headers:self.authHeaders()})
         .then(function(r) { return r.json(); })
         .then(function(all) {
           if (!Array.isArray(all)) return;
@@ -278,23 +489,223 @@ Vue.createApp({
     },
     loadCats: function() {
       var self = this;
-      fetch(API + '/categories')
+      fetch(API + '/categories', {headers:self.authHeaders()})
         .then(function(r) { return r.json(); })
-        .then(function(d) { self.cats = Array.isArray(d) ? d : []; })
+        .then(function(d) {
+          self.cats = Array.isArray(d) ? d : [];
+          if (self.dlg && self.showManhattanFields()) self.loadManhattanOptions();
+        })
         .catch(function(){});
+    },
+    loadManhattanSession: function() {
+      var self = this;
+      fetch(API + '/manhattan/session', {headers:self.authHeaders()})
+        .then(function(r) { return r.json(); })
+        .then(function(d) { self.mh = {loggedIn: !!d.logged_in, source: d.source || ''}; })
+        .catch(function(){ self.mh = {loggedIn:false, source:''}; });
+    },
+    goManhattanLogin: function() {
+      window.location.href = BASE + '/manhattan-login';
+    },
+    flattenOptions: function(raw) {
+      var src = raw && raw.respData !== undefined ? raw.respData : raw;
+      var out = [];
+      var walk = function(v) {
+        if (!v) return;
+        if (Array.isArray(v)) {
+          v.forEach(walk);
+          return;
+        }
+        if (typeof v === 'object') {
+          var label = v.label || v.name || v.title || v.text || v.value || v.businessName || v.brandName || v.modelName || v.categoryName;
+          var value = v.value || v.id || v.code || v.businessType || v.brandId || v.modelId || v.categoryId || label;
+          if (label || value) out.push({label: String(label || value), value: String(value), raw: v});
+          ['children','childList','list','records','data','options'].forEach(function(k) { if (v[k]) walk(v[k]); });
+        }
+      };
+      walk(src);
+      var seen = {};
+      return out.filter(function(o) { var k = o.value + '|' + o.label; if (seen[k]) return false; seen[k] = true; return true; });
+    },
+    loadManhattanOptions: function() {
+      var self = this;
+      if (!self.showManhattanFields()) return;
+      fetch(API + '/manhattan/cache', {headers:self.authHeaders()})
+        .then(function(r) { if (!r.ok) return r.json().then(function(e) { throw new Error(e.detail || r.statusText); }); return r.json(); })
+        .then(function(d) {
+          self.mhCache = d || self.mhCache;
+          self.option.applicableCategories = self.flattenOptions(self.mhCache.applicable_categories || []);
+          self.optErr.applicableCategories = self.option.applicableCategories.length ? '' : '本地暂无曼哈顿数据，请联系开发者更新。';
+          self.loadBrands();
+          self.loadModels();
+        })
+        .catch(function(e) { self.optErr.applicableCategories = e.message; });
+    },
+    showManhattanFields: function() {
+      var id = this.fm.cat || '';
+      var cat = (this.cats || []).find(function(c) { return c.id === id; });
+      var name = cat ? cat.name : '';
+      return id === 'cat-qc-standard' || id === 'cat-qc-process' || name === '质检标准' || name === '质检流程';
+    },
+    onKnowledgeCategoryChange: function() {
+      this.drop = '';
+      if (this.showManhattanFields()) {
+        this.loadManhattanOptions();
+      } else {
+        this.fm.applicableCategories = [];
+        this.fm.brands = [];
+        this.fm.models = [];
+      }
+    },
+    onCategoryChange: function() {
+      this.fm.brands = [];
+      this.fm.models = [];
+      this.option.brands = [];
+      this.option.models = [];
+      this.loadBrands();
+    },
+    loadBrands: function() {
+      var self = this;
+      var categoryId = (self.fm.applicableCategories || [])[0];
+      if (!self.showManhattanFields() || !categoryId) return;
+      self.option.brands = self.flattenOptions((self.mhCache.brands_by_category || {})[categoryId] || []);
+      self.optErr.brands = self.option.brands.length ? '' : '本地暂无该类目的品牌数据，请联系开发者更新。';
+      self.loadModels();
+    },
+    loadModels: function() {
+      var self = this;
+      var categoryIds = (self.fm.applicableCategories || []).filter(Boolean);
+      var brandIds = (self.fm.brands || []).filter(Boolean);
+      if (!self.showManhattanFields() || (!categoryIds.length && !brandIds.length)) return;
+      var selectedBrands = {};
+      brandIds.forEach(function(id) { selectedBrands[String(id)] = true; });
+      var selectedCategories = {};
+      categoryIds.forEach(function(id) { selectedCategories[String(id)] = true; });
+      var rawModels = (self.mhCache.models || []).filter(function(model) {
+        if (!model || typeof model !== 'object') return true;
+        var brandId = model.brandId || model.brand_id;
+        var categoryId = model.categoryId || model.category_id;
+        var brandMatch = !brandIds.length || !brandId || selectedBrands[String(brandId)];
+        var categoryMatch = !categoryIds.length || !categoryId || selectedCategories[String(categoryId)];
+        return brandMatch && categoryMatch;
+      });
+      self.option.models = self.flattenOptions(rawModels);
+      self.optErr.models = self.option.models.length ? '' : '本地暂无机型数据，请联系开发者更新。';
+    },
+    filterOptions: function(arr, kw) {
+      kw = (kw || '').trim().toLowerCase();
+      arr = arr || [];
+      if (!kw) return arr;
+      return arr.filter(function(o) {
+        var text = ((o.label || '') + ' ' + (o.value || '')).toLowerCase();
+        return text.indexOf(kw) !== -1;
+      });
+    },
+    filteredApplicableCategories: function() {
+      return this.filterOptions(this.option.applicableCategories, this.categoryKw);
+    },
+    filteredBrands: function() {
+      return this.filterOptions(this.option.brands, this.brandKw);
+    },
+    filteredModels: function() {
+      return this.filterOptions(this.option.models, this.modelKw);
+    },
+    visibleModels: function() {
+      return this.filteredModels().slice(0, 200);
+    },
+    hiddenModelCount: function() {
+      return Math.max(0, this.filteredModels().length - 200);
+    },
+    optLabel: function(o) { return o && typeof o === 'object' ? (o.label || o.value || '') : String(o || ''); },
+    optKey: function(o) { return o && typeof o === 'object' ? ((o.value || o.label || '') + '') : String(o || ''); },
+    optValue: function(o) { return o && typeof o === 'object' ? String(o.value || '') : String(o || ''); },
+    fieldArray: function(key) {
+      if (key === 'applicableCategories') return this.fm.applicableCategories;
+      if (key === 'brands') return this.fm.brands;
+      if (key === 'models') return this.fm.models;
+      return [];
+    },
+    isSelected: function(key, value) {
+      return this.fieldArray(key).indexOf(String(value)) !== -1;
+    },
+    toggleSelected: function(key, value) {
+      if (this.viewOnly) return;
+      value = String(value);
+      var arr = this.fieldArray(key);
+      var idx = arr.indexOf(value);
+      if (idx === -1) arr.push(value);
+      else arr.splice(idx, 1);
+      this.afterMultiSelectChange(key);
+    },
+    removeSelected: function(key, value) {
+      if (this.viewOnly) return;
+      value = String(value);
+      var arr = this.fieldArray(key);
+      var idx = arr.indexOf(value);
+      if (idx !== -1) arr.splice(idx, 1);
+      this.afterMultiSelectChange(key);
+    },
+    clearMultiSelect: function(key) {
+      if (this.viewOnly) return;
+      var arr = this.fieldArray(key);
+      arr.splice(0, arr.length);
+      if (key === 'applicableCategories') this.categoryKw = '';
+      if (key === 'brands') this.brandKw = '';
+      if (key === 'models') this.modelKw = '';
+      this.afterMultiSelectChange(key);
+    },
+    selectAllVisible: function(key, options) {
+      if (this.viewOnly) return;
+      var arr = this.fieldArray(key);
+      (options || []).forEach(function(o) {
+        var value = String(o && typeof o === 'object' ? (o.value || '') : o);
+        if (value && arr.indexOf(value) === -1) arr.push(value);
+      });
+      this.afterMultiSelectChange(key);
+    },
+    afterMultiSelectChange: function(key) {
+      if (key === 'applicableCategories') this.onCategoryChange();
+      if (key === 'brands') this.loadModels();
+    },
+    selectedLabel: function(key, value) {
+      var arr = this.option[key] || [];
+      for (var i = 0; i < arr.length; i++) {
+        if (this.optValue(arr[i]) === String(value)) return this.optLabel(arr[i]);
+      }
+      return String(value);
+    },
+    toggleDrop: function(key) {
+      this.drop = this.drop === key ? '' : key;
+    },
+    focusMultiInput: function(refName, key) {
+      if (this.viewOnly) return;
+      this.drop = key;
+      var self = this;
+      this.$nextTick(function() {
+        var el = self.$refs[refName];
+        if (el && el.focus) el.focus();
+      });
     },
     sl: function(s) {
       return {draft:'草稿', review:'待审核', published:'已发布', deprecated:'已废弃'}[s] || s;
     },
     closeDlg: function() {var self = this;self.dlg = false;},
     openNew: function() {
+      if (!this.can('knowledge:create')) { alert('没有新建权限'); return; }
+      this.viewOnly = false;
       this.eid = '';
-      this.fm = {title:'', subtitles:[], layer:'L1', cat:'', by:'', scenes:[], blocks:[{type:'text', value:'', children:[]}]};
+      this.fm = {title:'', subtitles:[], layer:'L1', cat:'', by:'', scenes:[], applicableCategories:[], brands:[], models:[], blocks:[{type:'text', value:'', children:[]}]};
       this.ns = '';
       this.dlg = true;
       this.loadCats();
+      this.loadManhattanOptions();
     },
-    openEdit: function(r) {
+    openView: function(r) {
+      this.openEdit(r, true);
+    },
+    openEdit: function(r, readonly) {
+      this.viewOnly = !!readonly;
+      if (!this.viewOnly && !this.can('knowledge:create')) { alert('没有编辑权限'); return; }
       var self = this;
       self.eid = r.id;
       var blocks = [];
@@ -353,10 +764,14 @@ Vue.createApp({
         cat: r.category_id || '',
         by: r.created_by,
         scenes: r.applicable_scenes ? r.applicable_scenes.slice() : [],
+        applicableCategories: r.applicable_categories ? r.applicable_categories.slice() : [],
+        brands: r.applicable_brands ? r.applicable_brands.slice() : [],
+        models: r.applicable_models ? r.applicable_models.slice() : [],
         blocks: blocks
       };
       self.ns = '';
       self.dlg = true;
+      self.loadManhattanOptions();
     },
     addS: function() {
       if (this.ns.trim()) {
@@ -391,8 +806,9 @@ Vue.createApp({
       fd.append('caption', ch.caption || '');
       var kid = self.eid;
       if (!kid) {
-        var body = {title: self.fm.title || '未命名', subtitles: (self.fm.subtitles || []).filter(function(s) { return s && s.trim(); }), content: {blocks: []}, layer: self.fm.layer, category_id: self.fm.cat || null, applicable_scenes: self.fm.scenes, created_by: self.fm.by || 'system'};
-        fetch(API + '/knowledge', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+        var useManhattan = self.showManhattanFields();
+        var body = {title: self.fm.title || '未命名', subtitles: (self.fm.subtitles || []).filter(function(s) { return s && s.trim(); }), content: {blocks: []}, layer: self.fm.layer, category_id: self.fm.cat || null, applicable_scenes: self.fm.scenes, applicable_categories: useManhattan ? self.fm.applicableCategories : [], applicable_brands: useManhattan ? self.fm.brands : [], applicable_models: useManhattan ? self.fm.models : [], created_by: self.fm.by || 'system'};
+        fetch(API + '/knowledge', {method: 'POST', headers: self.authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(body)})
           .then(function(r) { return r.json(); })
           .then(function(res) { self.eid = res.id; self.doUpload(res.id, fd, ch); })
           .catch(function(e) { ch.uploading = false; alert('保存失败: ' + e.message); });
@@ -402,7 +818,7 @@ Vue.createApp({
     },
     doUpload: function(kid, fd, ch) {
       var self = this;
-      fetch(API + '/knowledge/' + kid + '/media', {method: 'POST', body: fd})
+      fetch(API + '/knowledge/' + kid + '/media', {method: 'POST', headers: self.authHeaders(), body: fd})
         .then(function(r) { return r.json(); })
         .then(function(json) { ch.media_id = json.filename || json.file_path; ch.uploading = false; ch.file = null; })
         .catch(function(e) { ch.uploading = false; ch.preview = ''; if (ch.media_id) { self.deleteMedia(self.eid, ch.media_id); ch.media_id = ''; } alert('图片上传失败: ' + e.message); });
@@ -410,9 +826,10 @@ Vue.createApp({
     deleteMedia: function(kid, mediaId) {
       if (!kid || !mediaId) return;
       var fileRef = String(mediaId).replace(/^\/uploads\//i, '');
-      fetch(API + '/knowledge/' + kid + '/media/' + fileRef, {method: 'DELETE'}).catch(function(){});
+      fetch(API + '/knowledge/' + kid + '/media/' + fileRef, {method: 'DELETE', headers: this.authHeaders()}).catch(function(){});
     },
     save: function() {
+      if (!this.can('knowledge:create')) { alert('没有保存权限'); return; }
       if (!this.fm.title) { alert('请输入标题'); return; }
       this.saving = true;
       var self = this;
@@ -424,6 +841,7 @@ Vue.createApp({
           if (ch.media_id) cBlocks.push({type:ch.type, media_id:ch.media_id, alt:ch.alt||'', caption:ch.caption||''});
         });
       });
+      var useManhattan = this.showManhattanFields();
       var body = {
         title: this.fm.title,
         subtitles: this.fm.subtitles.filter(function(s) { return s && s.trim(); }),
@@ -431,11 +849,14 @@ Vue.createApp({
         layer: this.fm.layer,
         category_id: this.fm.cat || null,
         applicable_scenes: this.fm.scenes,
+        applicable_categories: useManhattan ? this.fm.applicableCategories : [],
+        applicable_brands: useManhattan ? this.fm.brands : [],
+        applicable_models: useManhattan ? this.fm.models : [],
         created_by: this.fm.by || 'system'
       };
       var method = this.eid ? 'PATCH' : 'POST';
       var url = this.eid ? (API + '/knowledge/' + this.eid) : (API + '/knowledge');
-      fetch(url, {method:method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+      fetch(url, {method:method, headers:self.authHeaders({'Content-Type':'application/json'}), body:JSON.stringify(body)})
         .then(function(r) { return r.json(); })
         .then(function(res) {
           var kid = self.eid || res.id;
@@ -453,7 +874,7 @@ Vue.createApp({
             fd.append('media_type', ch.type);
             fd.append('alt', ch.alt || ch.file.name);
             fd.append('caption', ch.caption || '');
-            fetch(API + '/knowledge/' + kid + '/media', {method:'POST', body:fd})
+            fetch(API + '/knowledge/' + kid + '/media', {method:'POST', headers:self.authHeaders(), body:fd})
               .then(function(r) { return r.json(); })
               .then(function(json) { ch.media_id = json.filename; ch.file = null; uploadNext(idx + 1); })
               .catch(function() { uploadNext(idx + 1); });
@@ -465,15 +886,22 @@ Vue.createApp({
     mediaUrl: function(id) { return BASE + '/uploads/' + id; },
     showFull: function(src, isVideo) { this.full = {show:true, src:src, isVideo:!!isVideo}; }, act: function(r, action) {
       var self = this;
-      fetch(API + '/knowledge/' + r.id + '/' + action, {method:'POST'})
+      fetch(API + '/knowledge/' + r.id + '/' + action, {method:'POST', headers:self.authHeaders()})
         .then(function() { self.load(); })
         .catch(function(e) { console.error(e); });
     }
   },
     mounted: function() {
       var self = this;
-      self.load();
-      self.loadCats();
+      self.checkAuth();
+      document.addEventListener('click', function(e) {
+        if (!e.target.closest('.ms')) self.drop = '';
+      });
+      document.addEventListener('keydown', function(e) {
+        if (e.target && ['INPUT','TEXTAREA','SELECT'].indexOf(e.target.tagName) !== -1) return;
+        self.dev.keys = (self.dev.keys + String(e.key || '').toLowerCase()).slice(-3);
+        if (self.dev.keys === 'mht') self.dev.showManhattanUpdate = true;
+      });
       self._hoverTarget = null;
       document.addEventListener('mouseover', function(e) {
         var zone = e.target.closest('.upload-zone');

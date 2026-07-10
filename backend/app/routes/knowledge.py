@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, 
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.routes.auth import get_current_user, require_permission
+from app.models.user import User
 from app.models.knowledge import (
     Knowledge, KnowledgeStatus, KnowledgeLayer,
     KnowledgeTag, KnowledgeMedia,
@@ -106,6 +108,11 @@ def _to_response(item: Knowledge) -> dict:
         "source": item.source,
         "quality_score": item.quality_score or 0.0,
         "applicable_scenes": item.applicable_scenes or [],
+        "applicable_business_types": item.applicable_business_types or [],
+        "applicable_categories": item.applicable_categories or [],
+        "applicable_brands": item.applicable_brands or [],
+        "applicable_models": item.applicable_models or [],
+        "is_model_personal": item.is_model_personal == "true",
         "created_by": item.created_by,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
@@ -117,7 +124,7 @@ def _to_response(item: Knowledge) -> dict:
 # ---- CRUD ----
 
 @router.post("", response_model=KnowledgeResponse, status_code=201, summary="创建知识条目", description="新建一条知识条目，初始状态为草稿(draft)")
-def create_knowledge(body: KnowledgeCreate, db: Session = Depends(get_db)):
+def create_knowledge(body: KnowledgeCreate, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:create"))):
     item = Knowledge(
         id=_generate_knowledge_id(db),
         title=body.title,
@@ -126,6 +133,11 @@ def create_knowledge(body: KnowledgeCreate, db: Session = Depends(get_db)):
         layer=KnowledgeLayer(body.layer),
         category_id=body.category_id,
         applicable_scenes=body.applicable_scenes,
+        applicable_business_types=body.applicable_business_types,
+        applicable_categories=body.applicable_categories,
+        applicable_brands=body.applicable_brands,
+        applicable_models=body.applicable_models,
+        is_model_personal="true" if body.is_model_personal else "false",
         created_by=body.created_by,
     )
     db.add(item)
@@ -143,8 +155,12 @@ def list_knowledge(
     page: int = Query(1, ge=1, description="页码"),
     size: int = Query(20, ge=1, le=100, description="每页条数"),
     db: Session = Depends(get_db),
+    _=Depends(require_permission("knowledge:view")),
+    current_user: User = Depends(get_current_user),
 ):
     q = db.query(Knowledge)
+    if current_user.role == "visitor":
+        q = q.filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
     if status:
         q = q.filter(Knowledge.status == KnowledgeStatus(status))
     if layer:
@@ -158,15 +174,17 @@ def list_knowledge(
 
 
 @router.get("/{knowledge_id}", response_model=KnowledgeResponse, summary="获取知识条目详情")
-def get_knowledge(knowledge_id: str, db: Session = Depends(get_db)):
+def get_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:view")), current_user: User = Depends(get_current_user)):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if current_user.role == "visitor" and item.status != KnowledgeStatus.PUBLISHED:
+        raise HTTPException(403, "Permission denied.")
     return _to_response(item)
 
 
 @router.patch("/{knowledge_id}", response_model=KnowledgeResponse, summary="更新知识条目")
-def update_knowledge(knowledge_id: str, body: KnowledgeUpdate, db: Session = Depends(get_db)):
+def update_knowledge(knowledge_id: str, body: KnowledgeUpdate, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:create"))):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
@@ -180,6 +198,8 @@ def update_knowledge(knowledge_id: str, body: KnowledgeUpdate, db: Session = Dep
             setattr(item, field, KnowledgeStatus(val))
         elif field == "layer":
             setattr(item, field, KnowledgeLayer(val))
+        elif field == "is_model_personal":
+            setattr(item, field, "true" if val else "false")
         else:
             setattr(item, field, val)
     item.updated_at = datetime.utcnow()
@@ -189,7 +209,7 @@ def update_knowledge(knowledge_id: str, body: KnowledgeUpdate, db: Session = Dep
 
 
 @router.delete("/{knowledge_id}", status_code=204, summary="删除知识条目")
-def delete_knowledge(knowledge_id: str, db: Session = Depends(get_db)):
+def delete_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:deprecate"))):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
@@ -200,7 +220,7 @@ def delete_knowledge(knowledge_id: str, db: Session = Depends(get_db)):
 # ---- 审核流程 ----
 
 @router.post("/{knowledge_id}/submit-review", response_model=KnowledgeResponse, summary="提交审核")
-def submit_review(knowledge_id: str, db: Session = Depends(get_db)):
+def submit_review(knowledge_id: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:submit"))):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
@@ -214,7 +234,7 @@ def submit_review(knowledge_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{knowledge_id}/approve", response_model=KnowledgeResponse, summary="审批通过")
-def approve_knowledge(knowledge_id: str, db: Session = Depends(get_db)):
+def approve_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:approve"))):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
@@ -228,7 +248,7 @@ def approve_knowledge(knowledge_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{knowledge_id}/deprecate", response_model=KnowledgeResponse, summary="废弃知识条目")
-def deprecate_knowledge(knowledge_id: str, db: Session = Depends(get_db)):
+def deprecate_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:deprecate"))):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
@@ -249,6 +269,7 @@ async def upload_media(
     alt: str = Form(""),
     caption: str = Form(""),
     db: Session = Depends(get_db),
+    _=Depends(require_permission("knowledge:create")),
 ):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
@@ -296,7 +317,7 @@ async def upload_media(
 
 
 @router.post("/upload-temp", summary="临时上传媒体文件", description="未创建知识条目时的临时上传，返回文件ID供编辑器使用")
-async def upload_temp(file: UploadFile = File(...), media_type: str = Form("image"), alt: str = Form(""), caption: str = Form("")):
+async def upload_temp(file: UploadFile = File(...), media_type: str = Form("image"), alt: str = Form(""), caption: str = Form(""), _=Depends(require_permission("knowledge:create"))):
     ext = os.path.splitext(file.filename)[1] or ".png"
     filename = f"temp-{uuid.uuid4().hex[:12]}{ext}"
     file_path = os.path.join(UPLOAD_DIR, filename)
@@ -315,7 +336,7 @@ async def upload_temp(file: UploadFile = File(...), media_type: str = Form("imag
     }
 
 @router.get("/{knowledge_id}/media", summary="获取知识条目的媒体文件列表")
-def list_media(knowledge_id: str, db: Session = Depends(get_db)):
+def list_media(knowledge_id: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:view"))):
     items = db.query(KnowledgeMedia).filter(
         KnowledgeMedia.knowledge_id == knowledge_id
     ).order_by(KnowledgeMedia.sort_order).all()
@@ -329,7 +350,7 @@ def list_media(knowledge_id: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/{knowledge_id}/media/{media_file}", summary="更新媒体信息", description="修改图片/视频的描述和说明文字")
-def update_media(knowledge_id: str, media_file: str, alt: str = Form(""), caption: str = Form(""), db: Session = Depends(get_db)):
+def update_media(knowledge_id: str, media_file: str, alt: str = Form(""), caption: str = Form(""), db: Session = Depends(get_db), _=Depends(require_permission("knowledge:create"))):
     media = db.query(KnowledgeMedia).filter(
         KnowledgeMedia.filename == media_file, KnowledgeMedia.knowledge_id == knowledge_id
     ).first()
@@ -342,7 +363,7 @@ def update_media(knowledge_id: str, media_file: str, alt: str = Form(""), captio
 
 
 @router.delete("/{knowledge_id}/media/{media_file}", status_code=204, summary="删除媒体文件")
-def delete_media(knowledge_id: str, media_file: str, db: Session = Depends(get_db)):
+def delete_media(knowledge_id: str, media_file: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:create"))):
     media = db.query(KnowledgeMedia).filter(
         KnowledgeMedia.filename == media_file, KnowledgeMedia.knowledge_id == knowledge_id
     ).first()

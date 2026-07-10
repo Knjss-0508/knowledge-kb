@@ -1,16 +1,21 @@
-﻿services:
+services:
   postgres:
     image: postgres:16-alpine
     container_name: kb-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: knowledge_admin
-      POSTGRES_PASSWORD: knowledge_pass_2026
-      POSTGRES_DB: knowledge_base
+      POSTGRES_USER: ${POSTGRES_USER:-knowledge_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-knowledge_pass_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-knowledge_base}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-knowledge_admin} -d ${POSTGRES_DB:-knowledge_base}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   elasticsearch:
     image: elasticsearch:8.15.0
@@ -21,7 +26,7 @@
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms512m -Xmx512m
     ports:
-      - "9200:9200"
+      - "${ES_PORT:-9200}:9200"
     volumes:
       - es_data:/usr/share/elasticsearch/data
 
@@ -30,28 +35,49 @@
     container_name: kb-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: kb-backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     volumes:
-      - ./backend:/app
+      - ./backend/uploads:/app/uploads
     environment:
-      - POSTGRES_HOST=postgres
-      - ES_HOST=elasticsearch
-      - REDIS_HOST=redis
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-knowledge_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-knowledge_pass_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-knowledge_base}
+      ES_HOST: elasticsearch
+      ES_PORT: 9200
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NMHT_BASE_URL: ${NMHT_BASE_URL:-https://nmht.zhuanspirit.com}
+      NMHT_COOKIE: ${NMHT_COOKIE:-}
     depends_on:
-      - postgres
-      - elasticsearch
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
 volumes:
   pg_data:

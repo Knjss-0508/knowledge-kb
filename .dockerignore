@@ -1,0 +1,14 @@
+.git/
+.agents/
+.codex/
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/**/*.pyo
+backend/.pytest_cache/
+backend/uploads/
+backend/server*.log
+localtunnel*.log
+*.sqlite3
+*.db

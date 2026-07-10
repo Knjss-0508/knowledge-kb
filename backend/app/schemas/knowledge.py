@@ -47,6 +47,11 @@ class KnowledgeCreate(BaseModel):
     layer: str = Field(..., pattern=r"^L[1-3]$", description="知识层级: L1=基础知识 L2=案例知识 L3=动态知识")
     category_id: Optional[str] = Field(None, description="所属分类ID")
     applicable_scenes: list[str] = Field(default=[], description="适用场景列表")
+    applicable_business_types: list[Any] = Field(default=[], description="适用业务")
+    applicable_categories: list[Any] = Field(default=[], description="适用类目")
+    applicable_brands: list[Any] = Field(default=[], description="适用品牌")
+    applicable_models: list[Any] = Field(default=[], description="适用机型")
+    is_model_personal: bool = Field(False, description="机型个性化信息")
     created_by: str = Field("system", description="创建人")
 
 
@@ -58,6 +63,11 @@ class KnowledgeUpdate(BaseModel):
     category_id: Optional[str] = Field(None, description="所属分类ID")
     status: Optional[str] = Field(None, description="状态: draft/review/published/deprecated")
     applicable_scenes: Optional[list[str]] = Field(None, description="适用场景列表")
+    applicable_business_types: Optional[list[Any]] = Field(None, description="适用业务")
+    applicable_categories: Optional[list[Any]] = Field(None, description="适用类目")
+    applicable_brands: Optional[list[Any]] = Field(None, description="适用品牌")
+    applicable_models: Optional[list[Any]] = Field(None, description="适用机型")
+    is_model_personal: Optional[bool] = Field(None, description="机型个性化信息")
 
 
 class KnowledgeResponse(BaseModel):
@@ -71,6 +81,11 @@ class KnowledgeResponse(BaseModel):
     source: str = Field(description="来源")
     quality_score: float = Field(description="质量评分")
     applicable_scenes: list[str] = Field(default=[], description="适用场景")
+    applicable_business_types: list[Any] = Field(default=[], description="适用业务")
+    applicable_categories: list[Any] = Field(default=[], description="适用类目")
+    applicable_brands: list[Any] = Field(default=[], description="适用品牌")
+    applicable_models: list[Any] = Field(default=[], description="适用机型")
+    is_model_personal: bool = Field(False, description="机型个性化信息")
     created_by: str = Field(description="创建人")
     created_at: datetime = Field(description="创建时间")
     updated_at: datetime = Field(description="更新时间")

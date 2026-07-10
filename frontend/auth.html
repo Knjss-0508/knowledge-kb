@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>登录 - 答疑中台</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f0f2f5;color:#1d2129;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+    .box{width:380px;background:#fff;border:1px solid #e5e6eb;border-radius:10px;padding:28px;box-shadow:0 12px 36px rgba(0,0,0,.08)}
+    h1{font-size:22px;margin-bottom:6px}
+    .sub{font-size:13px;color:#86909c;margin-bottom:22px}
+    label{display:block;font-size:13px;font-weight:600;margin:14px 0 8px}
+    input{width:100%;height:38px;border:1px solid #dcdfe6;border-radius:6px;padding:0 10px;font-size:14px;outline:none}
+    input:focus{border-color:#3370ff;box-shadow:0 0 0 2px rgba(51,112,255,.08)}
+    .btn{width:100%;height:38px;border:none;border-radius:6px;background:#3370ff;color:#fff;font-size:14px;font-weight:600;cursor:pointer;margin-top:18px}
+    .btn:hover{background:#2460e6}.btn:disabled{background:#a9c1ff;cursor:not-allowed}
+    .msg{min-height:20px;margin-top:12px;font-size:12px;color:#f53f3f;line-height:1.5}
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>答疑中台</h1>
+    <div class="sub">知识库管理后台</div>
+    <label>账号</label>
+    <input id="username" autocomplete="username" placeholder="请输入账号" value="Weichizhuo">
+    <label>密码</label>
+    <input id="password" type="password" autocomplete="current-password" placeholder="请输入密码" value="123456" onkeyup="if(event.key==='Enter')login()">
+    <button id="btn" class="btn" onclick="login()">登录</button>
+    <div id="msg" class="msg"></div>
+  </div>
+  <script>
+    var API=window.location.origin + '/api/v1';
+    function setMsg(t){document.getElementById('msg').textContent=t||'';}
+    function jsonOrError(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'登录失败');return d;});}
+    function login(){
+      var username=document.getElementById('username').value.trim();
+      var password=document.getElementById('password').value;
+      var btn=document.getElementById('btn');
+      if(!username||!password){setMsg('请输入账号和密码');return;}
+      btn.disabled=true;setMsg('');
+      fetch(API+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,password:password})})
+        .then(jsonOrError)
+        .then(function(d){
+          localStorage.setItem('kb_token', d.token);
+          localStorage.setItem('kb_user', JSON.stringify(d.user));
+          location.href=window.location.origin + '/app';
+        })
+        .catch(function(e){btn.disabled=false;setMsg(e.message);});
+    }
+  </script>
+</body>
+</html>

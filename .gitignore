@@ -6,6 +6,9 @@ venv/
 
 # Docker
 docker-compose.override.yml
+backend/server*.log
+localtunnel*.log
+tools/cloudflared.exe
 
 # IDE
 .vscode/

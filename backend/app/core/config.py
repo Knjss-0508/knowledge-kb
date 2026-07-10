@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     def REDIS_URL(self) -> str:
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
+    # Manhattan backend API. Put the logged-in browser Cookie in .env as NMHT_COOKIE.
+    NMHT_BASE_URL: str = "https://nmht.zhuanspirit.com"
+    NMHT_COOKIE: str = ""
+
     class Config:
         env_file = ".env"
 

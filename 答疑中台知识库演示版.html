@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>答疑中台知识库 - 演示版</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#f0f2f5;color:#1d2129}
+    button,input,select,textarea{font-family:inherit}
+    .login{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+    .login-box{width:390px;background:#fff;border:1px solid #e5e6eb;border-radius:10px;padding:30px;box-shadow:0 18px 50px rgba(0,0,0,.08)}
+    .login-box h1{font-size:22px;margin-bottom:6px}.login-box p{font-size:13px;color:#86909c;margin-bottom:22px}
+    .fl{display:block;font-size:12px;font-weight:600;margin:12px 0 7px}.fi,.inp{width:100%;height:34px;border:1px solid #e5e6eb;border-radius:6px;padding:0 10px;font-size:12px;outline:none;background:#fff;color:#1d2129}
+    textarea.fi{height:auto;padding:8px 10px;line-height:1.6;resize:vertical}.fi:focus,.inp:focus{border-color:#3370ff;box-shadow:0 0 0 2px rgba(51,112,255,.08)}
+    .hint{font-size:11px;color:#86909c;margin-top:6px;line-height:1.5}
+    .btn{display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 13px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;background:#fff}
+    .bp{background:#3370ff;color:#fff}.bd{border-color:#e5e6eb;color:#4e5969}.bs{border-color:#00b42a;color:#00b42a}.bw{border-color:#ff7d00;color:#ff7d00}.br{border-color:#f53f3f;color:#f53f3f}
+    .bsm{height:26px;padding:0 9px;font-size:11px}.btn:hover{filter:brightness(.97)}
+    .layout{display:none;min-height:100vh}.side{width:210px;background:#061b2d;color:#b8c6d8;display:flex;flex-direction:column;flex-shrink:0}.brand{height:54px;display:flex;align-items:center;padding:0 20px;color:#fff;font-weight:700;border-bottom:1px solid rgba(255,255,255,.08)}
+    .nav{padding:12px 0;flex:1}.nav-item{height:40px;display:flex;align-items:center;padding:0 20px;border-left:3px solid transparent;font-size:13px;cursor:pointer}.nav-item.on{background:#1683ff;color:#fff;border-left-color:#58b5ff}.nav-item:hover{background:rgba(255,255,255,.06);color:#fff}
+    .side-foot{padding:14px 18px;border-top:1px solid rgba(255,255,255,.08);font-size:12px;line-height:1.7}.side-link{color:#8bbcff;cursor:pointer;margin-top:6px}
+    .main{flex:1;min-width:0}.hd{height:54px;background:#fff;border-bottom:1px solid #e5e6eb;display:flex;align-items:center;padding:0 28px;position:sticky;top:0;z-index:20}.hd h1{font-size:17px}.sub{font-size:12px;color:#86909c;margin-left:8px;background:#f2f3f5;padding:2px 8px;border-radius:4px}
+    .mn{padding:20px 28px;max-width:1440px;margin:0 auto}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}.card{background:#fff;border:1px solid #e5e6eb;border-radius:10px;padding:18px 20px}.lb{font-size:12px;color:#86909c;margin-bottom:6px}.vl{font-size:27px;font-weight:800}.bl{color:#3370ff}.gn{color:#00b42a}.og{color:#ff7d00}.gy{color:#86909c}
+    .bar,.filter-tabs,.panel{background:#fff;border:1px solid #e5e6eb;border-radius:10px;margin-bottom:14px}.bar{padding:14px 18px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}.bar .tt{font-size:14px;font-weight:700;margin-right:auto}.search{width:180px}
+    .filter-tabs{padding:12px 18px;display:grid;gap:10px}.tab-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.tab-label{width:58px;font-size:12px;font-weight:700;color:#4e5969}.tab-btn{height:28px;padding:0 12px;border:1px solid transparent;border-radius:6px;background:#f7f8fa;color:#4e5969;font-size:12px;cursor:pointer}.tab-btn.on{background:#3370ff;color:#fff;border-color:#3370ff;font-weight:700}
+    .tw{background:#fff;border:1px solid #e5e6eb;border-radius:10px;overflow:hidden}table{width:100%;border-collapse:collapse}th{background:#f7f8fa;color:#86909c;font-size:12px;font-weight:600;text-align:left;padding:11px 14px;border-bottom:1px solid #e5e6eb}td{font-size:12px;padding:13px 14px;border-bottom:1px solid #f2f3f5}tr:hover td{background:#fafbfc}.right{text-align:right}.mono{font-family:Consolas,monospace;color:#86909c}
+    .tg{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700}.tg-l{background:#e8f3ff;color:#3370ff}.tg-d{background:#f2f3f5;color:#86909c}.tg-r{background:#fff7e8;color:#ff7d00}.tg-p{background:#e8ffea;color:#00b42a}.tg-x{background:#fff0f0;color:#f53f3f}
+    .mask{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100;align-items:flex-start;justify-content:center;padding-top:30px;overflow:auto}.dlg{width:900px;max-height:calc(100vh - 60px);background:#fff;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.16);display:flex;flex-direction:column}.dlg-h,.dlg-f{padding:16px 22px;border-bottom:1px solid #e5e6eb;display:flex;align-items:center;justify-content:space-between}.dlg-f{border-top:1px solid #e5e6eb;border-bottom:none;justify-content:flex-end;gap:8px}.dlg-b{padding:18px 22px;overflow:auto}.dlg-x{border:none;background:none;font-size:20px;color:#86909c;cursor:pointer}.sec{margin-bottom:20px}.sec-t{font-size:14px;font-weight:700;margin-bottom:10px;padding-bottom:7px;border-bottom:1px solid #f2f3f5}.row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.rg{display:flex}.rb{height:34px;padding:0 14px;border:1px solid #e5e6eb;background:#fff;font-size:12px;display:flex;align-items:center;cursor:pointer}.rb:first-child{border-radius:6px 0 0 6px}.rb:last-child{border-radius:0 6px 6px 0}.rb.on{background:#3370ff;border-color:#3370ff;color:#fff}
+    .ms{position:relative}.ms-box{min-height:34px;border:1px solid #e5e6eb;border-radius:6px;padding:5px 8px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;cursor:text}.ms-tag{display:inline-flex;align-items:center;gap:4px;max-width:130px;padding:2px 6px;background:#f2f3f5;border-radius:4px;font-size:11px}.ms-tag span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rx{cursor:pointer;color:#86909c}.rx:hover{color:#f53f3f}.ms-input{border:none;outline:none;min-width:64px;flex:1;font-size:12px;height:22px}.ms-menu{display:none;position:absolute;top:38px;left:0;right:0;max-height:220px;overflow:auto;background:#fff;border:1px solid #e5e6eb;border-radius:6px;box-shadow:0 10px 28px rgba(0,0,0,.12);z-index:120;padding:4px}.ms-opt{display:flex;justify-content:space-between;padding:7px;border-radius:4px;font-size:12px;cursor:pointer}.ms-opt:hover,.ms-opt.on{background:#e8f3ff}.ms-opt i{font-style:normal;color:#1683ff;font-weight:800}
+    .blk{background:#fafbfc;border:1px solid #e5e6eb;border-radius:8px;padding:10px;margin-bottom:8px}.blk textarea{margin-top:6px}.tagline{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.pill{display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:99px;background:#f2f3f5;color:#4e5969;font-size:11px}
+    .progress{height:8px;background:#edf0f5;border-radius:99px;overflow:hidden;margin-top:10px}.progress div{height:100%;width:0;background:#3370ff;transition:width .25s}.user-form{padding:18px;display:grid;grid-template-columns:1fr 1fr 180px auto;gap:12px;align-items:end}.notice{background:#f0f5ff;border:1px solid #bedaff;color:#3370ff;border-radius:8px;padding:10px 12px;font-size:12px;margin-bottom:14px}
+    .toast{position:fixed;right:22px;top:70px;background:#1d2129;color:#fff;border-radius:8px;padding:10px 14px;font-size:12px;box-shadow:0 12px 30px rgba(0,0,0,.18);display:none;z-index:200}
+  </style>
+</head>
+<body>
+  <div id="login" class="login">
+    <div class="login-box">
+      <h1>答疑中台</h1>
+      <p>知识库管理后台演示版</p>
+      <label class="fl">账号</label>
+      <input id="loginUser" class="fi" value="Weichizhuo">
+      <label class="fl">密码</label>
+      <input id="loginPwd" class="fi" type="password" value="123456" onkeydown="if(event.key==='Enter')login()">
+      <button class="btn bp" style="width:100%;margin-top:18px" onclick="login()">登录演示</button>
+      <div class="hint">演示版数据保存在当前浏览器内，不连接服务器。默认账号 Weichizhuo / 123456。</div>
+    </div>
+  </div>
+
+  <div id="app" class="layout">
+    <aside class="side">
+      <div class="brand">答疑中台</div>
+      <div class="nav">
+        <div class="nav-item on" id="navKnowledge" onclick="switchView('knowledge')">知识库管理</div>
+        <div class="nav-item" id="navUsers" onclick="switchView('users')">账号管理</div>
+      </div>
+      <div class="side-foot">
+        <div id="sideUser">Weichizhuo</div>
+        <div>超级管理员</div>
+        <div class="side-link" onclick="toast('演示版已模拟修改密码流程')">修改密码</div>
+        <div class="side-link" onclick="logout()">退出登录</div>
+      </div>
+    </aside>
+    <main class="main">
+      <div class="hd"><h1 id="pageTitle">答疑中台</h1><span class="sub" id="pageSub">知识库管理</span></div>
+      <section class="mn" id="knowledgePage">
+        <div class="cards">
+          <div class="card"><div class="lb">全部知识</div><div class="vl bl" id="statTotal">0</div></div>
+          <div class="card"><div class="lb">已发布</div><div class="vl gn" id="statPublished">0</div></div>
+          <div class="card"><div class="lb">待审核</div><div class="vl og" id="statReview">0</div></div>
+          <div class="card"><div class="lb">草稿</div><div class="vl gy" id="statDraft">0</div></div>
+        </div>
+        <div class="bar">
+          <span class="tt">知识列表</span>
+          <button class="btn bd" onclick="openMht()">更新本地数据</button>
+          <input class="inp search" id="kw" placeholder="搜索标题..." oninput="renderList()">
+          <button class="btn bd" onclick="resetFilters()">刷新</button>
+          <button class="btn bp" onclick="openEditor()">+ 新建知识</button>
+        </div>
+        <div class="filter-tabs">
+          <div class="tab-row" id="statusTabs"><span class="tab-label">状态</span></div>
+          <div class="tab-row" id="layerTabs"><span class="tab-label">分类</span></div>
+        </div>
+        <div class="tw">
+          <table>
+            <thead><tr><th style="width:130px">ID</th><th>标题</th><th style="width:80px">层级</th><th style="width:90px">状态</th><th style="width:90px">创建人</th><th style="width:260px" class="right">操作</th></tr></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="mn" id="usersPage" style="display:none">
+        <div class="notice">超级管理员可创建账号、修改角色、重置密码、禁用账号。这里是离线演示，操作只影响当前页面。</div>
+        <div class="panel user-form">
+          <div><label class="fl">账号</label><input class="fi" id="newUser" placeholder="输入账号"></div>
+          <div><label class="fl">初始密码</label><input class="fi" id="newPwd" value="123456"></div>
+          <div><label class="fl">角色</label><select class="fi" id="newRole"></select></div>
+          <button class="btn bp" onclick="createUser()">创建账号</button>
+        </div>
+        <div class="tw">
+          <table>
+            <thead><tr><th>账号</th><th style="width:190px">角色</th><th style="width:90px">状态</th><th style="width:170px">创建时间</th><th style="width:260px" class="right">操作</th></tr></thead>
+            <tbody id="usersBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="mask" id="editorMask">
+    <div class="dlg">
+      <div class="dlg-h"><h3 id="dlgTitle">新建知识</h3><button class="dlg-x" onclick="closeEditor()">&times;</button></div>
+      <div class="dlg-b">
+        <div class="sec">
+          <div class="sec-t">知识信息</div>
+          <div class="row">
+            <div><label class="fl">标题</label><input class="fi" id="fmTitle"></div>
+            <div><label class="fl">知识层级</label><div class="rg"><div class="rb" data-layer="L1">L1 基础</div><div class="rb" data-layer="L2">L2 案例</div><div class="rb" data-layer="L3">L3 动态</div></div></div>
+            <div><label class="fl">所属分类</label><select class="fi" id="fmCat" onchange="toggleMhtFields()"></select></div>
+          </div>
+          <div class="row" id="mhtFields" style="margin-top:14px">
+            <div><label class="fl">适用类目</label><div class="ms" data-key="cats"></div></div>
+            <div><label class="fl">适用品牌</label><div class="ms" data-key="brands"></div></div>
+            <div><label class="fl">适用机型</label><div class="ms" data-key="models"></div></div>
+          </div>
+          <div style="margin-top:14px"><label class="fl">适用场景</label><div class="tagline" id="sceneTags"></div></div>
+        </div>
+        <div class="sec">
+          <div class="sec-t">知识内容</div>
+          <div class="blk">
+            <div class="tg tg-l">文本</div>
+            <textarea class="fi" id="fmContent" rows="6"></textarea>
+          </div>
+          <div class="blk">
+            <div class="tg tg-l">素材示例</div>
+            <div class="tagline"><span class="pill">图片：成色检测示例</span><span class="pill">视频：质检流程录屏</span><span class="pill">案例：用户争议处理</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="dlg-f"><button class="btn bd" onclick="closeEditor()">取消</button><button class="btn bp" id="saveBtn" onclick="saveKnowledge()">保存</button></div>
+    </div>
+  </div>
+
+  <div class="mask" id="mhtMask">
+    <div class="dlg" style="width:560px">
+      <div class="dlg-h"><h3>更新曼哈顿本地数据</h3><button class="dlg-x" onclick="closeMht()">&times;</button></div>
+      <div class="dlg-b">
+        <label class="fl">Cookie</label>
+        <textarea class="fi" rows="5" placeholder="演示版不会真实提交 Cookie">session=demo; user=Weichizhuo;</textarea>
+        <div class="hint">演示效果：点击更新后模拟抓取适用类目、品牌、机型，并更新本地缓存。</div>
+        <div class="progress"><div id="mhtProgress"></div></div>
+        <div class="hint" id="mhtText">等待开始</div>
+      </div>
+      <div class="dlg-f"><button class="btn bd" onclick="closeMht()">关闭</button><button class="btn bp" onclick="runMht()">开始更新</button></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    var roles=[
+      ['visitor','游客用户'],['junior_support','小小答疑'],['senior_support','大大答疑'],
+      ['super_support','超级答疑'],['super_admin','超级管理员']
+    ];
+    var cats=['质检标准','质检流程','标准解析','注意事项','流程案例'];
+    var options={
+      cats:['手机','平板电脑','耳机/耳麦','笔记本','游戏机','智能手表'],
+      brands:['Apple','华为','小米','OPPO','vivo','三星','荣耀','联想'],
+      models:['iPhone 15 Pro','iPhone 14','Mate 60 Pro','Pura 70','小米 14','OPPO Find X7','vivo X100','Galaxy S24','Apple Watch S9']
+    };
+    var sceneList=['自营回收','聚合回收','上门后验'];
+    var knowledge=[
+      {id:'A-00005',title:'手机屏幕坏点质检标准',layer:'L2',status:'review',by:'test',cat:'质检标准',scenes:['自营回收'],cats:['手机'],brands:['Apple','华为'],models:['iPhone 15 Pro','Mate 60 Pro'],content:'检查屏幕是否存在亮点、暗点、色斑、压伤和触控异常。对争议项保留图片和视频证据。'},
+      {id:'A-00004',title:'笔记本外观检测流程',layer:'L1',status:'published',by:'魏驰卓',cat:'质检流程',scenes:['上门后验'],cats:['笔记本'],brands:['Apple','联想'],models:['MacBook Pro 14'],content:'按 A/B/C/D 面顺序检查划痕、磕碰、变形、接口损坏，并记录电池循环次数。'},
+      {id:'A-00003',title:'耳机进液判定注意事项',layer:'L1',status:'deprecated',by:'system',cat:'注意事项',scenes:['聚合回收'],cats:['耳机/耳麦'],brands:['Apple'],models:['AirPods Pro'],content:'观察充电盒触点、耳机滤网和麦克风孔位，疑似进液需拍照留证。'},
+      {id:'A-00002',title:'智能手表功能测试案例',layer:'L3',status:'published',by:'system',cat:'流程案例',scenes:['自营回收'],cats:['智能手表'],brands:['Apple','华为'],models:['Apple Watch S9'],content:'蓝牙连接、屏幕触控、旋钮、心率传感器、扬声器和麦克风需逐项确认。'},
+      {id:'A-00001',title:'平板电脑弯曲变形标准',layer:'L2',status:'draft',by:'魏驰卓',cat:'质检标准',scenes:['上门后验'],cats:['平板电脑'],brands:['Apple','华为'],models:['iPad Pro'],content:'平放桌面观察四角是否翘起，配合侧面照片确认弯曲程度。'}
+    ];
+    var users=[
+      {name:'Weichizhuo',role:'super_admin',active:true,created:'2026-07-08 10:00'},
+      {name:'demo_viewer',role:'visitor',active:true,created:'2026-07-08 10:18'},
+      {name:'qa_leader',role:'senior_support',active:true,created:'2026-07-08 10:23'}
+    ];
+    var filter={status:'',layer:'',kw:''};
+    var editingId=null, readonly=false, fm={layer:'L1',cats:[],brands:[],models:[],scenes:[]};
+
+    function $(id){return document.getElementById(id)}
+    function labelRole(v){var r=roles.find(function(x){return x[0]===v});return r?r[1]:v}
+    function sl(s){return {draft:'草稿',review:'待审核',published:'已发布',deprecated:'已废弃'}[s]||s}
+    function cls(s){return {draft:'tg-d',review:'tg-r',published:'tg-p',deprecated:'tg-x'}[s]||''}
+    function toast(t){var el=$('toast');el.textContent=t;el.style.display='block';clearTimeout(window._toast);window._toast=setTimeout(function(){el.style.display='none'},1800)}
+    function login(){$('login').style.display='none';$('app').style.display='flex';renderAll();toast('已进入超级管理员演示账号')}
+    function logout(){$('app').style.display='none';$('login').style.display='flex'}
+    function switchView(v){
+      $('knowledgePage').style.display=v==='knowledge'?'block':'none';$('usersPage').style.display=v==='users'?'block':'none';
+      $('navKnowledge').classList.toggle('on',v==='knowledge');$('navUsers').classList.toggle('on',v==='users');
+      $('pageTitle').textContent=v==='users'?'账号管理':'答疑中台';$('pageSub').textContent=v==='users'?'创建和查看后台账号':'知识库管理';
+      if(v==='users')renderUsers();
+    }
+    function renderAll(){renderTabs();renderList();renderUsers();fillSelects()}
+    function renderTabs(){
+      var status=[['','全部状态'],['draft','草稿'],['review','待审核'],['published','已发布'],['deprecated','已废弃']];
+      var layer=[['','全部分类'],['L1','L1 基础'],['L2','L2 案例'],['L3','L3 动态']];
+      $('statusTabs').innerHTML='<span class="tab-label">状态</span>'+status.map(function(x){return '<button class="tab-btn '+(filter.status===x[0]?'on':'')+'" onclick="setFilter(\'status\',\''+x[0]+'\')">'+x[1]+'</button>'}).join('');
+      $('layerTabs').innerHTML='<span class="tab-label">分类</span>'+layer.map(function(x){return '<button class="tab-btn '+(filter.layer===x[0]?'on':'')+'" onclick="setFilter(\'layer\',\''+x[0]+'\')">'+x[1]+'</button>'}).join('');
+    }
+    function setFilter(k,v){filter[k]=v;renderTabs();renderList()}
+    function resetFilters(){filter={status:'',layer:'',kw:''};$('kw').value='';renderTabs();renderList();toast('已刷新')}
+    function renderList(){
+      filter.kw=$('kw')?$('kw').value.trim():'';
+      var rows=knowledge.filter(function(r){return (!filter.status||r.status===filter.status)&&(!filter.layer||r.layer===filter.layer)&&(!filter.kw||r.title.indexOf(filter.kw)>-1)});
+      $('statTotal').textContent=knowledge.length;$('statPublished').textContent=knowledge.filter(function(x){return x.status==='published'}).length;$('statReview').textContent=knowledge.filter(function(x){return x.status==='review'}).length;$('statDraft').textContent=knowledge.filter(function(x){return x.status==='draft'}).length;
+      $('tbody').innerHTML=rows.map(function(r){return '<tr><td class="mono">'+r.id+'</td><td style="font-weight:600">'+r.title+'</td><td><span class="tg tg-l">'+r.layer+'</span></td><td><span class="tg '+cls(r.status)+'">'+sl(r.status)+'</span></td><td style="color:#86909c">'+r.by+'</td><td class="right"><button class="btn bd bsm" onclick="openEditor(\''+r.id+'\',true)">查看</button> <button class="btn bd bsm" onclick="openEditor(\''+r.id+'\')">编辑</button> '+actionButtons(r)+'</td></tr>'}).join('')||'<tr><td colspan="6" style="text-align:center;padding:42px;color:#c9cdd4">暂无数据</td></tr>';
+    }
+    function actionButtons(r){
+      var s=''; if(r.status==='draft')s+='<button class="btn bw bsm" onclick="act(\''+r.id+'\',\'submit\')">提交审核</button> ';
+      if(r.status==='review')s+='<button class="btn bs bsm" onclick="act(\''+r.id+'\',\'approve\')">审核发布</button> ';
+      if(r.status!=='deprecated')s+='<button class="btn br bsm" onclick="act(\''+r.id+'\',\'deprecate\')">废弃</button>'; return s;
+    }
+    function act(id,a){var r=knowledge.find(function(x){return x.id===id});if(!r)return;if(a==='submit')r.status='review';if(a==='approve')r.status='published';if(a==='deprecate')r.status='deprecated';renderList();toast('状态已更新：'+sl(r.status))}
+    function fillSelects(){
+      $('newRole').innerHTML=roles.map(function(r){return '<option value="'+r[0]+'">'+r[1]+'</option>'}).join('');
+      $('fmCat').innerHTML=cats.map(function(c){return '<option>'+c+'</option>'}).join('');
+      document.querySelectorAll('.rb').forEach(function(el){el.onclick=function(){if(readonly)return;fm.layer=el.dataset.layer;paintLayer()}});
+      document.querySelectorAll('.ms').forEach(buildMulti);
+    }
+    function buildMulti(el){
+      var key=el.dataset.key;
+      el.innerHTML='<div class="ms-box" onclick="openMulti(\''+key+'\')"><span class="tags"></span><input class="ms-input" placeholder="搜索/选择" oninput="filterMulti(\''+key+'\',this.value)" '+(readonly?'disabled':'')+'></div><div class="ms-menu"></div>';
+      paintMulti(key);
+    }
+    function paintMulti(key,kw){
+      var el=document.querySelector('.ms[data-key="'+key+'"]'); if(!el)return;
+      var arr=fm[key]||[]; el.querySelector('.tags').innerHTML=arr.map(function(v){return '<span class="ms-tag"><span>'+v+'</span><span class="rx" onclick="event.stopPropagation();removeMulti(\''+key+'\',\''+v+'\')">&times;</span></span>'}).join('');
+      var list=options[key].filter(function(v){return !kw||v.toLowerCase().indexOf(kw.toLowerCase())>-1});
+      el.querySelector('.ms-menu').innerHTML='<div class="ms-opt" onclick="selectAll(\''+key+'\')"><b>全选</b></div>'+list.map(function(v){var on=arr.indexOf(v)>-1;return '<div class="ms-opt '+(on?'on':'')+'" onclick="toggleMulti(\''+key+'\',\''+v+'\')"><span>'+v+'</span>'+(on?'<i>✓</i>':'')+'</div>'}).join('');
+    }
+    function openMulti(key){if(readonly)return;document.querySelectorAll('.ms-menu').forEach(function(m){m.style.display='none'});document.querySelector('.ms[data-key="'+key+'"] .ms-menu').style.display='block'}
+    function filterMulti(key,v){paintMulti(key,v);openMulti(key)}
+    function toggleMulti(key,v){if(readonly)return;var a=fm[key];var i=a.indexOf(v);i>-1?a.splice(i,1):a.push(v);paintMulti(key)}
+    function removeMulti(key,v){if(readonly)return;var a=fm[key];var i=a.indexOf(v);if(i>-1)a.splice(i,1);paintMulti(key)}
+    function selectAll(key){if(readonly)return;fm[key]=options[key].slice();paintMulti(key)}
+    document.addEventListener('click',function(e){if(!e.target.closest('.ms'))document.querySelectorAll('.ms-menu').forEach(function(m){m.style.display='none'})});
+    function openEditor(id,viewOnly){
+      editingId=id||null; readonly=!!viewOnly;
+      var r=id?knowledge.find(function(x){return x.id===id}):{title:'',layer:'L1',cat:'质检标准',scenes:['自营回收'],cats:[],brands:[],models:[],content:''};
+      fm={layer:r.layer,cats:(r.cats||[]).slice(),brands:(r.brands||[]).slice(),models:(r.models||[]).slice(),scenes:(r.scenes||[]).slice()};
+      $('dlgTitle').textContent=readonly?'查看知识':(id?'编辑知识':'新建知识');$('fmTitle').value=r.title;$('fmCat').value=r.cat;$('fmContent').value=r.content;$('saveBtn').style.display=readonly?'none':'inline-flex';
+      ['fmTitle','fmCat','fmContent'].forEach(function(id){$(id).disabled=readonly});paintLayer();paintScenes();document.querySelectorAll('.ms').forEach(buildMulti);toggleMhtFields();$('editorMask').style.display='flex';
+    }
+    function paintLayer(){document.querySelectorAll('.rb').forEach(function(x){x.classList.toggle('on',x.dataset.layer===fm.layer)})}
+    function paintScenes(){$('sceneTags').innerHTML=sceneList.map(function(s){var on=fm.scenes.indexOf(s)>-1;return '<span class="pill" style="'+(on?'background:#e8f3ff;color:#3370ff':'')+'" onclick="toggleScene(\''+s+'\')">'+s+(on?' ✓':'')+'</span>'}).join('')}
+    function toggleScene(s){if(readonly)return;var i=fm.scenes.indexOf(s);i>-1?fm.scenes.splice(i,1):fm.scenes.push(s);paintScenes()}
+    function toggleMhtFields(){var c=$('fmCat').value;$('mhtFields').style.display=(c==='质检标准'||c==='质检流程')?'grid':'none'}
+    function closeEditor(){$('editorMask').style.display='none'}
+    function saveKnowledge(){
+      var r=editingId?knowledge.find(function(x){return x.id===editingId}):null;
+      if(!r){r={id:'A-'+String(knowledge.length+1).padStart(5,'0'),status:'draft',by:'魏驰卓'};knowledge.unshift(r)}
+      r.title=$('fmTitle').value||'未命名知识';r.layer=fm.layer;r.cat=$('fmCat').value;r.scenes=fm.scenes.slice();r.cats=fm.cats.slice();r.brands=fm.brands.slice();r.models=fm.models.slice();r.content=$('fmContent').value;closeEditor();renderList();toast('知识已保存')
+    }
+    function renderUsers(){
+      $('usersBody').innerHTML=users.map(function(u,i){return '<tr><td>'+u.name+'</td><td><select class="inp" onchange="users['+i+'].role=this.value;toast(\'角色已修改\')">'+roles.map(function(r){return '<option value="'+r[0]+'" '+(u.role===r[0]?'selected':'')+'>'+r[1]+'</option>'}).join('')+'</select></td><td>'+ (u.active?'启用':'禁用') +'</td><td>'+u.created+'</td><td class="right"><button class="btn bd bsm" onclick="toast(\'密码已重置为 123456\')">重置密码</button> <button class="btn bw bsm" onclick="users['+i+'].active=!users['+i+'].active;renderUsers()">'+(u.active?'禁用':'启用')+'</button></td></tr>'}).join('');
+    }
+    function createUser(){var name=$('newUser').value.trim();if(!name){toast('请输入账号');return}users.push({name:name,role:$('newRole').value,active:true,created:'2026-07-08 11:30'});$('newUser').value='';renderUsers();toast('账号已创建')}
+    function openMht(){$('mhtMask').style.display='flex';$('mhtProgress').style.width='0%';$('mhtText').textContent='等待开始'}
+    function closeMht(){$('mhtMask').style.display='none'}
+    function runMht(){var p=0;var timer=setInterval(function(){p+=20;$('mhtProgress').style.width=p+'%';$('mhtText').textContent=p<100?'正在抓取：类目、品牌、机型 '+p+'%':'更新完成：类目 6 个，品牌 8 个，机型 9 个';if(p>=100){clearInterval(timer);toast('曼哈顿本地数据已更新')}},350)}
+  </script>
+</body>
+</html>
