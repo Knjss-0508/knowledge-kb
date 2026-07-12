@@ -67,6 +67,8 @@ class Settings(BaseSettings):
 
     # Empty means <backend>/uploads. Containers override this with /app/uploads.
     UPLOAD_DIR: str = ""
+    UPLOAD_MAX_BYTES: int = 20 * 1024 * 1024
+    SESSION_TTL_HOURS: int = 24
 
     class Config:
         env_file = ".env"

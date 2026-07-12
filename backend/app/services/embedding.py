@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import httpx
@@ -36,7 +37,7 @@ def _parse_openai_response(payload: dict[str, Any]) -> list[list[float]]:
     vectors = [item.get("embedding") for item in data if isinstance(item, dict)]
     if len(vectors) != len(data) or not all(isinstance(vector, list) for vector in vectors):
         raise ValueError("OpenAI-compatible response contains an invalid embedding.")
-    return [[float(value) for value in vector] for vector in vectors]
+    return _validate_vectors([[float(value) for value in vector] for vector in vectors])
 
 
 def _parse_tei_response(payload: Any) -> list[list[float]]:
@@ -44,7 +45,19 @@ def _parse_tei_response(payload: Any) -> list[list[float]]:
         payload = payload.get("embeddings")
     if not isinstance(payload, list) or not all(isinstance(vector, list) for vector in payload):
         raise ValueError("TEI response contains an invalid embedding.")
-    return [[float(value) for value in vector] for vector in payload]
+    return _validate_vectors([[float(value) for value in vector] for vector in payload])
+
+
+def _validate_vectors(vectors: list[list[float]]) -> list[list[float]]:
+    expected_dimension = settings.EMBEDDING_DIMENSIONS
+    for vector in vectors:
+        if len(vector) != expected_dimension:
+            raise ValueError(
+                f"Embedding dimension must be {expected_dimension}, got {len(vector)}."
+            )
+        if not all(math.isfinite(value) for value in vector):
+            raise ValueError("Embedding contains a non-finite value.")
+    return vectors
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:

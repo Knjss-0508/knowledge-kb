@@ -1,12 +1,13 @@
 import uuid
 import os
 import string
+import time
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -39,30 +40,29 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_IMAGE = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 ALLOWED_VIDEO = {"video/mp4", "video/webm", "video/quicktime"}
+MIME_EXTENSIONS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
+}
+TEMP_UPLOAD_TTL_SECONDS = 15 * 60
+TEMP_UPLOADS: dict[str, dict] = {}
 
 ALPHA = string.ascii_uppercase  # A-Z
 
 
 def _generate_knowledge_id(db: Session) -> str:
-    """生成 A-00001 格式的知识ID，按字母+数字递增，最高 Z-99999"""
-    all_ids = [row[0] for row in db.query(Knowledge.id).all()]
-    valid_ids = []
-    for kid in all_ids:
-        if len(kid) == 7 and kid[1] == '-' and kid[0] in ALPHA and kid[2:].isdigit():
-            valid_ids.append(kid)
-    if not valid_ids:
-        return "A-00001"
-    valid_ids.sort(key=lambda x: (x[0], int(x[2:])))
-    last = valid_ids[-1]
-    letter_idx = ALPHA.index(last[0])
-    num = int(last[2:]) + 1
-    if num > 99999:
-        letter_idx += 1
-        num = 1
-    if letter_idx >= len(ALPHA):
-        raise ValueError("知识ID已达上限 Z-99999")
-    return f"{ALPHA[letter_idx]}-{num:05d}"
-
+    sequence_number = db.execute(
+        text("SELECT nextval('knowledge_item_number_seq')")
+    ).scalar_one()
+    if sequence_number > len(ALPHA) * 99999:
+        raise ValueError("Knowledge ID limit reached.")
+    letter_idx, number = divmod(sequence_number - 1, 99999)
+    return f"{ALPHA[letter_idx]}-{number + 1:05d}"
 
 
 def _normalize_content(raw):
@@ -73,6 +73,67 @@ def _normalize_content(raw):
     if isinstance(raw, dict) and "blocks" in raw:
         return raw
     return {"blocks": [{"type": "text", "value": str(raw)}]}
+
+
+def _cleanup_temp_uploads() -> None:
+    cutoff = time.monotonic() - TEMP_UPLOAD_TTL_SECONDS
+    for temp_id, upload in list(TEMP_UPLOADS.items()):
+        if upload["created_at"] < cutoff:
+            TEMP_UPLOADS.pop(temp_id, None)
+
+
+async def _read_validated_upload(file: UploadFile, media_type: str) -> tuple[bytes, str]:
+    allowed_types = ALLOWED_IMAGE if media_type == "image" else ALLOWED_VIDEO if media_type == "video" else None
+    if not allowed_types or file.content_type not in allowed_types:
+        raise HTTPException(400, "Unsupported media type.")
+
+    data = await file.read(settings.UPLOAD_MAX_BYTES + 1)
+    if len(data) > settings.UPLOAD_MAX_BYTES:
+        raise HTTPException(413, "Uploaded file is too large.")
+    return data, MIME_EXTENSIONS[file.content_type]
+
+
+def _persist_temp_media(
+    db: Session,
+    knowledge_id: str,
+    content: dict,
+    username: str,
+) -> None:
+    _cleanup_temp_uploads()
+    for block in content.get("blocks", []):
+        temp_id = block.get("media_id")
+        if not isinstance(temp_id, str) or not temp_id.startswith("temp-"):
+            continue
+        upload = TEMP_UPLOADS.pop(temp_id, None)
+        if not upload or upload["username"] != username:
+            raise HTTPException(422, "Temporary upload is unavailable.")
+        filename = f"{uuid.uuid4().hex[:12]}{upload['extension']}"
+        file_path = UPLOAD_DIR / filename
+        file_path.write_bytes(upload["data"])
+        db.add(
+            KnowledgeMedia(
+                id=f"media-{uuid.uuid4().hex[:8]}",
+                knowledge_id=knowledge_id,
+                media_type=upload["media_type"],
+                filename=filename,
+                original_name=upload["original_name"],
+                file_path=str(file_path),
+                file_size=len(upload["data"]),
+                mime_type=upload["mime_type"],
+                alt=block.get("alt") or upload["alt"] or filename,
+                caption=block.get("caption") or upload["caption"],
+            )
+        )
+        block["media_id"] = filename
+
+
+def _discard_temp_media(content: dict, username: str) -> None:
+    for block in content.get("blocks", []):
+        temp_id = block.get("media_id")
+        if isinstance(temp_id, str):
+            upload = TEMP_UPLOADS.get(temp_id)
+            if upload and upload["username"] == username:
+                TEMP_UPLOADS.pop(temp_id, None)
 
 
 def _sync_media_meta(db: Session, knowledge_id: str, content: dict):
@@ -236,14 +297,18 @@ def create_knowledge(
     current_user: User = Depends(require_permission("knowledge:create")),
 ):
     normalized_content = _normalize_content(body.content)
-    decision = _check_manual_deduplication(
-        db,
-        title=body.title,
-        subtitles=body.subtitles or [],
-        content=normalized_content,
-        scene_tags=body.applicable_scenes or [],
-        confirm_dedup_review=body.confirm_dedup_review,
-    )
+    try:
+        decision = _check_manual_deduplication(
+            db,
+            title=body.title,
+            subtitles=body.subtitles or [],
+            content=normalized_content,
+            scene_tags=body.applicable_scenes or [],
+            confirm_dedup_review=body.confirm_dedup_review,
+        )
+    except Exception:
+        _discard_temp_media(normalized_content, current_user.username)
+        raise
     item = Knowledge(
         id=_generate_knowledge_id(db),
         title=body.title,
@@ -264,6 +329,7 @@ def create_knowledge(
     )
     db.add(item)
     db.flush()
+    _persist_temp_media(db, item.id, item.content, current_user.username)
     if decision.embedding:
         save_embedding(
             db,
@@ -323,24 +389,9 @@ def get_dashboard(
             KnowledgeStatus.DEPRECATED,
         )
     }
-
-
-def _knowledge_snapshot(item: Knowledge) -> dict:
-    return {
-        "title": item.title,
-        "subtitles": deepcopy(item.subtitles or []),
-        "content": deepcopy(item.content or {}),
-        "layer": item.layer.value,
-        "category_id": item.category_id,
-        "status": item.status.value,
-        "applicable_scenes": deepcopy(item.applicable_scenes or []),
-        "applicable_business_types": deepcopy(item.applicable_business_types or []),
-        "applicable_categories": deepcopy(item.applicable_categories or []),
-        "applicable_brands": deepcopy(item.applicable_brands or []),
-        "applicable_models": deepcopy(item.applicable_models or []),
-        "is_model_personal": item.is_model_personal == "true",
-    }
-    for status, total in q.with_entities(Knowledge.status, func.count(Knowledge.id)).group_by(Knowledge.status).all():
+    for status, total in q.with_entities(
+        Knowledge.status, func.count(Knowledge.id)
+    ).group_by(Knowledge.status).all():
         counts[status.value] = total
 
     pending = q.filter(Knowledge.status == KnowledgeStatus.REVIEW).order_by(
@@ -352,7 +403,6 @@ def _knowledge_snapshot(item: Knowledge) -> dict:
         .limit(5)
         .all()
     )
-
     return {
         "counts": counts,
         "pending": [
@@ -378,6 +428,44 @@ def _knowledge_snapshot(item: Knowledge) -> dict:
             for item in recent_updates
         ],
     }
+
+
+def _knowledge_snapshot(item: Knowledge) -> dict:
+    return {
+        "title": item.title,
+        "subtitles": deepcopy(item.subtitles or []),
+        "content": deepcopy(item.content or {}),
+        "layer": item.layer.value,
+        "category_id": item.category_id,
+        "status": item.status.value,
+        "applicable_scenes": deepcopy(item.applicable_scenes or []),
+        "applicable_business_types": deepcopy(item.applicable_business_types or []),
+        "applicable_categories": deepcopy(item.applicable_categories or []),
+        "applicable_brands": deepcopy(item.applicable_brands or []),
+        "applicable_models": deepcopy(item.applicable_models or []),
+        "is_model_personal": item.is_model_personal == "true",
+    }
+
+
+def _can_edit_knowledge(item: Knowledge, user: User) -> bool:
+    if user.role == "super_admin":
+        return True
+    if item.status == KnowledgeStatus.PUBLISHED:
+        return has_permission(user, "knowledge:edit_published")
+    if item.status == KnowledgeStatus.REVIEW:
+        return (
+            has_permission(user, "knowledge:edit_review_all")
+            or (
+                item.created_by == user.username
+                and has_permission(user, "knowledge:edit_own_review")
+            )
+        )
+    if item.status == KnowledgeStatus.DRAFT:
+        return (
+            item.created_by == user.username
+            and has_permission(user, "knowledge:create")
+        )
+    return False
 
 
 @router.get("/{knowledge_id}", response_model=KnowledgeResponse, summary="获取知识条目详情")
@@ -686,22 +774,24 @@ async def upload_media(
     alt: str = Form(""),
     caption: str = Form(""),
     db: Session = Depends(get_db),
-    _=Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(get_current_user),
 ):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if not _can_edit_knowledge(item, current_user):
+        raise HTTPException(403, "Permission denied.")
 
+    content, extension = await _read_validated_upload(file, media_type)
     if media_type == "image" and file.content_type not in ALLOWED_IMAGE:
         raise HTTPException(400, f"不支持的图片格式: {file.content_type}，支持: png/jpg/gif/webp")
     if media_type == "video" and file.content_type not in ALLOWED_VIDEO:
         raise HTTPException(400, f"不支持的视频格式: {file.content_type}，支持: mp4/webm/mov")
 
-    ext = os.path.splitext(file.filename)[1] or (".mp4" if media_type == "video" else ".png")
+    ext = extension
     filename = f"{uuid.uuid4().hex[:12]}{ext}"
     file_path = str(UPLOAD_DIR / filename)
 
-    content = await file.read()
     with open(file_path, "wb") as f:
         f.write(content)
 
@@ -734,20 +824,34 @@ async def upload_media(
 
 
 @router.post("/upload-temp", summary="临时上传媒体文件", description="未创建知识条目时的临时上传，返回文件ID供编辑器使用")
-async def upload_temp(file: UploadFile = File(...), media_type: str = Form("image"), alt: str = Form(""), caption: str = Form(""), _=Depends(require_permission("knowledge:create"))):
-    ext = os.path.splitext(file.filename)[1] or ".png"
-    filename = f"temp-{uuid.uuid4().hex[:12]}{ext}"
-    file_path = str(UPLOAD_DIR / filename)
-    content = await file.read()
-    with open(file_path, "wb") as f:
-        f.write(content)
+async def upload_temp(
+    file: UploadFile = File(...),
+    media_type: str = Form("image"),
+    alt: str = Form(""),
+    caption: str = Form(""),
+    current_user: User = Depends(require_permission("knowledge:create")),
+):
+    _cleanup_temp_uploads()
+    content, extension = await _read_validated_upload(file, media_type)
+    filename = f"temp-{uuid.uuid4().hex[:12]}"
+    TEMP_UPLOADS[filename] = {
+        "username": current_user.username,
+        "media_type": media_type,
+        "mime_type": file.content_type,
+        "extension": extension,
+        "original_name": file.filename or filename,
+        "alt": alt,
+        "caption": caption,
+        "data": content,
+        "created_at": time.monotonic(),
+    }
     return {
         "id": filename,
         "filename": filename,
         "original_name": file.filename,
-        "file_path": f"/uploads/{filename}",
+        "file_path": None,
         "file_size": len(content),
-        "mime_type": file.content_type or "image/png",
+        "mime_type": file.content_type,
         "alt": alt,
         "caption": caption,
     }
@@ -767,7 +871,12 @@ def list_media(knowledge_id: str, db: Session = Depends(get_db), _=Depends(requi
 
 
 @router.patch("/{knowledge_id}/media/{media_file}", summary="更新媒体信息", description="修改图片/视频的描述和说明文字")
-def update_media(knowledge_id: str, media_file: str, alt: str = Form(""), caption: str = Form(""), db: Session = Depends(get_db), _=Depends(require_permission("knowledge:create"))):
+def update_media(knowledge_id: str, media_file: str, alt: str = Form(""), caption: str = Form(""), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
+    if not item:
+        raise HTTPException(404, "知识条目不存在")
+    if not _can_edit_knowledge(item, current_user):
+        raise HTTPException(403, "Permission denied.")
     media = db.query(KnowledgeMedia).filter(
         KnowledgeMedia.filename == media_file, KnowledgeMedia.knowledge_id == knowledge_id
     ).first()
@@ -780,7 +889,12 @@ def update_media(knowledge_id: str, media_file: str, alt: str = Form(""), captio
 
 
 @router.delete("/{knowledge_id}/media/{media_file}", status_code=204, summary="删除媒体文件")
-def delete_media(knowledge_id: str, media_file: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:create"))):
+def delete_media(knowledge_id: str, media_file: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
+    if not item:
+        raise HTTPException(404, "知识条目不存在")
+    if not _can_edit_knowledge(item, current_user):
+        raise HTTPException(403, "Permission denied.")
     media = db.query(KnowledgeMedia).filter(
         KnowledgeMedia.filename == media_file, KnowledgeMedia.knowledge_id == knowledge_id
     ).first()
@@ -795,7 +909,11 @@ def delete_media(knowledge_id: str, media_file: str, db: Session = Depends(get_d
 # ---- 候选池 ----
 
 @router.post("/candidates", response_model=KnowledgeResponse, status_code=201, summary="提交候选知识")
-def submit_candidate(body: CandidateSubmit, db: Session = Depends(get_db)):
+def submit_candidate(
+    body: CandidateSubmit,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:create")),
+):
     try:
         decision = check_duplicate(
             db,
@@ -827,7 +945,8 @@ def submit_candidate(body: CandidateSubmit, db: Session = Depends(get_db)):
         applicable_scenes=body.applicable_scenes,
         source=body.source,
         source_session_id=body.source_session_id,
-        created_by=body.submitted_by,
+        created_by=current_user.username,
+        updated_by=current_user.username,
         deduplication_metadata=_deduplication_metadata(decision),
     )
     db.add(item)
@@ -848,7 +967,11 @@ def submit_candidate(body: CandidateSubmit, db: Session = Depends(get_db)):
 # ---- 检索 ----
 
 @router.post("/search", response_model=SearchResponse, summary="检索知识库")
-def search_knowledge(body: SearchRequest, db: Session = Depends(get_db)):
+def search_knowledge(
+    body: SearchRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("knowledge:view")),
+):
     try:
         ranked = search_embeddings(
             db,
@@ -892,7 +1015,11 @@ def search_knowledge(body: SearchRequest, db: Session = Depends(get_db)):
 # ---- 反馈 ----
 
 @router.post("/feedback", summary="提交使用反馈")
-def submit_feedback(body: FeedbackSubmit, db: Session = Depends(get_db)):
+def submit_feedback(
+    body: FeedbackSubmit,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("knowledge:view")),
+):
     item = db.query(Knowledge).filter(Knowledge.id == body.knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")

@@ -34,6 +34,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return response
+
+
 app.include_router(knowledge.router, prefix=settings.API_V1_PREFIX)
 app.include_router(category.router, prefix=settings.API_V1_PREFIX)
 app.include_router(tag.router, prefix=settings.API_V1_PREFIX)

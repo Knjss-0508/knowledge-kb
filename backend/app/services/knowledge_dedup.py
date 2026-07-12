@@ -197,18 +197,21 @@ def check_duplicate(
     if not text:
         raise ValueError("Knowledge content is empty after normalization.")
     content_hash = content_hash_for_text(text)
-    query = db.query(Knowledge).filter(
-        Knowledge.status.in_([KnowledgeStatus.REVIEW, KnowledgeStatus.PUBLISHED])
+    query = db.query(Knowledge).join(
+        KnowledgeEmbedding,
+        KnowledgeEmbedding.knowledge_id == Knowledge.id,
+    ).filter(
+        Knowledge.status.in_([KnowledgeStatus.REVIEW, KnowledgeStatus.PUBLISHED]),
+        KnowledgeEmbedding.embedding_model == settings.EMBEDDING_MODEL,
     )
     if exclude_knowledge_id:
         query = query.filter(Knowledge.id != exclude_knowledge_id)
-    existing = query.order_by(Knowledge.updated_at.desc()).all()
-
-    exact_matches = [
-        item
-        for item in existing
-        if content_hash_for_text(_knowledge_text(item)) == content_hash
-    ]
+    exact_matches = (
+        query.filter(KnowledgeEmbedding.content_hash == content_hash)
+        .order_by(Knowledge.updated_at.desc())
+        .limit(settings.DEDUP_MAX_CANDIDATES)
+        .all()
+    )
     if exact_matches:
         return DedupDecision(
             action="block_duplicate",
@@ -229,15 +232,14 @@ def check_duplicate(
         )
 
     query_vector = embed_texts([text])[0]
-    if not existing:
-        return DedupDecision(
-            action="create",
-            content_hash=content_hash,
-            embedding=query_vector,
-            matches=[],
-        )
-
-    existing_vectors = _load_candidate_embeddings(db, existing)
+    distance = KnowledgeEmbedding.embedding_vector.cosine_distance(query_vector)
+    candidates = (
+        query.filter(KnowledgeEmbedding.embedding_vector.is_not(None))
+        .with_entities(Knowledge, distance.label("distance"))
+        .order_by(distance)
+        .limit(settings.DEDUP_MAX_CANDIDATES)
+        .all()
+    )
     matches = [
         DedupMatch(
             knowledge_id=item.id,
@@ -246,9 +248,9 @@ def check_duplicate(
             category_id=item.category_id,
             layer=item.layer.value,
             match_type="semantic",
-            similarity=round(_cosine_similarity(query_vector, vector), 6),
+            similarity=round(max(0.0, 1.0 - float(distance_value)), 6),
         )
-        for item, vector in zip(existing, existing_vectors)
+        for item, distance_value in candidates
     ]
     matches.sort(key=lambda item: item.similarity, reverse=True)
     matches = [

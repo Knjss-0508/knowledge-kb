@@ -8,9 +8,12 @@ from app.services.embedding import embed_texts
 class EmbeddingProviderTests(unittest.TestCase):
     def setUp(self):
         self.original_provider = settings.EMBEDDING_PROVIDER
+        self.original_dimensions = settings.EMBEDDING_DIMENSIONS
+        settings.EMBEDDING_DIMENSIONS = 2
 
     def tearDown(self):
         settings.EMBEDDING_PROVIDER = self.original_provider
+        settings.EMBEDDING_DIMENSIONS = self.original_dimensions
 
     @patch("app.services.embedding.httpx.Client")
     def test_tei_provider_does_not_try_openai_endpoint(self, client_class):

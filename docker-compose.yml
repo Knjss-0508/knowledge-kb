@@ -82,6 +82,8 @@ services:
       SEARCH_CHUNK_SIZE: ${SEARCH_CHUNK_SIZE:-800}
       SEARCH_CHUNK_OVERLAP: ${SEARCH_CHUNK_OVERLAP:-120}
       UPLOAD_DIR: /app/uploads
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-20971520}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -4,19 +4,18 @@ import hmac
 import os
 import secrets
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import get_db
-from app.models.user import User
+from app.models.user import User, UserSession
 
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
-_sessions: dict[str, str] = {}
-
 ROLES = {
     "visitor": {"label": "游客用户", "permissions": {"knowledge:view"}},
     "junior_support": {"label": "小小答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_own_review", "password:reset_self"}},
@@ -113,10 +112,18 @@ def get_current_user(
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Not logged in.")
     token = authorization.replace("Bearer ", "", 1).strip()
-    user_id = _sessions.get(token)
-    if not user_id:
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    session = (
+        db.query(UserSession)
+        .filter(
+            UserSession.token_hash == token_hash,
+            UserSession.expires_at > datetime.utcnow(),
+        )
+        .first()
+    )
+    if not session:
         raise HTTPException(401, "Session expired.")
-    user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
+    user = db.query(User).filter(User.id == session.user_id, User.is_active == True).first()
     if not user:
         raise HTTPException(401, "User disabled.")
     return user
@@ -152,7 +159,15 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(401, "Invalid username or password.")
     token = secrets.token_urlsafe(32)
-    _sessions[token] = user.id
+    db.query(UserSession).filter(UserSession.expires_at <= datetime.utcnow()).delete()
+    db.add(
+        UserSession(
+            token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            user_id=user.id,
+            expires_at=datetime.utcnow() + timedelta(hours=settings.SESSION_TTL_HOURS),
+        )
+    )
+    db.commit()
     return {"token": token, "user": public_user(user)}
 
 
@@ -162,10 +177,12 @@ def me(user: User = Depends(get_current_user)):
 
 
 @router.delete("/logout")
-def logout(authorization: str | None = Header(default=None)):
+def logout(authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     if authorization and authorization.startswith("Bearer "):
         token = authorization.replace("Bearer ", "", 1).strip()
-        _sessions.pop(token, None)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        db.query(UserSession).filter(UserSession.token_hash == token_hash).delete()
+        db.commit()
     return {"ok": True}
 
 
