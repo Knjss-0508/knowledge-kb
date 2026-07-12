@@ -206,3 +206,25 @@ Start-Process -FilePath "python" -ArgumentList "-m","uvicorn","app.main:app","--
   - `update_knowledge`：content 更新时触发 media 表同步
 
 - **.gitignore**：排除 uploads/、临时测试页面、venv
+
+### 2026-07-12
+
+- **数据库与部署**：
+  - PostgreSQL 镜像切换为 `pgvector/pgvector:pg16`，支持向量字段与余弦距离检索。
+  - 新增 Alembic 配置和两份迁移：初始化既有表结构、创建向量索引。
+  - Docker Compose 新增 `migrate` 服务，应用启动前自动执行 `alembic upgrade head`。
+  - 新增嵌入维度、嵌入服务健康检查地址和上传目录配置；应用健康检查改为 `/ready`。
+
+- **知识候选去重与检索**：
+  - 候选知识提交前执行向量查重；重复内容返回 `409 DUPLICATE_BLOCKED`，嵌入服务不可用返回 `503`。
+  - 提交成功后保存候选知识的嵌入向量，并补齐可搜索内容的嵌入记录。
+  - 语义检索改为由 PostgreSQL/pgvector 执行余弦距离排序，避免在应用层计算全量相似度。
+  - `/knowledge/search` 支持按标签值 ID 筛选已发布知识；接口文档同步更新。
+
+- **嵌入服务与运行时**：
+  - `EMBEDDING_PROVIDER` 支持 `openai_compatible`、`tei` 和 `auto` 三种模式，并对非法配置给出明确错误。
+  - 上传目录改为可配置路径，避免依赖开发环境中的硬编码本机目录。
+  - 前端新增 `frontend/lib/kb-runtime.js`，并同步调整认证页与主页面的运行时加载方式。
+
+- **测试**：
+  - 新增嵌入服务和知识去重的单元测试。
