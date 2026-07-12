@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "Qwen/Qwen3-Embedding-0.6B"
     EMBEDDING_API_KEY: str = ""
     EMBEDDING_TIMEOUT_SECONDS: float = 30.0
+    EMBEDDING_DIMENSIONS: int = 1024
+    EMBEDDING_HEALTHCHECK_URL: str = ""
 
     # Knowledge deduplication thresholds. Scores are cosine similarities.
     # >= block threshold: reject as a likely duplicate.
@@ -62,6 +64,9 @@ class Settings(BaseSettings):
     # is predominantly Chinese. Overlap preserves context across chunk borders.
     SEARCH_CHUNK_SIZE: int = 800
     SEARCH_CHUNK_OVERLAP: int = 120
+
+    # Empty means <backend>/uploads. Containers override this with /app/uploads.
+    UPLOAD_DIR: str = ""
 
     class Config:
         env_file = ".env"

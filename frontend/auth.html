@@ -49,8 +49,9 @@
       <p class="tip">登录后可管理知识内容、审核流程与账号权限。</p>
     </section>
   </main>
+  <script src="lib/kb-runtime.js"></script>
   <script>
-    var API = window.location.origin + '/api/v1';
+    var API = window.KB_RUNTIME.apiBase;
     var form = document.getElementById('login-form');
     var button = document.getElementById('btn');
     var message = document.getElementById('msg');

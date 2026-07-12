@@ -2,7 +2,7 @@ name: knowledge-kb
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: kb-postgres
     restart: unless-stopped
     environment:
@@ -74,12 +74,17 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
       EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-30}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+      EMBEDDING_HEALTHCHECK_URL: ${EMBEDDING_HEALTHCHECK_URL:-}
       DEDUP_BLOCK_THRESHOLD: ${DEDUP_BLOCK_THRESHOLD:-0.96}
       DEDUP_REVIEW_THRESHOLD: ${DEDUP_REVIEW_THRESHOLD:-0.88}
       DEDUP_MAX_CANDIDATES: ${DEDUP_MAX_CANDIDATES:-10}
       SEARCH_CHUNK_SIZE: ${SEARCH_CHUNK_SIZE:-800}
       SEARCH_CHUNK_OVERLAP: ${SEARCH_CHUNK_OVERLAP:-120}
+      UPLOAD_DIR: /app/uploads
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -87,10 +92,27 @@ services:
       elasticsearch:
         condition: service_started
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()"]
       interval: 10s
       timeout: 5s
       retries: 10
+
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: kb-migrate
+    command: ["alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-knowledge_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-knowledge_pass_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-knowledge_base}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pg_data:

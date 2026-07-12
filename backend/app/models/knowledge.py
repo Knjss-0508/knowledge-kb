@@ -6,8 +6,10 @@ from sqlalchemy import (
     ForeignKey, JSON, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
+from pgvector.sqlalchemy import Vector
 
 from app.core.database import Base
+from app.core.config import settings
 
 
 class KnowledgeLayer(str, enum.Enum):
@@ -89,6 +91,7 @@ class KnowledgeEmbedding(Base):
     embedding_dimension = Column(Integer, nullable=False)
     content_hash = Column(String(64), nullable=False, index=True)
     embedding = Column(JSON, nullable=False)
+    embedding_vector = Column(Vector(settings.EMBEDDING_DIMENSIONS), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -113,6 +116,7 @@ class KnowledgeSearchEmbedding(Base):
     source_text = Column(Text, nullable=False)
     embedding_dimension = Column(Integer, nullable=False)
     embedding = Column(JSON, nullable=False)
+    embedding_vector = Column(Vector(settings.EMBEDDING_DIMENSIONS), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

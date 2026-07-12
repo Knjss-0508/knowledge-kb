@@ -1,53 +1,26 @@
-﻿import os
 from pathlib import Path
 
-from fastapi import FastAPI
+import httpx
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 
 from app.core.config import settings
-from app.core.database import engine, Base
-from app.models.user import User
-from app.routes import knowledge, category, tag, manhattan, auth, integration
-from app.routes.auth import hash_password
+from app.core.database import engine
+from app.routes import auth, category, integration, knowledge, manhattan, tag
 
-Base.metadata.create_all(bind=engine)
-
-with engine.begin() as conn:
-    for sql in (
-        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS applicable_business_types JSON DEFAULT '[]'",
-        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS applicable_categories JSON DEFAULT '[]'",
-        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS applicable_brands JSON DEFAULT '[]'",
-        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS applicable_models JSON DEFAULT '[]'",
-        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS deduplication_metadata JSON DEFAULT '{}'",
-        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS is_model_personal VARCHAR(16) DEFAULT 'false'",
-        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS updated_by VARCHAR(128)",
-        "INSERT INTO categories (id, name, parent_id, level, sort_order, created_at) VALUES ('cat-pending-classification', '待整理', NULL, 1, 0, NOW()) ON CONFLICT (id) DO NOTHING",
-        "UPDATE knowledge_items SET category_id = 'cat-pending-classification' WHERE category_id IS NULL",
-        "UPDATE knowledge_items SET updated_by = created_by WHERE updated_by IS NULL",
-        "ALTER TABLE knowledge_items ALTER COLUMN category_id SET NOT NULL",
-        "INSERT INTO categories (id, name, parent_id, level, sort_order, created_at) VALUES ('cat-qc-standard', '质检标准', NULL, 1, 10, NOW()) ON CONFLICT (id) DO NOTHING",
-        "INSERT INTO categories (id, name, parent_id, level, sort_order, created_at) VALUES ('cat-qc-process', '质检流程', NULL, 1, 20, NOW()) ON CONFLICT (id) DO NOTHING",
-    ):
-        conn.exec_driver_sql(sql)
-    admin = conn.exec_driver_sql("SELECT id FROM users WHERE username = 'Weichizhuo'").first()
-    if not admin:
-        conn.exec_driver_sql(
-            "INSERT INTO users (id, username, password_hash, role, is_active, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, NOW(), NOW())",
-            ("super-admin", "Weichizhuo", hash_password("123456"), "super_admin", True),
-        )
-    conn.exec_driver_sql("UPDATE users SET role = 'visitor' WHERE role = 'user'")
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = BACKEND_DIR.parent
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
-UPLOAD_DIR = BACKEND_DIR / "uploads"
+UPLOAD_DIR = Path(settings.UPLOAD_DIR) if settings.UPLOAD_DIR else BACKEND_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(
     title="答疑中台 - 知识库管理",
-    description="知识运营与标注模块后端API，提供知识条目CRUD、审核流程、分类管理、标签管理、检索和反馈接口。",
+    description="知识运营与标注模块后端 API，提供知识条目 CRUD、审核流程、分类管理、标签管理、检索和反馈接口。",
     version=settings.VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -90,3 +63,30 @@ def serve_login():
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "答疑中台知识库", "version": settings.VERSION}
+
+
+@app.get("/ready")
+def ready():
+    """Readiness probe for Docker and upstream traffic routing."""
+    errors: dict[str, str] = {}
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception as exc:
+        errors["database"] = str(exc)
+
+    health_url = settings.EMBEDDING_HEALTHCHECK_URL.strip()
+    if not health_url:
+        base_url = settings.EMBEDDING_BASE_URL.rstrip("/")
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+        health_url = f"{base_url}/health"
+    try:
+        response = httpx.get(health_url, timeout=3.0)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        errors["embedding"] = str(exc)
+
+    if errors:
+        raise HTTPException(status_code=503, detail={"status": "not_ready", "errors": errors})
+    return {"status": "ready"}

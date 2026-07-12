@@ -3,6 +3,7 @@ import os
 import string
 from copy import deepcopy
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy import func
@@ -33,8 +34,8 @@ from app.schemas.knowledge import (
 
 router = APIRouter(prefix="/knowledge", tags=["知识库管理"])
 
-UPLOAD_DIR = r"C:\Users\a1873\Documents\答疑中台知识库项目\backend\uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+UPLOAD_DIR = Path(settings.UPLOAD_DIR) if settings.UPLOAD_DIR else Path(__file__).resolve().parents[2] / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_IMAGE = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 ALLOWED_VIDEO = {"video/mp4", "video/webm", "video/quicktime"}
@@ -698,7 +699,7 @@ async def upload_media(
 
     ext = os.path.splitext(file.filename)[1] or (".mp4" if media_type == "video" else ".png")
     filename = f"{uuid.uuid4().hex[:12]}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    file_path = str(UPLOAD_DIR / filename)
 
     content = await file.read()
     with open(file_path, "wb") as f:
@@ -736,7 +737,7 @@ async def upload_media(
 async def upload_temp(file: UploadFile = File(...), media_type: str = Form("image"), alt: str = Form(""), caption: str = Form(""), _=Depends(require_permission("knowledge:create"))):
     ext = os.path.splitext(file.filename)[1] or ".png"
     filename = f"temp-{uuid.uuid4().hex[:12]}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    file_path = str(UPLOAD_DIR / filename)
     content = await file.read()
     with open(file_path, "wb") as f:
         f.write(content)
@@ -795,6 +796,27 @@ def delete_media(knowledge_id: str, media_file: str, db: Session = Depends(get_d
 
 @router.post("/candidates", response_model=KnowledgeResponse, status_code=201, summary="提交候选知识")
 def submit_candidate(body: CandidateSubmit, db: Session = Depends(get_db)):
+    try:
+        decision = check_duplicate(
+            db,
+            title=body.title,
+            subtitles=[],
+            content=_normalize_content(body.content),
+            scene_tags=body.applicable_scenes,
+        )
+    except EmbeddingServiceUnavailable as exc:
+        raise HTTPException(503, "Embedding 服务不可用，无法完成查重") from exc
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+    if decision.action == "block_duplicate":
+        raise HTTPException(
+            409,
+            detail={
+                "code": "DUPLICATE_BLOCKED",
+                "deduplication": _deduplication_metadata(decision),
+            },
+        )
+
     item = Knowledge(
         id=_generate_knowledge_id(db),
         title=body.title,
@@ -806,8 +828,18 @@ def submit_candidate(body: CandidateSubmit, db: Session = Depends(get_db)):
         source=body.source,
         source_session_id=body.source_session_id,
         created_by=body.submitted_by,
+        deduplication_metadata=_deduplication_metadata(decision),
     )
     db.add(item)
+    db.flush()
+    if decision.embedding:
+        save_embedding(
+            db,
+            knowledge=item,
+            content_hash=decision.content_hash,
+            embedding=decision.embedding,
+        )
+    ensure_search_embeddings(db, item)
     db.commit()
     db.refresh(item)
     return _to_response(item)
@@ -823,6 +855,7 @@ def search_knowledge(body: SearchRequest, db: Session = Depends(get_db)):
             query=body.query,
             category_id=body.category_id,
             layer=body.layer,
+            tags=body.tags,
             top_k=body.top_k,
         )
     except EmbeddingServiceUnavailable as exc:
@@ -836,6 +869,10 @@ def search_knowledge(body: SearchRequest, db: Session = Depends(get_db)):
             q = q.filter(Knowledge.category_id == body.category_id)
         if body.layer:
             q = q.filter(Knowledge.layer == KnowledgeLayer(body.layer))
+        if body.tags:
+            q = q.filter(
+                Knowledge.tags.any(KnowledgeTag.tag_value_id.in_(body.tags))
+            )
         q = q.filter(Knowledge.title.ilike(f"%{body.query}%"))
         ranked = [
             (item, float(item.quality_score or 0.0))

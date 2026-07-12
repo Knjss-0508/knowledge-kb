@@ -57,34 +57,41 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     headers = _authorization_headers()
     timeout = httpx.Timeout(settings.EMBEDDING_TIMEOUT_SECONDS)
     errors: list[str] = []
+    provider = settings.EMBEDDING_PROVIDER.strip().lower()
+    if provider not in {"openai_compatible", "tei", "auto"}:
+        raise ValueError(
+            "EMBEDDING_PROVIDER must be one of: openai_compatible, tei, auto."
+        )
 
     with httpx.Client(timeout=timeout) as client:
-        try:
-            response = client.post(
-                _openai_embeddings_url(),
-                headers=headers,
-                json={"model": settings.EMBEDDING_MODEL, "input": texts},
-            )
-            response.raise_for_status()
-            vectors = _parse_openai_response(response.json())
-            if len(vectors) != len(texts):
-                raise ValueError("Embedding result count does not match input count.")
-            return vectors
-        except (httpx.HTTPError, ValueError) as exc:
-            errors.append(f"OpenAI-compatible endpoint: {exc}")
+        if provider in {"openai_compatible", "auto"}:
+            try:
+                response = client.post(
+                    _openai_embeddings_url(),
+                    headers=headers,
+                    json={"model": settings.EMBEDDING_MODEL, "input": texts},
+                )
+                response.raise_for_status()
+                vectors = _parse_openai_response(response.json())
+                if len(vectors) != len(texts):
+                    raise ValueError("Embedding result count does not match input count.")
+                return vectors
+            except (httpx.HTTPError, ValueError) as exc:
+                errors.append(f"OpenAI-compatible endpoint: {exc}")
 
-        try:
-            response = client.post(
-                _tei_embeddings_url(),
-                headers=headers,
-                json={"inputs": texts},
-            )
-            response.raise_for_status()
-            vectors = _parse_tei_response(response.json())
-            if len(vectors) != len(texts):
-                raise ValueError("Embedding result count does not match input count.")
-            return vectors
-        except (httpx.HTTPError, ValueError) as exc:
-            errors.append(f"TEI endpoint: {exc}")
+        if provider in {"tei", "auto"}:
+            try:
+                response = client.post(
+                    _tei_embeddings_url(),
+                    headers=headers,
+                    json={"inputs": texts},
+                )
+                response.raise_for_status()
+                vectors = _parse_tei_response(response.json())
+                if len(vectors) != len(texts):
+                    raise ValueError("Embedding result count does not match input count.")
+                return vectors
+            except (httpx.HTTPError, ValueError) as exc:
+                errors.append(f"TEI endpoint: {exc}")
 
     raise EmbeddingServiceUnavailable("; ".join(errors))

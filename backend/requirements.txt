@@ -5,6 +5,7 @@ alembic==1.13.2
 pydantic==2.9.2
 pydantic-settings==2.5.2
 psycopg2-binary==2.9.9
+pgvector==0.3.6
 celery==5.4.0
 redis==5.1.1
 elasticsearch==8.15.0

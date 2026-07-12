@@ -552,9 +552,10 @@
     </div>
   </div>
   <script src="lib/vue.global.prod.js"></script>
+  <script src="lib/kb-runtime.js"></script>
 <script>
-var API=window.location.origin + '/api/v1';
-var BASE=window.location.origin;
+var API=window.KB_RUNTIME.apiBase;
+var BASE=window.KB_RUNTIME.baseUrl;
 
 Vue.createApp({
   data: function() {

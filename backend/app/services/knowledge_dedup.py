@@ -15,6 +15,7 @@ from app.models.knowledge import (
     KnowledgeEmbedding,
     KnowledgeSearchEmbedding,
     KnowledgeStatus,
+    KnowledgeTag,
 )
 from app.services.embedding import embed_texts
 
@@ -131,6 +132,7 @@ def _upsert_embeddings(
             record.content_hash = content_hash
             record.embedding_dimension = len(vector)
             record.embedding = vector
+            record.embedding_vector = vector
         else:
             db.add(
                 KnowledgeEmbedding(
@@ -140,6 +142,7 @@ def _upsert_embeddings(
                     embedding_dimension=len(vector),
                     content_hash=content_hash,
                     embedding=vector,
+                    embedding_vector=vector,
                 )
             )
     db.flush()
@@ -280,6 +283,7 @@ def save_embedding(
         record.content_hash = content_hash
         record.embedding_dimension = len(embedding)
         record.embedding = embedding
+        record.embedding_vector = embedding
     else:
         db.add(
             KnowledgeEmbedding(
@@ -289,6 +293,7 @@ def save_embedding(
                 embedding_dimension=len(embedding),
                 content_hash=content_hash,
                 embedding=embedding,
+                embedding_vector=embedding,
             )
         )
     db.flush()
@@ -407,6 +412,7 @@ def ensure_search_embeddings(db: Session, item: Knowledge) -> int:
                 row.source_text = text
                 row.embedding_dimension = len(vector)
                 row.embedding = vector
+                row.embedding_vector = vector
             else:
                 db.add(
                     KnowledgeSearchEmbedding(
@@ -419,6 +425,7 @@ def ensure_search_embeddings(db: Session, item: Knowledge) -> int:
                         source_text=text,
                         embedding_dimension=len(vector),
                         embedding=vector,
+                        embedding_vector=vector,
                     )
                 )
     db.flush()
@@ -431,33 +438,46 @@ def search_embeddings(
     query: str,
     category_id: str | None = None,
     layer: str | None = None,
+    tags: list[str] | None = None,
     top_k: int = 10,
 ) -> list[tuple[Knowledge, float]]:
-    """Semantic search over subtitle and content chunks, aggregated by knowledge ID."""
+    """Semantic search in PostgreSQL, aggregated by the parent knowledge item."""
     query_vector = embed_texts([query.strip()])[0]
-    item_query = db.query(Knowledge).filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
+    distance = KnowledgeSearchEmbedding.embedding_vector.cosine_distance(query_vector)
+    item_query = (
+        db.query(Knowledge, distance.label("distance"))
+        .join(
+            KnowledgeSearchEmbedding,
+            KnowledgeSearchEmbedding.knowledge_id == Knowledge.id,
+        )
+        .filter(
+            Knowledge.status == KnowledgeStatus.PUBLISHED,
+            KnowledgeSearchEmbedding.embedding_model == settings.EMBEDDING_MODEL,
+            KnowledgeSearchEmbedding.embedding_vector.is_not(None),
+        )
+    )
     if category_id:
         item_query = item_query.filter(Knowledge.category_id == category_id)
     if layer:
         item_query = item_query.filter(Knowledge.layer == layer)
-    items = item_query.all()
-    if not items:
-        return []
-    item_by_id = {item.id: item for item in items}
-    rows = (
-        db.query(KnowledgeSearchEmbedding)
-        .filter(
-            KnowledgeSearchEmbedding.embedding_model == settings.EMBEDDING_MODEL,
-            KnowledgeSearchEmbedding.knowledge_id.in_(item_by_id),
+    if tags:
+        item_query = item_query.filter(
+            Knowledge.tags.any(KnowledgeTag.tag_value_id.in_(tags))
         )
+
+    rows = (
+        item_query.order_by(distance)
+        .limit(max(top_k * 12, 50))
         .all()
     )
     scores: dict[str, float] = {}
-    for row in rows:
-        score = _cosine_similarity(query_vector, [float(value) for value in row.embedding])
-        scores[row.knowledge_id] = max(scores.get(row.knowledge_id, 0.0), score)
+    items: dict[str, Knowledge] = {}
+    for item, distance_value in rows:
+        score = max(0.0, 1.0 - float(distance_value))
+        items[item.id] = item
+        scores[item.id] = max(scores.get(item.id, 0.0), score)
     ranked = sorted(
-        ((item_by_id[knowledge_id], score) for knowledge_id, score in scores.items()),
+        ((items[knowledge_id], score) for knowledge_id, score in scores.items()),
         key=lambda pair: (pair[1], pair[0].quality_score or 0.0),
         reverse=True,
     )
