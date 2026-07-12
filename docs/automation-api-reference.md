@@ -525,7 +525,7 @@ POST /integration/retrieval-events:batch
 - 原始会话、手机号、订单号、地址、身份信息等由上游保存，知识库不接收未经脱敏的原文。
 - `conversation_url` 必须是受控访问链接，不能使用公网匿名地址。
 - 对接方只保存必要的 `knowledge_id`、`ingestion_id` 和事件 ID。
-- Embedding、PostgreSQL、Redis、Elasticsearch 均应保持在服务器内部网络，不对外暴露端口。
+- Embedding、PostgreSQL、Redis 均应保持在服务器内部网络，不对外暴露端口。
 - 生产环境必须将下游 `/knowledge/search` 置于内网或 API 网关之后。
 
 ## 9. cURL 示例

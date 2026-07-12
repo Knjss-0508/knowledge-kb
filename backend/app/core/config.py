@@ -20,14 +20,6 @@ class Settings(BaseSettings):
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
 
-    # Elasticsearch
-    ES_HOST: str = "localhost"
-    ES_PORT: int = 9200
-
-    @property
-    def ES_URL(self) -> str:
-        return f"http://{self.ES_HOST}:{self.ES_PORT}"
-
     # Redis
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379

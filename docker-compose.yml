@@ -19,19 +19,6 @@ services:
       timeout: 5s
       retries: 10
 
-  elasticsearch:
-    image: elasticsearch:8.15.0
-    container_name: kb-elasticsearch
-    restart: unless-stopped
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m
-    expose:
-      - "9200"
-    volumes:
-      - es_data:/usr/share/elasticsearch/data
-
   redis:
     image: redis:7-alpine
     container_name: kb-redis
@@ -62,8 +49,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-knowledge_admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-knowledge_pass_2026}
       POSTGRES_DB: ${POSTGRES_DB:-knowledge_base}
-      ES_HOST: elasticsearch
-      ES_PORT: 9200
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NMHT_BASE_URL: ${NMHT_BASE_URL:-https://nmht.zhuanspirit.com}
@@ -93,8 +78,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      elasticsearch:
-        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()"]
       interval: 10s
@@ -120,5 +103,4 @@ services:
 
 volumes:
   pg_data:
-  es_data:
   redis_data:

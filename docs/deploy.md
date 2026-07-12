@@ -99,10 +99,9 @@ docker compose -p knowledge-kb up -d
 如果服务器完全不能访问镜像仓库，还需要提前在本地导出依赖镜像：
 
 ```bash
-docker pull postgres:16-alpine
+docker pull pgvector/pgvector:pg16
 docker pull redis:7-alpine
-docker pull elasticsearch:8.15.0
-docker save -o knowledge-kb-deps.tar postgres:16-alpine redis:7-alpine elasticsearch:8.15.0
+docker save -o knowledge-kb-deps.tar pgvector/pgvector:pg16 redis:7-alpine
 ```
 
 服务器导入：
@@ -145,11 +144,11 @@ docker compose -p knowledge-kb down
 docker compose -p knowledge-kb down -v
 ```
 
-`-v` 会删除数据库、Redis、Elasticsearch 的数据卷。
+`-v` 会删除数据库和 Redis 的数据卷。
 
 ## 数据位置
 
-PostgreSQL、Redis、Elasticsearch 数据保存在 Docker volume 中。更新代码、重新构建后端镜像、重启容器都不会删除数据。
+PostgreSQL 和 Redis 数据保存在 Docker volume 中。更新代码、重新构建后端镜像、重启容器都不会删除数据。
 
 上传文件保存在 `backend/uploads`，当前 Compose 会挂载为宿主机目录，便于备份。
 

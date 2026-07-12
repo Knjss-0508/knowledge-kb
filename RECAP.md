@@ -10,7 +10,6 @@
 |------|------|------|
 | 后端 | Python 3.14 + FastAPI + SQLAlchemy | RESTful API，端口 8001 |
 | 数据库 | PostgreSQL 15（Docker） | 端口 5432 |
-| 搜索引擎 | Elasticsearch 8（Docker） | 端口 9200，预留全文检索 |
 | 缓存 | Redis 7（Docker） | 端口 6379，预留会话缓存 |
 | 前端 | Vue 3 (CDN) + 原生 CSS | 单页 HTML，无需构建工具 |
 
@@ -158,7 +157,6 @@ Start-Process -FilePath "python" -ArgumentList "-m","uvicorn","app.main:app","--
 │   └── lib/                     # 前端依赖（Vue3, Element Plus）
 ├── scripts/
 │   ├── start.ps1                # 启动脚本
-│   └── start-sandbox.ps1        # 沙箱启动脚本
 ├── docs/                        # 设计文档
 ├── docker-compose.yml           # PG/ES/Redis 容器编排
 ├── .gitignore
@@ -178,11 +176,10 @@ Start-Process -FilePath "python" -ArgumentList "-m","uvicorn","app.main:app","--
 ### 后续计划
 
 1. **分类/标签体系**：分类管理页面 + 标签维度管理页面
-2. **全文检索**：对接 Elasticsearch，实现知识内容全文搜索
-3. **与其他方向衔接**：
+2. **与其他方向衔接**：
    - 方向二（自动标注）：通过 API 自动提交候选知识
    - 方向四（检索推荐）：通过 `/search` 接口提供检索能力
-4. **可视化启停控制面板**：项目完结时做一个服务器启动/关闭的可视化操作界面
+3. **可视化启停控制面板**：项目完结时做一个服务器启动/关闭的可视化操作界面
 
 ---
 
