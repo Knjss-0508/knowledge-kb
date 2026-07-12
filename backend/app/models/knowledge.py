@@ -34,7 +34,7 @@ class Knowledge(Base):
     # {"type":"image", "media_id":"media-xxx", "alt":"图片描述", "caption":"图片说明文字"}
     # {"type":"video", "media_id":"media-xxx", "alt":"视频描述", "caption":"视频说明文字", "duration":"03:20"}
     layer = Column(Enum(KnowledgeLayer), nullable=False, index=True)
-    category_id = Column(String(64), ForeignKey("categories.id"), index=True)
+    category_id = Column(String(64), ForeignKey("categories.id"), nullable=False, index=True)
     status = Column(Enum(KnowledgeStatus), default=KnowledgeStatus.DRAFT, index=True)
     source = Column(String(32), default="manual")
     source_session_id = Column(String(128), nullable=True)
@@ -44,8 +44,10 @@ class Knowledge(Base):
     applicable_categories = Column(JSON, default=list)
     applicable_brands = Column(JSON, default=list)
     applicable_models = Column(JSON, default=list)
+    deduplication_metadata = Column(JSON, default=dict)
     is_model_personal = Column(String(16), default="false")
     created_by = Column(String(128), nullable=False)
+    updated_by = Column(String(128), nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -53,6 +55,106 @@ class Knowledge(Base):
     tags = relationship("KnowledgeTag", back_populates="knowledge_item", cascade="all, delete-orphan")
     usage_stats = relationship("UsageStat", back_populates="knowledge_item", uselist=False, cascade="all, delete-orphan")
     media = relationship("KnowledgeMedia", back_populates="knowledge_item", cascade="all, delete-orphan")
+    change_logs = relationship("KnowledgeChangeLog", back_populates="knowledge_item", cascade="all, delete-orphan")
+    embeddings = relationship("KnowledgeEmbedding", back_populates="knowledge_item", cascade="all, delete-orphan")
+    search_embeddings = relationship("KnowledgeSearchEmbedding", back_populates="knowledge_item", cascade="all, delete-orphan")
+    deduplication_feedbacks = relationship(
+        "KnowledgeDeduplicationFeedback",
+        back_populates="knowledge_item",
+        foreign_keys="KnowledgeDeduplicationFeedback.knowledge_id",
+        cascade="all, delete-orphan",
+    )
+
+
+class KnowledgeChangeLog(Base):
+    __tablename__ = "knowledge_change_logs"
+
+    id = Column(String(64), primary_key=True)
+    knowledge_id = Column(String(64), ForeignKey("knowledge_items.id"), nullable=False, index=True)
+    changed_by = Column(String(128), nullable=False)
+    changed_fields = Column(JSON, default=list, nullable=False)
+    before_data = Column(JSON, default=dict, nullable=False)
+    after_data = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    knowledge_item = relationship("Knowledge", back_populates="change_logs")
+
+
+class KnowledgeEmbedding(Base):
+    __tablename__ = "knowledge_embeddings"
+
+    id = Column(String(64), primary_key=True)
+    knowledge_id = Column(String(64), ForeignKey("knowledge_items.id"), nullable=False, index=True)
+    embedding_model = Column(String(256), nullable=False, index=True)
+    embedding_dimension = Column(Integer, nullable=False)
+    content_hash = Column(String(64), nullable=False, index=True)
+    embedding = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    knowledge_item = relationship("Knowledge", back_populates="embeddings")
+
+    __table_args__ = (
+        UniqueConstraint("knowledge_id", "embedding_model", name="uq_knowledge_embedding_model"),
+    )
+
+
+class KnowledgeSearchEmbedding(Base):
+    """检索专用向量：副标题问法和正文分块与查重向量分开保存。"""
+
+    __tablename__ = "knowledge_search_embeddings"
+
+    id = Column(String(64), primary_key=True)
+    knowledge_id = Column(String(64), ForeignKey("knowledge_items.id"), nullable=False, index=True)
+    embedding_model = Column(String(256), nullable=False, index=True)
+    embedding_kind = Column(String(32), nullable=False, index=True)
+    chunk_index = Column(Integer, nullable=False, default=0)
+    content_hash = Column(String(64), nullable=False, index=True)
+    source_text = Column(Text, nullable=False)
+    embedding_dimension = Column(Integer, nullable=False)
+    embedding = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    knowledge_item = relationship("Knowledge", back_populates="search_embeddings")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "knowledge_id",
+            "embedding_model",
+            "embedding_kind",
+            "chunk_index",
+            name="uq_knowledge_search_embedding",
+        ),
+    )
+
+
+class KnowledgeDeduplicationFeedback(Base):
+    __tablename__ = "knowledge_deduplication_feedback"
+
+    id = Column(String(64), primary_key=True)
+    knowledge_id = Column(String(64), ForeignKey("knowledge_items.id"), nullable=False, index=True)
+    matched_knowledge_id = Column(String(64), ForeignKey("knowledge_items.id"), nullable=False, index=True)
+    verdict = Column(String(32), nullable=False, default="different")
+    reason = Column(Text, nullable=False)
+    submitted_by = Column(String(128), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    knowledge_item = relationship(
+        "Knowledge",
+        back_populates="deduplication_feedbacks",
+        foreign_keys=[knowledge_id],
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "knowledge_id",
+            "matched_knowledge_id",
+            "submitted_by",
+            name="uq_dedup_feedback_submitter",
+        ),
+    )
 
 
 class KnowledgeMedia(Base):

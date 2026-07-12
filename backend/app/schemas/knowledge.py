@@ -1,7 +1,7 @@
 ﻿from datetime import datetime
-from typing import Optional, Any
+from typing import Literal, Optional, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---- 富文本内容块 ----
@@ -44,15 +44,27 @@ class KnowledgeCreate(BaseModel):
     title: str = Field(..., max_length=256, description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表，可多条")
     content: Any = Field(..., description="知识内容，支持富文本: 纯字符串 或 {blocks:[...]} 结构")
-    layer: str = Field(..., pattern=r"^L[1-3]$", description="知识层级: L1=基础知识 L2=案例知识 L3=动态知识")
-    category_id: Optional[str] = Field(None, description="所属分类ID")
-    applicable_scenes: list[str] = Field(default=[], description="适用场景列表")
+    layer: str = Field(..., pattern=r"^L[1-3]$", description="知识层级: L1=通用规则（长期稳定） L2=问题处理（典型问题与解决办法） L3=高频变更（版本、政策或活动等经常更新的内容）")
+    category_id: str = Field(..., description="所属分类ID")
+    applicable_scenes: list[str] = Field(default=[], description="场景标签列表")
     applicable_business_types: list[Any] = Field(default=[], description="适用业务")
     applicable_categories: list[Any] = Field(default=[], description="适用类目")
     applicable_brands: list[Any] = Field(default=[], description="适用品牌")
     applicable_models: list[Any] = Field(default=[], description="适用机型")
+    confirm_dedup_review: bool = Field(
+        False,
+        description="语义重复对比后，创建人确认仍需提交审核",
+    )
     is_model_personal: bool = Field(False, description="机型个性化信息")
     created_by: str = Field("system", description="创建人")
+
+    @field_validator("category_id")
+    @classmethod
+    def category_id_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("所属分类不能为空")
+        return value
 
 
 class KnowledgeUpdate(BaseModel):
@@ -62,12 +74,22 @@ class KnowledgeUpdate(BaseModel):
     layer: Optional[str] = Field(None, description="知识层级")
     category_id: Optional[str] = Field(None, description="所属分类ID")
     status: Optional[str] = Field(None, description="状态: draft/review/published/deprecated")
-    applicable_scenes: Optional[list[str]] = Field(None, description="适用场景列表")
+    applicable_scenes: Optional[list[str]] = Field(None, description="场景标签列表")
     applicable_business_types: Optional[list[Any]] = Field(None, description="适用业务")
     applicable_categories: Optional[list[Any]] = Field(None, description="适用类目")
     applicable_brands: Optional[list[Any]] = Field(None, description="适用品牌")
     applicable_models: Optional[list[Any]] = Field(None, description="适用机型")
     is_model_personal: Optional[bool] = Field(None, description="机型个性化信息")
+
+    @field_validator("category_id")
+    @classmethod
+    def category_id_must_not_be_blank(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            raise ValueError("所属分类不能为空")
+        value = value.strip()
+        if not value:
+            raise ValueError("所属分类不能为空")
+        return value
 
 
 class KnowledgeResponse(BaseModel):
@@ -80,13 +102,15 @@ class KnowledgeResponse(BaseModel):
     status: str = Field(description="当前状态")
     source: str = Field(description="来源")
     quality_score: float = Field(description="质量评分")
-    applicable_scenes: list[str] = Field(default=[], description="适用场景")
+    applicable_scenes: list[str] = Field(default=[], description="场景标签")
     applicable_business_types: list[Any] = Field(default=[], description="适用业务")
     applicable_categories: list[Any] = Field(default=[], description="适用类目")
     applicable_brands: list[Any] = Field(default=[], description="适用品牌")
     applicable_models: list[Any] = Field(default=[], description="适用机型")
+    deduplication_metadata: dict[str, Any] = Field(default={}, description="提交审核时的查重结果")
     is_model_personal: bool = Field(False, description="机型个性化信息")
     created_by: str = Field(description="创建人")
+    updated_by: Optional[str] = Field(None, description="最近变更人")
     created_at: datetime = Field(description="创建时间")
     updated_at: datetime = Field(description="更新时间")
     tags: list["TagBrief"] = Field(default=[], description="关联标签列表")
@@ -184,6 +208,9 @@ class SearchResponse(BaseModel):
 class CandidateSubmit(BaseModel):
     title: str = Field(..., description="标题")
     content: Any = Field(..., description="内容")
+    category_id: str = Field(..., description="所属分类ID")
+    layer: str = Field(..., pattern=r"^L[1-3]$", description="知识层级")
+    applicable_scenes: list[str] = Field(default=[], description="场景标签")
     source: str = Field("manual", description="来源")
     source_session_id: Optional[str] = Field(None, description="关联会话ID")
     submitted_by: str = Field("system", description="提交人")
@@ -195,6 +222,12 @@ class FeedbackSubmit(BaseModel):
     knowledge_id: str = Field(..., description="知识条目ID")
     action: str = Field(..., pattern=r"^(useful|useless)$", description="反馈动作")
     session_id: Optional[str] = Field(None, description="关联会话ID")
+
+
+class DeduplicationFeedbackSubmit(BaseModel):
+    matched_knowledge_id: str = Field(..., min_length=1, max_length=64, description="命中的已有知识ID")
+    verdict: Literal["different"] = Field("different", description="人工复核结论")
+    reason: str = Field(..., min_length=1, max_length=1000, description="判定不同的原因")
 
 
 KnowledgeResponse.model_rebuild()

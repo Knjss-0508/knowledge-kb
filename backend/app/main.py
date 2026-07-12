@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.models.user import User
-from app.routes import knowledge, category, tag, manhattan, auth
+from app.routes import knowledge, category, tag, manhattan, auth, integration
 from app.routes.auth import hash_password
 
 Base.metadata.create_all(bind=engine)
@@ -20,7 +20,13 @@ with engine.begin() as conn:
         "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS applicable_categories JSON DEFAULT '[]'",
         "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS applicable_brands JSON DEFAULT '[]'",
         "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS applicable_models JSON DEFAULT '[]'",
+        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS deduplication_metadata JSON DEFAULT '{}'",
         "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS is_model_personal VARCHAR(16) DEFAULT 'false'",
+        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS updated_by VARCHAR(128)",
+        "INSERT INTO categories (id, name, parent_id, level, sort_order, created_at) VALUES ('cat-pending-classification', '待整理', NULL, 1, 0, NOW()) ON CONFLICT (id) DO NOTHING",
+        "UPDATE knowledge_items SET category_id = 'cat-pending-classification' WHERE category_id IS NULL",
+        "UPDATE knowledge_items SET updated_by = created_by WHERE updated_by IS NULL",
+        "ALTER TABLE knowledge_items ALTER COLUMN category_id SET NOT NULL",
         "INSERT INTO categories (id, name, parent_id, level, sort_order, created_at) VALUES ('cat-qc-standard', '质检标准', NULL, 1, 10, NOW()) ON CONFLICT (id) DO NOTHING",
         "INSERT INTO categories (id, name, parent_id, level, sort_order, created_at) VALUES ('cat-qc-process', '质检流程', NULL, 1, 20, NOW()) ON CONFLICT (id) DO NOTHING",
     ):
@@ -60,6 +66,7 @@ app.include_router(category.router, prefix=settings.API_V1_PREFIX)
 app.include_router(tag.router, prefix=settings.API_V1_PREFIX)
 app.include_router(manhattan.router, prefix=settings.API_V1_PREFIX)
 app.include_router(auth.router, prefix=settings.API_V1_PREFIX)
+app.include_router(integration.router, prefix=settings.API_V1_PREFIX)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 app.mount("/lib", StaticFiles(directory=str(FRONTEND_DIR / "lib")), name="lib")
@@ -78,21 +85,6 @@ def serve_root():
 @app.get("/login")
 def serve_login():
     return FileResponse(FRONTEND_DIR / "auth.html")
-
-
-@app.get("/manhattan-login")
-def serve_manhattan_login():
-    return FileResponse(FRONTEND_DIR / "login.html")
-
-
-@app.get("/minimal")
-def serve_minimal():
-    return FileResponse(FRONTEND_DIR / "minimal.html")
-
-
-@app.get("/diag")
-def serve_diag():
-    return FileResponse(FRONTEND_DIR / "diag.html")
 
 
 @app.get("/health")

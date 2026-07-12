@@ -5,7 +5,7 @@
   <title>答疑中台 - 知识库管理</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#f0f2f5;color:#1d2129}
+    body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",Arial,sans-serif;background:#f0f2f5;color:#1d2129;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
     .layout{display:flex;min-height:100vh}
     .side{width:210px;background:#061b2d;color:#b8c6d8;flex-shrink:0;display:flex;flex-direction:column}
     .brand{height:52px;display:flex;align-items:center;padding:0 18px;color:#fff;font-size:16px;font-weight:700;border-bottom:1px solid rgba(255,255,255,.08)}
@@ -42,7 +42,7 @@
     .br{background:#fff;color:#f53f3f;border-color:#f53f3f}
     .bd{background:#fff;color:#4e5969;border-color:#e5e6eb}
     .bsm{padding:3px 8px;font-size:11px}
-    .tw{background:#fff;border-radius:10px;border:1px solid #e5e6eb;overflow:hidden}
+    .tw{background:#fff;border-radius:10px;border:1px solid #e5e6eb;overflow-x:auto;overflow-y:hidden}
     .user-form{background:#fff;border:1px solid #e5e6eb;border-radius:10px;padding:18px;margin-bottom:14px;display:grid;grid-template-columns:1fr 1fr 160px auto;gap:12px;align-items:end}
     table{width:100%;border-collapse:collapse}
     th{background:#f7f8fa;padding:10px 14px;text-align:left;font-size:12px;font-weight:500;color:#86909c;border-bottom:1px solid #e5e6eb}
@@ -50,23 +50,29 @@
     tr:hover td{background:#fafbfc}
     .tg{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:500}
     .tg-d{background:#f2f3f5;color:#86909c}.tg-r{background:#fff7e8;color:#ff7d00}.tg-p{background:#e8ffea;color:#00b42a}.tg-x{background:#fff0f0;color:#f53f3f}.tg-l{background:#e8f3ff;color:#3370ff}
-    .mask{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding-top:30px;overflow-y:auto}
-    .dlg{background:#fff;border-radius:12px;width:860px;max-height:calc(100vh - 60px);display:flex;flex-direction:column;box-shadow:0 12px 48px rgba(0,0,0,.12)}
-    .dlg-h{padding:18px 22px 14px;border-bottom:1px solid #e5e6eb;display:flex;align-items:center;justify-content:space-between}
-    .dlg-h h3{font-size:15px;font-weight:600}
-    .dlg-x{width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:6px;cursor:pointer;color:#86909c;font-size:17px;border:none;background:none}
-    .dlg-x:hover{background:#f2f3f5}
-    .dlg-b{padding:18px 22px;overflow-y:auto;flex:1}
-    .dlg-f{padding:14px 22px;border-top:1px solid #e5e6eb;display:flex;justify-content:flex-end;gap:8px}
-    .sec{margin-bottom:22px}
-    .sec-t{font-size:14px;font-weight:600;color:#1d2129;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid #f2f3f5}
-    .row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px}
-    .fg{margin-bottom:14px}
-    .fl{display:block;font-size:12px;font-weight:500;color:#1d2129;margin-bottom:5px}
+    .knowledge-table{min-width:1080px}
+    .status-cell{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:200px}
+    .status-cell .tg{white-space:nowrap}
+    .mask{position:fixed;inset:0;background:rgba(19,36,51,.56);backdrop-filter:blur(3px);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:28px;overflow-y:auto}
+    .dlg{width:min(980px,100%);max-height:calc(100vh - 56px);display:flex;flex-direction:column;overflow:hidden;background:#fff;border:1px solid rgba(229,233,239,.9);border-radius:8px;box-shadow:0 28px 80px rgba(16,24,40,.28)}
+    .dlg-h{min-height:72px;padding:0 24px;border-bottom:1px solid #e8edf0;display:flex;align-items:center;justify-content:space-between;background:#fff}
+    .dlg-h h3{position:relative;margin:0;padding-left:13px;font-size:17px;font-weight:700;color:#1d2939}
+    .dlg-h h3:before{content:"";position:absolute;left:0;top:3px;bottom:3px;width:4px;border-radius:2px;background:#009b83}
+    .dlg-x{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;cursor:pointer;color:#667085;font-size:22px;border:1px solid transparent;background:none;transition:all .16s ease}
+    .dlg-x:hover{background:#f2f5f6;border-color:#e1e8e8;color:#1d2939}
+    .dlg-b{padding:22px 24px 28px;overflow-y:auto;flex:1;background:#fafbfc}
+    .dlg-f{min-height:66px;padding:0 24px;border-top:1px solid #e8edf0;display:flex;align-items:center;justify-content:flex-end;gap:9px;background:#fff}
+    .sec{margin:0 0 24px;padding:0 0 24px;border-bottom:1px solid #e8edf0}
+    .sec:last-child{margin-bottom:0;padding-bottom:0;border-bottom:0}
+    .sec-t{display:flex;align-items:center;gap:8px;margin:0 0 16px;padding:0;border:0;color:#344054;font-size:14px;font-weight:700}
+    .sec-t:before{content:"";width:7px;height:7px;border-radius:50%;background:#009b83;box-shadow:0 0 0 4px #e4f8f2}
+    .row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:16px}
+    .fg{margin-bottom:16px}
+    .fl{display:block;font-size:12px;font-weight:600;color:#475467;margin-bottom:7px}
     .fl .req{color:#f53f3f}
-    .fi{width:100%;padding:7px 10px;border:1px solid #e5e6eb;border-radius:6px;font-size:12px;color:#1d2129;outline:none}
-    .fi:focus{border-color:#3370ff;box-shadow:0 0 0 2px rgba(51,112,255,.08)}
-    .fi:disabled{background:#f7f8fa;color:#4e5969;cursor:default}
+    .fi{width:100%;min-height:38px;padding:8px 11px;border:1px solid #dce4e8;border-radius:5px;background:#fff;font-size:13px;color:#1d2939;outline:none;transition:border-color .16s ease,box-shadow .16s ease}
+    .fi:focus{border-color:#009b83;box-shadow:0 0 0 3px rgba(0,155,131,.12)}
+    .fi:disabled{background:#f2f5f6;color:#667085;cursor:default}
     textarea.fi{resize:vertical;line-height:1.6}
     .rg{display:flex;gap:0}
     .rb{padding:5px 14px;font-size:12px;border:1px solid #e5e6eb;cursor:pointer;background:#fff;color:#4e5969}
@@ -100,7 +106,7 @@
     .ms-more{padding:8px;color:#86909c;font-size:12px;border-top:1px solid #f2f3f5}
     .hint{font-size:11px;color:#86909c;margin-top:4px;line-height:1.4}
     /* 块样式 */
-    .blk{padding:10px;margin-bottom:8px;background:#fafbfc;border:1px solid #e5e6eb;border-radius:8px}
+    .blk{padding:13px;margin-bottom:10px;background:#fff;border:1px solid #dfe7e9;border-radius:6px;box-shadow:0 2px 5px rgba(16,24,40,.03)}
     .blk-h{display:flex;gap:8px;align-items:flex-start}
     .blk-tag{font-size:10px;color:#fff;padding:2px 6px;border-radius:4px;white-space:nowrap;flex-shrink:0;margin-top:2px}
     .blk-body{flex:1;display:flex;flex-direction:column;gap:5px}
@@ -112,8 +118,8 @@
     .blk-act:hover{opacity:.8}
     .child{margin-top:6px;padding:8px;background:#fff;border:1px solid #e5e6eb;border-radius:6px}
     .child-h{display:flex;gap:8px;align-items:flex-start}
-    .upload-zone{display:flex;align-items:center;justify-content:center;gap:6px;padding:14px;border:2px dashed #dcdfe6;border-radius:8px;cursor:pointer;color:#86909c;transition:all .2s}
-    .upload-zone:hover{border-color:#3370ff;color:#3370ff;background:#f0f5ff}
+    .upload-zone{display:flex;align-items:center;justify-content:center;gap:6px;padding:16px;border:1.5px dashed #a9dcd2;border-radius:6px;cursor:pointer;color:#52746e;background:#f6fcfa;transition:all .2s}
+    .upload-zone:hover{border-color:#009b83;color:#007f6b;background:#eafaf5}
     .img-preview{width:72px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e5e6eb;flex-shrink:0}
     .vid-preview{width:72px;height:54px;max-width:72px;max-height:54px;border-radius:6px;border:1px solid #e5e6eb;background:#000;flex-shrink:0}
     .img-thumb-wrap{position:relative;width:72px;height:54px;max-width:72px;max-height:54px;min-width:72px;min-height:54px;flex-shrink:0;border-radius:6px;overflow:hidden;border:1px solid #e5e6eb;cursor:pointer}.img-thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block}.img-thumb-wrap .img-mask{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600;letter-spacing:2px;opacity:0;transition:opacity .2s;pointer-events:none;border-radius:6px}.img-thumb-wrap:hover .img-mask{opacity:1}
@@ -122,6 +128,51 @@
 
     .full-preview{position:fixed;top:0;left:0;right:0;bottom:0;z-index:3000;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;cursor:pointer}
     .full-preview img{max-width:90vw;max-height:90vh;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,.3)}
+
+    /* 运营工作台视觉层：保留既有 Vue 数据与操作逻辑 */
+    :root{--app-font:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",Arial,sans-serif;--ink:#1d2939;--muted:#667085;--line:#e5e9ef;--canvas:#f7f8fa;--surface:#fff;--teal:#009b83;--coral:#ef6d5b;--gold:#e6a83c;--violet:#765be6;--nav:#172633}
+    body{background:var(--canvas);color:var(--ink);font-family:var(--app-font)}
+    button,input,textarea,select{font-family:var(--app-font)!important;font-size:inherit}
+    .layout{min-height:100vh;background:var(--canvas)}
+    .side{width:236px;background:var(--nav);padding:22px 14px 16px;color:#fff}
+    .brand{height:auto;padding:0 10px 26px;border:0;font-size:17px;gap:10px}
+    .brand:before{content:"";width:26px;height:26px;flex:0 0 26px;border-radius:7px;background:#009b83;box-shadow:7px 7px 0 rgba(239,109,91,.88)}
+    .nav{padding:0;display:flex;flex-direction:column;gap:4px;align-items:stretch}
+    .nav-item{height:44px;padding:0 12px;border:0;border-radius:6px;font-size:14px;color:#a9bac8}
+    .nav-icon{width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;margin-right:10px;flex:0 0 18px;color:currentColor;opacity:.9}
+    .nav-icon svg{width:18px;height:18px;display:block;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+    .nav-item:hover{background:rgba(255,255,255,.07);color:#fff}
+    .nav-item.on{background:var(--teal);border:0;color:#fff;box-shadow:0 8px 18px rgba(0,155,131,.22)}
+    .side-foot{margin-top:auto;padding:18px 10px 0;border-color:rgba(255,255,255,.1);color:#fff}
+    .side-foot div:nth-child(2){color:#a9bac8;margin-top:2px}
+    .logout{color:#a9bac8;margin-top:10px}
+    .hd{height:74px;padding:0 42px;background:rgba(255,255,255,.92);border-color:var(--line)}
+    .hd h1{font-size:14px;color:#667085;font-weight:400}
+    .hd h1:before{content:"工作台 / ";color:#98a2b3}
+    .hd .sub{margin-left:12px;padding:5px 9px;background:#e4f8f2;color:#007f6b;border-radius:4px}
+    .mn{max-width:1540px;padding:31px 42px 42px}
+    .overview{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:24px}
+    .overview h2{font-size:31px;line-height:1.2;margin:0;letter-spacing:0}
+    .overview p{margin:8px 0 0;color:var(--muted);font-size:14px}
+    .overview-status{font-size:12px;color:var(--muted)}.overview-status b{color:var(--teal)}
+    .cards{gap:14px;margin-bottom:22px}
+    .card{position:relative;overflow:hidden;min-height:138px;padding:19px;border-radius:7px;border-color:var(--line);box-shadow:none;cursor:pointer}
+    .card:after{content:"";position:absolute;right:-24px;bottom:-34px;width:105px;height:105px;border:20px solid #d9f5ed;border-radius:50%}
+    .card:nth-child(2):after{border-color:#ffe3dd}.card:nth-child(3):after{border-color:#e9e4ff}.card:nth-child(4):after{border-color:#fff0d3}
+    .card .lb{font-size:13px;color:var(--muted);margin-bottom:8px}.card .vl{font-size:29px;color:var(--ink)!important;line-height:1.1}
+    .card .metric-note{position:relative;z-index:1;margin-top:15px;color:var(--muted);font-size:12px}.metric-note b{color:var(--teal)}.card:nth-child(2) .metric-note b{color:var(--coral)}.card:nth-child(3) .metric-note b{color:var(--violet)}.card:nth-child(4) .metric-note b{color:var(--gold)}
+    .dashboard-grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(320px,.85fr);gap:18px;margin-bottom:18px}
+    .insight-panel{background:#fff;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+    .insight-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:20px 21px 0}.insight-head h3{font-size:16px;margin:0}.insight-head p{margin:3px 0 0;color:var(--muted);font-size:12px}
+    .period{display:flex;padding:3px;border-radius:6px;background:#f1f3f5}.period button{height:28px;padding:0 10px;border:0;border-radius:4px;background:transparent;color:var(--muted);font-size:12px;cursor:pointer}.period button.on{background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(16,24,40,.12);font-weight:600}
+    .trend-chart{height:216px;margin:14px 21px 21px;position:relative;border-bottom:1px solid #edf0f2;background:repeating-linear-gradient(to bottom,transparent 0,transparent 52px,#edf0f2 53px)}
+    .trend-chart svg{width:100%;height:100%;overflow:visible}.trend-fill{fill:rgba(0,155,131,.1)}.trend-line{fill:none;stroke:var(--teal);stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.trend-dash{fill:none;stroke:var(--coral);stroke-width:2;stroke-dasharray:6 6}.trend-dot{fill:#fff;stroke:var(--teal);stroke-width:3}
+    .legend{display:flex;gap:17px;padding:16px 21px 0;font-size:12px;color:var(--muted)}.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--teal);margin-right:6px}.legend i.coral{background:var(--coral)}
+    .todo-list{padding:10px 21px 18px}.todo{display:grid;grid-template-columns:9px minmax(0,1fr) auto;gap:11px;align-items:center;min-height:64px;border-bottom:1px solid #f0f2f4}.todo:last-child{border-bottom:0}.todo-dot{width:9px;height:9px;border-radius:50%;background:var(--coral)}.todo-dot.gold{background:var(--gold)}.todo-dot.violet{background:var(--violet)}.todo-dot.teal{background:var(--teal)}.todo h4{margin:0;font-size:13px;color:#344054}.todo p{margin:3px 0 0;font-size:12px;color:var(--muted)}.todo time{font-size:12px;color:#98a2b3}.todo-link{margin:0 21px 17px;padding-top:13px;border-top:1px solid #f0f2f4;color:var(--teal);font-size:13px;font-weight:600;cursor:pointer}
+    .analysis-note{margin:0 0 18px;color:var(--muted);font-size:13px}.outcome{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600}.outcome-low_score{background:#fff0ed;color:#c83827}.outcome-no_candidates{background:#fff5df;color:#a96800}.outcome-not_selected{background:#eeeafe;color:#644bd1}.risk-query{max-width:420px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.risk-score{font-variant-numeric:tabular-nums}.integration-hint{padding:13px 16px;background:#e4f8f2;border:1px solid #b7e9dd;border-radius:6px;color:#166b5b;font-size:12px;line-height:1.6;margin-bottom:14px}
+    .mht-form{display:grid;gap:12px}.mht-form .fi{min-height:92px;resize:vertical}.mht-status{padding:12px;border-radius:6px;background:#f7f8fa;color:#667085;font-size:12px;line-height:1.7}.mht-status strong{color:#009b83}.mht-actions{display:flex;gap:8px;justify-content:flex-end}
+    .bar{border-radius:7px;border-color:var(--line);padding:16px 18px}.bar .tt{font-size:16px;color:var(--ink)}.filter-tabs,.tw{border-radius:7px;border-color:var(--line)}.filter-tabs{padding:12px 18px}.tab-btn{border-radius:4px}.tab-btn.on,.bp{background:var(--teal);border-color:var(--teal)}.tab-btn:hover,.bp:hover{background:#007f6b}.btn{border-radius:5px}.btn.bd:hover{border-color:var(--teal);color:var(--teal)}
+    @media(max-width:1120px){.cards{grid-template-columns:repeat(2,1fr)}.dashboard-grid{grid-template-columns:1fr}}@media(max-width:760px){.side{width:100%;min-height:auto;padding:12px 16px;display:block}.layout{display:block}.brand{padding:0}.nav{display:flex;flex-direction:column;overflow:visible;margin-top:12px;gap:3px}.nav-item{white-space:nowrap;flex:0 0 auto}.side-foot{display:none}.hd{height:58px;padding:0 16px}.mn{padding:24px 16px 32px}.overview{display:block}.overview h2{font-size:26px}.overview-status{margin-top:10px}.cards{grid-template-columns:1fr 1fr;gap:10px}.card{min-height:124px;padding:15px}.card .vl{font-size:24px}.dashboard-grid{gap:12px}.insight-head{padding:17px 16px 0}.trend-chart{margin:14px 16px 18px}.todo-list{padding-left:16px;padding-right:16px}.todo-link{margin-left:16px;margin-right:16px}}@media(max-width:420px){.cards{grid-template-columns:1fr}.period button{padding:0 7px}}
   </style>
 </head>
 <body>
@@ -130,8 +181,10 @@
   <aside class="side">
     <div class="brand">答疑中台</div>
     <div class="nav">
-      <div class="nav-item" :class="{on:view==='knowledge'}" @click="view='knowledge'">知识库管理</div>
-      <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='users'}" @click="openUsers">账号管理</div>
+      <div class="nav-item" :class="{on:view==='overview'}" @click="openOverview"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg></span>运营总览</div>
+      <div class="nav-item" :class="{on:view==='knowledge'}" @click="openKnowledge()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"></path><path d="M4 5.5v16"></path><path d="M8 7h8M8 11h8"></path></svg></span>知识库管理</div>
+      <div class="nav-item" :class="{on:view==='analysis'}" @click="openAnalysis"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 4.5 4.5"></path><path d="M8 10.5h5M10.5 8v5"></path></svg></span>搜索分析</div>
+      <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='users'}" @click="openUsers"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c.8-3.2 3.1-5 7-5s6.2 1.8 7 5"></path><path d="M19 8v4M21 10h-4"></path></svg></span>账号管理</div>
     </div>
     <div class="side-foot">
       <div>{{currentUser.username}}</div>
@@ -141,17 +194,54 @@
     </div>
   </aside>
   <main class="main">
-  <div class="hd"><h1>{{view==='users'?'账号管理':'答疑中台'}}</h1><span class="sub">{{view==='users'?'创建和查看后台账号':'知识库管理'}}</span></div>
-  <div class="mn" v-if="view==='knowledge'">
+  <div class="hd"><h1>{{view==='users'?'账号管理':(view==='analysis'?'搜索分析':(view==='changeLogs'?'变更日志':(view==='knowledge'?'知识库管理':'运营总览')))}}</h1><span class="sub">{{view==='users'?'创建和查看后台账号':(view==='analysis'?'下游召回质量监控':(view==='changeLogs'?'已发布知识变更追溯':(view==='knowledge'?'知识内容维护与审核':'知识运营工作台')))}}</span></div>
+  <div class="mn" v-if="view==='overview'">
+    <section class="overview">
+      <div>
+        <h2>把知识运营，变成可见的增长</h2>
+        <p>关注高频问题、审核时效和内容覆盖，让每一次答疑都有沉淀。</p>
+      </div>
+      <div class="overview-status">数据更新时间：<b>{{dashboard.updatedAt}}</b></div>
+    </section>
     <div class="cards">
-      <div class="card"><div class="lb">全部知识</div><div class="vl bl">{{stats.total}}</div></div>
-      <div class="card"><div class="lb">已发布</div><div class="vl gn">{{stats.published}}</div></div>
-      <div class="card"><div class="lb">待审核</div><div class="vl og">{{stats.review}}</div></div>
-      <div class="card"><div class="lb">草稿</div><div class="vl gy">{{stats.draft}}</div></div>
+      <div class="card" @click="openKnowledge()"><div class="lb">知识总量</div><div class="vl bl">{{stats.total}}</div><div class="metric-note"><b>全部</b> 当前知识条目</div></div>
+      <div class="card" @click="openKnowledge('published')"><div class="lb">已发布内容</div><div class="vl gn">{{stats.published}}</div><div class="metric-note"><b>可查询</b> 已通过审核</div></div>
+      <div class="card" @click="openKnowledge('review')"><div class="lb">待审核事项</div><div class="vl og">{{stats.review}}</div><div class="metric-note"><b>待处理</b> 等待发布审核</div></div>
+      <div class="card" @click="openKnowledge('draft')"><div class="lb">待完善草稿</div><div class="vl gy">{{stats.draft}}</div><div class="metric-note"><b>草稿</b> 尚未提交审核</div></div>
     </div>
+    <section class="dashboard-grid">
+      <article class="insight-panel">
+        <div class="insight-head">
+          <div><h3>最近发布</h3><p>仅展示已发布知识，按最近更新时间排序</p></div>
+          <span class="hint">{{dashboard.recentUpdates.length}} 条</span>
+        </div>
+        <div class="todo-list">
+          <div class="todo" v-for="item in dashboard.recentUpdates" :key="item.id">
+            <span class="todo-dot teal"></span>
+            <div><h4>{{item.title}}</h4><p>{{sl(item.status)}} · 变更人：{{item.updated_by || item.created_by || '系统'}}</p></div>
+            <time>{{formatDate(item.updated_at)}}</time>
+          </div>
+          <div class="todo" v-if="!dashboard.recentUpdates.length"><div></div><div><h4>暂无已发布知识</h4><p>审核发布后的知识会显示在这里。</p></div><time></time></div>
+        </div>
+      </article>
+      <article class="insight-panel">
+        <div class="insight-head"><div><h3>待审核知识</h3><p>按最早提交时间优先处理</p></div><span class="hint">{{stats.review}} 项</span></div>
+        <div class="todo-list">
+          <div class="todo" v-for="item in dashboard.pending" :key="item.id">
+            <span class="todo-dot"></span>
+            <div><h4>{{item.title}}</h4><p>{{item.id}} · {{item.created_by || '系统'}}</p></div>
+            <time>{{formatDate(item.updated_at)}}</time>
+          </div>
+          <div class="todo" v-if="!dashboard.pending.length"><div></div><div><h4>暂无待审核知识</h4><p>提交审核后的知识会显示在这里。</p></div><time></time></div>
+        </div>
+        <div class="todo-link" @click="openKnowledge('review')">查看全部待办</div>
+      </article>
+    </section>
+  </div>
+  <div class="mn" v-if="view==='knowledge'">
     <div class="bar">
-      <span class="tt">知识列表</span>
-      <button class="btn bd" v-if="dev.showManhattanUpdate && can('account:manage')" @click="goManhattanLogin">更新曼哈顿数据</button>
+      <span class="tt">知识工作区</span>
+      <button class="btn bd" v-if="dev.showManhattanUpdate && can('account:manage')" @click="openManhattanPanel">更新曼哈顿数据</button>
       <input class="inp" style="width:160px" v-model="f.kw" placeholder="搜索标题..." @keyup.enter="load">
       <button class="btn bd" @click="load">刷新</button>
       <button class="btn bp" v-if="can('knowledge:create')" @click="openNew">+ 新建知识</button>
@@ -167,24 +257,90 @@
       </div>
     </div>
     <div class="tw">
-      <table>
-        <thead><tr><th style="width:130px">ID</th><th>标题</th><th style="width:70px">层级</th><th style="width:80px">状态</th><th style="width:70px">创建人</th><th style="width:220px;text-align:right">操作</th></tr></thead>
+      <table class="knowledge-table">
+        <thead><tr><th style="width:130px">ID</th><th>标题</th><th style="width:70px">层级</th><th style="width:220px">状态</th><th style="width:90px">创建人</th><th style="width:100px">最近变更人</th><th style="width:280px;text-align:right">操作</th></tr></thead>
         <tbody>
           <tr v-for="r in list" :key="r.id">
             <td style="font-family:monospace;color:#86909c">{{r.id}}</td>
             <td style="font-weight:500">{{r.title}}</td>
             <td><span class="tg tg-l">{{r.layer}}</span></td>
-            <td><span class="tg" :class="{'tg-d':r.status==='draft','tg-r':r.status==='review','tg-p':r.status==='published','tg-x':r.status==='deprecated'}">{{sl(r.status)}}</span></td>
+            <td><div class="status-cell"><span class="tg" :class="{'tg-d':r.status==='draft','tg-r':r.status==='review','tg-p':r.status==='published','tg-x':r.status==='deprecated'}">{{sl(r.status)}}</span><span class="tg tg-r" v-if="r.status==='review' && r.deduplication_metadata && r.deduplication_metadata.action==='review_duplicate'" title="检测到语义相近的已有知识，请在审核时确认是否合并">疑似重复 {{dedupMatchIds(r)}}</span></div></td>
             <td style="color:#86909c">{{r.created_by}}</td>
+            <td style="color:#86909c">{{r.status==='published' ? (r.updated_by || r.created_by) : '-'}}</td>
             <td style="text-align:right">
               <button class="btn bd bsm" v-if="can('knowledge:view')" @click="openView(r)">查看</button>
-              <button class="btn bd bsm" v-if="can('knowledge:create')" @click="openEdit(r)">编辑</button>
+              <button class="btn bd bsm" v-if="canEditKnowledge(r)" @click="openEdit(r)">编辑</button>
+              <button class="btn bd bsm" v-if="r.status==='published'" @click="openChangeLogs(r)">变更日志</button>
               <button class="btn bw bsm" v-if="can('knowledge:submit') && r.status==='draft'" @click="act(r,'submit-review')">提交审核</button>
-              <button class="btn bs bsm" v-if="can('knowledge:approve') && r.status==='review'" @click="act(r,'approve')">审核发布</button>
+              <button class="btn bs bsm" v-if="can('knowledge:approve') && r.status==='review'" @click="openReview(r)">审核</button>
+              <button class="btn bs bsm" v-if="can('knowledge:deprecate') && r.status==='deprecated'" @click="act(r,'restore')">重新启用</button>
               <button class="btn br bsm" v-if="can('knowledge:deprecate') && r.status!=='deprecated'" @click="act(r,'deprecate')">废弃</button>
             </td>
           </tr>
-          <tr v-if="!list.length"><td colspan="6" style="text-align:center;padding:40px;color:#c9cdd4">暂无数据</td></tr>
+          <tr v-if="!list.length"><td colspan="7" style="text-align:center;padding:40px;color:#c9cdd4">暂无数据</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="mn" v-if="view==='changeLogs'">
+    <section class="overview">
+      <div>
+        <h2>知识变更日志</h2>
+        <p>{{changeLogs.item ? changeLogs.item.title : '已发布知识的正式变更记录'}}</p>
+      </div>
+      <div class="overview-status">共 <b>{{changeLogs.entries.length}}</b> 条记录</div>
+    </section>
+    <div class="bar">
+      <span class="tt">变更记录</span>
+      <button class="btn bd" @click="openKnowledge()">返回知识库</button>
+      <button class="btn bd" v-if="changeLogs.item" @click="loadChangeLogs(changeLogs.item)">刷新</button>
+    </div>
+    <div class="tw">
+      <table>
+        <thead><tr><th style="width:190px">变更时间</th><th style="width:140px">变更人</th><th>变更内容</th></tr></thead>
+        <tbody>
+          <tr v-for="log in changeLogs.entries" :key="log.id">
+            <td>{{formatDate(log.created_at)}}</td>
+            <td style="font-weight:600">{{log.changed_by}}</td>
+            <td><div class="tl" style="margin-top:0"><span class="ti" v-for="field in log.changed_fields" :key="field">{{changeFieldLabel(field)}}</span></div></td>
+          </tr>
+          <tr v-if="!changeLogs.entries.length"><td colspan="3" style="text-align:center;padding:40px;color:#c9cdd4">暂无变更日志。已发布知识发生实际修改后会在这里记录。</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="mn" v-if="view==='analysis'">
+    <section class="overview">
+      <div>
+        <h2>下游召回质量分析</h2>
+        <p>记录 rerank 阈值判断、无候选和未采用结果，定位知识内容缺口。</p>
+      </div>
+      <div class="overview-status">数据更新时间：<b>{{analysis.updatedAt}}</b></div>
+    </section>
+    <div class="integration-hint">下游调用 <code>POST /api/v1/integration/retrieval-events:batch</code> 并携带 <code>X-Integration-Key</code>，即可将召回质量事件写入本页。</div>
+    <div class="cards">
+      <div class="card"><div class="lb">召回事件总数</div><div class="vl bl">{{analysis.summary.total}}</div><div class="metric-note"><b>全部</b> 已上报事件</div></div>
+      <div class="card"><div class="lb">低于阈值</div><div class="vl og">{{analysis.summary.low_score}}</div><div class="metric-note"><b>低分</b> 建议补充或优化知识</div></div>
+      <div class="card"><div class="lb">无候选结果</div><div class="vl gy">{{analysis.summary.no_candidates}}</div><div class="metric-note"><b>缺口</b> 未召回任何知识</div></div>
+      <div class="card"><div class="lb">最终未采用</div><div class="vl bl">{{analysis.summary.not_selected}}</div><div class="metric-note"><b>待复核</b> 高分但未被下游采用</div></div>
+    </div>
+    <div class="bar">
+      <span class="tt">风险事件</span>
+      <button class="btn bd" @click="loadSearchAnalysis">刷新</button>
+    </div>
+    <div class="tw">
+      <table>
+        <thead><tr><th style="width:110px">类型</th><th>查询词</th><th style="width:120px">调用系统</th><th style="width:105px">候选数</th><th style="width:130px">最高分 / 阈值</th><th style="width:150px">上报时间</th></tr></thead>
+        <tbody>
+          <tr v-for="item in analysis.risks" :key="item.id">
+            <td><span class="outcome" :class="'outcome-' + item.outcome">{{outcomeLabel(item.outcome)}}</span></td>
+            <td><div class="risk-query" :title="item.query">{{item.query}}</div></td>
+            <td>{{item.source_system}}</td>
+            <td>{{item.candidate_count}}</td>
+            <td class="risk-score">{{formatScore(item.top_rerank_score)}} / {{formatScore(item.score_threshold)}}</td>
+            <td>{{formatDate(item.created_at)}}</td>
+          </tr>
+          <tr v-if="!analysis.risks.length"><td colspan="6" style="text-align:center;padding:40px;color:#c9cdd4">暂无风险事件。下游上报低分、无候选或未采用的召回事件后会在此显示。</td></tr>
         </tbody>
       </table>
     </div>
@@ -198,12 +354,35 @@
     </div>
     <div class="tw">
       <table>
-        <thead><tr><th>账号</th><th style="width:180px">角色</th><th style="width:100px">状态</th><th style="width:180px">创建时间</th><th style="width:300px;text-align:right">操作</th></tr></thead>
+        <thead><tr><th>账号</th><th style="width:180px">角色</th><th>权限范围</th><th style="width:100px">状态</th><th style="width:180px">创建时间</th><th style="width:300px;text-align:right">操作</th></tr></thead>
         <tbody>
-          <tr v-for="u in users" :key="u.id"><td>{{u.username}}</td><td><select class="inp" v-model="u.role" @change="updateUser(u,{role:u.role})"><option v-for="r in roles" :key="r.value" :value="r.value">{{r.label}}</option></select></td><td>{{u.is_active?'启用':'禁用'}}</td><td>{{u.created_at || '-'}}</td><td style="text-align:right"><button class="btn bd bsm" @click="resetUserPassword(u)">重置密码</button><button class="btn bw bsm" @click="updateUser(u,{is_active:!u.is_active})">{{u.is_active?'禁用':'启用'}}</button></td></tr>
-          <tr v-if="!users.length"><td colspan="5" style="text-align:center;padding:40px;color:#c9cdd4">暂无账号</td></tr>
+          <tr v-for="u in users" :key="u.id"><td>{{u.username}}</td><td><select class="inp" v-model="u.role" @change="updateUser(u,{role:u.role})"><option v-for="r in roles" :key="r.value" :value="r.value">{{r.label}}</option></select></td><td><div class="tl" style="margin-top:0"><span class="ti" v-for="permission in permissionLabels(u.role)" :key="permission">{{permission}}</span></div></td><td>{{u.is_active?'启用':'禁用'}}</td><td>{{u.created_at || '-'}}</td><td style="text-align:right"><button class="btn bd bsm" @click="resetUserPassword(u)">重置密码</button><button class="btn bw bsm" @click="updateUser(u,{is_active:!u.is_active})">{{u.is_active?'禁用':'启用'}}</button></td></tr>
+          <tr v-if="!users.length"><td colspan="6" style="text-align:center;padding:40px;color:#c9cdd4">暂无账号</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+  <div class="mask" v-if="mht.open" @click.self="mht.open=false">
+    <div class="dlg" style="width:560px">
+      <div class="dlg-h"><h3>更新曼哈顿后台数据</h3><button class="dlg-x" @click="mht.open=false">&times;</button></div>
+      <div class="dlg-b">
+        <div class="mht-form">
+          <div class="hint">此功能仅超级管理员可见。输入后台 Cookie 后，系统会在后台更新适用类目、品牌和机型缓存。</div>
+          <div><label class="fl">后台 Cookie</label><textarea class="fi" v-model="mht.cookie" placeholder="粘贴曼哈顿后台 Cookie"></textarea></div>
+          <div class="mht-status">
+            登录状态：<strong>{{mh.loggedIn ? '已连接' : '未连接'}}</strong><br>
+            数据状态：{{mhtStatusLabel()}}<br>
+            {{mht.status.message || '尚未开始更新'}}
+            <span v-if="mht.status.percent">（{{mht.status.percent}}%）</span>
+            <span v-if="mht.status.error"> · {{mht.status.error}}</span>
+          </div>
+        </div>
+      </div>
+      <div class="dlg-f mht-actions">
+        <button class="btn bd" @click="clearManhattanSession">清除连接</button>
+        <button class="btn bd" @click="verifyManhattanSession" :disabled="mht.saving">验证 Cookie</button>
+        <button class="btn bp" @click="refreshManhattanCache" :disabled="mht.refreshing || !mh.loggedIn">{{mht.refreshing ? '更新中...' : '开始更新'}}</button>
+      </div>
     </div>
   </div>
   </main>
@@ -212,14 +391,14 @@
   <!-- 编辑弹窗 -->
   <div class="mask" v-if="dlg" @click.self="dlg=false">
     <div class="dlg" :class="{'view-only':viewOnly}">
-      <div class="dlg-h"><h3>{{viewOnly?'查看知识':(eid?'编辑知识':'新建知识')}}</h3><button class="dlg-x" @click="closeDlg">&times;</button></div>
+      <div class="dlg-h"><h3>{{auditMode?'审核知识':(viewOnly?'查看知识':(eid?'编辑知识':'新建知识'))}}</h3><button class="dlg-x" @click="closeDlg">&times;</button></div>
       <div class="dlg-b">
         <div class="sec">
           <div class="sec-t">知识信息</div>
           <div class="row">
             <div class="fg"><label class="fl"><span class="req">*</span> 标题</label><input class="fi" v-model="fm.title" :disabled="viewOnly" placeholder="输入知识标题"></div>
-            <div class="fg"><label class="fl"><span class="req">*</span> 知识层级</label><div class="rg"><div class="rb" :class="{on:fm.layer==='L1'}" @click="!viewOnly && (fm.layer='L1')">L1 基础</div><div class="rb" :class="{on:fm.layer==='L2'}" @click="!viewOnly && (fm.layer='L2')">L2 案例</div><div class="rb" :class="{on:fm.layer==='L3'}" @click="!viewOnly && (fm.layer='L3')">L3 动态</div></div></div>
-            <div class="fg"><label class="fl">所属分类</label><select class="fi" v-model="fm.cat" :disabled="viewOnly" @change="onKnowledgeCategoryChange"><option value="">未分类</option><option v-for="c in cats" :key="c.id" :value="c.id">{{c.name}}</option></select></div>
+            <div class="fg"><label class="fl"><span class="req">*</span> 所属分类</label><select class="fi" v-model="fm.cat" :disabled="viewOnly" @change="onKnowledgeCategoryChange"><option value="" disabled>请选择分类</option><option v-for="c in cats" :key="c.id" :value="c.id">{{c.name}}</option></select></div>
+            <div class="fg"><label class="fl"><span class="req">*</span> 知识层级</label><div class="rg"><div class="rb" title="长期稳定、可反复使用的规则和流程" :class="{on:fm.layer==='L1'}" @click="!viewOnly && (fm.layer='L1')">L1 通用规则</div><div class="rb" title="典型问题的排查步骤和解决办法" :class="{on:fm.layer==='L2'}" @click="!viewOnly && (fm.layer='L2')">L2 问题处理</div><div class="rb" title="版本、政策或活动等经常更新的内容" :class="{on:fm.layer==='L3'}" @click="!viewOnly && (fm.layer='L3')">L3 高频变更</div></div></div>
           </div>
           <div class="fg" style="margin-bottom:14px">
             <label class="fl">副标题 <span style="font-weight:400;color:#86909c;font-size:11px">（选填，可添加多条）</span></label>
@@ -230,13 +409,26 @@
             <button class="btn bd bsm" v-if="!viewOnly" @click="fm.subtitles.push('')">+ 副标题</button>
           </div>
           <div class="row">
-            <div class="fg"><label class="fl">创建人</label><input class="fi" v-model="fm.by" :disabled="viewOnly" placeholder="你的名字"></div>
-            <div class="fg"><label class="fl">适用场景</label><input class="fi" v-if="!viewOnly" v-model="ns" placeholder="输入后回车" @keyup.enter="addS"><div class="tl" v-if="fm.scenes.length"><span class="ti" v-for="(s,i) in fm.scenes" :key="i">{{s}}<span class="rx" v-if="!viewOnly" @click="fm.scenes.splice(i,1)">&times;</span></span></div></div>
+            <div class="fg"><label class="fl">创建人</label><input class="fi" v-model="fm.by" disabled><div class="hint">自动采用当前登录账号</div></div>
+            <div class="fg"><label class="fl">场景标签</label><input class="fi" v-if="!viewOnly" v-model="ns" placeholder="输入标签后回车" @keyup.enter="addS"><div class="tl" v-if="fm.scenes.length"><span class="ti" v-for="(s,i) in fm.scenes" :key="i">{{s}}<span class="rx" v-if="!viewOnly" @click="fm.scenes.splice(i,1)">&times;</span></span></div></div>
           </div>
           <div class="row" v-if="showManhattanFields()">
             <div class="fg"><label class="fl">适用类目</label><div class="ms"><div class="ms-box" @click="focusMultiInput('categoryInput','applicableCategories')"><span class="ms-tag" v-for="v in fm.applicableCategories" :key="v"><span class="ms-tag-text">{{selectedLabel('applicableCategories',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('applicableCategories',v)">&times;</span></span><input ref="categoryInput" class="ms-inline-input" v-model="categoryKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.applicableCategories.length?'':'请选择类目'" @focus="!viewOnly && (drop='applicableCategories')"><span class="ms-clear" @click.stop="clearMultiSelect('applicableCategories')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='applicableCategories'"><div class="ms-all" @click="selectAllVisible('applicableCategories', filteredApplicableCategories())">全选</div><div class="ms-empty" v-if="optErr.applicableCategories">{{optErr.applicableCategories}}</div><div class="ms-empty" v-else-if="!option.applicableCategories.length">暂无数据</div><div class="ms-opt" :class="{on:isSelected('applicableCategories',optValue(o))}" v-for="o in filteredApplicableCategories()" :key="optKey(o)" @click="toggleSelected('applicableCategories',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('applicableCategories',optValue(o))">✓</span></div></div></div><div class="hint" v-if="optErr.applicableCategories">{{optErr.applicableCategories}}</div></div>
             <div class="fg"><label class="fl">适用品牌</label><div class="ms"><div class="ms-box" @click="focusMultiInput('brandInput','brands')"><span class="ms-tag" v-for="v in fm.brands" :key="v"><span class="ms-tag-text">{{selectedLabel('brands',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('brands',v)">&times;</span></span><input ref="brandInput" class="ms-inline-input" v-model="brandKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.brands.length?'':'请选择品牌'" @focus="!viewOnly && (drop='brands')"><span class="ms-clear" @click.stop="clearMultiSelect('brands')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='brands'"><div class="ms-all" @click="selectAllVisible('brands', filteredBrands())">全选</div><div class="ms-empty" v-if="optErr.brands">{{optErr.brands}}</div><div class="ms-empty" v-else-if="!option.brands.length">请先选择类目</div><div class="ms-opt" :class="{on:isSelected('brands',optValue(o))}" v-for="o in filteredBrands()" :key="optKey(o)" @click="toggleSelected('brands',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('brands',optValue(o))">✓</span></div></div></div><div class="hint" v-if="optErr.brands">{{optErr.brands}}</div></div>
             <div class="fg"><label class="fl">适用机型</label><div class="ms"><div class="ms-box" @click="focusMultiInput('modelInput','models')"><span class="ms-tag" v-for="v in fm.models" :key="v"><span class="ms-tag-text">{{selectedLabel('models',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('models',v)">&times;</span></span><input ref="modelInput" class="ms-inline-input" v-model="modelKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.models.length?'':'请选择机型'" @focus="!viewOnly && (drop='models')"><span class="ms-clear" @click.stop="clearMultiSelect('models')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='models'"><div class="ms-all" @click="selectAllVisible('models', visibleModels())">全选</div><div class="ms-empty" v-if="optErr.models">{{optErr.models}}</div><div class="ms-empty" v-else-if="!option.models.length">请先选择类目/品牌</div><div class="ms-opt" :class="{on:isSelected('models',optValue(o))}" v-for="o in visibleModels()" :key="optKey(o)" @click="toggleSelected('models',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('models',optValue(o))">✓</span></div><div class="ms-more" v-if="hiddenModelCount() > 0">还有 {{hiddenModelCount()}} 个机型，请搜索缩小范围</div></div></div><div class="hint" v-if="optErr.models">{{optErr.models}}</div></div>
+          </div>
+        </div>
+        <div class="sec" v-if="visibleDedupMatches(fm.deduplicationMetadata).length">
+          <div class="sec-t">查重审核证据</div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div v-for="match in visibleDedupMatches(fm.deduplicationMetadata)" :key="match.knowledge_id" style="display:flex;gap:10px;align-items:center;padding:9px 10px;border:1px solid #e5e6eb;border-radius:6px">
+              <div style="min-width:0;flex:1">
+                <div style="font-size:12px;font-weight:600">{{match.knowledge_id}} · {{match.title}}</div>
+                <div style="margin-top:3px;font-size:11px;color:#86909c">{{match.match_type==='exact'?'完全一致':'语义相似'}} · 相似度 {{formatSimilarity(match.similarity)}}</div>
+              </div>
+              <button class="btn bd bsm" v-if="viewOnly && can('knowledge:approve')" @click="openDedupFeedback(match)" :disabled="hasDedupFeedback(match.knowledge_id)">确实不同</button>
+              <span v-if="hasDedupFeedback(match.knowledge_id)" style="font-size:11px;color:#00b42a">已反馈不同</span>
+            </div>
           </div>
         </div>
         <div class="sec">
@@ -312,9 +504,45 @@
         </div>
       </div>
       <div class="dlg-f">
-        <button class="btn bd" @click="closeDlg">{{viewOnly?'关闭':'取消'}}</button>
-        <button class="btn bp" v-if="!viewOnly" @click="save" :disabled="saving">{{saving?'保存中...':'保存'}}</button>
+        <button class="btn bd" @click="closeDlg">{{auditMode?'取消审核':(viewOnly?'关闭':'取消')}}</button>
+        <button class="btn bp" v-if="auditMode && can('knowledge:approve')" @click="approveFromDetail" :disabled="saving">{{saving?'发布中...':'发布'}}</button>
+        <button class="btn bp" v-if="!viewOnly" @click="save" :disabled="saving || !fm.cat || !fm.layer">{{saving?'保存中...':(eid?'保存修改':'保存并提交审核')}}</button>
       </div>
+    </div>
+  </div>
+  <div class="mask" v-if="dedupCompare.open" @click.self="dedupCompare.open=false">
+    <div class="dlg" style="width:min(980px,94vw)">
+      <div class="dlg-h"><h3>发现疑似重复知识</h3><button class="dlg-x" @click="dedupCompare.open=false">&times;</button></div>
+      <div class="dlg-b">
+        <div class="hint">命中知识：<b>{{dedupCompare.match.knowledge_id}}</b> · {{dedupCompare.match.title}}，语义相似度 {{formatSimilarity(dedupCompare.match.similarity)}}。请完成对比后决定是否仍要送审。</div>
+        <div v-if="dedupCompare.loading" style="padding:24px 0;text-align:center;color:#86909c">正在加载命中知识详情...</div>
+        <div v-else style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px">
+          <div style="border:1px solid #e5e6eb;border-radius:6px;padding:12px;min-width:0">
+            <div style="font-size:12px;font-weight:600;margin-bottom:8px">新建知识</div>
+            <div style="font-size:12px;margin-bottom:5px"><b>标题：</b>{{dedupCompare.candidate.title}}</div>
+            <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{dedupCompare.candidate.category_id}} · <b>层级：</b>{{dedupCompare.candidate.layer}}</div>
+            <div style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word">{{contentPreview(dedupCompare.candidate.content)}}</div>
+          </div>
+          <div style="border:1px solid #e5e6eb;border-radius:6px;padding:12px;min-width:0">
+            <div style="font-size:12px;font-weight:600;margin-bottom:8px">命中的已有知识 · {{dedupCompare.match.knowledge_id}}</div>
+            <div style="font-size:12px;margin-bottom:5px"><b>标题：</b>{{dedupCompare.target.title || dedupCompare.match.title}}</div>
+            <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{dedupCompare.target.category_id || dedupCompare.match.category_id}} · <b>层级：</b>{{dedupCompare.target.layer || dedupCompare.match.layer}}</div>
+            <div style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word">{{contentPreview(dedupCompare.target.content)}}</div>
+          </div>
+        </div>
+      </div>
+      <div class="dlg-f"><button class="btn bd" @click="dedupCompare.open=false">返回修改</button><button class="btn bp" @click="confirmDedupSubmit" :disabled="dedupCompare.loading">内容确实不同，仍要送审</button></div>
+    </div>
+  </div>
+  <div class="mask" v-if="dedupFeedback.open" @click.self="dedupFeedback.open=false">
+    <div class="dlg" style="width:520px">
+      <div class="dlg-h"><h3>反馈：确实不同</h3><button class="dlg-x" @click="dedupFeedback.open=false">&times;</button></div>
+      <div class="dlg-b">
+        <div class="hint">系统会记录该人工结论，用于后续优化查重阈值和模型效果。本次知识仍按正常审核流程处理。</div>
+        <div class="fg"><label class="fl">命中的知识</label><div class="fi" style="background:#f7f8fa">{{dedupFeedback.match.knowledge_id}} · {{dedupFeedback.match.title}}</div></div>
+        <div class="fg"><label class="fl">判定不同的原因</label><textarea class="fi" rows="4" v-model="dedupFeedback.reason" placeholder="例如：适用产品、业务规则或处理条件不同"></textarea></div>
+      </div>
+      <div class="dlg-f"><button class="btn bd" @click="dedupFeedback.open=false">取消</button><button class="btn bp" @click="submitDedupFeedback" :disabled="dedupFeedback.submitting || !dedupFeedback.reason.trim()">{{dedupFeedback.submitting?'提交中...':'提交反馈'}}</button></div>
     </div>
   </div>
     <!-- 点击全屏预览 -->
@@ -332,7 +560,7 @@ Vue.createApp({
   data: function() {
     return {
       ready: false,
-      view: 'knowledge',
+      view: 'overview',
       token: localStorage.getItem('kb_token') || '',
       currentUser: {},
       users: [],
@@ -341,9 +569,13 @@ Vue.createApp({
       list: [],
       cats: [],
       stats: {total:0, published:0, review:0, draft:0},
+      dashboard: {pending:[], recentUpdates:[], updatedAt:'-'},
+      analysis: {summary:{total:0, accepted:0, low_score:0, no_candidates:0, not_selected:0}, risks:[], updatedAt:'-'},
+      changeLogs: {item:null, entries:[]},
       f: {status:'', layer:'', kw:''},
       dlg: false,
       viewOnly: false,
+      auditMode: false,
       eid: '',
       saving: false,
       ns: '',
@@ -353,10 +585,14 @@ Vue.createApp({
       modelKw: '',
       dev: {keys:'', showManhattanUpdate:false},
       mh: {loggedIn:false, source:''},
+      mht: {open:false, cookie:'', saving:false, refreshing:false, status:{running:false, stage:'idle', message:'', percent:0, error:'', counts:{}}},
       mhCache: {updated_at:null, applicable_categories:[], brands_by_category:{}, models:[]},
       option: {applicableCategories:[], brands:[], models:[]},
       optErr: {applicableCategories:'', brands:'', models:''},
-      fm: {title:'', subtitles:[], layer:'L1', cat:'', by:'', scenes:[], applicableCategories:[], brands:[], models:[], blocks:[{type:'text', value:'', children:[]}]}, full:{show:false, src:'', isVideo:false}
+      fm: {title:'', subtitles:[], layer:'', cat:'', by:'', scenes:[], applicableCategories:[], brands:[], models:[], deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]},
+      dedupCompare: {open:false, loading:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', category_id:'', layer:'', content:{blocks:[]}}, target:{}},
+      dedupFeedback: {open:false, match:{knowledge_id:'', title:''}, reason:'', submitting:false},
+      full:{show:false, src:'', isVideo:false}
     }
   },
   methods: {
@@ -370,7 +606,7 @@ Vue.createApp({
       if (!self.token) { location.href = BASE + '/login'; return; }
       fetch(API + '/auth/me', {headers:self.authHeaders()})
         .then(function(r) { if (!r.ok) throw new Error('login required'); return r.json(); })
-        .then(function(u) { self.currentUser = u; if (u.role === 'visitor') self.f.status = 'published'; self.ready = true; self.loadRoles(); self.load(); self.loadStats(); self.loadCats(); self.loadManhattanSession(); self.loadManhattanOptions(); })
+        .then(function(u) { self.currentUser = u; if (u.role === 'visitor') self.f.status = 'published'; self.ready = true; self.loadRoles(); self.load(); self.loadStats(); self.loadSearchAnalysis(); self.loadCats(); self.loadManhattanSession(); self.loadManhattanOptions(); })
         .catch(function() { localStorage.removeItem('kb_token'); localStorage.removeItem('kb_user'); location.href = BASE + '/login'; });
     },
     isSuperAdmin: function() {
@@ -380,9 +616,22 @@ Vue.createApp({
       var perms = (this.currentUser && this.currentUser.permissions) || [];
       return perms.indexOf('*') !== -1 || perms.indexOf(permission) !== -1;
     },
+    canEditKnowledge: function(item) {
+      if (!item) return false;
+      if (this.can('account:manage')) return true;
+      var isOwner = item.created_by === (this.currentUser && this.currentUser.username);
+      if (item.status === 'draft') return isOwner && this.can('knowledge:create');
+      if (item.status === 'review') return this.can('knowledge:edit_review_all') || (isOwner && this.can('knowledge:edit_own_review'));
+      if (item.status === 'published') return this.can('knowledge:edit_published');
+      return false;
+    },
     roleLabel: function(role) {
       var found = (this.roles || []).find(function(r) { return r.value === role; });
       return found ? found.label : (this.currentUser.role_label || role || '');
+    },
+    permissionLabels: function(role) {
+      var found = (this.roles || []).find(function(r) { return r.value === role; });
+      return found && Array.isArray(found.permission_labels) ? found.permission_labels : ['权限信息加载中'];
     },
     statusTabs: function() {
       if (this.currentUser && this.currentUser.role === 'visitor') return [{label:'已发布', value:'published'}];
@@ -397,9 +646,9 @@ Vue.createApp({
     layerTabs: function() {
       return [
         {label:'全部分类', value:''},
-        {label:'L1 基础', value:'L1'},
-        {label:'L2 案例', value:'L2'},
-        {label:'L3 动态', value:'L3'}
+        {label:'L1 通用规则', value:'L1'},
+        {label:'L2 问题处理', value:'L2'},
+        {label:'L3 高频变更', value:'L3'}
       ];
     },
     setFilter: function(key, value) {
@@ -416,6 +665,35 @@ Vue.createApp({
       this.view = 'users';
       this.loadRoles();
       this.loadUsers();
+    },
+    openOverview: function() {
+      this.view = 'overview';
+      this.loadStats();
+    },
+    openKnowledge: function(status) {
+      this.view = 'knowledge';
+      if (typeof status === 'string') this.f.status = status;
+      this.load();
+    },
+    openChangeLogs: function(item) {
+      this.view = 'changeLogs';
+      this.changeLogs.item = item;
+      this.loadChangeLogs(item);
+    },
+    loadChangeLogs: function(item) {
+      var self = this;
+      if (!item || !item.id) return;
+      fetch(API + '/knowledge/' + item.id + '/change-logs', {headers:self.authHeaders()})
+        .then(function(r) {
+          if (!r.ok) throw new Error('加载变更日志失败');
+          return r.json();
+        })
+        .then(function(data) { self.changeLogs.entries = Array.isArray(data) ? data : []; })
+        .catch(function(e) { console.error(e); self.changeLogs.entries = []; });
+    },
+    openAnalysis: function() {
+      this.view = 'analysis';
+      this.loadSearchAnalysis();
     },
     loadRoles: function() {
       var self = this;
@@ -476,16 +754,91 @@ Vue.createApp({
     },
     loadStats: function() {
       var self = this;
-      fetch(API + '/knowledge?size=100', {headers:self.authHeaders()})
-        .then(function(r) { return r.json(); })
-        .then(function(all) {
-          if (!Array.isArray(all)) return;
-          self.stats.total = all.length;
-          self.stats.published = all.filter(function(i){return i.status==='published'}).length;
-          self.stats.review = all.filter(function(i){return i.status==='review'}).length;
-          self.stats.draft = all.filter(function(i){return i.status==='draft'}).length;
+      fetch(API + '/knowledge/dashboard', {headers:self.authHeaders()})
+        .then(function(r) {
+          if (!r.ok) throw new Error('加载运营数据失败');
+          return r.json();
+        })
+        .then(function(data) {
+          var counts = data.counts || {};
+          self.stats.total = (counts.draft || 0) + (counts.review || 0) + (counts.published || 0) + (counts.deprecated || 0);
+          self.stats.published = counts.published || 0;
+          self.stats.review = counts.review || 0;
+          self.stats.draft = counts.draft || 0;
+          self.dashboard.pending = Array.isArray(data.pending) ? data.pending : [];
+          self.dashboard.recentUpdates = Array.isArray(data.recent_updates) ? data.recent_updates : [];
+          self.dashboard.updatedAt = self.formatDate(new Date());
         })
         .catch(function(){});
+    },
+    loadSearchAnalysis: function() {
+      var self = this;
+      fetch(API + '/integration/retrieval-analytics', {headers:self.authHeaders()})
+        .then(function(r) {
+          if (!r.ok) throw new Error('加载搜索分析失败');
+          return r.json();
+        })
+        .then(function(data) {
+          self.analysis.summary = data.summary || self.analysis.summary;
+          self.analysis.risks = Array.isArray(data.risks) ? data.risks : [];
+          self.analysis.updatedAt = self.formatDate(new Date());
+        })
+        .catch(function(e) { console.error(e); });
+    },
+    formatDate: function(value) {
+      if (!value) return '-';
+      var date = new Date(value);
+      if (isNaN(date.getTime())) return '-';
+      return date.toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'});
+    },
+    formatScore: function(value) {
+      return typeof value === 'number' ? value.toFixed(2) : '-';
+    },
+    formatSimilarity: function(value) {
+      return typeof value === 'number' ? (value * 100).toFixed(2) + '%' : '-';
+    },
+    contentPreview: function(content) {
+      if (!content) return '暂无正文';
+      if (typeof content === 'string') return content;
+      var blocks = Array.isArray(content.blocks) ? content.blocks : [];
+      var text = blocks.map(function(block) {
+        return block.value || block.text || block.caption || block.alt || '';
+      }).filter(function(value) { return value; }).join('\n');
+      return text || '暂无正文';
+    },
+    dedupMatchIds: function(item) {
+      var metadata = item && item.deduplication_metadata;
+      var matches = this.visibleDedupMatches(metadata);
+      return matches.slice(0, 2).map(function(match) { return match.knowledge_id; }).join('、');
+    },
+    visibleDedupMatches: function(metadata) {
+      var matches = metadata && Array.isArray(metadata.matches) ? metadata.matches : [];
+      var threshold = Number(metadata && metadata.review_threshold);
+      if (isNaN(threshold)) threshold = 0.88;
+      return matches.filter(function(match) {
+        return match.match_type === 'exact' || (
+          typeof match.similarity === 'number' && match.similarity >= threshold
+        );
+      });
+    },
+    outcomeLabel: function(outcome) {
+      return {low_score:'低于阈值', no_candidates:'无候选', not_selected:'未采用'}[outcome] || outcome;
+    },
+    changeFieldLabel: function(field) {
+      return {
+        title:'标题',
+        subtitles:'副标题',
+        content:'正文内容',
+        layer:'知识层级',
+        category_id:'所属分类',
+        status:'状态',
+        applicable_scenes:'场景标签',
+        applicable_business_types:'适用业务',
+        applicable_categories:'适用类目',
+        applicable_brands:'适用品牌',
+        applicable_models:'适用机型',
+        is_model_personal:'机型个性化'
+      }[field] || field;
     },
     loadCats: function() {
       var self = this;
@@ -505,7 +858,71 @@ Vue.createApp({
         .catch(function(){ self.mh = {loggedIn:false, source:''}; });
     },
     goManhattanLogin: function() {
-      window.location.href = BASE + '/manhattan-login';
+      this.openManhattanPanel();
+    },
+    openManhattanPanel: function() {
+      if (!this.can('account:manage')) return;
+      this.mht.open = true;
+      this.loadManhattanSession();
+      this.loadManhattanRefreshStatus();
+    },
+    verifyManhattanSession: function() {
+      var self = this;
+      if (!self.mht.cookie.trim()) {
+        alert('请先粘贴后台 Cookie。');
+        return;
+      }
+      self.mht.saving = true;
+      fetch(API + '/manhattan/session', {
+        method:'POST',
+        headers:self.authHeaders({'Content-Type':'application/json'}),
+        body:JSON.stringify({cookie:self.mht.cookie.trim()})
+      })
+        .then(function(r) {
+          return r.json().then(function(d) {
+            if (!r.ok) throw new Error(d.detail || 'Cookie 验证失败');
+            return d;
+          });
+        })
+        .then(function() { self.mht.saving = false; self.loadManhattanSession(); })
+        .catch(function(e) { self.mht.saving = false; alert(e.message); });
+    },
+    clearManhattanSession: function() {
+      var self = this;
+      fetch(API + '/manhattan/session', {method:'DELETE', headers:self.authHeaders()})
+        .then(function() { self.mht.cookie = ''; self.loadManhattanSession(); });
+    },
+    refreshManhattanCache: function() {
+      var self = this;
+      fetch(API + '/manhattan/cache/refresh', {method:'POST', headers:self.authHeaders()})
+        .then(function(r) {
+          return r.json().then(function(d) {
+            if (!r.ok) throw new Error(d.detail || '启动更新失败');
+            return d;
+          });
+        })
+        .then(function() { self.loadManhattanRefreshStatus(); })
+        .catch(function(e) { alert(e.message); });
+    },
+    loadManhattanRefreshStatus: function() {
+      var self = this;
+      fetch(API + '/manhattan/cache/refresh/status', {headers:self.authHeaders()})
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          self.mht.status = d || self.mht.status;
+          self.mht.refreshing = !!(d && d.running);
+          if (self.mht.open && self.mht.refreshing) {
+            window.setTimeout(function() { self.loadManhattanRefreshStatus(); }, 1000);
+          }
+          if (d && !d.running && d.stage === 'done') self.loadManhattanOptions();
+        })
+        .catch(function(){});
+    },
+    mhtStatusLabel: function() {
+      if (this.mht.refreshing) return '更新进行中';
+      if (this.mht.status.stage === 'done') return '已完成';
+      if (this.mht.status.stage === 'error') return '更新失败';
+      return this.mh.loggedIn ? '已连接，等待更新' : '未连接';
     },
     flattenOptions: function(raw) {
       var src = raw && raw.respData !== undefined ? raw.respData : raw;
@@ -689,22 +1106,29 @@ Vue.createApp({
     sl: function(s) {
       return {draft:'草稿', review:'待审核', published:'已发布', deprecated:'已废弃'}[s] || s;
     },
-    closeDlg: function() {var self = this;self.dlg = false;},
+    closeDlg: function() {var self = this;self.dlg = false;self.auditMode = false;},
     openNew: function() {
       if (!this.can('knowledge:create')) { alert('没有新建权限'); return; }
       this.viewOnly = false;
+      this.auditMode = false;
       this.eid = '';
-      this.fm = {title:'', subtitles:[], layer:'L1', cat:'', by:'', scenes:[], applicableCategories:[], brands:[], models:[], blocks:[{type:'text', value:'', children:[]}]};
+      this.fm = {title:'', subtitles:[], layer:'', cat:'', by:(this.currentUser.username || ''), scenes:[], applicableCategories:[], brands:[], models:[], deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]};
       this.ns = '';
       this.dlg = true;
       this.loadCats();
       this.loadManhattanOptions();
     },
     openView: function(r) {
+      this.auditMode = false;
+      this.openEdit(r, true);
+    },
+    openReview: function(r) {
+      this.auditMode = true;
       this.openEdit(r, true);
     },
     openEdit: function(r, readonly) {
       this.viewOnly = !!readonly;
+      if (!this.viewOnly) this.auditMode = false;
       if (!this.viewOnly && !this.can('knowledge:create')) { alert('没有编辑权限'); return; }
       var self = this;
       self.eid = r.id;
@@ -767,6 +1191,7 @@ Vue.createApp({
         applicableCategories: r.applicable_categories ? r.applicable_categories.slice() : [],
         brands: r.applicable_brands ? r.applicable_brands.slice() : [],
         models: r.applicable_models ? r.applicable_models.slice() : [],
+        deduplicationMetadata: r.deduplication_metadata || {},
         blocks: blocks
       };
       self.ns = '';
@@ -778,6 +1203,101 @@ Vue.createApp({
         this.fm.scenes.push(this.ns.trim());
         this.ns = '';
       }
+    },
+    hasDedupFeedback: function(matchedKnowledgeId) {
+      var metadata = this.fm.deduplicationMetadata || {};
+      var feedback = Array.isArray(metadata.feedback) ? metadata.feedback : [];
+      return feedback.some(function(item) { return item.matched_knowledge_id === matchedKnowledgeId && item.verdict === 'different'; });
+    },
+    openDedupFeedback: function(match) {
+      this.dedupFeedback = {
+        open: true,
+        match: match,
+        reason: '',
+        submitting: false
+      };
+    },
+    openDedupCompare: function(metadata, candidate) {
+      var self = this;
+      var matches = metadata && Array.isArray(metadata.matches) ? metadata.matches : [];
+      if (!matches.length) {
+        alert('未获取到命中的知识详情，请稍后重试。');
+        return;
+      }
+      self.dedupCompare = {
+        open: true,
+        loading: true,
+        match: matches[0],
+        candidate: candidate,
+        target: {}
+      };
+      fetch(API + '/knowledge/' + matches[0].knowledge_id, {headers:self.authHeaders()})
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(data.detail || '加载命中知识详情失败');
+            return data;
+          });
+        })
+        .then(function(target) {
+          self.dedupCompare.target = target;
+          self.dedupCompare.loading = false;
+        })
+        .catch(function(error) {
+          self.dedupCompare.loading = false;
+          alert(error.message);
+        });
+    },
+    confirmDedupSubmit: function() {
+      this.dedupCompare.open = false;
+      this.save(true);
+    },
+    submitDedupFeedback: function() {
+      var self = this;
+      if (!self.eid || !self.dedupFeedback.match.knowledge_id || !self.dedupFeedback.reason.trim()) return;
+      self.dedupFeedback.submitting = true;
+      fetch(API + '/knowledge/' + self.eid + '/deduplication-feedback', {
+        method: 'POST',
+        headers: self.authHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({
+          matched_knowledge_id: self.dedupFeedback.match.knowledge_id,
+          verdict: 'different',
+          reason: self.dedupFeedback.reason.trim()
+        })
+      })
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(data.detail || '反馈提交失败');
+            return data;
+          });
+        })
+        .then(function(data) {
+          self.fm.deduplicationMetadata = data.deduplication_metadata || self.fm.deduplicationMetadata;
+          self.dedupFeedback.open = false;
+          self.load();
+          alert('已记录“确实不同”的人工反馈。');
+        })
+        .catch(function(error) { alert(error.message); })
+        .finally(function() { self.dedupFeedback.submitting = false; });
+    },
+    approveFromDetail: function() {
+      var self = this;
+      if (!self.eid) return;
+      self.saving = true;
+      fetch(API + '/knowledge/' + self.eid + '/approve', {method:'POST', headers:self.authHeaders()})
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(data.detail || '发布失败');
+            return data;
+          });
+        })
+        .then(function() {
+          self.dlg = false;
+          self.auditMode = false;
+          self.load();
+          self.loadStats();
+        })
+        .catch(function(error) { alert(error.message); })
+        .finally(function() { self.saving = false; });
     },
     addBlock: function() {
       this.fm.blocks.push({type:'text', value:'', children:[]});
@@ -793,6 +1313,12 @@ Vue.createApp({
       if (!file) return;
       ch.preview = URL.createObjectURL(file);
       if (!ch.alt) ch.alt = file.name;
+      if (!this.eid) {
+        ch.file = file;
+        ch.uploading = false;
+        e.target.value = '';
+        return;
+      }
       ch.uploading = true;
       this.uploadSingle(ch, file);
       e.target.value = '';
@@ -806,10 +1332,19 @@ Vue.createApp({
       fd.append('caption', ch.caption || '');
       var kid = self.eid;
       if (!kid) {
+        if (!self.fm.cat) { alert('请选择所属分类'); ch.uploading = false; return; }
+        if (!self.fm.layer) { alert('请选择知识层级'); ch.uploading = false; return; }
         var useManhattan = self.showManhattanFields();
-        var body = {title: self.fm.title || '未命名', subtitles: (self.fm.subtitles || []).filter(function(s) { return s && s.trim(); }), content: {blocks: []}, layer: self.fm.layer, category_id: self.fm.cat || null, applicable_scenes: self.fm.scenes, applicable_categories: useManhattan ? self.fm.applicableCategories : [], applicable_brands: useManhattan ? self.fm.brands : [], applicable_models: useManhattan ? self.fm.models : [], created_by: self.fm.by || 'system'};
+        var body = {title: self.fm.title || '未命名', subtitles: (self.fm.subtitles || []).filter(function(s) { return s && s.trim(); }), content: {blocks: []}, layer: self.fm.layer, category_id: self.fm.cat, applicable_scenes: self.fm.scenes, applicable_categories: useManhattan ? self.fm.applicableCategories : [], applicable_brands: useManhattan ? self.fm.brands : [], applicable_models: useManhattan ? self.fm.models : []};
         fetch(API + '/knowledge', {method: 'POST', headers: self.authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(body)})
-          .then(function(r) { return r.json(); })
+          .then(function(r) {
+            return r.json().then(function(data) {
+              if (r.ok) return data;
+              var detail = data.detail || '保存失败';
+              if (typeof detail === 'object') detail = detail.message || '检测到重复知识，未提交审核。';
+              throw new Error(detail);
+            });
+          })
           .then(function(res) { self.eid = res.id; self.doUpload(res.id, fd, ch); })
           .catch(function(e) { ch.uploading = false; alert('保存失败: ' + e.message); });
       } else {
@@ -828,36 +1363,50 @@ Vue.createApp({
       var fileRef = String(mediaId).replace(/^\/uploads\//i, '');
       fetch(API + '/knowledge/' + kid + '/media/' + fileRef, {method: 'DELETE', headers: this.authHeaders()}).catch(function(){});
     },
-    save: function() {
-      if (!this.can('knowledge:create')) { alert('没有保存权限'); return; }
-      if (!this.fm.title) { alert('请输入标题'); return; }
-      this.saving = true;
-      var self = this;
-      var cBlocks = [];
-      this.fm.blocks.forEach(function(b) {
-        var hasMedia = b.children && b.children.some(function(ch) { return ch.media_id; });
-        if (b.value && b.value.trim()) cBlocks.push({type:'text', value:b.value});
-        if (hasMedia && b.children) b.children.forEach(function(ch) {
-          if (ch.media_id) cBlocks.push({type:ch.type, media_id:ch.media_id, alt:ch.alt||'', caption:ch.caption||''});
+    buildContentBlocks: function() {
+      var blocks = [];
+      this.fm.blocks.forEach(function(block) {
+        var hasMedia = block.children && block.children.some(function(child) { return child.media_id; });
+        if (block.value && block.value.trim()) blocks.push({type:'text', value:block.value});
+        if (hasMedia && block.children) block.children.forEach(function(child) {
+          if (child.media_id) blocks.push({type:child.type, media_id:child.media_id, alt:child.alt||'', caption:child.caption||''});
         });
       });
+      return blocks;
+    },
+    save: function(confirmDedupReview) {
+      if (!this.can('knowledge:create')) { alert('没有保存权限'); return; }
+      if (!this.fm.title) { alert('请输入标题'); return; }
+      if (!this.fm.cat) { alert('请选择所属分类'); return; }
+      if (!this.fm.layer) { alert('请选择知识层级'); return; }
+      this.saving = true;
+      var self = this;
+      var cBlocks = this.buildContentBlocks();
       var useManhattan = this.showManhattanFields();
       var body = {
         title: this.fm.title,
         subtitles: this.fm.subtitles.filter(function(s) { return s && s.trim(); }),
         content: {blocks: cBlocks},
         layer: this.fm.layer,
-        category_id: this.fm.cat || null,
+        category_id: this.fm.cat,
         applicable_scenes: this.fm.scenes,
         applicable_categories: useManhattan ? this.fm.applicableCategories : [],
         applicable_brands: useManhattan ? this.fm.brands : [],
         applicable_models: useManhattan ? this.fm.models : [],
-        created_by: this.fm.by || 'system'
+        confirm_dedup_review: !!confirmDedupReview
       };
       var method = this.eid ? 'PATCH' : 'POST';
       var url = this.eid ? (API + '/knowledge/' + this.eid) : (API + '/knowledge');
       fetch(url, {method:method, headers:self.authHeaders({'Content-Type':'application/json'}), body:JSON.stringify(body)})
-        .then(function(r) { return r.json(); })
+        .then(function(r) {
+          return r.json().then(function(data) {
+            if (r.ok) return data;
+            var detail = data.detail || '保存失败';
+            var error = new Error(typeof detail === 'object' ? (detail.message || '检测到重复知识，未提交审核。') : detail);
+            error.detail = detail;
+            throw error;
+          });
+        })
         .then(function(res) {
           var kid = self.eid || res.id;
           var uploads = [];
@@ -866,8 +1415,30 @@ Vue.createApp({
               if (ch.file && !ch.media_id) uploads.push(ch);
             });
           });
+          function finishSave() {
+            self.dlg = false;
+            self.load();
+            self.loadStats();
+            self.saving = false;
+          }
           function uploadNext(idx) {
-            if (idx >= uploads.length) { self.dlg = false; self.load(); self.saving = false; return; }
+            if (idx >= uploads.length) {
+              if (!uploads.length) { finishSave(); return; }
+              fetch(API + '/knowledge/' + kid, {
+                method:'PATCH',
+                headers:self.authHeaders({'Content-Type':'application/json'}),
+                body:JSON.stringify({content:{blocks:self.buildContentBlocks()}})
+              })
+                .then(function(response) {
+                  return response.json().then(function(data) {
+                    if (!response.ok) throw new Error(data.detail || '媒体内容保存失败');
+                    return data;
+                  });
+                })
+                .then(finishSave)
+                .catch(function(error) { alert(error.message); self.saving = false; });
+              return;
+            }
             var ch = uploads[idx];
             var fd = new FormData();
             fd.append('file', ch.file);
@@ -881,14 +1452,31 @@ Vue.createApp({
           }
           uploadNext(0);
         })
-        .catch(function(e) { alert('保存失败: ' + e.message); self.saving = false; });
+        .catch(function(e) {
+          self.saving = false;
+          if (e.detail && e.detail.code === 'DUPLICATE_REVIEW_REQUIRED') {
+            self.openDedupCompare(e.detail.deduplication, body);
+            return;
+          }
+          alert('保存失败: ' + e.message);
+        });
     },
     mediaUrl: function(id) { return BASE + '/uploads/' + id; },
     showFull: function(src, isVideo) { this.full = {show:true, src:src, isVideo:!!isVideo}; }, act: function(r, action) {
       var self = this;
       fetch(API + '/knowledge/' + r.id + '/' + action, {method:'POST', headers:self.authHeaders()})
-        .then(function() { self.load(); })
-        .catch(function(e) { console.error(e); });
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) {
+              var detail = data.detail || '操作失败';
+              if (typeof detail === 'object') detail = detail.message || '检测到重复知识，未提交审核。';
+              throw new Error(detail);
+            }
+            return data;
+          });
+        })
+        .then(function() { self.load(); self.loadStats(); })
+        .catch(function(e) { alert(e.message); });
     }
   },
     mounted: function() {

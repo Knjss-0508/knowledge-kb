@@ -19,10 +19,24 @@ _sessions: dict[str, str] = {}
 
 ROLES = {
     "visitor": {"label": "游客用户", "permissions": {"knowledge:view"}},
-    "junior_support": {"label": "小小答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "password:reset_self"}},
-    "senior_support": {"label": "大大答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:approve", "password:reset_self"}},
-    "super_support": {"label": "超级答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:approve", "knowledge:publish", "knowledge:deprecate", "password:reset_self"}},
+    "junior_support": {"label": "小小答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_own_review", "password:reset_self"}},
+    "senior_support": {"label": "大大答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_review_all", "knowledge:approve", "password:reset_self"}},
+    "super_support": {"label": "超级答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_review_all", "knowledge:edit_published", "knowledge:approve", "password:reset_self"}},
     "super_admin": {"label": "超级管理员", "permissions": {"*", "account:manage"}},
+}
+
+PERMISSION_LABELS = {
+    "knowledge:view": "查看知识",
+    "knowledge:create": "新建知识和编辑本人草稿",
+    "knowledge:submit": "提交审核",
+    "knowledge:edit_own_review": "编辑本人待审核知识",
+    "knowledge:edit_review_all": "编辑全部待审核知识",
+    "knowledge:edit_published": "编辑已发布知识",
+    "knowledge:approve": "审核发布",
+    "knowledge:publish": "发布知识",
+    "knowledge:deprecate": "废弃知识",
+    "password:reset_self": "修改本人密码",
+    "account:manage": "管理账号",
 }
 
 
@@ -116,7 +130,19 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
 
 @router.get("/roles")
 def list_roles(user: User = Depends(get_current_user)):
-    return [{"value": key, "label": val["label"]} for key, val in ROLES.items()]
+    return [
+        {
+            "value": key,
+            "label": val["label"],
+            "permissions": sorted(val["permissions"]),
+            "permission_labels": (
+                ["全部后台权限"]
+                if "*" in val["permissions"]
+                else [PERMISSION_LABELS[permission] for permission in sorted(val["permissions"])]
+            ),
+        }
+        for key, val in ROLES.items()
+    ]
 
 
 @router.post("/login")

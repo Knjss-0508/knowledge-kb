@@ -1,21 +1,33 @@
 import uuid
 import os
 import string
+from copy import deepcopy
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.routes.auth import get_current_user, require_permission
+from app.routes.auth import get_current_user, has_permission, require_permission
 from app.models.user import User
 from app.models.knowledge import (
     Knowledge, KnowledgeStatus, KnowledgeLayer,
-    KnowledgeTag, KnowledgeMedia,
+    KnowledgeTag, KnowledgeMedia, KnowledgeDeduplicationFeedback, KnowledgeChangeLog,
+)
+from app.core.config import settings
+from app.services.embedding import EmbeddingServiceUnavailable
+from app.services.knowledge_dedup import (
+    DedupDecision,
+    check_duplicate,
+    ensure_embedding,
+    ensure_search_embeddings,
+    save_embedding,
+    search_embeddings,
 )
 from app.schemas.knowledge import (
     KnowledgeCreate, KnowledgeUpdate, KnowledgeResponse,
-    CandidateSubmit, FeedbackSubmit,
+    CandidateSubmit, DeduplicationFeedbackSubmit, FeedbackSubmit,
     SearchRequest, SearchResponse, SearchResult,
 )
 
@@ -76,6 +88,97 @@ def _sync_media_meta(db: Session, knowledge_id: str, content: dict):
                     media_obj.alt = b["alt"]
                 if b.get("caption"):
                     media_obj.caption = b["caption"]
+
+
+def _deduplication_metadata(decision: DedupDecision) -> dict:
+    return {
+        "action": decision.action,
+        "embedding_model": settings.EMBEDDING_MODEL,
+        "content_hash": decision.content_hash,
+        "block_threshold": settings.DEDUP_BLOCK_THRESHOLD,
+        "review_threshold": settings.DEDUP_REVIEW_THRESHOLD,
+        "matches": [
+            {
+                "knowledge_id": match.knowledge_id,
+                "title": match.title,
+                "status": match.status,
+                "category_id": match.category_id,
+                "layer": match.layer,
+                "match_type": match.match_type,
+                "similarity": match.similarity,
+            }
+            for match in decision.matches
+        ],
+    }
+
+
+def _check_manual_deduplication(
+    db: Session,
+    *,
+    title: str,
+    subtitles: list[str],
+    content: dict,
+    scene_tags: list[str],
+    exclude_knowledge_id: str | None = None,
+    confirm_dedup_review: bool = False,
+) -> DedupDecision:
+    try:
+        decision = check_duplicate(
+            db,
+            title=title,
+            subtitles=subtitles,
+            content=content,
+            scene_tags=scene_tags,
+            exclude_knowledge_id=exclude_knowledge_id,
+        )
+    except EmbeddingServiceUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding 服务不可用，无法完成查重，请稍后再提交审核。",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if (
+        decision.action == "block_duplicate"
+        and decision.matches
+        and decision.matches[0].match_type == "semantic"
+    ):
+        # Human-submitted knowledge needs a review path when semantics are uncertain.
+        decision.action = "review_duplicate"
+
+    if decision.action == "review_duplicate" and not confirm_dedup_review:
+        metadata = _deduplication_metadata(decision)
+        top_match = metadata["matches"][0] if metadata["matches"] else None
+        message = "检测到疑似重复知识，请对比后确认是否仍要提交审核。"
+        if top_match:
+            message += f" 命中 {top_match['knowledge_id']}《{top_match['title']}》。"
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DUPLICATE_REVIEW_REQUIRED",
+                "message": message,
+                "deduplication": metadata,
+            },
+        )
+
+    if decision.action == "block_duplicate":
+        metadata = _deduplication_metadata(decision)
+        top_match = metadata["matches"][0] if metadata["matches"] else None
+        message = "检测到重复或高度相似的已有知识，未提交审核。"
+        if top_match:
+            message += f" 命中 {top_match['knowledge_id']}《{top_match['title']}》。"
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DUPLICATE_BLOCKED",
+                "message": message,
+                "deduplication": metadata,
+            },
+        )
+    return decision
+
+
 def _to_response(item: Knowledge) -> dict:
     tags = []
     for kt in item.tags:
@@ -112,8 +215,10 @@ def _to_response(item: Knowledge) -> dict:
         "applicable_categories": item.applicable_categories or [],
         "applicable_brands": item.applicable_brands or [],
         "applicable_models": item.applicable_models or [],
+        "deduplication_metadata": item.deduplication_metadata or {},
         "is_model_personal": item.is_model_personal == "true",
         "created_by": item.created_by,
+        "updated_by": item.updated_by,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
         "tags": tags,
@@ -123,24 +228,49 @@ def _to_response(item: Knowledge) -> dict:
 
 # ---- CRUD ----
 
-@router.post("", response_model=KnowledgeResponse, status_code=201, summary="创建知识条目", description="新建一条知识条目，初始状态为草稿(draft)")
-def create_knowledge(body: KnowledgeCreate, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:create"))):
+@router.post("", response_model=KnowledgeResponse, status_code=201, summary="创建知识条目", description="新建一条知识条目，完成查重后直接进入待审核(review)")
+def create_knowledge(
+    body: KnowledgeCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:create")),
+):
+    normalized_content = _normalize_content(body.content)
+    decision = _check_manual_deduplication(
+        db,
+        title=body.title,
+        subtitles=body.subtitles or [],
+        content=normalized_content,
+        scene_tags=body.applicable_scenes or [],
+        confirm_dedup_review=body.confirm_dedup_review,
+    )
     item = Knowledge(
         id=_generate_knowledge_id(db),
         title=body.title,
         subtitles=body.subtitles or [],
-        content=_normalize_content(body.content),
+        content=normalized_content,
         layer=KnowledgeLayer(body.layer),
         category_id=body.category_id,
+        status=KnowledgeStatus.REVIEW,
         applicable_scenes=body.applicable_scenes,
         applicable_business_types=body.applicable_business_types,
         applicable_categories=body.applicable_categories,
         applicable_brands=body.applicable_brands,
         applicable_models=body.applicable_models,
+        deduplication_metadata=_deduplication_metadata(decision),
         is_model_personal="true" if body.is_model_personal else "false",
-        created_by=body.created_by,
+        created_by=current_user.username,
+        updated_by=current_user.username,
     )
     db.add(item)
+    db.flush()
+    if decision.embedding:
+        save_embedding(
+            db,
+            knowledge=item,
+            content_hash=decision.content_hash,
+            embedding=decision.embedding,
+        )
+    ensure_search_embeddings(db, item)
     db.commit()
     db.refresh(item)
     return _to_response(item)
@@ -173,6 +303,82 @@ def list_knowledge(
     return [_to_response(i) for i in items]
 
 
+@router.get("/dashboard", summary="获取知识运营总览")
+def get_dashboard(
+    db: Session = Depends(get_db),
+    _=Depends(require_permission("knowledge:view")),
+    current_user: User = Depends(get_current_user),
+):
+    q = db.query(Knowledge)
+    if current_user.role == "visitor":
+        q = q.filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
+
+    counts = {
+        status.value: 0
+        for status in (
+            KnowledgeStatus.DRAFT,
+            KnowledgeStatus.REVIEW,
+            KnowledgeStatus.PUBLISHED,
+            KnowledgeStatus.DEPRECATED,
+        )
+    }
+
+
+def _knowledge_snapshot(item: Knowledge) -> dict:
+    return {
+        "title": item.title,
+        "subtitles": deepcopy(item.subtitles or []),
+        "content": deepcopy(item.content or {}),
+        "layer": item.layer.value,
+        "category_id": item.category_id,
+        "status": item.status.value,
+        "applicable_scenes": deepcopy(item.applicable_scenes or []),
+        "applicable_business_types": deepcopy(item.applicable_business_types or []),
+        "applicable_categories": deepcopy(item.applicable_categories or []),
+        "applicable_brands": deepcopy(item.applicable_brands or []),
+        "applicable_models": deepcopy(item.applicable_models or []),
+        "is_model_personal": item.is_model_personal == "true",
+    }
+    for status, total in q.with_entities(Knowledge.status, func.count(Knowledge.id)).group_by(Knowledge.status).all():
+        counts[status.value] = total
+
+    pending = q.filter(Knowledge.status == KnowledgeStatus.REVIEW).order_by(
+        Knowledge.updated_at.asc()
+    ).limit(5).all()
+    recent_updates = (
+        q.filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
+        .order_by(Knowledge.updated_at.desc())
+        .limit(5)
+        .all()
+    )
+
+    return {
+        "counts": counts,
+        "pending": [
+            {
+                "id": item.id,
+                "title": item.title,
+                "status": item.status.value,
+                "updated_at": item.updated_at,
+                "created_by": item.created_by,
+                "updated_by": item.updated_by,
+            }
+            for item in pending
+        ],
+        "recent_updates": [
+            {
+                "id": item.id,
+                "title": item.title,
+                "status": item.status.value,
+                "updated_at": item.updated_at,
+                "created_by": item.created_by,
+                "updated_by": item.updated_by,
+            }
+            for item in recent_updates
+        ],
+    }
+
+
 @router.get("/{knowledge_id}", response_model=KnowledgeResponse, summary="获取知识条目详情")
 def get_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:view")), current_user: User = Depends(get_current_user)):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
@@ -183,12 +389,68 @@ def get_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends(re
     return _to_response(item)
 
 
-@router.patch("/{knowledge_id}", response_model=KnowledgeResponse, summary="更新知识条目")
-def update_knowledge(knowledge_id: str, body: KnowledgeUpdate, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:create"))):
+@router.get("/{knowledge_id}/change-logs", summary="获取已发布知识的变更日志")
+def list_change_logs(
+    knowledge_id: str,
+    db: Session = Depends(get_db),
+    _=Depends(require_permission("knowledge:view")),
+    current_user: User = Depends(get_current_user),
+):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
-    for field, val in body.model_dump(exclude_unset=True).items():
+    if current_user.role == "visitor" and item.status != KnowledgeStatus.PUBLISHED:
+        raise HTTPException(403, "Permission denied.")
+    logs = (
+        db.query(KnowledgeChangeLog)
+        .filter(KnowledgeChangeLog.knowledge_id == knowledge_id)
+        .order_by(KnowledgeChangeLog.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": log.id,
+            "changed_by": log.changed_by,
+            "changed_fields": log.changed_fields or [],
+            "before_data": log.before_data or {},
+            "after_data": log.after_data or {},
+            "created_at": log.created_at,
+        }
+        for log in logs
+    ]
+
+
+@router.patch("/{knowledge_id}", response_model=KnowledgeResponse, summary="更新知识条目")
+def update_knowledge(
+    knowledge_id: str,
+    body: KnowledgeUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
+    if not item:
+        raise HTTPException(404, "知识条目不存在")
+    is_admin = current_user.role == "super_admin"
+    is_owner = item.created_by == current_user.username
+    if item.status == KnowledgeStatus.PUBLISHED:
+        allowed = is_admin or has_permission(current_user, "knowledge:edit_published")
+    elif item.status == KnowledgeStatus.REVIEW:
+        allowed = (
+            is_admin
+            or has_permission(current_user, "knowledge:edit_review_all")
+            or (is_owner and has_permission(current_user, "knowledge:edit_own_review"))
+        )
+    elif item.status == KnowledgeStatus.DRAFT:
+        allowed = is_admin or (is_owner and has_permission(current_user, "knowledge:create"))
+    else:
+        allowed = is_admin
+    if not allowed:
+        raise HTTPException(403, "You do not have permission to edit this knowledge item.")
+    was_published = item.status == KnowledgeStatus.PUBLISHED
+    before_data = _knowledge_snapshot(item) if was_published else None
+    updates = body.model_dump(exclude_unset=True)
+    updated_fields = set(updates)
+    for field, val in updates.items():
         if field == "content":
             normalized = _normalize_content(val)
             setattr(item, field, normalized)
@@ -202,6 +464,27 @@ def update_knowledge(knowledge_id: str, body: KnowledgeUpdate, db: Session = Dep
             setattr(item, field, "true" if val else "false")
         else:
             setattr(item, field, val)
+    after_data = _knowledge_snapshot(item)
+    changed_fields = [
+        field for field, before_value in (before_data or {}).items()
+        if before_value != after_data.get(field)
+    ]
+    if changed_fields:
+        item.updated_by = current_user.username
+    if was_published and changed_fields:
+        db.add(
+            KnowledgeChangeLog(
+                id=f"kcl-{uuid.uuid4().hex[:12]}",
+                knowledge_id=item.id,
+                changed_by=current_user.username,
+                changed_fields=changed_fields,
+                before_data=before_data,
+                after_data=after_data,
+            )
+        )
+    if {"title", "subtitles", "content"} & updated_fields:
+        ensure_embedding(db, item)
+        ensure_search_embeddings(db, item)
     item.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(item)
@@ -217,16 +500,116 @@ def delete_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends
     db.commit()
 
 
+@router.post(
+    "/{knowledge_id}/deduplication-feedback",
+    summary="提交知识查重人工反馈",
+)
+def submit_deduplication_feedback(
+    knowledge_id: str,
+    body: DeduplicationFeedbackSubmit,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_permission("knowledge:approve")),
+    current_user: User = Depends(get_current_user),
+):
+    item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
+    if not item:
+        raise HTTPException(404, "知识条目不存在")
+    matched_item = db.query(Knowledge).filter(Knowledge.id == body.matched_knowledge_id).first()
+    if not matched_item:
+        raise HTTPException(404, "命中的知识条目不存在")
+
+    metadata = item.deduplication_metadata or {}
+    matches = metadata.get("matches") if isinstance(metadata, dict) else []
+    if not any(match.get("knowledge_id") == body.matched_knowledge_id for match in matches or []):
+        raise HTTPException(422, "该知识不包含指定的查重命中记录")
+
+    feedback = (
+        db.query(KnowledgeDeduplicationFeedback)
+        .filter(
+            KnowledgeDeduplicationFeedback.knowledge_id == knowledge_id,
+            KnowledgeDeduplicationFeedback.matched_knowledge_id == body.matched_knowledge_id,
+            KnowledgeDeduplicationFeedback.submitted_by == current_user.username,
+        )
+        .first()
+    )
+    if feedback:
+        feedback.verdict = body.verdict
+        feedback.reason = body.reason.strip()
+    else:
+        feedback = KnowledgeDeduplicationFeedback(
+            id=f"dfb-{uuid.uuid4().hex[:12]}",
+            knowledge_id=knowledge_id,
+            matched_knowledge_id=body.matched_knowledge_id,
+            verdict=body.verdict,
+            reason=body.reason.strip(),
+            submitted_by=current_user.username,
+        )
+        db.add(feedback)
+
+    metadata = dict(metadata)
+    existing_feedback = [
+        entry
+        for entry in metadata.get("feedback", [])
+        if not (
+            entry.get("matched_knowledge_id") == body.matched_knowledge_id
+            and entry.get("submitted_by") == current_user.username
+        )
+    ]
+    existing_feedback.append(
+        {
+            "matched_knowledge_id": body.matched_knowledge_id,
+            "verdict": body.verdict,
+            "reason": body.reason.strip(),
+            "submitted_by": current_user.username,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+    )
+    metadata["feedback"] = existing_feedback
+    item.deduplication_metadata = metadata
+    item.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(item)
+    return {
+        "status": "recorded",
+        "deduplication_metadata": item.deduplication_metadata,
+    }
+
+
 # ---- 审核流程 ----
 
 @router.post("/{knowledge_id}/submit-review", response_model=KnowledgeResponse, summary="提交审核")
-def submit_review(knowledge_id: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:submit"))):
+def submit_review(
+    knowledge_id: str,
+    confirm_dedup_review: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
     if item.status != KnowledgeStatus.DRAFT:
         raise HTTPException(400, "只有草稿状态才能提交审核")
+    if current_user.role != "super_admin" and item.created_by != current_user.username:
+        raise HTTPException(403, "Only the creator can submit this knowledge item for review.")
+    decision = _check_manual_deduplication(
+        db,
+        title=item.title,
+        subtitles=item.subtitles or [],
+        content=item.content,
+        scene_tags=item.applicable_scenes or [],
+        exclude_knowledge_id=item.id,
+        confirm_dedup_review=confirm_dedup_review,
+    )
     item.status = KnowledgeStatus.REVIEW
+    item.deduplication_metadata = _deduplication_metadata(decision)
+    if decision.embedding:
+        save_embedding(
+            db,
+            knowledge=item,
+            content_hash=decision.content_hash,
+            embedding=decision.embedding,
+        )
+    ensure_search_embeddings(db, item)
     item.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(item)
@@ -240,6 +623,8 @@ def approve_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depend
         raise HTTPException(404, "知识条目不存在")
     if item.status != KnowledgeStatus.REVIEW:
         raise HTTPException(400, "只有审核中状态才能审批通过")
+    ensure_embedding(db, item)
+    ensure_search_embeddings(db, item)
     item.status = KnowledgeStatus.PUBLISHED
     item.updated_at = datetime.utcnow()
     db.commit()
@@ -254,6 +639,37 @@ def deprecate_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depe
         raise HTTPException(404, "知识条目不存在")
     item.status = KnowledgeStatus.DEPRECATED
     item.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(item)
+    return _to_response(item)
+
+
+@router.post("/{knowledge_id}/restore", response_model=KnowledgeResponse, summary="重新启用废弃知识")
+def restore_knowledge(
+    knowledge_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:deprecate")),
+):
+    item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
+    if not item:
+        raise HTTPException(404, "知识条目不存在")
+    if item.status != KnowledgeStatus.DEPRECATED:
+        raise HTTPException(400, "Only deprecated knowledge items can be restored.")
+    before_data = _knowledge_snapshot(item)
+    item.status = KnowledgeStatus.PUBLISHED
+    item.updated_by = current_user.username
+    item.updated_at = datetime.utcnow()
+    after_data = _knowledge_snapshot(item)
+    db.add(
+        KnowledgeChangeLog(
+            id=f"kcl-{uuid.uuid4().hex[:12]}",
+            knowledge_id=item.id,
+            changed_by=current_user.username,
+            changed_fields=["status"],
+            before_data=before_data,
+            after_data=after_data,
+        )
+    )
     db.commit()
     db.refresh(item)
     return _to_response(item)
@@ -383,7 +799,10 @@ def submit_candidate(body: CandidateSubmit, db: Session = Depends(get_db)):
         id=_generate_knowledge_id(db),
         title=body.title,
         content=_normalize_content(body.content),
-        layer=KnowledgeLayer.L2,
+        layer=KnowledgeLayer(body.layer),
+        category_id=body.category_id,
+        status=KnowledgeStatus.REVIEW,
+        applicable_scenes=body.applicable_scenes,
         source=body.source,
         source_session_id=body.source_session_id,
         created_by=body.submitted_by,
@@ -398,21 +817,37 @@ def submit_candidate(body: CandidateSubmit, db: Session = Depends(get_db)):
 
 @router.post("/search", response_model=SearchResponse, summary="检索知识库")
 def search_knowledge(body: SearchRequest, db: Session = Depends(get_db)):
-    q = db.query(Knowledge).filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
-    if body.category_id:
-        q = q.filter(Knowledge.category_id == body.category_id)
-    if body.layer:
-        q = q.filter(Knowledge.layer == KnowledgeLayer(body.layer))
-    if body.query:
+    try:
+        ranked = search_embeddings(
+            db,
+            query=body.query,
+            category_id=body.category_id,
+            layer=body.layer,
+            top_k=body.top_k,
+        )
+    except EmbeddingServiceUnavailable as exc:
+        raise HTTPException(503, "Embedding 服务不可用，无法完成语义检索") from exc
+
+    # Existing installations can still serve title matches while search vectors
+    # are being rebuilt in the background.
+    if not ranked:
+        q = db.query(Knowledge).filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
+        if body.category_id:
+            q = q.filter(Knowledge.category_id == body.category_id)
+        if body.layer:
+            q = q.filter(Knowledge.layer == KnowledgeLayer(body.layer))
         q = q.filter(Knowledge.title.ilike(f"%{body.query}%"))
-    items = q.order_by(Knowledge.quality_score.desc()).limit(body.top_k).all()
+        ranked = [
+            (item, float(item.quality_score or 0.0))
+            for item in q.order_by(Knowledge.quality_score.desc()).limit(body.top_k).all()
+        ]
     results = [
         SearchResult(
             id=i.id, title=i.title, content=i.content,
-            score=i.quality_score, layer=i.layer.value,
+            score=round(score, 6), layer=i.layer.value,
             status=i.status.value, category_id=i.category_id,
         )
-        for i in items
+        for i, score in ranked
     ]
     return SearchResponse(query=body.query, total=len(results), results=results)
 

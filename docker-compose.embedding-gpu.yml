@@ -1,0 +1,17 @@
+services:
+  embedding-qwen:
+    image: ghcr.io/huggingface/text-embeddings-inference:cuda-1.9
+    container_name: kb-embedding-qwen
+    restart: unless-stopped
+    gpus: all
+    command:
+      - --model-id
+      - ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      - --auto-truncate
+    expose:
+      - "80"
+    volumes:
+      - embedding_model_cache:/data
+
+volumes:
+  embedding_model_cache:

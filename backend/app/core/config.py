@@ -41,6 +41,28 @@ class Settings(BaseSettings):
     NMHT_BASE_URL: str = "https://nmht.zhuanspirit.com"
     NMHT_COOKIE: str = ""
 
+    # Service-to-service authentication for automation ingestion endpoints.
+    INTEGRATION_API_KEY: str = ""
+
+    # OpenAI-compatible embedding service, normally the internal Qwen3 service.
+    EMBEDDING_PROVIDER: str = "openai_compatible"
+    EMBEDDING_BASE_URL: str = "http://embedding-qwen:80/v1"
+    EMBEDDING_MODEL: str = "Qwen/Qwen3-Embedding-0.6B"
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_TIMEOUT_SECONDS: float = 30.0
+
+    # Knowledge deduplication thresholds. Scores are cosine similarities.
+    # >= block threshold: reject as a likely duplicate.
+    # >= review threshold: create a review item with duplicate evidence attached.
+    DEDUP_BLOCK_THRESHOLD: float = 0.96
+    DEDUP_REVIEW_THRESHOLD: float = 0.88
+    DEDUP_MAX_CANDIDATES: int = 10
+
+    # Retrieval chunks are measured in characters because the source knowledge
+    # is predominantly Chinese. Overlap preserves context across chunk borders.
+    SEARCH_CHUNK_SIZE: int = 800
+    SEARCH_CHUNK_OVERLAP: int = 120
+
     class Config:
         env_file = ".env"
 
