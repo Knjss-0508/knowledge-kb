@@ -26,8 +26,6 @@ def upgrade() -> None:
     Base.metadata.create_all(bind=bind)
 
     for sql in (
-        "INSERT INTO categories (id, name, parent_id, level, sort_order, created_at) VALUES ('cat-pending-classification', '待整理', NULL, 1, 0, NOW()) ON CONFLICT (id) DO NOTHING",
-        "UPDATE knowledge_items SET category_id = 'cat-pending-classification' WHERE category_id IS NULL",
         "UPDATE knowledge_items SET updated_by = created_by WHERE updated_by IS NULL",
         "ALTER TABLE knowledge_items ALTER COLUMN category_id SET NOT NULL",
         "INSERT INTO categories (id, name, parent_id, level, sort_order, created_at) VALUES ('cat-qc-standard', '质检标准', NULL, 1, 10, NOW()) ON CONFLICT (id) DO NOTHING",

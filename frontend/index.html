@@ -424,8 +424,9 @@
             <div v-for="match in visibleDedupMatches(fm.deduplicationMetadata)" :key="match.knowledge_id" style="display:flex;gap:10px;align-items:center;padding:9px 10px;border:1px solid #e5e6eb;border-radius:6px">
               <div style="min-width:0;flex:1">
                 <div style="font-size:12px;font-weight:600">{{match.knowledge_id}} · {{match.title}}</div>
-                <div style="margin-top:3px;font-size:11px;color:#86909c">{{match.match_type==='exact'?'完全一致':'语义相似'}} · 相似度 {{formatSimilarity(match.similarity)}}</div>
+                <div style="margin-top:3px;font-size:11px;color:#86909c">{{match.match_type==='exact'?'标题和正文完全一致':(match.match_type==='content_containment'?'正文存在包含关系':'标题/正文语义相似')}} · 综合 {{formatSimilarity(match.similarity)}}<span v-if="typeof match.title_similarity==='number'"> · 标题 {{formatSimilarity(match.title_similarity)}} · 正文 {{formatSimilarity(match.content_similarity)}}</span></div>
               </div>
+              <button class="btn bd bsm" v-if="auditMode && can('knowledge:approve')" @click="openDedupCompare({matches:[match]}, dedupCandidateFromForm(), false)">对比详情</button>
               <button class="btn bd bsm" v-if="viewOnly && can('knowledge:approve')" @click="openDedupFeedback(match)" :disabled="hasDedupFeedback(match.knowledge_id)">确实不同</button>
               <span v-if="hasDedupFeedback(match.knowledge_id)" style="font-size:11px;color:#00b42a">已反馈不同</span>
             </div>
@@ -520,18 +521,18 @@
           <div style="border:1px solid #e5e6eb;border-radius:6px;padding:12px;min-width:0">
             <div style="font-size:12px;font-weight:600;margin-bottom:8px">新建知识</div>
             <div style="font-size:12px;margin-bottom:5px"><b>标题：</b>{{dedupCompare.candidate.title}}</div>
-            <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{dedupCompare.candidate.category_id}} · <b>层级：</b>{{dedupCompare.candidate.layer}}</div>
+            <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{categoryLabel(dedupCompare.candidate.category_id)}} · <b>层级：</b>{{dedupCompare.candidate.layer}}</div>
             <div style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word">{{contentPreview(dedupCompare.candidate.content)}}</div>
           </div>
           <div style="border:1px solid #e5e6eb;border-radius:6px;padding:12px;min-width:0">
             <div style="font-size:12px;font-weight:600;margin-bottom:8px">命中的已有知识 · {{dedupCompare.match.knowledge_id}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>标题：</b>{{dedupCompare.target.title || dedupCompare.match.title}}</div>
-            <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{dedupCompare.target.category_id || dedupCompare.match.category_id}} · <b>层级：</b>{{dedupCompare.target.layer || dedupCompare.match.layer}}</div>
+            <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{categoryLabel(dedupCompare.target.category_id || dedupCompare.match.category_id)}} · <b>层级：</b>{{dedupCompare.target.layer || dedupCompare.match.layer}}</div>
             <div style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word">{{contentPreview(dedupCompare.target.content)}}</div>
           </div>
         </div>
       </div>
-      <div class="dlg-f"><button class="btn bd" @click="dedupCompare.open=false">返回修改</button><button class="btn bp" @click="confirmDedupSubmit" :disabled="dedupCompare.loading">内容确实不同，仍要送审</button></div>
+      <div class="dlg-f"><button class="btn bd" @click="dedupCompare.open=false">返回修改</button><button v-if="dedupCompare.allowSubmit" class="btn bp" @click="confirmDedupSubmit" :disabled="dedupCompare.loading">内容确实不同，仍要送审</button></div>
     </div>
   </div>
   <div class="mask" v-if="dedupFeedback.open" @click.self="dedupFeedback.open=false">
@@ -591,7 +592,7 @@ Vue.createApp({
       option: {applicableCategories:[], brands:[], models:[]},
       optErr: {applicableCategories:'', brands:'', models:''},
       fm: {title:'', subtitles:[], layer:'', cat:'', by:'', scenes:[], applicableCategories:[], brands:[], models:[], deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]},
-      dedupCompare: {open:false, loading:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', category_id:'', layer:'', content:{blocks:[]}}, target:{}},
+      dedupCompare: {open:false, loading:false, allowSubmit:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', category_id:'', layer:'', content:{blocks:[]}}, target:{}},
       dedupFeedback: {open:false, match:{knowledge_id:'', title:''}, reason:'', submitting:false},
       full:{show:false, src:'', isVideo:false}
     }
@@ -817,7 +818,7 @@ Vue.createApp({
       var threshold = Number(metadata && metadata.review_threshold);
       if (isNaN(threshold)) threshold = 0.88;
       return matches.filter(function(match) {
-        return match.match_type === 'exact' || (
+        return match.match_type === 'exact' || match.match_type === 'content_containment' || (
           typeof match.similarity === 'number' && match.similarity >= threshold
         );
       });
@@ -1092,6 +1093,13 @@ Vue.createApp({
       }
       return String(value);
     },
+    categoryLabel: function(categoryId) {
+      var id = String(categoryId || '');
+      for (var i = 0; i < this.cats.length; i++) {
+        if (String(this.cats[i].id) === id) return this.cats[i].name;
+      }
+      return id;
+    },
     toggleDrop: function(key) {
       this.drop = this.drop === key ? '' : key;
     },
@@ -1218,7 +1226,15 @@ Vue.createApp({
         submitting: false
       };
     },
-    openDedupCompare: function(metadata, candidate) {
+    dedupCandidateFromForm: function() {
+      return {
+        title: this.fm.title,
+        category_id: this.fm.cat,
+        layer: this.fm.layer,
+        content: {blocks: this.buildContentBlocks()}
+      };
+    },
+    openDedupCompare: function(metadata, candidate, allowSubmit) {
       var self = this;
       var matches = metadata && Array.isArray(metadata.matches) ? metadata.matches : [];
       if (!matches.length) {
@@ -1228,6 +1244,7 @@ Vue.createApp({
       self.dedupCompare = {
         open: true,
         loading: true,
+        allowSubmit: !!allowSubmit,
         match: matches[0],
         candidate: candidate,
         target: {}
@@ -1455,8 +1472,12 @@ Vue.createApp({
         })
         .catch(function(e) {
           self.saving = false;
-          if (e.detail && e.detail.code === 'DUPLICATE_REVIEW_REQUIRED') {
-            self.openDedupCompare(e.detail.deduplication, body);
+          if (e.detail && (e.detail.code === 'DUPLICATE_REVIEW_REQUIRED' || e.detail.code === 'DUPLICATE_BLOCKED')) {
+            self.openDedupCompare(
+              e.detail.deduplication,
+              body,
+              e.detail.code === 'DUPLICATE_REVIEW_REQUIRED'
+            );
             return;
           }
           alert('保存失败: ' + e.message);

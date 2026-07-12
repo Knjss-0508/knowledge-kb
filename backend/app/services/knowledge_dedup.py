@@ -21,6 +21,7 @@ from app.services.embedding import embed_texts
 
 
 DedupAction = Literal["create", "review_duplicate", "block_duplicate"]
+DedupMatchType = Literal["exact", "semantic", "content_containment"]
 
 
 @dataclass
@@ -30,8 +31,10 @@ class DedupMatch:
     status: str
     category_id: str
     layer: str
-    match_type: Literal["exact", "semantic"]
+    match_type: DedupMatchType
     similarity: float
+    title_similarity: float | None = None
+    content_similarity: float | None = None
 
 
 @dataclass
@@ -39,6 +42,8 @@ class DedupDecision:
     action: DedupAction
     content_hash: str
     embedding: list[float] | None
+    title_embedding: list[float] | None
+    content_embedding: list[float] | None
     matches: list[DedupMatch]
 
 
@@ -84,6 +89,15 @@ def build_embedding_text(
     return "\n".join(parts).strip()
 
 
+def build_dedup_documents(title: str, content: Any) -> tuple[str, str, str]:
+    """Build separate title and content documents for field-aware deduplication."""
+    title_text = title.strip()
+    content_text = _content_to_text(content)
+    if not content_text:
+        content_text = title_text
+    return "\n".join(part for part in (title_text, content_text) if part), title_text, content_text
+
+
 def content_hash_for_text(text: str) -> str:
     normalized = "\n".join(line.strip() for line in text.splitlines() if line.strip())
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -100,12 +114,42 @@ def _cosine_similarity(left: list[float], right: list[float]) -> float:
     return dot_product / (left_norm * right_norm)
 
 
+def _combined_dedup_similarity(title_similarity: float, content_similarity: float) -> float:
+    """Require both fields to agree instead of allowing one field to dominate."""
+    return round(min(title_similarity, content_similarity), 6)
+
+
+def _has_enough_semantic_content(content_text: str) -> bool:
+    """Short fragments do not provide reliable semantic duplicate evidence."""
+    return len(content_text.strip()) >= settings.DEDUP_MIN_SEMANTIC_CONTENT_CHARS
+
+
+def _normalized_containment_text(content_text: str) -> str:
+    return "".join(content_text.split()).casefold()
+
+
+def _has_content_containment(left: str, right: str) -> bool:
+    """Detect meaningful literal inclusion that embedding similarity can miss."""
+    normalized_left = _normalized_containment_text(left)
+    normalized_right = _normalized_containment_text(right)
+    if (
+        len(normalized_left) < settings.DEDUP_MIN_CONTAINMENT_CONTENT_CHARS
+        or len(normalized_right) < settings.DEDUP_MIN_CONTAINMENT_CONTENT_CHARS
+    ):
+        return False
+    return normalized_left in normalized_right or normalized_right in normalized_left
+
+
 def _knowledge_text(item: Knowledge) -> str:
     return build_embedding_text(
         item.title,
         None,
         item.content,
     )
+
+
+def _knowledge_dedup_documents(item: Knowledge) -> tuple[str, str, str]:
+    return build_dedup_documents(item.title, item.content)
 
 
 def _find_embedding(db: Session, knowledge_id: str) -> KnowledgeEmbedding | None:
@@ -125,14 +169,29 @@ def _upsert_embeddings(
     texts: list[str],
     content_hashes: list[str],
 ) -> list[list[float]]:
-    vectors = embed_texts(texts)
-    for item, content_hash, vector in zip(items, content_hashes, vectors):
+    documents = [_knowledge_dedup_documents(item) for item in items]
+    title_texts = [title_text for _, title_text, _ in documents]
+    content_texts = [content_text for _, _, content_text in documents]
+    embedded = embed_texts([*texts, *title_texts, *content_texts])
+    count = len(items)
+    vectors = embedded[:count]
+    title_vectors = embedded[count : count * 2]
+    content_vectors = embedded[count * 2 :]
+    for item, content_hash, vector, title_vector, content_vector in zip(
+        items,
+        content_hashes,
+        vectors,
+        title_vectors,
+        content_vectors,
+    ):
         record = _find_embedding(db, item.id)
         if record:
             record.content_hash = content_hash
             record.embedding_dimension = len(vector)
             record.embedding = vector
             record.embedding_vector = vector
+            record.title_embedding_vector = title_vector
+            record.content_embedding_vector = content_vector
         else:
             db.add(
                 KnowledgeEmbedding(
@@ -143,6 +202,8 @@ def _upsert_embeddings(
                     content_hash=content_hash,
                     embedding=vector,
                     embedding_vector=vector,
+                    title_embedding_vector=title_vector,
+                    content_embedding_vector=content_vector,
                 )
             )
     db.flush()
@@ -153,35 +214,15 @@ def ensure_embedding(db: Session, item: Knowledge) -> list[float]:
     text = _knowledge_text(item)
     content_hash = content_hash_for_text(text)
     record = _find_embedding(db, item.id)
-    if record and record.content_hash == content_hash and record.embedding:
+    if (
+        record
+        and record.content_hash == content_hash
+        and record.embedding
+        and record.title_embedding_vector is not None
+        and record.content_embedding_vector is not None
+    ):
         return [float(value) for value in record.embedding]
     return _upsert_embeddings(db, [item], [text], [content_hash])[0]
-
-
-def _load_candidate_embeddings(db: Session, items: list[Knowledge]) -> list[list[float]]:
-    vectors: list[list[float] | None] = []
-    missing_items: list[Knowledge] = []
-    missing_texts: list[str] = []
-    missing_hashes: list[str] = []
-
-    for item in items:
-        text = _knowledge_text(item)
-        content_hash = content_hash_for_text(text)
-        record = _find_embedding(db, item.id)
-        if record and record.content_hash == content_hash and record.embedding:
-            vectors.append([float(value) for value in record.embedding])
-        else:
-            vectors.append(None)
-            missing_items.append(item)
-            missing_texts.append(text)
-            missing_hashes.append(content_hash)
-
-    if missing_items:
-        generated = _upsert_embeddings(db, missing_items, missing_texts, missing_hashes)
-        generated_iter = iter(generated)
-        vectors = [vector if vector is not None else next(generated_iter) for vector in vectors]
-
-    return [vector for vector in vectors if vector is not None]
 
 
 def check_duplicate(
@@ -193,7 +234,7 @@ def check_duplicate(
     scene_tags: list[str] | None,
     exclude_knowledge_id: str | None = None,
 ) -> DedupDecision:
-    text = build_embedding_text(title, subtitles, content, scene_tags)
+    text, title_text, content_text = build_dedup_documents(title, content)
     if not text:
         raise ValueError("Knowledge content is empty after normalization.")
     content_hash = content_hash_for_text(text)
@@ -206,6 +247,37 @@ def check_duplicate(
     )
     if exclude_knowledge_id:
         query = query.filter(Knowledge.id != exclude_knowledge_id)
+    title_matches = (
+        query.filter(Knowledge.title == title.strip())
+        .order_by(Knowledge.updated_at.desc())
+        .limit(settings.DEDUP_MAX_CANDIDATES)
+        .all()
+    )
+    exact_title_and_content_matches = [
+        item
+        for item in title_matches
+        if _content_to_text(item.content) == content_text
+    ]
+    if exact_title_and_content_matches:
+        return DedupDecision(
+            action="block_duplicate",
+            content_hash=content_hash,
+            embedding=None,
+            title_embedding=None,
+            content_embedding=None,
+            matches=[
+                DedupMatch(
+                    knowledge_id=item.id,
+                    title=item.title,
+                    status=item.status.value,
+                    category_id=item.category_id,
+                    layer=item.layer.value,
+                    match_type="exact",
+                    similarity=1.0,
+                )
+                for item in exact_title_and_content_matches
+            ],
+        )
     exact_matches = (
         query.filter(KnowledgeEmbedding.content_hash == content_hash)
         .order_by(Knowledge.updated_at.desc())
@@ -217,6 +289,8 @@ def check_duplicate(
             action="block_duplicate",
             content_hash=content_hash,
             embedding=None,
+            title_embedding=None,
+            content_embedding=None,
             matches=[
                 DedupMatch(
                     knowledge_id=item.id,
@@ -231,7 +305,43 @@ def check_duplicate(
             ],
         )
 
-    query_vector = embed_texts([text])[0]
+    query_vector, title_vector, content_vector = embed_texts(
+        [text, title_text, content_text]
+    )
+    containment_matches = [
+        item
+        for item in query.all()
+        if _has_content_containment(content_text, _content_to_text(item.content))
+    ]
+    if containment_matches:
+        return DedupDecision(
+            action="review_duplicate",
+            content_hash=content_hash,
+            embedding=query_vector,
+            title_embedding=title_vector,
+            content_embedding=content_vector,
+            matches=[
+                DedupMatch(
+                    knowledge_id=item.id,
+                    title=item.title,
+                    status=item.status.value,
+                    category_id=item.category_id,
+                    layer=item.layer.value,
+                    match_type="content_containment",
+                    similarity=1.0,
+                )
+                for item in containment_matches[: settings.DEDUP_MAX_CANDIDATES]
+            ],
+        )
+    if not _has_enough_semantic_content(content_text):
+        return DedupDecision(
+            action="create",
+            content_hash=content_hash,
+            embedding=query_vector,
+            title_embedding=title_vector,
+            content_embedding=content_vector,
+            matches=[],
+        )
     distance = KnowledgeEmbedding.embedding_vector.cosine_distance(query_vector)
     candidates = (
         query.filter(KnowledgeEmbedding.embedding_vector.is_not(None))
@@ -240,18 +350,48 @@ def check_duplicate(
         .limit(settings.DEDUP_MAX_CANDIDATES)
         .all()
     )
-    matches = [
-        DedupMatch(
-            knowledge_id=item.id,
-            title=item.title,
-            status=item.status.value,
-            category_id=item.category_id,
-            layer=item.layer.value,
-            match_type="semantic",
-            similarity=round(max(0.0, 1.0 - float(distance_value)), 6),
+    matches: list[DedupMatch] = []
+    for item, _ in candidates:
+        record = _find_embedding(db, item.id)
+        if not record:
+            continue
+        if (
+            record.title_embedding_vector is None
+            or record.content_embedding_vector is None
+        ):
+            _upsert_embeddings(
+                db,
+                [item],
+                [_knowledge_text(item)],
+                [content_hash_for_text(_knowledge_text(item))],
+            )
+            record = _find_embedding(db, item.id)
+        if not record or record.title_embedding_vector is None or record.content_embedding_vector is None:
+            continue
+        title_similarity = _cosine_similarity(
+            title_vector,
+            [float(value) for value in record.title_embedding_vector],
         )
-        for item, distance_value in candidates
-    ]
+        content_similarity = _cosine_similarity(
+            content_vector,
+            [float(value) for value in record.content_embedding_vector],
+        )
+        matches.append(
+            DedupMatch(
+                knowledge_id=item.id,
+                title=item.title,
+                status=item.status.value,
+                category_id=item.category_id,
+                layer=item.layer.value,
+                match_type="semantic",
+                similarity=_combined_dedup_similarity(
+                    max(0.0, title_similarity),
+                    max(0.0, content_similarity),
+                ),
+                title_similarity=round(max(0.0, title_similarity), 6),
+                content_similarity=round(max(0.0, content_similarity), 6),
+            )
+        )
     matches.sort(key=lambda item: item.similarity, reverse=True)
     matches = [
         item
@@ -269,6 +409,8 @@ def check_duplicate(
         action=action,
         content_hash=content_hash,
         embedding=query_vector,
+        title_embedding=title_vector,
+        content_embedding=content_vector,
         matches=matches,
     )
 
@@ -279,6 +421,8 @@ def save_embedding(
     knowledge: Knowledge,
     content_hash: str,
     embedding: list[float],
+    title_embedding: list[float],
+    content_embedding: list[float],
 ) -> None:
     record = _find_embedding(db, knowledge.id)
     if record:
@@ -286,6 +430,8 @@ def save_embedding(
         record.embedding_dimension = len(embedding)
         record.embedding = embedding
         record.embedding_vector = embedding
+        record.title_embedding_vector = title_embedding
+        record.content_embedding_vector = content_embedding
     else:
         db.add(
             KnowledgeEmbedding(
@@ -296,6 +442,8 @@ def save_embedding(
                 content_hash=content_hash,
                 embedding=embedding,
                 embedding_vector=embedding,
+                title_embedding_vector=title_embedding,
+                content_embedding_vector=content_embedding,
             )
         )
     db.flush()

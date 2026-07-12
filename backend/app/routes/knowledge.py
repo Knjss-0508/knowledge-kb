@@ -168,6 +168,8 @@ def _deduplication_metadata(decision: DedupDecision) -> dict:
                 "layer": match.layer,
                 "match_type": match.match_type,
                 "similarity": match.similarity,
+                "title_similarity": match.title_similarity,
+                "content_similarity": match.content_similarity,
             }
             for match in decision.matches
         ],
@@ -336,6 +338,8 @@ def create_knowledge(
             knowledge=item,
             content_hash=decision.content_hash,
             embedding=decision.embedding,
+            title_embedding=decision.title_embedding,
+            content_embedding=decision.content_embedding,
         )
     ensure_search_embeddings(db, item)
     db.commit()
@@ -697,6 +701,8 @@ def submit_review(
             knowledge=item,
             content_hash=decision.content_hash,
             embedding=decision.embedding,
+            title_embedding=decision.title_embedding,
+            content_embedding=decision.content_embedding,
         )
     ensure_search_embeddings(db, item)
     item.updated_at = datetime.utcnow()
@@ -957,6 +963,8 @@ def submit_candidate(
             knowledge=item,
             content_hash=decision.content_hash,
             embedding=decision.embedding,
+            title_embedding=decision.title_embedding,
+            content_embedding=decision.content_embedding,
         )
     ensure_search_embeddings(db, item)
     db.commit()

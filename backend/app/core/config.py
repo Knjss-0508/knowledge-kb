@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     DEDUP_BLOCK_THRESHOLD: float = 0.96
     DEDUP_REVIEW_THRESHOLD: float = 0.88
     DEDUP_MAX_CANDIDATES: int = 10
+    DEDUP_MIN_SEMANTIC_CONTENT_CHARS: int = 8
+    DEDUP_MIN_CONTAINMENT_CONTENT_CHARS: int = 12
 
     # Retrieval chunks are measured in characters because the source knowledge
     # is predominantly Chinese. Overlap preserves context across chunk borders.

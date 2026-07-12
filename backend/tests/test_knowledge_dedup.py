@@ -2,7 +2,11 @@ import unittest
 from types import SimpleNamespace
 
 from app.services.knowledge_dedup import (
+    _combined_dedup_similarity,
+    _has_content_containment,
+    _has_enough_semantic_content,
     _split_search_chunks,
+    build_dedup_documents,
     build_embedding_text,
     build_search_documents,
 )
@@ -38,6 +42,34 @@ class KnowledgeDedupTextTests(unittest.TestCase):
         chunks = _split_search_chunks("甲" * 1900)
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 800 for chunk in chunks))
+
+    def test_dedup_documents_keep_title_and_content_separate(self):
+        result = build_dedup_documents(
+            "iPhone question",
+            {"blocks": [{"type": "text", "value": "iPhone cannot start"}]},
+        )
+        self.assertEqual(
+            result,
+            (
+                "iPhone question\niPhone cannot start",
+                "iPhone question",
+                "iPhone cannot start",
+            ),
+        )
+
+    def test_dedup_similarity_requires_both_title_and_content_to_match(self):
+        self.assertEqual(_combined_dedup_similarity(0.99, 0.70), 0.70)
+        self.assertEqual(_combined_dedup_similarity(0.88, 0.93), 0.88)
+
+    def test_short_content_skips_semantic_deduplication(self):
+        self.assertFalse(_has_enough_semantic_content("测试内容"))
+        self.assertTrue(_has_enough_semantic_content("无法正常启动设备"))
+
+    def test_content_containment_requires_a_meaningful_fragment(self):
+        self.assertFalse(_has_content_containment("1234567890123456", "3456"))
+        self.assertTrue(_has_content_containment("1234567890123456", "345678901234"))
+        self.assertTrue(_has_content_containment(" 1234 5678 9012 3456 ", "345678901234"))
+        self.assertFalse(_has_content_containment("1234567890123456", "999999999999"))
 
 
 if __name__ == "__main__":

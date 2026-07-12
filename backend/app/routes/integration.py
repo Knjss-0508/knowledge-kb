@@ -58,6 +58,8 @@ def _to_dedup_response(decision: DedupDecision) -> IntegrationDedupResponse:
                 layer=match.layer,
                 match_type=match.match_type,
                 similarity=match.similarity,
+                title_similarity=match.title_similarity,
+                content_similarity=match.content_similarity,
             )
             for match in decision.matches
         ],
@@ -415,6 +417,8 @@ def submit_knowledge_candidates(
                 knowledge=knowledge,
                 content_hash=decision.content_hash,
                 embedding=decision.embedding,
+                title_embedding=decision.title_embedding,
+                content_embedding=decision.content_embedding,
             )
         ensure_search_embeddings(db, knowledge)
 

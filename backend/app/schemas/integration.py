@@ -81,8 +81,10 @@ class IntegrationDedupMatch(BaseModel):
     status: Literal["review", "published"]
     category_id: str
     layer: Literal["L1", "L2", "L3"]
-    match_type: Literal["exact", "semantic"]
+    match_type: Literal["exact", "semantic", "content_containment"]
     similarity: float = Field(..., ge=0, le=1)
+    title_similarity: float | None = Field(None, ge=0, le=1)
+    content_similarity: float | None = Field(None, ge=0, le=1)
 
 
 class IntegrationDedupResponse(BaseModel):

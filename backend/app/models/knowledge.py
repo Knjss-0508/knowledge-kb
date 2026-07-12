@@ -92,6 +92,8 @@ class KnowledgeEmbedding(Base):
     content_hash = Column(String(64), nullable=False, index=True)
     embedding = Column(JSON, nullable=False)
     embedding_vector = Column(Vector(settings.EMBEDDING_DIMENSIONS), nullable=True)
+    title_embedding_vector = Column(Vector(settings.EMBEDDING_DIMENSIONS), nullable=True)
+    content_embedding_vector = Column(Vector(settings.EMBEDDING_DIMENSIONS), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
