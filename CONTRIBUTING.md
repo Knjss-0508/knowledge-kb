@@ -4,6 +4,14 @@
 
 每项功能或修复都使用独立分支和 Pull Request，不直接修改 `master`。
 
+首次克隆项目后启用共享 Git 钩子：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup-git-hooks.ps1
+```
+
+该钩子会阻止直接向远程 `master` 推送。禁止使用 `--no-verify` 绕过。
+
 ```bash
 git switch master
 git pull --ff-only origin master
