@@ -1,0 +1,14 @@
+[
+  {
+    "standard_id": "STD-001",
+    "title": "屏幕色斑如何判定",
+    "category_l1": "显示问题",
+    "category_l2": "色斑",
+    "keywords": ["色斑", "屏幕", "异常点"],
+    "scope": "适用于屏幕显示异常判断",
+    "response_snippet": "根据图片中局部颜色异常点判定为色斑。",
+    "status": "published",
+    "version": "v1"
+  }
+]
+

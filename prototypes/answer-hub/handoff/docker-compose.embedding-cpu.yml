@@ -1,0 +1,17 @@
+services:
+  embedding-qwen:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    container_name: answer-hub-embedding-qwen
+    restart: unless-stopped
+    command:
+      - --model-id
+      - ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      - --auto-truncate
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - answer_hub_embedding_cache:/data
+
+volumes:
+  answer_hub_embedding_cache:
+

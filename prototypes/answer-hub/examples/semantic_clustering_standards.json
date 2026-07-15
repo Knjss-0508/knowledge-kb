@@ -1,0 +1,41 @@
+[
+  {
+    "standard_id": "DEMO-DISPLAY-001",
+    "title": "手机屏幕色斑的检查方法",
+    "category_l1": "显示问题",
+    "category_l2": "色斑",
+    "knowledge_type": "检测方法",
+    "standard_path": "【显示问题】【色斑】",
+    "keywords": ["手机", "屏幕", "色斑", "白屏", "显示异常"],
+    "scope": "手机屏幕显示异常检查",
+    "response_snippet": "使用纯色背景和清晰图片确认色斑位置、范围和稳定性。",
+    "status": "published",
+    "version": "demo-v1"
+  },
+  {
+    "standard_id": "DEMO-MODEL-001",
+    "title": "设备机型的查询和核对方法",
+    "category_l1": "基本信息",
+    "category_l2": "机型",
+    "knowledge_type": "检测方法",
+    "standard_path": "【基本信息】【机型】",
+    "keywords": ["设备", "机型", "型号", "设置", "外观"],
+    "scope": "手机机型信息查询",
+    "response_snippet": "结合系统信息、设备标识和实物特征核对具体机型。",
+    "status": "published",
+    "version": "demo-v1"
+  },
+  {
+    "standard_id": "DEMO-APPEARANCE-001",
+    "title": "手机后盖划痕的检查方法",
+    "category_l1": "外观问题",
+    "category_l2": "后盖划痕",
+    "knowledge_type": "检测方法",
+    "standard_path": "【外观问题】【后盖划痕】",
+    "keywords": ["手机", "后盖", "划痕", "磨损", "外观"],
+    "scope": "手机后盖外观检查",
+    "response_snippet": "在正常光线下检查划痕位置、长度、深度和可见程度。",
+    "status": "published",
+    "version": "demo-v1"
+  }
+]

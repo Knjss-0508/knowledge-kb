@@ -1,0 +1,16 @@
+.git
+.agents
+.codex
+.venv
+.pytest_cache
+__pycache__
+.env
+**/.env
+*.db
+data
+output
+outputs
+tests
+examples
+交接包_2026-07-12
+cz-knowledge-kb/knowledge-kb-master/backend/uploads
