@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>手机知识候选验证与复标台</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">答疑中台 · 第三部分</p>
+      <h1>手机知识候选验证与复标台</h1>
+    </div>
+    <div class="scope">手机 MVP</div>
+  </header>
+
+  <main class="workspace">
+    <section class="controls" aria-label="验证输入">
+      <form id="validationForm">
+        <label class="file-field">
+          <span>第二部分数据表</span>
+          <input id="source" name="source" type="file" accept=".xlsx" required>
+        </label>
+        <label class="file-field">
+          <span>手机标准主表</span>
+          <input id="standards" name="standards" type="file" accept=".xlsx,.json">
+        </label>
+        <label>
+          <span>产品类型</span>
+          <input id="productType" name="product_type" value="手机" maxlength="32">
+        </label>
+        <label>
+          <span>重点复核阈值</span>
+          <input id="confidence" name="min_confidence" type="number" value="0.75" min="0.1" max="0.98" step="0.01">
+        </label>
+        <label class="toggle-field">
+          <span>模型初标</span>
+          <span class="toggle-line"><input id="useMimo" name="use_mimo" type="checkbox" value="true" checked> 调用 MiMo；未配置或失败时规则兜底</span>
+        </label>
+        <div class="actions">
+          <button id="previewButton" type="submit">运行验证</button>
+          <button id="downloadButton" type="button" class="secondary">下载复核工作簿</button>
+        </div>
+      </form>
+      <p id="status" class="status" role="status">等待上传数据。</p>
+    </section>
+
+    <section class="review-controls" aria-label="复标输入">
+      <div>
+        <p class="eyebrow">人工复标</p>
+        <h2>上传 review_queue.xlsx，在线查看与填写 CZ 复核结果</h2>
+      </div>
+      <div class="review-upload-actions">
+        <input id="reviewFile" type="file" accept=".xlsx">
+        <button id="loadReviewButton" type="button">加载复标工作台</button>
+        <button id="exportReviewButton" type="button" class="secondary" disabled>下载已复标工作簿</button>
+      </div>
+      <p id="reviewStatus" class="status" role="status">复标修改仅保存在当前浏览器，下载工作簿后才会写入文件。</p>
+    </section>
+
+    <section id="summary" class="summary" hidden>
+      <div><span>原始记录</span><strong id="sourceTotal">0</strong></div>
+      <div><span>手机记录</span><strong id="selectedTotal">0</strong></div>
+      <div><span>标准条目</span><strong id="standardTotal">0</strong></div>
+      <div><span>重点复核</span><strong id="reviewTotal">0</strong></div>
+      <div><span>排除记录</span><strong id="excludedTotal">0</strong></div>
+      <div><span>模型失败</span><strong id="modelFailedTotal">0</strong></div>
+      <div><span>图片不可用</span><strong id="imageUnavailableTotal">0</strong></div>
+    </section>
+
+    <section id="results" class="results" hidden>
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-view="candidates" role="tab">候选知识</button>
+        <button class="tab" data-view="preprocessed" role="tab">预处理</button>
+        <button class="tab" data-view="excluded" role="tab">排除记录</button>
+      </div>
+
+      <div class="result-grid">
+        <section class="table-wrap">
+          <div class="table-heading">
+            <h2 id="tableTitle">候选知识</h2>
+            <span id="tableMeta"></span>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead id="tableHead"></thead>
+              <tbody id="tableBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <aside class="detail" aria-live="polite">
+          <p class="detail-label">候选详情</p>
+          <h2 id="detailTitle">请选择一条候选</h2>
+          <dl id="detailBody"></dl>
+        </aside>
+      </div>
+    </section>
+
+    <section id="reviewWorkspace" class="review-workspace" hidden>
+      <div class="review-heading">
+        <div>
+          <p class="eyebrow">CZ 复核工作台</p>
+          <h2>候选复标</h2>
+        </div>
+        <div id="reviewMeta" class="review-meta"></div>
+      </div>
+      <div class="review-filters">
+        <input id="reviewKeyword" type="search" placeholder="搜索数据 ID、核心问题或模型标题">
+        <select id="reviewDecisionFilter">
+          <option value="">全部复核状态</option>
+          <option value="__pending__">未复核</option>
+          <option value="通过">通过</option>
+          <option value="修改后通过">修改后通过</option>
+          <option value="驳回">驳回</option>
+          <option value="标记Bad Case">标记 Bad Case</option>
+        </select>
+        <label class="checkbox-label"><input id="focusOnly" type="checkbox"> 仅看重点复核</label>
+      </div>
+      <div class="review-grid">
+        <section class="table-wrap">
+          <div class="table-scroll">
+            <table>
+              <thead id="reviewTableHead"></thead>
+              <tbody id="reviewTableBody"></tbody>
+            </table>
+          </div>
+        </section>
+        <aside class="review-editor">
+          <p class="detail-label">当前候选</p>
+          <h2 id="reviewTitle">请选择一条候选</h2>
+          <div id="reviewEvidence" class="review-evidence"></div>
+          <form id="reviewForm">
+            <label><span>CZ复核结论</span>
+              <select id="reviewDecision" data-field="CZ复核结论">
+                <option value="">未复核</option>
+                <option value="通过">通过</option>
+                <option value="修改后通过">修改后通过</option>
+                <option value="驳回">驳回</option>
+                <option value="标记Bad Case">标记 Bad Case</option>
+              </select>
+            </label>
+            <label><span>CZ主标题</span><input data-field="CZ主标题"></label>
+            <label><span>CZ副标题</span><textarea data-field="CZ副标题" rows="2"></textarea></label>
+            <label><span>CZ知识内容</span><textarea data-field="CZ知识内容" rows="7"></textarea></label>
+            <div class="two-fields">
+              <label><span>CZ一级分类</span><input data-field="CZ一级分类"></label>
+              <label><span>CZ二级分类</span><input data-field="CZ二级分类"></label>
+            </div>
+            <label><span>CZ关联标准</span><textarea data-field="CZ关联标准" rows="3"></textarea></label>
+            <label><span>CZ复核备注</span><textarea data-field="CZ复核备注" rows="3"></textarea></label>
+            <div class="two-fields">
+              <label><span>错误类型</span><input data-field="错误类型"></label>
+              <label><span>是否进入再训练样本</span><input data-field="是否进入再训练样本" placeholder="是 / 否"></label>
+            </div>
+            <label><span>错误原因</span><textarea data-field="错误原因" rows="3"></textarea></label>
+            <div class="two-fields">
+              <label><span>审核人</span><input data-field="审核人"></label>
+              <label><span>审核时间</span><input data-field="审核时间" placeholder="YYYY-MM-DD HH:mm:ss"></label>
+            </div>
+            <button id="saveReviewButton" type="submit">保存当前复标</button>
+          </form>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

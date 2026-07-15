@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "answer-hub"
+version = "0.1.0"
+description = "Answer hub workflow skeleton for model labeling, human review, and feedback loop"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "Flask>=2.2",
+  "openpyxl>=3.0.10",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+]
+ui = [
+  "streamlit",
+]
+
+[project.scripts]
+answer-hub = "answer_hub.cli:main"
+answer-hub-web = "answer_hub.web:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
