@@ -8,6 +8,7 @@
 
 - 禁止直接在 `master` 分支开发、提交或推送。
 - 每项改动必须从最新 `master` 创建独立分支。
+- 首次克隆项目后必须执行 `powershell -ExecutionPolicy Bypass -File scripts/setup-git-hooks.ps1`，启用主分支推送防护。
 - 分支命名使用以下前缀：
   - `feature/`：新增功能
   - `fix/`：缺陷修复
@@ -34,6 +35,7 @@ git rebase origin/master
 
 - 如果出现冲突，必须逐项确认两边改动，禁止直接整文件覆盖。
 - 禁止对 `master` 使用强制推送。
+- 如果钩子提示禁止推送 `master`，必须切换到独立分支并创建 PR，禁止使用 `--no-verify` 绕过。
 
 ## Pull Request
 
