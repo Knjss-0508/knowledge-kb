@@ -57,6 +57,21 @@ class KnowledgeDedupTextTests(unittest.TestCase):
             ),
         )
 
+    def test_rich_text_links_are_reduced_to_visible_text(self):
+        result = build_embedding_text(
+            "Account help",
+            [],
+            {
+                "blocks": [
+                    {
+                        "type": "text",
+                        "value": 'Read the <a href="https://example.com/help">help center</a>.',
+                    }
+                ]
+            },
+        )
+        self.assertEqual(result, "Account help\nRead the help center.")
+
     def test_dedup_similarity_requires_both_title_and_content_to_match(self):
         self.assertEqual(_combined_dedup_similarity(0.99, 0.70), 0.70)
         self.assertEqual(_combined_dedup_similarity(0.88, 0.93), 0.88)

@@ -5,6 +5,7 @@ import json
 import math
 import uuid
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
@@ -47,11 +48,42 @@ class DedupDecision:
     matches: list[DedupMatch]
 
 
+class _VisibleTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "br":
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"div", "p", "li"}:
+            self.parts.append("\n")
+
+    def text(self) -> str:
+        return "\n".join(
+            line.strip()
+            for line in "".join(self.parts).splitlines()
+            if line.strip()
+        )
+
+
+def _rich_text_to_plain_text(value: str) -> str:
+    parser = _VisibleTextParser()
+    parser.feed(value)
+    parser.close()
+    return parser.text()
+
+
 def _content_to_text(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
-        return value.strip()
+        return _rich_text_to_plain_text(value)
     if isinstance(value, list):
         return "\n".join(part for item in value if (part := _content_to_text(item)))
     if isinstance(value, dict):
