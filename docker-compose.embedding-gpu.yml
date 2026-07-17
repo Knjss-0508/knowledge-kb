@@ -11,6 +11,10 @@ services:
     container_name: kb-embedding-qwen
     restart: unless-stopped
     gpus: all
+    environment:
+      # Docker Desktop on WSL injects the Windows NVIDIA driver at this path.
+      # Set TEI_GPU_LD_PRELOAD empty on hosts where the preload is unnecessary.
+      LD_PRELOAD: ${TEI_GPU_LD_PRELOAD:-/usr/lib/x86_64-linux-gnu/libcuda.so.1}
     command:
       - --model-id
       - ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}

@@ -26,3 +26,5 @@ Windows PowerShell：
 GPU 模式无法通过预检会直接失败；自动模式则回退到 CPU 模式。启动完成前，脚本会在后端容器中调用一次真实 embedding 请求，并验证向量维度为 1024。任何步骤失败都会输出容器状态和最近日志。
 
 生产环境应固定 `TEI_GPU_IMAGE` 到经过验证的镜像 digest，并将 `EMBEDDING_MODEL` 固定到模型 revision。驱动、Docker GPU 运行时、内存或磁盘等宿主机条件不满足时，脚本会选择 CPU 或明确失败，不会静默修改模型。
+
+Docker Desktop/WSL 的 GPU 配置默认会预加载 `/usr/lib/x86_64-linux-gnu/libcuda.so.1`。其他宿主机若不需要该兼容设置，可将 `TEI_GPU_LD_PRELOAD` 置空。
