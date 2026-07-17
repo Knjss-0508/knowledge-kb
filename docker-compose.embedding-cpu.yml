@@ -1,16 +1,31 @@
 services:
+  backend:
+    depends_on:
+      embedding-qwen:
+        condition: service_healthy
+
   embedding-qwen:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    build:
+      context: .
+      dockerfile: embedding-cpu/Dockerfile
     container_name: kb-embedding-qwen
     restart: unless-stopped
-    command:
-      - --model-id
-      - ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
-      - --auto-truncate
+    environment:
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+      EMBEDDING_CPU_THREADS: ${EMBEDDING_CPU_THREADS:-0}
+      EMBEDDING_CPU_BATCH_SIZE: ${EMBEDDING_CPU_BATCH_SIZE:-8}
+      HF_HOME: /data
     expose:
       - "80"
     volumes:
-      - embedding_model_cache:/data
+      - embedding_cpu_model_cache:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:80/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 10m
 
 volumes:
-  embedding_model_cache:
+  embedding_cpu_model_cache:
