@@ -1,9 +1,15 @@
 services:
   embedding-qwen:
-    image: ghcr.io/huggingface/text-embeddings-inference:cuda-1.9
+    # CUDA 12.9 build; supports Blackwell GPUs such as RTX 5070 Ti.
+    image: ghcr.io/huggingface/text-embeddings-inference:120-1.9.1
     container_name: kb-embedding-qwen
     restart: unless-stopped
     gpus: all
+    environment:
+      # Docker Desktop on WSL injects the Windows NVIDIA driver here.  Without
+      # preloading it, TEI can select its bundled CUDA 12.9 compatibility
+      # library and fail to enumerate the GPU (CUDA_ERROR_NO_DEVICE).
+      LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libcuda.so.1
     command:
       - --model-id
       - ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
