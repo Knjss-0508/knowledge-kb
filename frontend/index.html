@@ -116,13 +116,11 @@
     .blk-act{display:inline-flex;align-items:center;gap:3px;padding:3px 8px;background:#f0f5ff;color:#3370ff;border:1px solid #bedaff;border-radius:4px;font-size:10px;cursor:pointer}
     .blk-act.vi{background:#f5f0ff;color:#722ed1;border-color:#d3adf7}
     .blk-act:hover{opacity:.8}
-    .rich-toolbar{display:flex;gap:5px;align-items:center}
-    .rich-tool{height:26px;padding:0 8px;border:1px solid #dce4e8;border-radius:4px;background:#fff;color:#475467;font-size:11px;cursor:pointer}
-    .rich-tool:hover{border-color:#009b83;color:#007f6b;background:#f1fbf8}
     .rich-editor{min-height:92px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
-    .rich-editor:empty:before{content:attr(data-placeholder);color:#98a2b3;pointer-events:none}
-    .rich-editor[contenteditable="false"]{background:#f2f5f6;color:#667085;cursor:default}
-    .rich-editor a{color:#1677ff;text-decoration:underline;text-underline-offset:2px}
+    textarea.rich-editor{resize:vertical}
+    .rich-editor-view{height:auto;background:#f2f5f6;color:#667085}
+    .rich-editor a,.linkified-text a{color:#1677ff;text-decoration:underline;text-underline-offset:2px}
+    .rich-editor-tip{font-size:10px;color:#86909c}
     .child{margin-top:6px;padding:8px;background:#fff;border:1px solid #e5e6eb;border-radius:6px}
     .child-h{display:flex;gap:8px;align-items:flex-start}
     .upload-zone{display:flex;align-items:center;justify-content:center;gap:6px;padding:16px;border:1.5px dashed #a9dcd2;border-radius:6px;cursor:pointer;color:#52746e;background:#f6fcfa;transition:all .2s}
@@ -445,19 +443,9 @@
             <div class="blk-h">
               <span class="blk-tag" style="background:#86909c">文本</span>
               <div class="blk-body">
-                <div class="rich-toolbar" v-if="!viewOnly">
-                  <button type="button" class="rich-tool" @mousedown.prevent="insertRichLink(b,bi)">🔗 超链接</button>
-                  <button type="button" class="rich-tool" @mousedown.prevent="removeRichLink(b,bi)">取消链接</button>
-                </div>
-                <div class="fi rich-editor"
-                  :data-rich-editor="bi"
-                  :contenteditable="viewOnly?'false':'true'"
-                  data-placeholder="输入文本内容..."
-                  role="textbox"
-                  aria-multiline="true"
-                  @blur="syncRichText(b,$event)"
-                  @paste="pasteRichText"
-                  v-html="sanitizeRichHtml(b.value)"></div>
+                <textarea v-if="!viewOnly" class="fi rich-editor" v-model="b.value" placeholder="输入文本内容，可直接粘贴 http:// 或 https:// 链接..."></textarea>
+                <div v-else class="fi rich-editor rich-editor-view" v-html="linkifyText(b.value)"></div>
+                <div v-if="!viewOnly" class="rich-editor-tip">链接请直接作为正文内容输入，保存后可点击跳转。</div>
                 <div class="blk-acts" v-if="!viewOnly">
                   <span class="blk-act" @click="addImg(b)">📷 插入图片</span>
                   <span class="blk-act vi" @click="addVid(b)">🎬 插入视频</span>
@@ -541,13 +529,13 @@
             <div style="font-size:12px;font-weight:600;margin-bottom:8px">新建知识</div>
             <div style="font-size:12px;margin-bottom:5px"><b>标题：</b>{{dedupCompare.candidate.title}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{categoryLabel(dedupCompare.candidate.category_id)}} · <b>层级：</b>{{dedupCompare.candidate.layer}}</div>
-            <div style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word">{{contentPreview(dedupCompare.candidate.content)}}</div>
+            <div class="linkified-text" style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word" v-html="linkifyText(contentPreview(dedupCompare.candidate.content))"></div>
           </div>
           <div style="border:1px solid #e5e6eb;border-radius:6px;padding:12px;min-width:0">
             <div style="font-size:12px;font-weight:600;margin-bottom:8px">命中的已有知识 · {{dedupCompare.match.knowledge_id}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>标题：</b>{{dedupCompare.target.title || dedupCompare.match.title}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{categoryLabel(dedupCompare.target.category_id || dedupCompare.match.category_id)}} · <b>层级：</b>{{dedupCompare.target.layer || dedupCompare.match.layer}}</div>
-            <div style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word">{{contentPreview(dedupCompare.target.content)}}</div>
+            <div class="linkified-text" style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word" v-html="linkifyText(contentPreview(dedupCompare.target.content))"></div>
           </div>
         </div>
       </div>
@@ -820,10 +808,11 @@ Vue.createApp({
     },
     contentPreview: function(content) {
       if (!content) return '暂无正文';
-      if (typeof content === 'string') return content;
+      if (typeof content === 'string') return this.richTextToPlainText(content);
+      var self = this;
       var blocks = Array.isArray(content.blocks) ? content.blocks : [];
       var text = blocks.map(function(block) {
-        return block.value || block.text || block.caption || block.alt || '';
+        return self.richTextToPlainText(block.value || block.text || block.caption || block.alt || '');
       }).filter(function(value) { return value; }).join('\n');
       return text || '暂无正文';
     },
@@ -1193,7 +1182,7 @@ Vue.createApp({
         var last = null;
         contentBlocks.forEach(function(b) {
           if (b.type === 'text') {
-            var nb = {type:'text', value: b.value||'', children:[]};
+            var nb = {type:'text', value:self.richTextToPlainText(b.value||''), children:[]};
             blocks.push(nb);
             last = nb;
           } else if (b.type === 'image' || b.type === 'video') {
@@ -1351,114 +1340,93 @@ Vue.createApp({
       if (!/^(https?:|mailto:|tel:)/i.test(url)) return '';
       return url;
     },
-    sanitizeRichHtml: function(value) {
+    richTextToPlainText: function(value) {
       var source = String(value || '');
       if (!source) return '';
       if (!/<\/?(a|br|div|p)\b/i.test(source)) {
-        return this.escapeRichText(source).replace(/\r?\n/g, '<br>');
+        return source;
       }
       var holder = document.createElement('div');
       holder.innerHTML = source;
-      Array.prototype.slice.call(holder.querySelectorAll('script,style,iframe,object,embed')).forEach(function(node) {
-        node.remove();
-      });
       var self = this;
-      Array.prototype.slice.call(holder.querySelectorAll('*')).forEach(function(node) {
+      var readNode = function(node) {
+        if (node.nodeType === 3) return node.nodeValue || '';
+        if (node.nodeType !== 1) return '';
         var tag = node.tagName.toUpperCase();
+        if (tag === 'BR') return '\n';
         if (tag === 'A') {
           var url = self.normalizeRichLinkUrl(node.getAttribute('href'));
-          if (!url) {
-            node.replaceWith(document.createTextNode(node.textContent || ''));
-            return;
-          }
-          Array.prototype.slice.call(node.attributes).forEach(function(attr) {
-            node.removeAttribute(attr.name);
-          });
-          node.setAttribute('href', url);
-          node.setAttribute('target', '_blank');
-          node.setAttribute('rel', 'noopener noreferrer');
-          return;
+          var label = String(node.textContent || '').trim();
+          if (!url) return label;
+          var labelUrl = self.normalizeRichLinkUrl(label);
+          if (!label || label === url || labelUrl === url) return label || url;
+          return label + ' (' + url + ')';
         }
-        if (tag === 'BR' || tag === 'DIV' || tag === 'P') {
-          Array.prototype.slice.call(node.attributes).forEach(function(attr) {
-            node.removeAttribute(attr.name);
-          });
-          return;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'IFRAME' || tag === 'OBJECT' || tag === 'EMBED') {
+          return '';
         }
-        node.replaceWith(document.createTextNode(node.textContent || ''));
+        var text = '';
+        Array.prototype.slice.call(node.childNodes).forEach(function(child) {
+          text += readNode(child);
+        });
+        if ((tag === 'DIV' || tag === 'P') && text && text.charAt(text.length - 1) !== '\n') text += '\n';
+        return text;
+      };
+      var result = '';
+      Array.prototype.slice.call(holder.childNodes).forEach(function(node) {
+        result += readNode(node);
       });
-      return holder.innerHTML;
+      return result
+        .replace(/\u00a0/g, ' ')
+        .replace(/\r/g, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/^\n+|\n+$/g, '');
+    },
+    splitLinkSuffix: function(value) {
+      var url = String(value || '');
+      var suffix = '';
+      var simplePunctuation = /[.,;:!?，。；：！？、）》】」』\]}]/;
+      while (url && simplePunctuation.test(url.charAt(url.length - 1))) {
+        suffix = url.charAt(url.length - 1) + suffix;
+        url = url.slice(0, -1);
+      }
+      while (url.charAt(url.length - 1) === ')') {
+        var opens = (url.match(/\(/g) || []).length;
+        var closes = (url.match(/\)/g) || []).length;
+        if (closes <= opens) break;
+        suffix = ')' + suffix;
+        url = url.slice(0, -1);
+      }
+      return {url:url, suffix:suffix};
+    },
+    linkifyText: function(value) {
+      var text = this.richTextToPlainText(value);
+      if (!text) return '';
+      var self = this;
+      var pattern = /(?:https?:\/\/|www\.)[^\s<>"']+|(?:mailto:|tel:)[^\s<>"']+/gi;
+      var html = '';
+      var cursor = 0;
+      text.replace(pattern, function(match, offset) {
+        var parts = self.splitLinkSuffix(match);
+        var urlText = parts.url;
+        var href = self.normalizeRichLinkUrl(urlText);
+        html += self.escapeRichText(text.slice(cursor, offset));
+        if (href) {
+          var attrs = ' href="' + self.escapeRichText(href) + '"';
+          if (/^https?:/i.test(href)) attrs += ' target="_blank" rel="noopener noreferrer"';
+          html += '<a' + attrs + '>' + self.escapeRichText(urlText) + '</a>';
+        } else {
+          html += self.escapeRichText(urlText);
+        }
+        html += self.escapeRichText(parts.suffix);
+        cursor = offset + match.length;
+        return match;
+      });
+      html += self.escapeRichText(text.slice(cursor));
+      return html;
     },
     richTextHasContent: function(value) {
-      var holder = document.createElement('div');
-      holder.innerHTML = this.sanitizeRichHtml(value);
-      return !!String(holder.textContent || '').trim();
-    },
-    richEditor: function(index) {
-      return document.querySelector('[data-rich-editor="' + index + '"]');
-    },
-    richSelectionRange: function(editor) {
-      var selection = window.getSelection();
-      if (!selection || !selection.rangeCount) return null;
-      var range = selection.getRangeAt(0);
-      return editor.contains(range.commonAncestorContainer) ? range.cloneRange() : null;
-    },
-    restoreRichSelection: function(range) {
-      if (!range) return;
-      var selection = window.getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
-    },
-    syncRichText: function(block, event) {
-      var editor = event.currentTarget;
-      var sanitized = this.sanitizeRichHtml(editor.innerHTML);
-      if (!this.richTextHasContent(sanitized)) sanitized = '';
-      block.value = sanitized;
-      if (editor.innerHTML !== sanitized) editor.innerHTML = sanitized;
-    },
-    pasteRichText: function(event) {
-      event.preventDefault();
-      var text = (event.clipboardData || window.clipboardData).getData('text/plain');
-      document.execCommand('insertText', false, text);
-    },
-    insertRichLink: function(block, index) {
-      var editor = this.richEditor(index);
-      if (!editor) return;
-      var range = this.richSelectionRange(editor);
-      var selectedText = range ? range.toString().trim() : '';
-      var rawUrl = prompt('请输入链接地址', 'https://');
-      if (rawUrl === null) return;
-      var url = this.normalizeRichLinkUrl(rawUrl);
-      if (!url) {
-        alert('仅支持 http、https、mailto 或 tel 链接');
-        return;
-      }
-      var label = selectedText || prompt('请输入链接文字', url);
-      if (!label) return;
-      editor.focus();
-      if (range && selectedText) {
-        this.restoreRichSelection(range);
-        document.execCommand('createLink', false, url);
-        var selection = window.getSelection();
-        var anchorNode = selection && selection.anchorNode;
-        var anchorElement = anchorNode && (anchorNode.nodeType === 1 ? anchorNode : anchorNode.parentElement);
-        var anchor = anchorElement && anchorElement.closest ? anchorElement.closest('a') : null;
-        if (anchor && editor.contains(anchor)) {
-          anchor.setAttribute('target', '_blank');
-          anchor.setAttribute('rel', 'noopener noreferrer');
-        }
-      } else {
-        var html = '<a href="' + this.escapeRichText(url) + '" target="_blank" rel="noopener noreferrer">' + this.escapeRichText(label) + '</a>';
-        document.execCommand('insertHTML', false, html);
-      }
-      this.syncRichText(block, {currentTarget: editor});
-    },
-    removeRichLink: function(block, index) {
-      var editor = this.richEditor(index);
-      if (!editor) return;
-      editor.focus();
-      document.execCommand('unlink', false, null);
-      this.syncRichText(block, {currentTarget: editor});
+      return !!this.richTextToPlainText(value).trim();
     },
     addBlock: function() {
       this.fm.blocks.push({type:'text', value:'', children:[]});
@@ -1529,8 +1497,8 @@ Vue.createApp({
       var self = this;
       this.fm.blocks.forEach(function(block) {
         var hasMedia = block.children && block.children.some(function(child) { return child.media_id; });
-        var richValue = self.sanitizeRichHtml(block.value);
-        if (self.richTextHasContent(richValue)) blocks.push({type:'text', value:richValue});
+        var textValue = self.richTextToPlainText(block.value);
+        if (self.richTextHasContent(textValue)) blocks.push({type:'text', value:textValue});
         if (hasMedia && block.children) block.children.forEach(function(child) {
           if (child.media_id) blocks.push({type:child.type, media_id:child.media_id, alt:child.alt||'', caption:child.caption||''});
         });
