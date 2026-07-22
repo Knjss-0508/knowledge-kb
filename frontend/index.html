@@ -32,6 +32,7 @@
     .tab-btn{height:28px;padding:0 12px;border:1px solid transparent;border-radius:6px;background:#f7f8fa;color:#4e5969;font-size:12px;cursor:pointer}
     .tab-btn:hover{background:#eef3ff;color:#3370ff}
     .tab-btn.on{background:#3370ff;color:#fff;border-color:#3370ff;font-weight:600}
+    .filter-applicability-grid{display:flex;align-items:center;justify-content:flex-start;flex-wrap:wrap;gap:14px;padding-top:2px}.filter-app-field{min-width:0;display:flex;align-items:center;gap:8px;flex:0 0 auto}.filter-app-field .ms{width:240px;flex:0 0 240px}.filter-app-label{width:58px;flex-shrink:0;font-size:12px;font-weight:600;color:#4e5969}
     .inp{padding:6px 10px;border:1px solid #e5e6eb;border-radius:6px;font-size:12px;outline:none}
     .inp:focus{border-color:#3370ff}
     select.inp{appearance:auto}
@@ -137,7 +138,7 @@
     .full-preview img{max-width:90vw;max-height:90vh;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,.3)}
 
     /* 运营工作台视觉层：保留既有 Vue 数据与操作逻辑 */
-    :root{--app-font:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",Arial,sans-serif;--ink:#1d2939;--muted:#667085;--line:#e5e9ef;--canvas:#f7f8fa;--surface:#fff;--teal:#009b83;--coral:#ef6d5b;--gold:#e6a83c;--violet:#765be6;--nav:#172633}
+    :root{--app-font:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",Arial,sans-serif;--ink:#1d2939;--muted:#667085;--line:#e5e9ef;--canvas:#f7f8fa;--surface:#fff;--blue:#3370ff;--green:#00b42a;--teal:#009b83;--coral:#ef6d5b;--orange:#ff7d00;--gold:#e6a83c;--violet:#765be6;--nav:#172633}
     body{background:var(--canvas);color:var(--ink);font-family:var(--app-font)}
     button,input,textarea,select{font-family:var(--app-font)!important;font-size:inherit}
     .layout{min-height:100vh;background:var(--canvas)}
@@ -165,9 +166,14 @@
     .cards{gap:14px;margin-bottom:22px}
     .card{position:relative;overflow:hidden;min-height:138px;padding:19px;border-radius:7px;border-color:var(--line);box-shadow:none;cursor:pointer}
     .card:after{content:"";position:absolute;right:-24px;bottom:-34px;width:105px;height:105px;border:20px solid #d9f5ed;border-radius:50%}
-    .card:nth-child(2):after{border-color:#ffe3dd}.card:nth-child(3):after{border-color:#e9e4ff}.card:nth-child(4):after{border-color:#fff0d3}
+    .dashboard-metric-cards .card:after,.analysis-metric-cards .card:after{border-color:#dce8ff}
+    .dashboard-metric-cards .card:nth-child(2):after{border-color:#d8f5e1}.dashboard-metric-cards .card:nth-child(3):after{border-color:#e9e4ff}.dashboard-metric-cards .card:nth-child(4):after{border-color:#fff0d3}
+    .analysis-metric-cards .card:nth-child(2):after{border-color:#ffe3dd}.analysis-metric-cards .card:nth-child(3):after{border-color:#e9e4ff}.analysis-metric-cards .card:nth-child(4):after{border-color:#fff0d3}
     .card .lb{font-size:13px;color:var(--muted);margin-bottom:8px}.card .vl{font-size:29px;color:var(--ink)!important;line-height:1.1}
-    .card .metric-note{position:relative;z-index:1;margin-top:15px;color:var(--muted);font-size:12px}.metric-note b{color:var(--teal)}.card:nth-child(2) .metric-note b{color:var(--coral)}.card:nth-child(3) .metric-note b{color:var(--violet)}.card:nth-child(4) .metric-note b{color:var(--gold)}
+    .card .metric-note{position:relative;z-index:1;margin-top:15px;color:var(--muted);font-size:12px}
+    .dashboard-metric-cards .metric-note b,.analysis-metric-cards .metric-note b{color:var(--blue)}
+    .dashboard-metric-cards .card:nth-child(2) .metric-note b{color:var(--green)}.dashboard-metric-cards .card:nth-child(3) .metric-note b{color:var(--violet)}.dashboard-metric-cards .card:nth-child(4) .metric-note b{color:var(--orange)}
+    .analysis-metric-cards .card:nth-child(2) .metric-note b{color:var(--coral)}.analysis-metric-cards .card:nth-child(3) .metric-note b{color:var(--violet)}.analysis-metric-cards .card:nth-child(4) .metric-note b{color:var(--orange)}
     .dashboard-grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(320px,.85fr);gap:18px;margin-bottom:18px}
     .insight-panel{background:#fff;border:1px solid var(--line);border-radius:7px;overflow:hidden}
     .insight-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:20px 21px 0}.insight-head h3{font-size:16px;margin:0}.insight-head p{margin:3px 0 0;color:var(--muted);font-size:12px}
@@ -179,7 +185,7 @@
     .analysis-note{margin:0 0 18px;color:var(--muted);font-size:13px}.outcome{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600}.outcome-low_score{background:#fff0ed;color:#c83827}.outcome-no_candidates{background:#fff5df;color:#a96800}.outcome-not_selected{background:#eeeafe;color:#644bd1}.risk-query{max-width:420px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.risk-score{font-variant-numeric:tabular-nums}.integration-hint{padding:13px 16px;background:#e4f8f2;border:1px solid #b7e9dd;border-radius:6px;color:#166b5b;font-size:12px;line-height:1.6;margin-bottom:14px}
     .mht-form{display:grid;gap:12px}.mht-form .fi{min-height:92px;resize:vertical}.mht-status{padding:12px;border-radius:6px;background:#f7f8fa;color:#667085;font-size:12px;line-height:1.7}.mht-status strong{color:#009b83}.mht-actions{display:flex;gap:8px;justify-content:flex-end}
     .bar{border-radius:7px;border-color:var(--line);padding:16px 18px}.bar .tt{font-size:16px;color:var(--ink)}.filter-tabs,.tw{border-radius:7px;border-color:var(--line)}.filter-tabs{padding:12px 18px}.tab-btn{border-radius:4px}.tab-btn.on,.bp{background:var(--teal);border-color:var(--teal)}.tab-btn:hover,.bp:hover{background:#007f6b}.btn{border-radius:5px}.btn.bd:hover{border-color:var(--teal);color:var(--teal)}
-    @media(max-width:1120px){.cards{grid-template-columns:repeat(2,1fr)}.dashboard-grid{grid-template-columns:1fr}}@media(max-width:760px){.side{width:100%;min-height:auto;padding:12px 16px;display:block}.layout{display:block}.brand{padding:0}.nav{display:flex;flex-direction:column;overflow:visible;margin-top:12px;gap:3px}.nav-item{white-space:nowrap;flex:0 0 auto}.side-foot{display:none}.hd{height:58px;padding:0 16px}.mn{padding:24px 16px 32px}.overview{display:block}.overview h2{font-size:26px}.overview-status{margin-top:10px}.cards{grid-template-columns:1fr 1fr;gap:10px}.card{min-height:124px;padding:15px}.card .vl{font-size:24px}.dashboard-grid{gap:12px}.insight-head{padding:17px 16px 0}.trend-chart{margin:14px 16px 18px}.todo-list{padding-left:16px;padding-right:16px}.todo-link{margin-left:16px;margin-right:16px}}@media(max-width:420px){.cards{grid-template-columns:1fr}.period button{padding:0 7px}}
+    @media(max-width:1120px){.cards{grid-template-columns:repeat(2,1fr)}.dashboard-grid{grid-template-columns:1fr}}@media(max-width:760px){.side{width:100%;min-height:auto;padding:12px 16px;display:block}.layout{display:block}.brand{padding:0}.nav{display:flex;flex-direction:column;overflow:visible;margin-top:12px;gap:3px}.nav-item{white-space:nowrap;flex:0 0 auto}.side-foot{display:none}.hd{height:58px;padding:0 16px}.mn{padding:24px 16px 32px}.overview{display:block}.overview h2{font-size:26px}.overview-status{margin-top:10px}.cards{grid-template-columns:1fr 1fr;gap:10px}.card{min-height:124px;padding:15px}.dashboard-grid{gap:12px}.insight-head{padding:17px 16px 0}.trend-chart{margin:14px 16px 18px}.todo-list{padding-left:16px;padding-right:16px}.todo-link{margin-left:16px;margin-right:16px}.filter-app-field{width:100%}.filter-app-field .ms{width:auto;flex:1 1 auto}}@media(max-width:420px){.cards{grid-template-columns:1fr}.period button{padding:0 7px}}
   </style>
 </head>
 <body>
@@ -210,7 +216,7 @@
       </div>
       <div class="overview-status">数据更新时间：<b>{{dashboard.updatedAt}}</b></div>
     </section>
-    <div class="cards">
+    <div class="cards dashboard-metric-cards">
       <div class="card" @click="openKnowledge()"><div class="lb">知识总量</div><div class="vl bl">{{stats.total}}</div><div class="metric-note"><b>全部</b> 当前知识条目</div></div>
       <div class="card" @click="openKnowledge('published')"><div class="lb">已发布内容</div><div class="vl gn">{{stats.published}}</div><div class="metric-note"><b>可查询</b> 已通过审核</div></div>
       <div class="card" @click="openKnowledge('review')"><div class="lb">待审核事项</div><div class="vl og">{{stats.review}}</div><div class="metric-note"><b>待处理</b> 等待发布审核</div></div>
@@ -265,6 +271,57 @@
         <span class="tab-label">知识分类</span>
         <button class="tab-btn" :class="{on:!f.category_id}" @click="setFilter('category_id', '')">全部分类</button>
         <button class="tab-btn" v-for="cat in cats" :key="cat.id" :class="{on:f.category_id===cat.id}" @click="setFilter('category_id', cat.id)">{{cat.name}}</button>
+      </div>
+      <div class="filter-applicability-grid">
+        <div class="filter-app-field">
+          <div class="filter-app-label">适用类目</div>
+          <div class="ms">
+            <div class="ms-box" @click="focusListFilterInput('listFilterCategoryInput','applicableCategories')">
+              <span class="ms-tag" v-for="value in f.applicableCategoryIds" :key="value"><span class="ms-tag-text">{{listFilterSelectedLabel('applicableCategories',value)}}</span><span class="ms-tag-x" @click.stop="removeListFilterSelected('applicableCategories',value)">&times;</span></span>
+              <input ref="listFilterCategoryInput" class="ms-inline-input" v-model="listFilterCategoryKw" placeholder="请选择类目" @focus="focusListFilterInput('listFilterCategoryInput','applicableCategories')">
+              <span class="ms-clear" @click.stop="clearListFilter('applicableCategories')">&times;</span>
+            </div>
+            <div class="ms-menu" v-if="filterDrop==='applicableCategories'">
+              <div class="ms-all" @click="selectAllListFilterVisible('applicableCategories')">全选</div>
+              <div class="ms-empty" v-if="!listFilterOptions('applicableCategories').length">暂无类目数据</div>
+              <div class="ms-opt" :class="{on:isListFilterSelected('applicableCategories',optValue(option))}" v-for="option in visibleListFilterOptions('applicableCategories')" :key="optKey(option)" @click="toggleListFilterSelected('applicableCategories',optValue(option))"><span>{{optLabel(option)}}</span><span class="ms-opt-check" v-if="isListFilterSelected('applicableCategories',optValue(option))">✓</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="filter-app-field">
+          <div class="filter-app-label">适用品牌</div>
+          <div class="ms">
+            <div class="ms-box" @click="focusListFilterInput('listFilterBrandInput','brands')">
+              <span class="ms-tag" v-for="value in f.brandIds" :key="value"><span class="ms-tag-text">{{listFilterSelectedLabel('brands',value)}}</span><span class="ms-tag-x" @click.stop="removeListFilterSelected('brands',value)">&times;</span></span>
+              <input ref="listFilterBrandInput" class="ms-inline-input" v-model="listFilterBrandKw" :placeholder="f.applicableCategoryIds.length?'请选择品牌':'请先选择类目'" @focus="focusListFilterInput('listFilterBrandInput','brands')">
+              <span class="ms-clear" @click.stop="clearListFilter('brands')">&times;</span>
+            </div>
+            <div class="ms-menu" v-if="filterDrop==='brands'">
+              <div class="ms-all" v-if="listFilterOptions('brands').length" @click="selectAllListFilterVisible('brands')">全选</div>
+              <div class="ms-empty" v-if="!f.applicableCategoryIds.length">请先选择类目</div>
+              <div class="ms-empty" v-else-if="!listFilterOptions('brands').length">暂无品牌数据</div>
+              <div class="ms-opt" :class="{on:isListFilterSelected('brands',optValue(option))}" v-for="option in visibleListFilterOptions('brands')" :key="optKey(option)" @click="toggleListFilterSelected('brands',optValue(option))"><span>{{optLabel(option)}}</span><span class="ms-opt-check" v-if="isListFilterSelected('brands',optValue(option))">✓</span></div>
+              <div class="ms-more" v-if="hiddenListFilterOptionCount('brands') > 0">还有 {{hiddenListFilterOptionCount('brands')}} 个品牌，请搜索缩小范围</div>
+            </div>
+          </div>
+        </div>
+        <div class="filter-app-field">
+          <div class="filter-app-label">适用机型</div>
+          <div class="ms">
+            <div class="ms-box" @click="focusListFilterInput('listFilterModelInput','models')">
+              <span class="ms-tag" v-for="value in f.modelIds" :key="value"><span class="ms-tag-text">{{listFilterSelectedLabel('models',value)}}</span><span class="ms-tag-x" @click.stop="removeListFilterSelected('models',value)">&times;</span></span>
+              <input ref="listFilterModelInput" class="ms-inline-input" v-model="listFilterModelKw" :placeholder="f.applicableCategoryIds.length&&f.brandIds.length?'请选择机型':'请先选择类目和品牌'" @focus="focusListFilterInput('listFilterModelInput','models')">
+              <span class="ms-clear" @click.stop="clearListFilter('models')">&times;</span>
+            </div>
+            <div class="ms-menu" v-if="filterDrop==='models'">
+              <div class="ms-all" v-if="listFilterOptions('models').length" @click="selectAllListFilterVisible('models')">全选</div>
+              <div class="ms-empty" v-if="!f.applicableCategoryIds.length||!f.brandIds.length">请先选择类目和品牌</div>
+              <div class="ms-empty" v-else-if="!listFilterOptions('models').length">暂无机型数据</div>
+              <div class="ms-opt" :class="{on:isListFilterSelected('models',optValue(option))}" v-for="option in visibleListFilterOptions('models')" :key="optKey(option)" @click="toggleListFilterSelected('models',optValue(option))"><span>{{optLabel(option)}}</span><span class="ms-opt-check" v-if="isListFilterSelected('models',optValue(option))">✓</span></div>
+              <div class="ms-more" v-if="hiddenListFilterOptionCount('models') > 0">还有 {{hiddenListFilterOptionCount('models')}} 个机型，请搜索缩小范围</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     <div class="tw">
@@ -329,7 +386,7 @@
       <div class="overview-status">数据更新时间：<b>{{analysis.updatedAt}}</b></div>
     </section>
     <div class="integration-hint">下游调用 <code>POST /api/v1/integration/retrieval-events:batch</code> 并携带 <code>X-Integration-Key</code>，即可将召回质量事件写入本页。</div>
-    <div class="cards">
+    <div class="cards analysis-metric-cards">
       <div class="card"><div class="lb">召回事件总数</div><div class="vl bl">{{analysis.summary.total}}</div><div class="metric-note"><b>全部</b> 已上报事件</div></div>
       <div class="card"><div class="lb">低于阈值</div><div class="vl og">{{analysis.summary.low_score}}</div><div class="metric-note"><b>低分</b> 建议补充或优化知识</div></div>
       <div class="card"><div class="lb">无候选结果</div><div class="vl gy">{{analysis.summary.no_candidates}}</div><div class="metric-note"><b>缺口</b> 未召回任何知识</div></div>
@@ -586,7 +643,11 @@ Vue.createApp({
       dashboard: {pending:[], recentUpdates:[], updatedAt:'-'},
       analysis: {summary:{total:0, accepted:0, low_score:0, no_candidates:0, not_selected:0}, risks:[], updatedAt:'-'},
       changeLogs: {item:null, entries:[]},
-      f: {status:'', category_id:'', kw:''},
+      f: {status:'', category_id:'', applicableCategoryIds:[], brandIds:[], modelIds:[], kw:''},
+      filterDrop: '',
+      listFilterCategoryKw: '',
+      listFilterBrandKw: '',
+      listFilterModelKw: '',
       dlg: false,
       viewOnly: false,
       auditMode: false,
@@ -824,6 +885,9 @@ Vue.createApp({
       if (self.currentUser.role === 'visitor') p.set('status', 'published');
       else if (self.f.status) p.set('status', self.f.status);
       if (self.f.category_id) p.set('category_id', self.f.category_id);
+      (self.f.applicableCategoryIds || []).forEach(function(value) { p.append('applicable_category_ids', value); });
+      (self.f.brandIds || []).forEach(function(value) { p.append('brand_ids', value); });
+      (self.f.modelIds || []).forEach(function(value) { p.append('model_ids', value); });
       if (self.f.kw) p.set('keyword', self.f.kw);
       fetch(API + '/knowledge?' + p, {headers:self.authHeaders()})
         .then(function(r) { return r.json(); })
@@ -865,9 +929,16 @@ Vue.createApp({
     },
     formatDate: function(value) {
       if (!value) return '-';
-      var date = new Date(value);
+      var normalized = value;
+      if (typeof value === 'string') {
+        normalized = value.trim();
+        if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(normalized)) {
+          normalized = normalized.replace(' ', 'T') + 'Z';
+        }
+      }
+      var date = new Date(normalized);
       if (isNaN(date.getTime())) return '-';
-      return date.toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'});
+      return date.toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false});
     },
     formatScore: function(value) {
       return typeof value === 'number' ? value.toFixed(2) : '-';
@@ -1022,23 +1093,158 @@ Vue.createApp({
     },
     loadManhattanOptions: function() {
       var self = this;
-      if (!self.showManhattanFields()) return;
       fetch(API + '/manhattan/cache', {headers:self.authHeaders()})
         .then(function(r) { if (!r.ok) return r.json().then(function(e) { throw new Error(e.detail || r.statusText); }); return r.json(); })
         .then(function(d) {
           self.mhCache = d || self.mhCache;
           self.option.applicableCategories = self.flattenOptions(self.mhCache.applicable_categories || []);
           self.optErr.applicableCategories = self.option.applicableCategories.length ? '' : '本地暂无曼哈顿数据，请联系开发者更新。';
-          self.loadBrands();
-          self.loadModels();
+          if (self.showManhattanFields()) {
+            self.loadBrands();
+            self.loadModels();
+          }
         })
         .catch(function(e) { self.optErr.applicableCategories = e.message; });
+    },
+    listFilterOptions: function(key) {
+      if (key === 'applicableCategories') {
+        return this.flattenOptions(this.mhCache.applicable_categories || []);
+      }
+      if (key === 'brands') {
+        var groups = this.mhCache.brands_by_category || {};
+        var rawBrands = [];
+        if (!(this.f.applicableCategoryIds || []).length) return [];
+        (this.f.applicableCategoryIds || []).forEach(function(categoryId) {
+          rawBrands = rawBrands.concat(groups[categoryId] || []);
+        });
+        return this.flattenOptions(rawBrands);
+      }
+      if (key === 'models') {
+        if (
+          !(this.f.applicableCategoryIds || []).length
+          || !(this.f.brandIds || []).length
+        ) return [];
+        var categoryIds = {};
+        var brandIds = {};
+        (this.f.applicableCategoryIds || []).forEach(function(value) { categoryIds[String(value)] = true; });
+        (this.f.brandIds || []).forEach(function(value) { brandIds[String(value)] = true; });
+        var hasCategories = Object.keys(categoryIds).length > 0;
+        var hasBrands = Object.keys(brandIds).length > 0;
+        var rawModels = (this.mhCache.models || []).filter(function(model) {
+          if (!model || typeof model !== 'object') return true;
+          var modelCategoryId = String(model.categoryId || model.category_id || '');
+          var modelBrandId = String(model.brandId || model.brand_id || '');
+          var categoryMatch = !hasCategories || !modelCategoryId || categoryIds[modelCategoryId];
+          var brandMatch = !hasBrands || !modelBrandId || brandIds[modelBrandId];
+          return categoryMatch && brandMatch;
+        });
+        return this.flattenOptions(rawModels);
+      }
+      return [];
+    },
+    listFilterKeyword: function(key) {
+      if (key === 'applicableCategories') return this.listFilterCategoryKw;
+      if (key === 'brands') return this.listFilterBrandKw;
+      if (key === 'models') return this.listFilterModelKw;
+      return '';
+    },
+    clearListFilterSearch: function(key) {
+      if (key === 'applicableCategories') this.listFilterCategoryKw = '';
+      if (key === 'brands') this.listFilterBrandKw = '';
+      if (key === 'models') this.listFilterModelKw = '';
+    },
+    visibleListFilterOptions: function(key) {
+      return this.filterOptions(
+        this.listFilterOptions(key),
+        this.listFilterKeyword(key)
+      ).slice(0, 200);
+    },
+    hiddenListFilterOptionCount: function(key) {
+      return Math.max(
+        0,
+        this.filterOptions(
+          this.listFilterOptions(key),
+          this.listFilterKeyword(key)
+        ).length - 200
+      );
+    },
+    listFilterFieldArray: function(key) {
+      if (key === 'applicableCategories') return this.f.applicableCategoryIds;
+      if (key === 'brands') return this.f.brandIds;
+      if (key === 'models') return this.f.modelIds;
+      return [];
+    },
+    isListFilterSelected: function(key, value) {
+      return this.listFilterFieldArray(key).indexOf(String(value)) !== -1;
+    },
+    toggleListFilterSelected: function(key, value) {
+      value = String(value);
+      var values = this.listFilterFieldArray(key);
+      var index = values.indexOf(value);
+      if (index === -1) values.push(value);
+      else values.splice(index, 1);
+      this.clearListFilterSearch(key);
+      this.afterListFilterChange(key);
+    },
+    removeListFilterSelected: function(key, value) {
+      value = String(value);
+      var values = this.listFilterFieldArray(key);
+      var index = values.indexOf(value);
+      if (index !== -1) values.splice(index, 1);
+      this.afterListFilterChange(key);
+    },
+    clearListFilter: function(key) {
+      var values = this.listFilterFieldArray(key);
+      values.splice(0, values.length);
+      this.clearListFilterSearch(key);
+      this.afterListFilterChange(key);
+    },
+    selectAllListFilterVisible: function(key) {
+      var values = this.listFilterFieldArray(key);
+      this.visibleListFilterOptions(key).forEach(function(option) {
+        var value = String(option && typeof option === 'object' ? (option.value || '') : option);
+        if (value && values.indexOf(value) === -1) values.push(value);
+      });
+      this.clearListFilterSearch(key);
+      this.afterListFilterChange(key);
+    },
+    afterListFilterChange: function(key) {
+      if (key === 'applicableCategories') {
+        this.f.brandIds.splice(0, this.f.brandIds.length);
+        this.f.modelIds.splice(0, this.f.modelIds.length);
+        this.listFilterBrandKw = '';
+        this.listFilterModelKw = '';
+      } else if (key === 'brands') {
+        this.f.modelIds.splice(0, this.f.modelIds.length);
+        this.listFilterModelKw = '';
+      }
+      this.load();
+    },
+    listFilterSelectedLabel: function(key, value) {
+      var options = this.listFilterOptions(key);
+      for (var i = 0; i < options.length; i++) {
+        if (this.optValue(options[i]) === String(value)) return this.optLabel(options[i]);
+      }
+      return String(value);
+    },
+    focusListFilterInput: function(refName, key) {
+      if (this.filterDrop && this.filterDrop !== key) {
+        this.clearListFilterSearch(this.filterDrop);
+      }
+      this.clearMultiSearch(this.drop);
+      this.drop = '';
+      this.filterDrop = key;
+      var self = this;
+      this.$nextTick(function() {
+        var element = self.$refs[refName];
+        if (element && element.focus) element.focus();
+      });
     },
     showManhattanFields: function() {
       var id = this.fm.cat || '';
       var cat = (this.cats || []).find(function(c) { return c.id === id; });
       var name = cat ? cat.name : '';
-      return id === 'cat-qc-standard' || id === 'cat-qc-process' || name === '质检标准' || name === '质检流程';
+      return id === 'cat-qc-standard' || id === 'cat-qc-process' || name === '质检标准' || name === '操作流程';
     },
     onKnowledgeCategoryChange: function() {
       this.drop = '';
@@ -1185,6 +1391,8 @@ Vue.createApp({
     focusMultiInput: function(refName, key) {
       if (this.viewOnly) return;
       if (this.drop && this.drop !== key) this.clearMultiSearch(this.drop);
+      this.clearListFilterSearch(this.filterDrop);
+      this.filterDrop = '';
       this.drop = key;
       var self = this;
       this.$nextTick(function() {
@@ -1688,6 +1896,8 @@ Vue.createApp({
         if (!e.target.closest('.ms')) {
           self.clearMultiSearch(self.drop);
           self.drop = '';
+          self.clearListFilterSearch(self.filterDrop);
+          self.filterDrop = '';
         }
       });
       document.addEventListener('keydown', function(e) {

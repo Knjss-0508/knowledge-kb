@@ -23,7 +23,7 @@ class KnowledgeExcelTests(unittest.TestCase):
             ),
             SimpleNamespace(
                 id="cat-process",
-                name="质检流程",
+                name="操作流程",
                 parent_id="cat-parent",
                 level=2,
                 sort_order=20,
@@ -68,7 +68,7 @@ class KnowledgeExcelTests(unittest.TestCase):
         dictionary_rows = list(
             workbook["分类字典"].iter_rows(min_row=2, values_only=True)
         )
-        self.assertIn(("cat-process", "质检流程", "质检/质检流程"), dictionary_rows)
+        self.assertIn(("cat-process", "操作流程", "质检/操作流程"), dictionary_rows)
 
     def test_parse_accepts_category_id_and_splits_multi_value_fields(self):
         payload = self.workbook_bytes(
@@ -95,7 +95,7 @@ class KnowledgeExcelTests(unittest.TestCase):
     def test_parse_accepts_full_category_path(self):
         payload = self.workbook_bytes(
             ["标题", "知识分类", "正文"],
-            [["流程说明", "质检/质检流程", "按流程逐项检查。"]],
+            [["流程说明", "质检/操作流程", "按流程逐项检查。"]],
         )
 
         rows = parse_knowledge_workbook(payload, self.categories)

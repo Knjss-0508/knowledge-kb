@@ -10,6 +10,19 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn("/api/v1/knowledge/import/template", paths)
         self.assertIn("/api/v1/knowledge/import/excel", paths)
 
+    def test_knowledge_list_exposes_applicability_filters(self):
+        operation = app.openapi()["paths"]["/api/v1/knowledge"]["get"]
+        parameter_names = {
+            parameter["name"] for parameter in operation["parameters"]
+        }
+        self.assertTrue(
+            {
+                "applicable_category_ids",
+                "brand_ids",
+                "model_ids",
+            }.issubset(parameter_names)
+        )
+
     def test_openapi_no_longer_exposes_knowledge_layer(self):
         specification = json.dumps(app.openapi(), ensure_ascii=False)
         self.assertNotIn('"layer"', specification)

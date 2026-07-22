@@ -99,11 +99,32 @@ GET /integration/taxonomy
   "version": "automation-v3",
   "categories": [
     {
-      "id": "cat-phone",
-      "name": "手机",
+      "id": "cat-qc-standard",
+      "name": "质检标准",
       "parent_id": null,
       "level": 1,
       "sort_order": 10
+    },
+    {
+      "id": "cat-qc-process",
+      "name": "操作流程",
+      "parent_id": null,
+      "level": 1,
+      "sort_order": 20
+    },
+    {
+      "id": "cat-case-analysis",
+      "name": "案例解析",
+      "parent_id": null,
+      "level": 1,
+      "sort_order": 30
+    },
+    {
+      "id": "cat-extra-knowledge",
+      "name": "课外常识",
+      "parent_id": null,
+      "level": 1,
+      "sort_order": 40
     }
   ],
   "tag_dimensions": []
@@ -136,7 +157,7 @@ POST /integration/knowledge-dedup:check
         }
       ]
     },
-    "category_id": "cat-phone",
+    "category_id": "cat-qc-standard",
     "scene_tags": ["无法开机", "售后咨询"],
     "applicable_categories": [],
     "applicable_brands": [],
@@ -172,7 +193,7 @@ POST /integration/knowledge-dedup:check
       "knowledge_id": "A-00001",
       "title": "手机开机异常处理规则",
       "status": "published",
-      "category_id": "cat-phone",
+      "category_id": "cat-qc-standard",
       "match_type": "semantic",
       "similarity": 0.913421
     }
@@ -237,7 +258,7 @@ POST /integration/knowledge-candidates:batch
             }
           ]
         },
-        "category_id": "cat-phone",
+        "category_id": "cat-qc-standard",
         "scene_tags": ["无法开机", "售后咨询"],
         "applicable_categories": [],
         "applicable_brands": ["品牌示例"],
@@ -356,7 +377,7 @@ POST /knowledge/search
 ```json
 {
   "query": "手机黑屏无法开机应该怎么排查",
-  "category_id": "cat-phone",
+  "category_id": "cat-qc-standard",
   "top_k": 5
 }
 ```
@@ -390,7 +411,7 @@ POST /knowledge/search
       },
       "score": 0.912345,
       "status": "published",
-      "category_id": "cat-phone"
+      "category_id": "cat-qc-standard"
     }
   ]
 }
@@ -518,7 +539,7 @@ curl -X POST "$KB_BASE_URL/api/v1/knowledge/search" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "手机黑屏无法开机应该怎么排查",
-    "category_id": "cat-phone",
+    "category_id": "cat-qc-standard",
     "top_k": 5
   }'
 ```

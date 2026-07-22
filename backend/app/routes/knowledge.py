@@ -10,7 +10,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, text
+from sqlalchemy import cast, func, or_, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -512,10 +513,13 @@ async def import_knowledge_excel(
     )
 
 
-@router.get("", response_model=list[KnowledgeResponse], summary="查询知识条目列表", description="支持按状态、分类筛选，分页查询")
+@router.get("", response_model=list[KnowledgeResponse], summary="查询知识条目列表", description="支持按状态、知识分类、适用类目、品牌和机型筛选，分页查询")
 def list_knowledge(
     status: str | None = Query(None, description="状态筛选"),
     category_id: str | None = Query(None, description="分类ID"),
+    applicable_category_ids: list[str] | None = Query(None, description="适用类目ID，可多选"),
+    brand_ids: list[str] | None = Query(None, description="适用品牌ID，可多选"),
+    model_ids: list[str] | None = Query(None, description="适用机型ID，可多选"),
     keyword: str | None = Query(None, description="标题关键词搜索"),
     page: int = Query(1, ge=1, description="页码"),
     size: int = Query(20, ge=1, le=100, description="每页条数"),
@@ -524,12 +528,57 @@ def list_knowledge(
     current_user: User = Depends(get_current_user),
 ):
     q = db.query(Knowledge)
+    applicable_category_ids = [
+        value.strip()
+        for value in (applicable_category_ids or [])
+        if value and value.strip()
+    ]
+    brand_ids = [
+        value.strip()
+        for value in (brand_ids or [])
+        if value and value.strip()
+    ]
+    model_ids = [
+        value.strip()
+        for value in (model_ids or [])
+        if value and value.strip()
+    ]
     if current_user.role == "visitor":
         q = q.filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
     if status:
         q = q.filter(Knowledge.status == KnowledgeStatus(status))
     if category_id:
         q = q.filter(Knowledge.category_id == category_id)
+    if applicable_category_ids:
+        q = q.filter(
+            or_(
+                *[
+                    cast(Knowledge.applicable_categories, JSONB).contains([value])
+                    for value in dict.fromkeys(applicable_category_ids)
+                    if value
+                ]
+            )
+        )
+    if brand_ids:
+        q = q.filter(
+            or_(
+                *[
+                    cast(Knowledge.applicable_brands, JSONB).contains([value])
+                    for value in dict.fromkeys(brand_ids)
+                    if value
+                ]
+            )
+        )
+    if model_ids:
+        q = q.filter(
+            or_(
+                *[
+                    cast(Knowledge.applicable_models, JSONB).contains([value])
+                    for value in dict.fromkeys(model_ids)
+                    if value
+                ]
+            )
+        )
     if keyword:
         q = q.filter(Knowledge.title.ilike(f"%{keyword}%"))
     items = q.order_by(Knowledge.created_at.desc()).offset((page - 1) * size).limit(size).all()
