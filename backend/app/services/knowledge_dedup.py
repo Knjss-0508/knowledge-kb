@@ -31,7 +31,6 @@ class DedupMatch:
     title: str
     status: str
     category_id: str
-    layer: str
     match_type: DedupMatchType
     similarity: float
     title_similarity: float | None = None
@@ -303,7 +302,6 @@ def check_duplicate(
                     title=item.title,
                     status=item.status.value,
                     category_id=item.category_id,
-                    layer=item.layer.value,
                     match_type="exact",
                     similarity=1.0,
                 )
@@ -329,7 +327,6 @@ def check_duplicate(
                     title=item.title,
                     status=item.status.value,
                     category_id=item.category_id,
-                    layer=item.layer.value,
                     match_type="exact",
                     similarity=1.0,
                 )
@@ -358,7 +355,6 @@ def check_duplicate(
                     title=item.title,
                     status=item.status.value,
                     category_id=item.category_id,
-                    layer=item.layer.value,
                     match_type="content_containment",
                     similarity=1.0,
                 )
@@ -414,7 +410,6 @@ def check_duplicate(
                 title=item.title,
                 status=item.status.value,
                 category_id=item.category_id,
-                layer=item.layer.value,
                 match_type="semantic",
                 similarity=_combined_dedup_similarity(
                     max(0.0, title_similarity),
@@ -619,7 +614,6 @@ def search_embeddings(
     *,
     query: str,
     category_id: str | None = None,
-    layer: str | None = None,
     tags: list[str] | None = None,
     top_k: int = 10,
 ) -> list[tuple[Knowledge, float]]:
@@ -640,8 +634,6 @@ def search_embeddings(
     )
     if category_id:
         item_query = item_query.filter(Knowledge.category_id == category_id)
-    if layer:
-        item_query = item_query.filter(Knowledge.layer == layer)
     if tags:
         item_query = item_query.filter(
             Knowledge.tags.any(KnowledgeTag.tag_value_id.in_(tags))

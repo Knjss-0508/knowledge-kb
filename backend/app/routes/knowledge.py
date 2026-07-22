@@ -1,20 +1,24 @@
 import uuid
 import os
+import logging
 import string
 import time
 from copy import deepcopy
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.routes.auth import get_current_user, has_permission, require_permission
 from app.models.user import User
 from app.models.knowledge import (
-    Knowledge, KnowledgeStatus, KnowledgeLayer,
+    Category, Knowledge, KnowledgeStatus,
     KnowledgeTag, KnowledgeMedia, KnowledgeDeduplicationFeedback, KnowledgeChangeLog,
 )
 from app.core.config import settings
@@ -27,13 +31,21 @@ from app.services.knowledge_dedup import (
     save_embedding,
     search_embeddings,
 )
+from app.services.knowledge_excel import (
+    MAX_IMPORT_FILE_BYTES,
+    KnowledgeExcelError,
+    build_knowledge_import_template,
+    parse_knowledge_workbook,
+)
 from app.schemas.knowledge import (
     KnowledgeCreate, KnowledgeUpdate, KnowledgeResponse,
     CandidateSubmit, DeduplicationFeedbackSubmit, FeedbackSubmit,
+    ExcelImportResponse, ExcelImportRowResult,
     SearchRequest, SearchResponse, SearchResult,
 )
 
 router = APIRouter(prefix="/knowledge", tags=["知识库管理"])
+logger = logging.getLogger(__name__)
 
 UPLOAD_DIR = Path(settings.UPLOAD_DIR) if settings.UPLOAD_DIR else Path(__file__).resolve().parents[2] / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -165,7 +177,6 @@ def _deduplication_metadata(decision: DedupDecision) -> dict:
                 "title": match.title,
                 "status": match.status,
                 "category_id": match.category_id,
-                "layer": match.layer,
                 "match_type": match.match_type,
                 "similarity": match.similarity,
                 "title_similarity": match.title_similarity,
@@ -269,7 +280,6 @@ def _to_response(item: Knowledge) -> dict:
         "title": item.title,
         "subtitles": item.subtitles or [],
         "content": item.content,
-        "layer": item.layer.value,
         "category_id": item.category_id,
         "status": item.status.value,
         "source": item.source,
@@ -292,12 +302,16 @@ def _to_response(item: Knowledge) -> dict:
 
 # ---- CRUD ----
 
-@router.post("", response_model=KnowledgeResponse, status_code=201, summary="创建知识条目", description="新建一条知识条目，完成查重后直接进入待审核(review)")
-def create_knowledge(
+def _create_knowledge_item(
     body: KnowledgeCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("knowledge:create")),
-):
+    db: Session,
+    current_user: User,
+    *,
+    source: str = "manual",
+) -> Knowledge:
+    if not db.query(Category.id).filter(Category.id == body.category_id).first():
+        raise HTTPException(status_code=422, detail="所属分类不存在。")
+
     normalized_content = _normalize_content(body.content)
     try:
         decision = _check_manual_deduplication(
@@ -316,9 +330,9 @@ def create_knowledge(
         title=body.title,
         subtitles=body.subtitles or [],
         content=normalized_content,
-        layer=KnowledgeLayer(body.layer),
         category_id=body.category_id,
         status=KnowledgeStatus.REVIEW,
+        source=source,
         applicable_scenes=body.applicable_scenes,
         applicable_business_types=body.applicable_business_types,
         applicable_categories=body.applicable_categories,
@@ -342,15 +356,171 @@ def create_knowledge(
             content_embedding=decision.content_embedding,
         )
     ensure_search_embeddings(db, item)
+    return item
+
+
+@router.post("", response_model=KnowledgeResponse, status_code=201, summary="创建知识条目", description="新建一条知识条目，完成查重后直接进入待审核(review)")
+def create_knowledge(
+    body: KnowledgeCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:create")),
+):
+    item = _create_knowledge_item(body, db, current_user)
     db.commit()
     db.refresh(item)
     return _to_response(item)
 
 
-@router.get("", response_model=list[KnowledgeResponse], summary="查询知识条目列表", description="支持按状态、层级、分类筛选，分页查询")
+@router.get("/import/template", summary="下载知识批量导入模板")
+def download_knowledge_import_template(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("knowledge:create")),
+):
+    categories = db.query(Category).order_by(Category.level, Category.sort_order).all()
+    payload = build_knowledge_import_template(categories)
+    return StreamingResponse(
+        BytesIO(payload),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="knowledge-import-template.xlsx"'
+        },
+    )
+
+
+@router.post(
+    "/import/excel",
+    response_model=ExcelImportResponse,
+    summary="Excel 批量导入知识",
+)
+async def import_knowledge_excel(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:create")),
+):
+    filename = file.filename or ""
+    if not filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=422, detail="仅支持 .xlsx 文件。")
+
+    data = await file.read(MAX_IMPORT_FILE_BYTES + 1)
+    categories = db.query(Category).order_by(Category.level, Category.sort_order).all()
+    try:
+        rows = parse_knowledge_workbook(data, categories)
+    except KnowledgeExcelError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    results: list[ExcelImportRowResult] = []
+    imported = 0
+    for row in rows:
+        if not row.is_valid:
+            results.append(
+                ExcelImportRowResult(
+                    row=row.row_number,
+                    title=row.title,
+                    status="failed",
+                    error_code=row.error_code,
+                    error_message=row.error_message,
+                )
+            )
+            continue
+
+        try:
+            body = KnowledgeCreate(
+                title=row.title,
+                subtitles=row.subtitles or [],
+                content=row.content,
+                category_id=row.category_id,
+                applicable_scenes=row.applicable_scenes or [],
+                applicable_business_types=row.applicable_business_types or [],
+                applicable_categories=row.applicable_categories or [],
+                applicable_brands=row.applicable_brands or [],
+                applicable_models=row.applicable_models or [],
+                is_model_personal=row.is_model_personal,
+            )
+            item = _create_knowledge_item(
+                body,
+                db,
+                current_user,
+                source="excel",
+            )
+            db.commit()
+            db.refresh(item)
+            imported += 1
+            results.append(
+                ExcelImportRowResult(
+                    row=row.row_number,
+                    title=row.title,
+                    status="imported",
+                    knowledge_id=item.id,
+                )
+            )
+        except HTTPException as exc:
+            db.rollback()
+            detail = exc.detail
+            error_code = "IMPORT_REJECTED"
+            if isinstance(detail, dict):
+                error_code = str(detail.get("code") or error_code)
+                error_message = str(detail.get("message") or detail)
+            else:
+                error_message = str(detail)
+            results.append(
+                ExcelImportRowResult(
+                    row=row.row_number,
+                    title=row.title,
+                    status="failed",
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+            )
+        except IntegrityError:
+            db.rollback()
+            logger.exception(
+                "Excel knowledge import hit a database constraint at row %s",
+                row.row_number,
+            )
+            results.append(
+                ExcelImportRowResult(
+                    row=row.row_number,
+                    title=row.title,
+                    status="failed",
+                    error_code="INVALID_ROW",
+                    error_message="数据校验失败，请检查分类和字段格式。",
+                )
+            )
+        except ValueError as exc:
+            db.rollback()
+            results.append(
+                ExcelImportRowResult(
+                    row=row.row_number,
+                    title=row.title,
+                    status="failed",
+                    error_code="INVALID_ROW",
+                    error_message=str(exc),
+                )
+            )
+        except Exception:
+            db.rollback()
+            logger.exception("Excel knowledge import failed at row %s", row.row_number)
+            results.append(
+                ExcelImportRowResult(
+                    row=row.row_number,
+                    title=row.title,
+                    status="failed",
+                    error_code="IMPORT_FAILED",
+                    error_message="导入失败，请检查服务日志。",
+                )
+            )
+
+    return ExcelImportResponse(
+        total=len(results),
+        imported=imported,
+        failed=len(results) - imported,
+        results=results,
+    )
+
+
+@router.get("", response_model=list[KnowledgeResponse], summary="查询知识条目列表", description="支持按状态、分类筛选，分页查询")
 def list_knowledge(
     status: str | None = Query(None, description="状态筛选"),
-    layer: str | None = Query(None, description="知识层级"),
     category_id: str | None = Query(None, description="分类ID"),
     keyword: str | None = Query(None, description="标题关键词搜索"),
     page: int = Query(1, ge=1, description="页码"),
@@ -364,8 +534,6 @@ def list_knowledge(
         q = q.filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
     if status:
         q = q.filter(Knowledge.status == KnowledgeStatus(status))
-    if layer:
-        q = q.filter(Knowledge.layer == KnowledgeLayer(layer))
     if category_id:
         q = q.filter(Knowledge.category_id == category_id)
     if keyword:
@@ -439,7 +607,6 @@ def _knowledge_snapshot(item: Knowledge) -> dict:
         "title": item.title,
         "subtitles": deepcopy(item.subtitles or []),
         "content": deepcopy(item.content or {}),
-        "layer": item.layer.value,
         "category_id": item.category_id,
         "status": item.status.value,
         "applicable_scenes": deepcopy(item.applicable_scenes or []),
@@ -551,8 +718,6 @@ def update_knowledge(
             _sync_media_meta(db, item.id, normalized)
         elif field == "status":
             setattr(item, field, KnowledgeStatus(val))
-        elif field == "layer":
-            setattr(item, field, KnowledgeLayer(val))
         elif field == "is_model_personal":
             setattr(item, field, "true" if val else "false")
         else:
@@ -945,7 +1110,6 @@ def submit_candidate(
         id=_generate_knowledge_id(db),
         title=body.title,
         content=_normalize_content(body.content),
-        layer=KnowledgeLayer(body.layer),
         category_id=body.category_id,
         status=KnowledgeStatus.REVIEW,
         applicable_scenes=body.applicable_scenes,
@@ -985,7 +1149,6 @@ def search_knowledge(
             db,
             query=body.query,
             category_id=body.category_id,
-            layer=body.layer,
             tags=body.tags,
             top_k=body.top_k,
         )
@@ -998,8 +1161,6 @@ def search_knowledge(
         q = db.query(Knowledge).filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
         if body.category_id:
             q = q.filter(Knowledge.category_id == body.category_id)
-        if body.layer:
-            q = q.filter(Knowledge.layer == KnowledgeLayer(body.layer))
         if body.tags:
             q = q.filter(
                 Knowledge.tags.any(KnowledgeTag.tag_value_id.in_(body.tags))
@@ -1012,7 +1173,7 @@ def search_knowledge(
     results = [
         SearchResult(
             id=i.id, title=i.title, content=i.content,
-            score=round(score, 6), layer=i.layer.value,
+            score=round(score, 6),
             status=i.status.value, category_id=i.category_id,
         )
         for i, score in ranked

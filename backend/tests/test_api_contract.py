@@ -1,0 +1,20 @@
+import json
+import unittest
+
+from app.main import app
+
+
+class ApiContractTests(unittest.TestCase):
+    def test_excel_import_routes_are_exposed(self):
+        paths = app.openapi()["paths"]
+        self.assertIn("/api/v1/knowledge/import/template", paths)
+        self.assertIn("/api/v1/knowledge/import/excel", paths)
+
+    def test_openapi_no_longer_exposes_knowledge_layer(self):
+        specification = json.dumps(app.openapi(), ensure_ascii=False)
+        self.assertNotIn('"layer"', specification)
+        self.assertNotIn("知识层级", specification)
+
+
+if __name__ == "__main__":
+    unittest.main()

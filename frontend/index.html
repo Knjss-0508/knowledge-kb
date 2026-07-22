@@ -249,6 +249,9 @@
       <button class="btn bd" v-if="dev.showManhattanUpdate && can('account:manage')" @click="openManhattanPanel">更新曼哈顿数据</button>
       <input class="inp" style="width:160px" v-model="f.kw" placeholder="搜索标题..." @keyup.enter="load">
       <button class="btn bd" @click="load">刷新</button>
+      <button class="btn bd" v-if="can('knowledge:create')" @click="downloadImportTemplate">下载导入模板</button>
+      <button class="btn bd" v-if="can('knowledge:create')" @click="chooseImportFile" :disabled="importing">{{importing?'导入中...':'Excel 批量导入'}}</button>
+      <input ref="knowledgeImportFile" type="file" accept=".xlsx" style="display:none" @change="importKnowledgeExcel">
       <button class="btn bp" v-if="can('knowledge:create')" @click="openNew">+ 新建知识</button>
     </div>
     <div class="filter-tabs">
@@ -257,18 +260,19 @@
         <button class="tab-btn" v-for="tab in statusTabs()" :key="tab.value || 'all-status'" :class="{on:f.status===tab.value}" @click="setFilter('status', tab.value)">{{tab.label}}</button>
       </div>
       <div class="tab-row">
-        <span class="tab-label">分类</span>
-        <button class="tab-btn" v-for="tab in layerTabs()" :key="tab.value || 'all-layer'" :class="{on:f.layer===tab.value}" @click="setFilter('layer', tab.value)">{{tab.label}}</button>
+        <span class="tab-label">知识分类</span>
+        <button class="tab-btn" :class="{on:!f.category_id}" @click="setFilter('category_id', '')">全部分类</button>
+        <button class="tab-btn" v-for="cat in cats" :key="cat.id" :class="{on:f.category_id===cat.id}" @click="setFilter('category_id', cat.id)">{{cat.name}}</button>
       </div>
     </div>
     <div class="tw">
       <table class="knowledge-table">
-        <thead><tr><th style="width:130px">ID</th><th>标题</th><th style="width:70px">层级</th><th style="width:220px">状态</th><th style="width:90px">创建人</th><th style="width:100px">最近变更人</th><th style="width:280px;text-align:right">操作</th></tr></thead>
+        <thead><tr><th style="width:130px">ID</th><th>标题</th><th style="width:150px">知识分类</th><th style="width:220px">状态</th><th style="width:90px">创建人</th><th style="width:100px">最近变更人</th><th style="width:280px;text-align:right">操作</th></tr></thead>
         <tbody>
           <tr v-for="r in list" :key="r.id">
             <td style="font-family:monospace;color:#86909c">{{r.id}}</td>
             <td style="font-weight:500">{{r.title}}</td>
-            <td><span class="tg tg-l">{{r.layer}}</span></td>
+            <td><span class="tg tg-l">{{categoryLabel(r.category_id)}}</span></td>
             <td><div class="status-cell"><span class="tg" :class="{'tg-d':r.status==='draft','tg-r':r.status==='review','tg-p':r.status==='published','tg-x':r.status==='deprecated'}">{{sl(r.status)}}</span><span class="tg tg-r" v-if="r.status==='review' && r.deduplication_metadata && r.deduplication_metadata.action==='review_duplicate'" title="检测到语义相近的已有知识，请在审核时确认是否合并">疑似重复 {{dedupMatchIds(r)}}</span></div></td>
             <td style="color:#86909c">{{r.created_by}}</td>
             <td style="color:#86909c">{{r.status==='published' ? (r.updated_by || r.created_by) : '-'}}</td>
@@ -400,10 +404,9 @@
       <div class="dlg-b">
         <div class="sec">
           <div class="sec-t">知识信息</div>
-          <div class="row">
+          <div class="row" style="grid-template-columns:repeat(2,minmax(0,1fr))">
             <div class="fg"><label class="fl"><span class="req">*</span> 标题</label><input class="fi" v-model="fm.title" :disabled="viewOnly" placeholder="输入知识标题"></div>
             <div class="fg"><label class="fl"><span class="req">*</span> 所属分类</label><select class="fi" v-model="fm.cat" :disabled="viewOnly" @change="onKnowledgeCategoryChange"><option value="" disabled>请选择分类</option><option v-for="c in cats" :key="c.id" :value="c.id">{{c.name}}</option></select></div>
-            <div class="fg"><label class="fl"><span class="req">*</span> 知识层级</label><div class="rg"><div class="rb" title="长期稳定、可反复使用的规则和流程" :class="{on:fm.layer==='L1'}" @click="!viewOnly && (fm.layer='L1')">L1 通用规则</div><div class="rb" title="典型问题的排查步骤和解决办法" :class="{on:fm.layer==='L2'}" @click="!viewOnly && (fm.layer='L2')">L2 问题处理</div><div class="rb" title="版本、政策或活动等经常更新的内容" :class="{on:fm.layer==='L3'}" @click="!viewOnly && (fm.layer='L3')">L3 高频变更</div></div></div>
           </div>
           <div class="fg" style="margin-bottom:14px">
             <label class="fl">副标题 <span style="font-weight:400;color:#86909c;font-size:11px">（选填，可添加多条）</span></label>
@@ -514,7 +517,7 @@
       <div class="dlg-f">
         <button class="btn bd" @click="closeDlg">{{auditMode?'取消审核':(viewOnly?'关闭':'取消')}}</button>
         <button class="btn bp" v-if="auditMode && can('knowledge:approve')" @click="approveFromDetail" :disabled="saving">{{saving?'发布中...':'发布'}}</button>
-        <button class="btn bp" v-if="!viewOnly" @click="save" :disabled="saving || !fm.cat || !fm.layer">{{saving?'保存中...':(eid?'保存修改':'保存并提交审核')}}</button>
+        <button class="btn bp" v-if="!viewOnly" @click="save" :disabled="saving || !fm.cat">{{saving?'保存中...':(eid?'保存修改':'保存并提交审核')}}</button>
       </div>
     </div>
   </div>
@@ -528,13 +531,13 @@
           <div style="border:1px solid #e5e6eb;border-radius:6px;padding:12px;min-width:0">
             <div style="font-size:12px;font-weight:600;margin-bottom:8px">新建知识</div>
             <div style="font-size:12px;margin-bottom:5px"><b>标题：</b>{{dedupCompare.candidate.title}}</div>
-            <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{categoryLabel(dedupCompare.candidate.category_id)}} · <b>层级：</b>{{dedupCompare.candidate.layer}}</div>
+            <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{categoryLabel(dedupCompare.candidate.category_id)}}</div>
             <div class="linkified-text" style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word" v-html="linkifyText(contentPreview(dedupCompare.candidate.content))"></div>
           </div>
           <div style="border:1px solid #e5e6eb;border-radius:6px;padding:12px;min-width:0">
             <div style="font-size:12px;font-weight:600;margin-bottom:8px">命中的已有知识 · {{dedupCompare.match.knowledge_id}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>标题：</b>{{dedupCompare.target.title || dedupCompare.match.title}}</div>
-            <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{categoryLabel(dedupCompare.target.category_id || dedupCompare.match.category_id)}} · <b>层级：</b>{{dedupCompare.target.layer || dedupCompare.match.layer}}</div>
+            <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{categoryLabel(dedupCompare.target.category_id || dedupCompare.match.category_id)}}</div>
             <div class="linkified-text" style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word" v-html="linkifyText(contentPreview(dedupCompare.target.content))"></div>
           </div>
         </div>
@@ -581,12 +584,13 @@ Vue.createApp({
       dashboard: {pending:[], recentUpdates:[], updatedAt:'-'},
       analysis: {summary:{total:0, accepted:0, low_score:0, no_candidates:0, not_selected:0}, risks:[], updatedAt:'-'},
       changeLogs: {item:null, entries:[]},
-      f: {status:'', layer:'', kw:''},
+      f: {status:'', category_id:'', kw:''},
       dlg: false,
       viewOnly: false,
       auditMode: false,
       eid: '',
       saving: false,
+      importing: false,
       ns: '',
       drop: '',
       categoryKw: '',
@@ -598,8 +602,8 @@ Vue.createApp({
       mhCache: {updated_at:null, applicable_categories:[], brands_by_category:{}, models:[]},
       option: {applicableCategories:[], brands:[], models:[]},
       optErr: {applicableCategories:'', brands:'', models:''},
-      fm: {title:'', subtitles:[], layer:'', cat:'', by:'', scenes:[], applicableCategories:[], brands:[], models:[], deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]},
-      dedupCompare: {open:false, loading:false, allowSubmit:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', category_id:'', layer:'', content:{blocks:[]}}, target:{}},
+      fm: {title:'', subtitles:[], cat:'', by:'', scenes:[], applicableCategories:[], brands:[], models:[], deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]},
+      dedupCompare: {open:false, loading:false, allowSubmit:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', category_id:'', content:{blocks:[]}}, target:{}},
       dedupFeedback: {open:false, match:{knowledge_id:'', title:''}, reason:'', submitting:false},
       full:{show:false, src:'', isVideo:false}
     }
@@ -652,17 +656,80 @@ Vue.createApp({
         {label:'已废弃', value:'deprecated'}
       ];
     },
-    layerTabs: function() {
-      return [
-        {label:'全部分类', value:''},
-        {label:'L1 通用规则', value:'L1'},
-        {label:'L2 问题处理', value:'L2'},
-        {label:'L3 高频变更', value:'L3'}
-      ];
-    },
     setFilter: function(key, value) {
       this.f[key] = value;
       this.load();
+    },
+    downloadImportTemplate: function() {
+      var self = this;
+      fetch(API + '/knowledge/import/template', {headers:self.authHeaders()})
+        .then(function(response) {
+          if (!response.ok) {
+            return response.json().then(function(data) {
+              throw new Error(data.detail || '模板下载失败');
+            });
+          }
+          return response.blob();
+        })
+        .then(function(blob) {
+          var url = URL.createObjectURL(blob);
+          var link = document.createElement('a');
+          link.href = url;
+          link.download = '知识批量导入模板.xlsx';
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          URL.revokeObjectURL(url);
+        })
+        .catch(function(error) { alert(error.message); });
+    },
+    chooseImportFile: function() {
+      if (this.importing) return;
+      this.$refs.knowledgeImportFile.click();
+    },
+    importKnowledgeExcel: function(event) {
+      var self = this;
+      var input = event.target;
+      var file = input.files && input.files[0];
+      if (!file) return;
+      if (!/\.xlsx$/i.test(file.name)) {
+        alert('仅支持 .xlsx 文件。');
+        input.value = '';
+        return;
+      }
+
+      var form = new FormData();
+      form.append('file', file);
+      self.importing = true;
+      fetch(API + '/knowledge/import/excel', {
+        method:'POST',
+        headers:self.authHeaders(),
+        body:form
+      })
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(data.detail || '批量导入失败');
+            return data;
+          });
+        })
+        .then(function(data) {
+          var failed = (data.results || []).filter(function(item) { return item.status === 'failed'; });
+          var message = '导入完成：成功 ' + data.imported + ' 条，失败 ' + data.failed + ' 条。';
+          if (failed.length) {
+            message += '\n\n失败明细：\n' + failed.slice(0, 10).map(function(item) {
+              return '第 ' + item.row + ' 行《' + (item.title || '未填写标题') + '》：' + (item.error_message || item.error_code || '导入失败');
+            }).join('\n');
+            if (failed.length > 10) message += '\n其余 ' + (failed.length - 10) + ' 条请分批修正后重新导入。';
+          }
+          alert(message);
+          self.load();
+          self.loadStats();
+        })
+        .catch(function(error) { alert(error.message); })
+        .finally(function() {
+          self.importing = false;
+          input.value = '';
+        });
     },
     logout: function() {
       fetch(API + '/auth/logout', {method:'DELETE', headers:this.authHeaders()}).catch(function(){});
@@ -754,7 +821,7 @@ Vue.createApp({
       var p = new URLSearchParams();
       if (self.currentUser.role === 'visitor') p.set('status', 'published');
       else if (self.f.status) p.set('status', self.f.status);
-      if (self.f.layer) p.set('layer', self.f.layer);
+      if (self.f.category_id) p.set('category_id', self.f.category_id);
       if (self.f.kw) p.set('keyword', self.f.kw);
       fetch(API + '/knowledge?' + p, {headers:self.authHeaders()})
         .then(function(r) { return r.json(); })
@@ -839,7 +906,6 @@ Vue.createApp({
         title:'标题',
         subtitles:'副标题',
         content:'正文内容',
-        layer:'知识层级',
         category_id:'所属分类',
         status:'状态',
         applicable_scenes:'场景标签',
@@ -1129,7 +1195,7 @@ Vue.createApp({
       this.viewOnly = false;
       this.auditMode = false;
       this.eid = '';
-      this.fm = {title:'', subtitles:[], layer:'', cat:'', by:(this.currentUser.username || ''), scenes:[], applicableCategories:[], brands:[], models:[], deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]};
+      this.fm = {title:'', subtitles:[], cat:'', by:(this.currentUser.username || ''), scenes:[], applicableCategories:[], brands:[], models:[], deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]};
       this.ns = '';
       this.dlg = true;
       this.loadCats();
@@ -1201,7 +1267,6 @@ Vue.createApp({
       self.fm = {
         title: r.title,
         subtitles: r.subtitles ? r.subtitles.slice() : [],
-        layer: r.layer,
         cat: r.category_id || '',
         by: r.created_by,
         scenes: r.applicable_scenes ? r.applicable_scenes.slice() : [],
@@ -1238,7 +1303,6 @@ Vue.createApp({
       return {
         title: this.fm.title,
         category_id: this.fm.cat,
-        layer: this.fm.layer,
         content: {blocks: this.buildContentBlocks()}
       };
     },
@@ -1462,9 +1526,8 @@ Vue.createApp({
       var kid = self.eid;
       if (!kid) {
         if (!self.fm.cat) { alert('请选择所属分类'); ch.uploading = false; return; }
-        if (!self.fm.layer) { alert('请选择知识层级'); ch.uploading = false; return; }
         var useManhattan = self.showManhattanFields();
-        var body = {title: self.fm.title || '未命名', subtitles: (self.fm.subtitles || []).filter(function(s) { return s && s.trim(); }), content: {blocks: []}, layer: self.fm.layer, category_id: self.fm.cat, applicable_scenes: self.fm.scenes, applicable_categories: useManhattan ? self.fm.applicableCategories : [], applicable_brands: useManhattan ? self.fm.brands : [], applicable_models: useManhattan ? self.fm.models : []};
+        var body = {title: self.fm.title || '未命名', subtitles: (self.fm.subtitles || []).filter(function(s) { return s && s.trim(); }), content: {blocks: []}, category_id: self.fm.cat, applicable_scenes: self.fm.scenes, applicable_categories: useManhattan ? self.fm.applicableCategories : [], applicable_brands: useManhattan ? self.fm.brands : [], applicable_models: useManhattan ? self.fm.models : []};
         fetch(API + '/knowledge', {method: 'POST', headers: self.authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(body)})
           .then(function(r) {
             return r.json().then(function(data) {
@@ -1509,7 +1572,6 @@ Vue.createApp({
       if (!this.can('knowledge:create')) { alert('没有保存权限'); return; }
       if (!this.fm.title) { alert('请输入标题'); return; }
       if (!this.fm.cat) { alert('请选择所属分类'); return; }
-      if (!this.fm.layer) { alert('请选择知识层级'); return; }
       this.saving = true;
       var self = this;
       var cBlocks = this.buildContentBlocks();
@@ -1518,7 +1580,6 @@ Vue.createApp({
         title: this.fm.title,
         subtitles: this.fm.subtitles.filter(function(s) { return s && s.trim(); }),
         content: {blocks: cBlocks},
-        layer: this.fm.layer,
         category_id: this.fm.cat,
         applicable_scenes: this.fm.scenes,
         applicable_categories: useManhattan ? this.fm.applicableCategories : [],

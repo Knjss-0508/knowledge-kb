@@ -44,7 +44,6 @@ class KnowledgeCreate(BaseModel):
     title: str = Field(..., max_length=256, description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表，可多条")
     content: Any = Field(..., description="知识内容，支持富文本: 纯字符串 或 {blocks:[...]} 结构")
-    layer: str = Field(..., pattern=r"^L[1-3]$", description="知识层级: L1=通用规则（长期稳定） L2=问题处理（典型问题与解决办法） L3=高频变更（版本、政策或活动等经常更新的内容）")
     category_id: str = Field(..., description="所属分类ID")
     applicable_scenes: list[str] = Field(default=[], description="场景标签列表")
     applicable_business_types: list[Any] = Field(default=[], description="适用业务")
@@ -71,7 +70,6 @@ class KnowledgeUpdate(BaseModel):
     title: Optional[str] = Field(None, description="知识标题")
     subtitles: Optional[list[str]] = Field(None, description="副标题列表")
     content: Optional[Any] = Field(None, description="知识内容")
-    layer: Optional[str] = Field(None, description="知识层级")
     category_id: Optional[str] = Field(None, description="所属分类ID")
     status: Optional[str] = Field(None, description="状态: draft/review/published/deprecated")
     applicable_scenes: Optional[list[str]] = Field(None, description="场景标签列表")
@@ -97,7 +95,6 @@ class KnowledgeResponse(BaseModel):
     title: str = Field(description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表")
     content: Any = Field(description="知识内容")
-    layer: str = Field(description="知识层级")
     category_id: Optional[str] = Field(None, description="所属分类ID")
     status: str = Field(description="当前状态")
     source: str = Field(description="来源")
@@ -182,7 +179,6 @@ class TagDimensionResponse(BaseModel):
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, description="搜索关键词")
     category_id: Optional[str] = Field(None, description="限定分类ID")
-    layer: Optional[str] = Field(None, description="限定知识层级")
     tags: Optional[list[str]] = Field(None, description="限定标签")
     top_k: int = Field(default=10, ge=1, le=50, description="返回条数上限")
 
@@ -192,7 +188,6 @@ class SearchResult(BaseModel):
     title: str = Field(description="知识标题")
     content: Any = Field(description="知识内容")
     score: float = Field(description="匹配得分")
-    layer: str = Field(description="知识层级")
     status: str = Field(description="状态")
     category_id: Optional[str] = Field(None, description="所属分类ID")
 
@@ -209,7 +204,6 @@ class CandidateSubmit(BaseModel):
     title: str = Field(..., description="标题")
     content: Any = Field(..., description="内容")
     category_id: str = Field(..., description="所属分类ID")
-    layer: str = Field(..., pattern=r"^L[1-3]$", description="知识层级")
     applicable_scenes: list[str] = Field(default=[], description="场景标签")
     source: str = Field("manual", description="来源")
     source_session_id: Optional[str] = Field(None, description="关联会话ID")
@@ -228,6 +222,22 @@ class DeduplicationFeedbackSubmit(BaseModel):
     matched_knowledge_id: str = Field(..., min_length=1, max_length=64, description="命中的已有知识ID")
     verdict: Literal["different"] = Field("different", description="人工复核结论")
     reason: str = Field(..., min_length=1, max_length=1000, description="判定不同的原因")
+
+
+class ExcelImportRowResult(BaseModel):
+    row: int = Field(description="Excel 行号")
+    title: str = Field(description="知识标题")
+    status: Literal["imported", "failed"] = Field(description="导入结果")
+    knowledge_id: Optional[str] = Field(None, description="成功导入后的知识ID")
+    error_code: Optional[str] = Field(None, description="失败错误码")
+    error_message: Optional[str] = Field(None, description="失败原因")
+
+
+class ExcelImportResponse(BaseModel):
+    total: int = Field(description="有效数据总行数")
+    imported: int = Field(description="成功导入行数")
+    failed: int = Field(description="失败行数")
+    results: list[ExcelImportRowResult] = Field(description="逐行导入结果")
 
 
 KnowledgeResponse.model_rebuild()
