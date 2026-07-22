@@ -41,6 +41,8 @@
     .bw{background:#fff;color:#ff7d00;border-color:#ff7d00}
     .br{background:#fff;color:#f53f3f;border-color:#f53f3f}
     .bd{background:#fff;color:#4e5969;border-color:#e5e6eb}
+    .b-template{background:#e8f3ff;color:#245bdb;border-color:#b7d4ff}.b-template:hover{background:#d8eaff;border-color:#8fbcff}
+    .b-import{background:#fff1e6;color:#c65b00;border-color:#ffc28c}.b-import:hover{background:#ffe4cc;border-color:#ffa95c}.b-import:disabled{opacity:.65;cursor:wait}
     .bsm{padding:3px 8px;font-size:11px}
     .tw{background:#fff;border-radius:10px;border:1px solid #e5e6eb;overflow-x:auto;overflow-y:hidden}
     .user-form{background:#fff;border:1px solid #e5e6eb;border-radius:10px;padding:18px;margin-bottom:14px;display:grid;grid-template-columns:1fr 1fr 160px auto;gap:12px;align-items:end}
@@ -249,8 +251,8 @@
       <button class="btn bd" v-if="dev.showManhattanUpdate && can('account:manage')" @click="openManhattanPanel">更新曼哈顿数据</button>
       <input class="inp" style="width:160px" v-model="f.kw" placeholder="搜索标题..." @keyup.enter="load">
       <button class="btn bd" @click="load">刷新</button>
-      <button class="btn bd" v-if="can('knowledge:create')" @click="downloadImportTemplate">下载导入模板</button>
-      <button class="btn bd" v-if="can('knowledge:create')" @click="chooseImportFile" :disabled="importing">{{importing?'导入中...':'Excel 批量导入'}}</button>
+      <button class="btn b-template" v-if="can('knowledge:create')" @click="downloadImportTemplate">下载导入模板</button>
+      <button class="btn b-import" v-if="can('knowledge:create')" @click="chooseImportFile" :disabled="importing">{{importing?'导入中...':'Excel 批量导入'}}</button>
       <input ref="knowledgeImportFile" type="file" accept=".xlsx" style="display:none" @change="importKnowledgeExcel">
       <button class="btn bp" v-if="can('knowledge:create')" @click="openNew">+ 新建知识</button>
     </div>
@@ -1126,6 +1128,7 @@ Vue.createApp({
       var idx = arr.indexOf(value);
       if (idx === -1) arr.push(value);
       else arr.splice(idx, 1);
+      this.clearMultiSearch(key);
       this.afterMultiSelectChange(key);
     },
     removeSelected: function(key, value) {
@@ -1140,10 +1143,13 @@ Vue.createApp({
       if (this.viewOnly) return;
       var arr = this.fieldArray(key);
       arr.splice(0, arr.length);
+      this.clearMultiSearch(key);
+      this.afterMultiSelectChange(key);
+    },
+    clearMultiSearch: function(key) {
       if (key === 'applicableCategories') this.categoryKw = '';
       if (key === 'brands') this.brandKw = '';
       if (key === 'models') this.modelKw = '';
-      this.afterMultiSelectChange(key);
     },
     selectAllVisible: function(key, options) {
       if (this.viewOnly) return;
@@ -1152,6 +1158,7 @@ Vue.createApp({
         var value = String(o && typeof o === 'object' ? (o.value || '') : o);
         if (value && arr.indexOf(value) === -1) arr.push(value);
       });
+      this.clearMultiSearch(key);
       this.afterMultiSelectChange(key);
     },
     afterMultiSelectChange: function(key) {
@@ -1177,6 +1184,7 @@ Vue.createApp({
     },
     focusMultiInput: function(refName, key) {
       if (this.viewOnly) return;
+      if (this.drop && this.drop !== key) this.clearMultiSearch(this.drop);
       this.drop = key;
       var self = this;
       this.$nextTick(function() {
@@ -1677,7 +1685,10 @@ Vue.createApp({
       var self = this;
       self.checkAuth();
       document.addEventListener('click', function(e) {
-        if (!e.target.closest('.ms')) self.drop = '';
+        if (!e.target.closest('.ms')) {
+          self.clearMultiSearch(self.drop);
+          self.drop = '';
+        }
       });
       document.addEventListener('keydown', function(e) {
         if (e.target && ['INPUT','TEXTAREA','SELECT'].indexOf(e.target.tagName) !== -1) return;

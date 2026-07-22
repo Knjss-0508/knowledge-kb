@@ -17,6 +17,11 @@ PROJECT_ROOT = BACKEND_DIR.parent
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 UPLOAD_DIR = Path(settings.UPLOAD_DIR) if settings.UPLOAD_DIR else BACKEND_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+HTML_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
 
 app = FastAPI(
     title="答疑中台 - 知识库管理",
@@ -54,17 +59,17 @@ app.mount("/lib", StaticFiles(directory=str(FRONTEND_DIR / "lib")), name="lib")
 
 @app.get("/app")
 def serve_frontend():
-    return FileResponse(FRONTEND_DIR / "index.html")
+    return FileResponse(FRONTEND_DIR / "index.html", headers=HTML_NO_CACHE_HEADERS)
 
 
 @app.get("/")
 def serve_root():
-    return FileResponse(FRONTEND_DIR / "auth.html")
+    return FileResponse(FRONTEND_DIR / "auth.html", headers=HTML_NO_CACHE_HEADERS)
 
 
 @app.get("/login")
 def serve_login():
-    return FileResponse(FRONTEND_DIR / "auth.html")
+    return FileResponse(FRONTEND_DIR / "auth.html", headers=HTML_NO_CACHE_HEADERS)
 
 
 @app.get("/health")
