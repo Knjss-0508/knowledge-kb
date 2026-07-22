@@ -1,0 +1,51 @@
+{
+  "system": "manhattan",
+  "base_url": "https://replace-with-actual-host",
+  "login_url": "https://replace-with-actual-login-page",
+  "profile_dir": "data/browser_profiles/manhattan",
+  "channel": "chrome",
+  "operations": {
+    "list": {
+      "method": "POST",
+      "path": "<fill-from-network-discovery>",
+      "body": {
+        "<page-field>": "{{page}}",
+        "<page-size-field>": "{{page_size}}",
+        "<start-date-field>": "{{start}}",
+        "<end-date-field>": "{{end}}"
+      },
+      "items_path": "<response-path-to-record-array>",
+      "total_path": "<response-path-to-total>",
+      "page_size": 100,
+      "field_map": {
+        "transfer_id": "<path-to-transfer-id>",
+        "conversation_id": "<path-to-conversation-id>",
+        "work_order_id": "<path-to-work-order-id>",
+        "event_time": "<path-to-transfer-time>",
+        "engineer": "<path-to-engineer>",
+        "transfer_reason": "<path-to-selected-reason>",
+        "category": "<path-to-category>",
+        "model": "<path-to-model>",
+        "order_status": "<path-to-order-status>"
+      }
+    },
+    "detail": {
+      "method": "POST",
+      "path": "<fill-from-network-discovery>",
+      "body": {
+        "<id-field>": "{{transfer_id}}"
+      },
+      "record_path": "<response-path-to-detail>",
+      "field_map": {
+        "source_id": "<path-to-transfer-id>",
+        "work_order_id": "<path-to-work-order-id>",
+        "engineer": "<path-to-engineer>",
+        "started_at": "<path-to-start-time>",
+        "ended_at": "<path-to-end-time>",
+        "conversation_text": "<path-to-conversation-text>",
+        "messages": "<path-to-message-array>",
+        "attachments": "<path-to-attachment-array>"
+      }
+    }
+  }
+}

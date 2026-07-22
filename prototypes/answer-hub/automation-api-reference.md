@@ -12,7 +12,7 @@
 ```mermaid
 flowchart LR
     A["上游：会话拉取与脱敏"] --> B["聚合、标注、筛选"]
-    B --> C["Skill 改写为知识条目"]
+    B --> C["插件改写为知识条目"]
     C --> D["预查重（可选）"]
     D --> E["批量送审"]
     E --> F["知识库：查重、索引、待审核"]
@@ -73,6 +73,8 @@ Content-Type: application/json
 
 副标题、分类、层级、场景标签、品牌和机型不参与查重向量，避免结构化元数据或大量副标题干扰重复判断。
 
+自动化批量送审启用语义文本证据门禁：Qwen3的标题和正文相似度达到阈值后，还必须满足标题与正文的有效字符片段重合，或正文存在强文本重合，才会进入语义重复拦截。完全重复和正文包含关系不受该门禁影响。
+
 ### 3.2 召回向量
 
 已发布知识会生成两类检索向量：
@@ -83,6 +85,25 @@ Content-Type: application/json
 分类、层级等字段用于筛选，不拼入正文语义向量。
 
 ## 4. 上游接口
+
+### 4.0 第二部分批量接入与无标准改写
+
+```http
+POST /integration/second-part/records:batch
+```
+
+用途：第二部分把已脱敏记录批量送入CZ，由CZ调用当前第三部分工作流完成原子问题拆分、主题聚合和10项候选改写。
+
+规则：
+
+- 单批最多100条。
+- 只接受`redaction_status=redacted`。
+- 当前固定为`knowledge_mode=case_only`。
+- `standard_references_enabled=false`。
+- 候选只依据完整会话、历史实际回复和脱敏案例图生成。
+- 相同`idempotency_key`重试返回`reused`，不会再次调用模型。
+
+请求示例见`examples/second_part_batch.example.json`。
 
 ### 4.1 获取分类、层级与标签字典
 
@@ -194,7 +215,11 @@ POST /integration/knowledge-dedup:check
       "category_id": "cat-phone",
       "layer": "L2",
       "match_type": "semantic",
-      "similarity": 0.913421
+      "similarity": 0.913421,
+      "title_similarity": 0.925100,
+      "content_similarity": 0.913421,
+      "title_lexical_similarity": 0.285714,
+      "content_lexical_similarity": 0.257143
     }
   ]
 }
@@ -204,9 +229,9 @@ POST /integration/knowledge-dedup:check
 
 | action | 含义 | 上游动作 |
 |---|---|---|
-| `create` | 未达到查重审核阈值 | 可以继续批量送审 |
-| `review_duplicate` | 存在疑似重复知识 | 可以送审，同时保留 `matches` 供审核人员比较 |
-| `block_duplicate` | 内容完全相同或达到拦截阈值 | 不要送审，记录命中的知识 ID |
+| `create` | 未达到查重审核阈值，或高语义相似但缺少有效文本重合 | 可以继续批量送审 |
+| `review_duplicate` | 达到审核阈值并通过文本证据门禁，或正文存在包含关系 | 可以送审，同时保留`matches`供审核人员比较 |
+| `block_duplicate` | 内容完全相同，或达到拦截阈值并通过文本证据门禁 | 不要送审，记录命中的知识ID |
 
 ### 4.3 批量提交候选知识
 
@@ -232,8 +257,8 @@ POST /integration/knowledge-candidates:batch
       "processing": {
         "summary_version": "summary-v1",
         "label_model": "classifier-v2",
-        "skill_name": "knowledge-rewriter",
-        "skill_version": "2026-07-11",
+        "plugin_name": "answer-hub-topic-transcription",
+        "plugin_version": "2026-07-22",
         "prompt_version": "prompt-v3",
         "model_name": "your-model-name"
       },
@@ -241,7 +266,7 @@ POST /integration/knowledge-candidates:batch
         "eligible": true,
         "confidence": 0.92,
         "duplicate_fingerprint": "sha256:upstream-fingerprint",
-        "reasons": ["回答完整", "问题可复用", "已完成脱敏"]
+        "reasons": ["已确认值得沉淀", "回答完整", "问题可复用", "已完成脱敏"]
       },
       "knowledge": {
         "title": "手机无法开机的排查步骤",
@@ -279,7 +304,9 @@ POST /integration/knowledge-candidates:batch
 | `idempotency_key` | 是 | 稳定幂等键；重试时必须相同 |
 | `source` | 是 | 来源系统与受控会话定位信息 |
 | `processing` | 是 | 聚合、标注、改写过程的版本信息 |
-| `selection.eligible` | 是 | 上游筛选是否允许送审 |
+| `processing.plugin_name` | 是 | 执行知识改写的插件名称 |
+| `processing.plugin_version` | 是 | 插件版本 |
+| `selection.eligible` | 是 | 上游筛选是否允许送审；仅“值得沉淀”且通过人工验证或模型自动审核的候选可为 `true` |
 | `selection.confidence` | 是 | 0 到 1 的自动化置信度 |
 | `knowledge.title` | 是 | 主标题 |
 | `knowledge.subtitles` | 否 | 可检索的用户问法或别名；不要堆砌关键词 |
@@ -288,6 +315,8 @@ POST /integration/knowledge-candidates:batch
 | `knowledge.layer` | 是 | `L1`、`L2` 或 `L3` |
 | `knowledge.evidence_excerpt` | 否 | 不超过 4000 字的脱敏证据摘要 |
 
+兼容期内CZ仍接收旧字段`skill_name`和`skill_version`，但服务端会统一转换为`plugin_name`和`plugin_version`保存。新接入不得继续发送旧字段。
+
 响应示例：
 
 ```json
@@ -295,6 +324,8 @@ POST /integration/knowledge-candidates:batch
   "accepted": 1,
   "rejected": 0,
   "reused": 0,
+  "intercepted": 1,
+  "blocked": 0,
   "results": [
     {
       "event_id": "qa-20260711-000123",
@@ -312,6 +343,12 @@ POST /integration/knowledge-candidates:batch
   ]
 }
 ```
+
+计数说明：
+
+- `accepted`：已经创建CZ待审核知识的总数，其中可能包含疑似重复拦截项。
+- `intercepted`：Qwen3查重命中`review_duplicate`，已进入人工终审拦截的数量，是`accepted`的子集。
+- `blocked`：Qwen3或精确查重命中`block_duplicate`、未创建知识的数量，是`rejected`的子集。
 
 结果状态：
 
@@ -507,6 +544,7 @@ GET /integration/retrieval-analytics
 ### 7.1 上游送审
 
 ```text
+POST /integration/second-part/records:batch   （第二部分批量接入并生成主题候选）
 GET  /integration/taxonomy
 POST /integration/knowledge-dedup:check        （可选）
 POST /integration/knowledge-candidates:batch

@@ -1,0 +1,54 @@
+{
+  "products": [
+    {
+      "product_type": "手机",
+      "source": "D:/standards/手机质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "平板",
+      "source": "D:/standards/平板质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "笔记本",
+      "source": "D:/standards/笔记本质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "相机机身",
+      "source": "D:/standards/相机机身质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "相机镜头",
+      "source": "D:/standards/相机镜头质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "耳机",
+      "source": "D:/standards/耳机质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "手表",
+      "source": "D:/standards/手表质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "游戏机",
+      "source": "D:/standards/游戏机质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "手写笔",
+      "source": "D:/standards/手写笔质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "学习机",
+      "source": "D:/standards/学习机质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    }
+  ]
+}

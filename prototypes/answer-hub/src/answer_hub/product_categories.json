@@ -1,0 +1,65 @@
+{
+  "version": "2026-07-21",
+  "categories": [
+    {
+      "code": "phone",
+      "name": "手机",
+      "aliases": ["智能手机"],
+      "active": true
+    },
+    {
+      "code": "tablet",
+      "name": "平板",
+      "aliases": ["平板电脑"],
+      "active": true
+    },
+    {
+      "code": "laptop",
+      "name": "笔记本",
+      "aliases": ["笔记本电脑", "Laptop"],
+      "active": true
+    },
+    {
+      "code": "camera_body",
+      "name": "相机机身",
+      "aliases": ["单反机身", "微单机身"],
+      "active": true
+    },
+    {
+      "code": "camera_lens",
+      "name": "相机镜头",
+      "aliases": ["镜头"],
+      "active": true
+    },
+    {
+      "code": "headphones",
+      "name": "耳机",
+      "aliases": ["耳麦", "蓝牙耳机"],
+      "active": true
+    },
+    {
+      "code": "watch",
+      "name": "手表",
+      "aliases": ["智能手表"],
+      "active": true
+    },
+    {
+      "code": "game_console",
+      "name": "游戏机",
+      "aliases": ["游戏主机", "掌机"],
+      "active": true
+    },
+    {
+      "code": "stylus",
+      "name": "手写笔",
+      "aliases": ["触控笔"],
+      "active": true
+    },
+    {
+      "code": "learning_device",
+      "name": "学习机",
+      "aliases": ["学习平板"],
+      "active": true
+    }
+  ]
+}
