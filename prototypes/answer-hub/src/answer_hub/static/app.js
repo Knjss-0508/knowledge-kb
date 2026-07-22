@@ -180,7 +180,7 @@ async function requestPreview(event) {
     return;
   }
   previewButton.disabled = true;
-  setStatus('正在处理手机数据并匹配质检标准…');
+  setStatus('正在处理配置品类数据并匹配质检标准…');
   try {
     const response = await fetch('/api/preview', { method: 'POST', body: new FormData(form) });
     const payload = await response.json();
@@ -189,7 +189,7 @@ async function requestPreview(event) {
     const modelText = payload.mimo_enabled
       ? (payload.mimo_configured ? '已调用 MiMo 或已记录模型结果' : '未配置 MiMo，已使用规则式候选兜底')
       : '已按规则式候选运行';
-    setStatus(`验证完成：手机候选 ${payload.selected_rows} 条，重点复核 ${payload.focus_review_rows} 条；${modelText}。`);
+    setStatus(`验证完成：候选 ${payload.selected_rows} 条，重点复核 ${payload.focus_review_rows} 条；${modelText}。`);
   } catch (error) {
     setStatus(error.message || '验证失败', true);
   } finally {
@@ -213,7 +213,7 @@ async function downloadWorkbook() {
     const blob = await response.blob();
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = '手机-候选知识复核表.xlsx';
+    link.download = '多品类-候选知识复核表.xlsx';
     link.click();
     URL.revokeObjectURL(link.href);
     setStatus('复核工作簿已生成。');
@@ -397,7 +397,7 @@ async function exportReviewWorkbook() {
     const blob = await response.blob();
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = '手机-已复标候选知识表.xlsx';
+    link.download = '多品类-已复标候选知识表.xlsx';
     link.click();
     URL.revokeObjectURL(link.href);
     setReviewStatus(`已导出 ${reviewChanges.size} 条本地复标修改。`);

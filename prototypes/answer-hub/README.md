@@ -2,32 +2,61 @@
 
 ## 主题级工作流（当前）
 
-手机第一期按以下链路处理，单条记录不会直接生成知识正文：
+当前按动态品类配置处理首批手机、平板、笔记本、相机机身、相机镜头、耳机、手表、游戏机、手写笔和学习机；单条高质量原子问题也可以形成待审核主题：
 
 ```text
-单条记录清洗与主题特征提取
-→ 混合聚类
-→ 主题级标准检索
-→ 主题级 MiMo/规则初标
-→ 人工完整编辑与反馈
-→ 13 列候选导出
+第二部分服务器数据
+→ CZ 接口幂等接收
+→ 原子问题拆分
+→ 纯大模型 1～N 聚类
+→ 基于完整会话、历史实际回复和案例图转写
+→ 生成10项候选知识与模型初标（含是否值得沉淀）
+→ 组员标注 / 人工复核
+→ 批量提交CZ
+→ Qwen3查重拦截、终审与发布
 ```
 
 - 只有至少 2 条完整会话或可用图片证据记录的主题进入 `topic_review_queue.xlsx`。
-- 无聊天且无可用图片的记录进入 `evidence_gap_rows`；只有 1 条有效证据的主题进入 `pending_cluster_rows`。
-- 审核人在工作台直接编辑最终 13 列候选，审核字段仅保留结论、错误说明、训练标记和审核信息。
-- `.env` 中的 `KB_BASE_URL`、`KB_INTEGRATION_KEY` 只用于显示 cz API 联调就绪状态；当前版本不会发送任何 cz API 请求。
+- 无聊天且无可用图片的记录进入 `evidence_gap_rows`；1～N 个原子问题均可形成待审核主题。
+- 审核人在工作台直接编辑最终候选和推荐回复；发给组员时标注“是否值得沉淀、是否可用、如何修改、问题反馈”，作为模型自动审核的验证金标。
+- 只有模型或组员确认具备复用价值、值得沉淀的知识点才能进入批量送审；纯个案结论和无复用价值内容留在例外队列。
+- 验证准确率和自动放行精确率达到配置门槛后，可绑定具体模型与 Prompt 版本，让模型自动标注替代第三部分逐条人工复标；低置信度和风险候选仍进入人工例外队列。
+- 配置 `KB_BASE_URL`、`KB_INTEGRATION_KEY` 后，工作台可把审核通过候选批量送入 CZ 待审核队列。
+- 第二部分可直接调用 `/api/v1/integration/second-part/records:batch`；同一幂等键重试不会重复聚类或生成候选。
+- 当前批量链路不读取、不检索、不主动生成质检标准关联；`关联标准项`字段始终保留，新候选默认为空，已有值不覆盖。
+- Qwen3 Embedding 对批量导入执行重复拦截；自动化批量场景还必须具备标题或正文的有效文本重合证据，避免同品类、同回复模板的不同知识被整批误拦截。
+- 服务端会统一检查知识ID、主标题、知识内容、推荐回复、知识分类、适用范围和关键词；已有标准关联或显式标准引用会保留并进入“标准关联搁置”，不通过当前无标准入口送审。
+- 批量入库按候选逐条提交事务，单条向量或写库失败不会回滚后续成功项。
+
+完整部署和联调步骤见 [CZ_INTEGRATION_RUNBOOK.md](CZ_INTEGRATION_RUNBOOK.md)。
+
+## 发布前一键验收
+
+仅检查当前源码：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_release.ps1
+```
+
+完成全量测试、Compose检查、构建交付包并扫描敏感文件：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_release.ps1 `
+  -BuildPackage -Version 20260722-preserve-standard-fields-v12
+```
+
+脚本会执行根项目测试、CZ后端测试、Python编译、前端JavaScript语法检查、Docker Compose配置检查、交付包清单和SHA256校验，并在解压后的交付包内再次运行两套测试。任一步失败均返回非零退出码。
+也可以直接双击根目录的`发布前验收并打包.cmd`。
 
 This repository implements the third-part knowledge ingestion workflow for the answer hub:
 
-`第二部分数据 -> 数据预处理 -> 标准检索 -> MiMo 多模态初标 -> 人工复核 -> 发布 -> 反馈回流`
+`第二部分数据 -> 数据预处理 -> 无标准案例改写 -> 人工复核 -> Qwen3查重拦截 -> CZ待审核 -> 发布`
 
 ## What it does
 
 - Reads the Excel output from the second part.
-- Loads a qc standard catalog exported from the cz skill转写 result.
-- Converts every input row into one auditable knowledge candidate.
-- Retrieves the Top 3–5 relevant phone QC standards before labeling.
+- Uses complete conversations, historical replies and sanitized case images as primary evidence.
+- Aggregates one or more atomic questions into auditable topic candidates.
 - Uses the MiMo OpenAI-compatible API (text + up to 4 images) when configured.
 - Falls back to the deterministic rule candidate when MiMo is not configured or fails; these rows are forced into human review.
 - Saves raw/preprocessed records, image download results, model input/output metadata, candidates, and review feedback in local SQLite.
@@ -53,21 +82,11 @@ Expected columns from the second-part data:
 - 一级分类
 - 二级分类
 - 参考话术
+- 历史实际回复（可选；缺失时兼容读取参考话术）
 
-### Standard catalog
-The standard catalog can be a `.json` or `.xlsx` file.
+### Legacy standard-aware mode
 
-Expected fields:
-
-- 标准ID / standard_id
-- 主标题 / title
-- 一级分类 / category_l1
-- 二级分类 / category_l2
-- 检索关键词 / keywords
-- 适用范围 / scope
-- 参考话术 / response_snippet
-- 状态 / status
-- 版本 / version
+旧的标准检索与引用代码仍保留用于历史文件兼容，但当前第二部分批量入口和页面默认不启用。
 
 ## Commands
 
@@ -96,27 +115,25 @@ Create the raw audit workbook and the topic review workbook:
 ```bash
 answer-hub ingest \
   --source "D:\\飞书\\共享数据汇总_2026-07-10~2026-07-10.xlsx" \
-  --standards "D:\\飞书\\cz标准目录.xlsx" \
   --output-dir ".\\outputs"
 ```
 
-Phone MVP example. The standards file should contain only the phone standard master table exported by cz's skill:
+Phone example:
 
 ```bash
 answer-hub ingest \
   --source "D:\\飞书\\共享数据汇总_2026-07-10~2026-07-10.xlsx" \
-  --standards "D:\\飞书\\手机-RAG知识库主表.xlsx" \
   --product-type "手机" \
   --output-dir ".\\outputs\\phone"
 ```
 
-Use `--rule-only` to validate preprocessing and standard retrieval without calling MiMo. Use `--audit-db .\\data\\phone_mvp.db` to override the local audit database path.
+Use `--rule-only` to validate preprocessing and case-only candidate generation without calling MiMo. Use `--audit-db .\\data\\phone_mvp.db` to override the local audit database path.
 
 The command now writes:
 
 - `review_queue.xlsx`: per-record audit and model trace, not the formal review entry.
 - `topic_review_queue.xlsx`: topic-level candidate workbook for local review.
-- `candidate_knowledge.xlsx`: unreviewed topic candidates in the shared 13-column contract.
+- `candidate_knowledge.xlsx`: unreviewed topic candidates in the 10-field case-only contract.
 
 Finalize locally reviewed topic candidates for submission to the cz knowledge website and optional training:
 
@@ -165,17 +182,51 @@ python -m pip install streamlit openpyxl
 
 启动本地工作台：
 
-```cmd
-cd /d "C:\Users\admin\Desktop\答疑中台知识库"
-python -m streamlit run streamlit_app.py
+直接双击项目根目录中的：
+
+```text
+启动自动化看板.cmd
 ```
 
-页面会自动打开本地地址。它包含两个工作区：
+或者在 PowerShell 中执行：
 
-1. `生成主题候选`：上传方向二 Excel 与 cz 手机标准主表，执行证据分流、标准检索、模型/规则初标和主题聚类。
-2. `审核与反馈`：审核 `topic_review_queue.xlsx`，下载审核底稿、13 列候选知识和训练反馈样本。
+```powershell
+Set-Location "C:\Users\admin\Desktop\答疑中台知识库"
+.\start_streamlit.ps1
+```
+
+启动后访问 `http://localhost:8501`。页面包含四个工作区：
+
+1. `自动化看板`：上传脱敏会话与标准目录，一次运行完成输入快照、清洗、语义标注、主题聚类、知识转写和待审核队列生成。
+2. `聚类验证`：对边界样本执行聚类判断并收集人工反馈。
+3. `生成主题候选`：手动运行原有主题候选流程，便于调参与单步验证。
+4. `审核与反馈`：审核 `topic_review_queue.xlsx`，下载审核底稿、13 列候选知识和训练反馈样本。
 
 没有聊天内容且没有可用现场图片的记录只进入 `evidence_gap_rows`，不会独立生成主题候选。若电脑无法访问 PyPI，请使用公司镜像或由管理员提供 `streamlit` 的离线 wheel 安装包。
+
+### 自动化命令行入口
+
+工作台和命令行共用同一套自动化编排。后续可由定时任务、上游服务或工作台 API 调用：
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m answer_hub.cli automate `
+  --source ".\data\共享数据.xlsx" `
+  --output-dir ".\outputs\automation-runs"
+```
+
+只验证本地规则链路、不调用模型：
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m answer_hub.cli automate `
+  --source ".\data\共享数据.xlsx" `
+  --output-dir ".\outputs\automation-runs" `
+  --rule-only `
+  --clustering-mode rule
+```
+
+每次运行会生成独立目录和 `automation_run.json`，持续记录六个阶段的状态、指标、错误和产物路径。自动化只生成待审核知识；人工确认后可从工作台提交 CZ，但不会自动发布。
 
 Run the local validation page:
 
@@ -184,7 +235,15 @@ set PYTHONPATH=src
 python -m answer_hub.web
 ```
 
-Open `http://127.0.0.1:8765`. The page accepts the second-part workbook and the phone standard master table, calls MiMo only on the local server, previews the candidate queue and downloads the review workbook. It also supports uploading `review_queue.xlsx`, filtering candidates, filling the `CZ*` review fields, and downloading an updated workbook. The API key is never exposed to the browser.
+Open `http://127.0.0.1:8765`. The page accepts the second-part workbook, calls MiMo only on the local server, previews the candidate queue and downloads the review workbook. The API key is never exposed to the browser.
+
+## 百晓生转人工分析
+
+Streamlit 工作台新增“转人工分析”，支持曼哈顿与百晓生数据导入、工单关联、
+周度分层抽样、召回与工具能力分析、低置信度人工复核和八张工作表的周报导出。
+诊断标签统一写入“备注”，不单独增加标签列。
+
+详细配置、接口勘探和命令行用法见 `TRANSFER_ANALYSIS.md`。
 
 If PyPI is unavailable and Flask cannot be installed, run the bundled Codex Python instead. The web entrypoint automatically falls back to a standard-library local server:
 
@@ -197,17 +256,18 @@ set PYTHONPATH=src
 
 1. Clean required fields and normalize duplicate image links. Rows missing core question, conclusion, basis, or category are excluded from candidate generation with a recorded reason.
 2. Filter to `产品类型=手机` before candidate generation.
-3. Retrieve up to five active standards using category path and keywords; broad terms alone cannot establish a trusted match.
+3. Use the complete conversation, historical actual reply and sanitized case image as primary evidence.
 4. Download at most four public JPEG/PNG/WebP images, each at most 5MB.
-5. Send text, available image data and retrieved standards to MiMo. The response must be valid JSON and can cite only the retrieved standards. Invalid JSON/fields are retried once.
-6. If image download fails, no standard is retrieved, MiMo fails, or the evidence is uncertain, keep a process-style candidate and set `是否重点复核=是`. A record without chat content and usable image evidence only contributes to coverage analysis and topic clues.
-7. Aggregate evidence-qualified records by topic before review. Only `通过` / `修改后通过` topic outcomes are exported as 13-column candidates for the cz website.
+5. Send case evidence to MiMo. The response must not cite or invent quality standards.
+6. If image download fails, MiMo fails, or the evidence is uncertain, keep a process-style candidate and set `是否重点复核=是`.
+7. Aggregate evidence-qualified records by topic before review. Only `通过` / `修改后通过` outcomes are exported as 10-field candidates.
+8. CZ uses Qwen3 Embedding for final duplicate interception before creating a `review` item.
 
 ## Output files
 
 - `review_queue.xlsx`: source rows plus model labels and the legacy per-record review fields.
 - `topic_review_queue.xlsx`: topic-level review queue, source mapping and evidence gaps.
-- `candidate_knowledge.xlsx`: unreviewed topic candidates in the 13-column contract.
+- `candidate_knowledge.xlsx`: unreviewed topic candidates in the 10-field case-only contract.
 - `candidate_knowledge_for_submission.xlsx`: locally approved candidates ready to submit to the cz website.
 - `topic_feedback.jsonl`: topic-level reviewer feedback.
 - `topic_training_samples.jsonl`: approved reviewer-corrected examples selected for future training.

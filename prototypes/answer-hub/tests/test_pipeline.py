@@ -9,6 +9,8 @@ from openpyxl import Workbook, load_workbook
 
 from answer_hub.catalog import StandardCatalogItem, load_standard_catalog
 from answer_hub.workflow import (
+    CASE_KNOWLEDGE_COLUMNS,
+    build_case_knowledge_rows,
     build_topic_review_rows,
     evaluate_review_rows,
     finalize_topic_review_rows,
@@ -20,6 +22,7 @@ from answer_hub.workflow import (
     finalize_review_rows,
     retrieve_standard_matches,
     write_candidate_knowledge_workbook,
+    write_topic_candidate_knowledge_workbook,
 )
 
 
@@ -72,6 +75,7 @@ class WorkflowTests(unittest.TestCase):
                 "上传者": "测试1 ",
                 "聊天内容": "第一行\n\n第二行",
                 "图片链接": "a.jpg， b.jpg\nb.jpg",
+                "视频链接": "a.mp4， b.mp4\nb.mp4",
                 "核心问题": "  屏幕这个点怎么判，是色斑吗  ",
                 "判定结论": "  该屏幕上的点应被判定为色斑。  ",
                 "判定依据": "  平台标准依据：色斑属于显示问题。  ",
@@ -86,10 +90,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(processed[0]["上传者"], "测试1")
         self.assertEqual(processed[0]["聊天内容"], "第一行\n第二行")
         self.assertEqual(processed[0]["图片链接"], "a.jpg\nb.jpg")
+        self.assertEqual(processed[0]["视频链接"], "a.mp4\nb.mp4")
         self.assertEqual(processed[0]["核心问题"], "屏幕这个点怎么判，是色斑吗")
         self.assertEqual(processed[0]["数据ID"], "row-00001")
 
-    def test_missing_critical_fields_are_excluded_from_model_labeling(self) -> None:
+    def test_missing_legacy_fields_do_not_exclude_a_real_conversation(self) -> None:
         processed = preprocess_source_rows(
             [
                 {
@@ -106,11 +111,11 @@ class WorkflowTests(unittest.TestCase):
             ]
         )
         eligible, excluded = filter_preprocessed_rows_for_model(processed)
-        self.assertEqual(eligible, [])
-        self.assertEqual(excluded[0]["数据ID"], "W-MISSING")
-        self.assertIn("核心问题", excluded[0]["排除原因"])
+        self.assertEqual(len(eligible), 1)
+        self.assertEqual(excluded, [])
+        self.assertEqual(processed[0]["可进入模型初标"], "是")
 
-    def test_missing_chat_content_stays_eligible_but_requires_review(self) -> None:
+    def test_missing_primary_evidence_is_excluded_from_model_labeling(self) -> None:
         source = {
             "序号": 1,
             "工单ID": "W-NO-CHAT",
@@ -124,15 +129,10 @@ class WorkflowTests(unittest.TestCase):
         }
         processed = preprocess_source_rows([source])
         eligible, excluded = filter_preprocessed_rows_for_model(processed)
-        self.assertEqual(len(eligible), 1)
-        self.assertEqual(excluded, [])
+        self.assertEqual(eligible, [])
+        self.assertEqual(excluded[0]["数据ID"], "W-NO-CHAT")
+        self.assertIn("聊天内容或图片链接", excluded[0]["排除原因"])
         self.assertIn("缺少原始聊天上下文", processed[0]["预处理备注"])
-
-        standard = load_standard_catalog(
-            Path(__file__).resolve().parents[1] / "examples" / "standard_catalog.example.json"
-        )[0]
-        candidate = initial_label_rows(processed, [standard])[0]
-        self.assertEqual(candidate["是否重点复核"], "是")
 
     def test_initial_label_rows_uses_standard_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -511,6 +511,7 @@ class WorkflowTests(unittest.TestCase):
             "失效原因": "",
             "检索关键词": "设备机型 | 型号",
             "校验备注": "主题聚合样本数：2",
+            "是否值得沉淀": "是",
             "审核结论": "修改后通过",
             "审核备注": "标题更准确",
             "错误类型": "标题不准",
@@ -529,6 +530,27 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(feedback_rows[0]["错误类型"], "标题不准")
         self.assertEqual(len(training_rows), 1)
         self.assertEqual(training_rows[0]["target"]["主标题"], "手机机型如何查询与确认")
+
+    def test_topic_review_finalization_accepts_simple_teammate_annotations(self) -> None:
+        topic_row = {
+            "主题ID": "TOP-SIMPLE-001",
+            "主标题": "耳机蓝牙连接如何核验",
+            "知识内容": "1. 确认设备与耳机状态。\n2. 重新配对并记录结果。",
+            "知识分类": "检测方法",
+            "知识来源": "方向二主题候选",
+            "适用范围": "耳机-通用",
+            "是否值得沉淀": "是",
+            "是否可用": "是",
+            "如何修改": "",
+            "问题反馈": "推荐回复可再口语化",
+        }
+
+        final_rows, feedback_rows, training_rows = finalize_topic_review_rows([topic_row])
+
+        self.assertEqual(len(final_rows), 1)
+        self.assertEqual(feedback_rows[0]["审核结论"], "通过")
+        self.assertIn("推荐回复可再口语化", feedback_rows[0]["错误原因"])
+        self.assertEqual(training_rows, [])
 
     def test_ingest_writes_topic_review_and_theme_candidate_workbooks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -587,6 +609,145 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("topic_source_mapping", topic_book.sheetnames)
             self.assertIn("topic_model_drafts", topic_book.sheetnames)
             topic_book.close()
+
+    def test_case_only_ingest_exports_ten_fields_without_standard_references(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "source.xlsx"
+            output_dir = tmp_path / "output"
+            _write_workbook(
+                source_path,
+                SOURCE_HEADERS,
+                [[
+                    1,
+                    "tester",
+                    "2026-07-22",
+                    "W-CASE-001",
+                    "",
+                    "这个手机型号怎么确认？",
+                    "",
+                    "手机机型和型号如何确认",
+                    "通过系统信息和实物信息核对",
+                    "历史记录曾引用平台标准，但本次不应输出标准引用。",
+                    "手机",
+                    "基本情况",
+                    "机型",
+                    "请打开关于本机查看型号，再结合实物信息核对。",
+                ]],
+            )
+
+            summary = initial_label_from_workbook(
+                source_path=source_path,
+                standards_path=None,
+                output_dir=output_dir,
+                product_type="手机",
+                use_mimo=False,
+                audit_db_path=tmp_path / "audit.db",
+                clustering_mode="rule",
+                use_standard_references=False,
+            )
+
+            self.assertFalse(summary["standard_references_enabled"])
+            candidate_book = load_workbook(
+                summary["candidate_output_file"],
+                read_only=True,
+                data_only=True,
+            )
+            candidate_rows = list(candidate_book["候选知识"].iter_rows(values_only=True))
+            candidate_book.close()
+
+            self.assertEqual(list(candidate_rows[0]), CASE_KNOWLEDGE_COLUMNS)
+            candidate = dict(zip(candidate_rows[0], candidate_rows[1]))
+            self.assertEqual(candidate["知识ID"][:4], "TOP-")
+            self.assertIsNone(candidate["关联标准项"])
+            self.assertNotIn("标准", candidate["知识内容"])
+            self.assertNotIn("标准", candidate["推荐回复"])
+            self.assertIn("关于本机", candidate["推荐回复"])
+
+            topic_book = load_workbook(
+                summary["topic_review_file"],
+                read_only=True,
+                data_only=True,
+            )
+            mapping_rows = list(topic_book["topic_source_mapping"].iter_rows(values_only=True))
+            topic_book.close()
+            mapping = dict(zip(mapping_rows[0], mapping_rows[1]))
+            self.assertEqual(
+                mapping["历史实际回复"],
+                "请打开关于本机查看型号，再结合实物信息核对。",
+            )
+
+    def test_case_only_topic_keeps_case_image_and_clears_standard_field(self) -> None:
+        rows = [
+            {
+                "数据ID": "CASE-IMAGE-001",
+                "工单ID": "CASE-IMAGE-001",
+                "聊天内容": "屏幕图片里有一处显示异常，应该怎么补充图片确认？",
+                "核心问题": "屏幕显示异常如何通过图片核验",
+                "历史实际回复": "请补充白屏全景和异常位置近景。",
+                "图片链接": "https://example.com/case-image.jpg",
+                "图片处理状态": "可用:1",
+                "产品类型": "手机",
+                "一级分类": "显示问题",
+                "二级分类": "屏幕异常",
+                "模型主题一级分类": "显示问题",
+                "模型主题二级分类": "屏幕异常",
+                "问题意图": "检测核验",
+                "对象/部位": "屏幕",
+                "异常现象": "显示异常",
+                "解题方式": "案例证据核验",
+                "语义标注图片必要性": "需要",
+                "语义标注依据": "完整会话和案例图支持沉淀图片核验流程。",
+                "关联标准项": "历史标准引用需保留",
+                "来源版本": "qc-old-v1",
+            }
+        ]
+
+        topics, mapping, gaps, pending = build_topic_review_rows(
+            rows,
+            use_mimo=False,
+            clustering_mode="rule",
+            use_standard_references=False,
+        )
+
+        self.assertEqual(len(topics), 1)
+        self.assertFalse(gaps)
+        self.assertFalse(pending)
+        self.assertEqual(topics[0]["图例"], "https://example.com/case-image.jpg")
+        self.assertEqual(topics[0]["关联标准项"], "历史标准引用需保留")
+        self.assertEqual(topics[0]["来源版本"], "qc-old-v1")
+        self.assertEqual(mapping[0]["历史实际回复"], "请补充白屏全景和异常位置近景。")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "candidate.xlsx"
+            write_topic_candidate_knowledge_workbook(
+                topics,
+                output_path,
+                use_standard_references=False,
+            )
+            workbook = load_workbook(output_path, read_only=True, data_only=True)
+            data = list(workbook["候选知识"].iter_rows(values_only=True))
+            workbook.close()
+
+        self.assertEqual(list(data[0]), CASE_KNOWLEDGE_COLUMNS)
+        exported = dict(zip(data[0], data[1]))
+        self.assertEqual(exported["图例"], "https://example.com/case-image.jpg")
+        self.assertEqual(exported["关联标准项"], "历史标准引用需保留")
+
+    def test_build_case_knowledge_rows_preserves_existing_standard_references(self) -> None:
+        rows = build_case_knowledge_rows(
+            [{
+                "主题ID": "TOP-CASE-001",
+                "主标题": "案例知识",
+                "关联标准项": "旧标准引用",
+                "检索关键词": "案例 处理",
+            }]
+        )
+
+        self.assertEqual(list(rows[0]), CASE_KNOWLEDGE_COLUMNS)
+        self.assertEqual(rows[0]["知识ID"], "TOP-CASE-001")
+        self.assertEqual(rows[0]["关联标准项"], "旧标准引用")
+        self.assertEqual(rows[0]["关键词"], "案例 处理")
 
     def test_retrieval_collapses_standard_chunks_with_same_path(self) -> None:
         standards = [
