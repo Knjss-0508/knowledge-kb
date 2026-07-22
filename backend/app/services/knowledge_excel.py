@@ -269,14 +269,14 @@ def build_knowledge_import_template(categories) -> bytes:
     instructions_sheet = workbook.create_sheet("填写说明")
 
     headers = [
-        "标题",
-        "知识分类",
-        "正文",
-        "副标题",
-        "场景标签",
-        "适用类目",
-        "适用品牌",
-        "适用机型",
+        "标题（必填）",
+        "知识分类（必填）",
+        "正文（必填）",
+        "副标题（选填）",
+        "场景标签（选填）",
+        "适用类目（选填）",
+        "适用品牌（选填）",
+        "适用机型（选填）",
     ]
     import_sheet.append(headers)
     import_sheet.freeze_panes = "A2"

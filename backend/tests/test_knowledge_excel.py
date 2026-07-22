@@ -54,7 +54,14 @@ class KnowledgeExcelTests(unittest.TestCase):
             cell.value
             for cell in next(workbook["知识导入"].iter_rows(max_row=1))
         ]
-        self.assertIn("知识分类", headers)
+        self.assertIn("标题（必填）", headers)
+        self.assertIn("知识分类（必填）", headers)
+        self.assertIn("正文（必填）", headers)
+        self.assertIn("副标题（选填）", headers)
+        self.assertIn("场景标签（选填）", headers)
+        self.assertIn("适用类目（选填）", headers)
+        self.assertIn("适用品牌（选填）", headers)
+        self.assertIn("适用机型（选填）", headers)
         self.assertNotIn("知识层级", headers)
         self.assertNotIn("适用业务", headers)
         self.assertNotIn("机型个性化", headers)
