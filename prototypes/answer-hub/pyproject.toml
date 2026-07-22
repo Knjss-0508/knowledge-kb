@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "Flask>=2.2",
+  "numpy>=1.26",
   "openpyxl>=3.0.10",
 ]
 
@@ -19,6 +20,9 @@ dev = [
 ]
 ui = [
   "streamlit",
+]
+collector = [
+  "playwright",
 ]
 
 [project.scripts]
@@ -30,6 +34,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+answer_hub = ["product_categories.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

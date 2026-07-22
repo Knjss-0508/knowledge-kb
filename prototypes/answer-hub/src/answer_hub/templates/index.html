@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>手机知识候选验证与复标台</title>
+  <title>多品类知识候选验证与复标台</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 </head>
 <body>
   <header class="topbar">
     <div>
       <p class="eyebrow">答疑中台 · 第三部分</p>
-      <h1>手机知识候选验证与复标台</h1>
+      <h1>多品类知识候选验证与复标台</h1>
     </div>
-    <div class="scope">手机 MVP</div>
+    <div class="scope">动态品类</div>
   </header>
 
   <main class="workspace">
@@ -23,12 +23,12 @@
           <input id="source" name="source" type="file" accept=".xlsx" required>
         </label>
         <label class="file-field">
-          <span>手机标准主表</span>
+          <span>当前品类标准目录</span>
           <input id="standards" name="standards" type="file" accept=".xlsx,.json">
         </label>
         <label>
           <span>产品类型</span>
-          <input id="productType" name="product_type" value="手机" maxlength="32">
+          <input id="productType" name="product_type" value="" placeholder="留空处理全部生效品类" maxlength="64">
         </label>
         <label>
           <span>重点复核阈值</span>
@@ -61,7 +61,7 @@
 
     <section id="summary" class="summary" hidden>
       <div><span>原始记录</span><strong id="sourceTotal">0</strong></div>
-      <div><span>手机记录</span><strong id="selectedTotal">0</strong></div>
+      <div><span>入选记录</span><strong id="selectedTotal">0</strong></div>
       <div><span>标准条目</span><strong id="standardTotal">0</strong></div>
       <div><span>重点复核</span><strong id="reviewTotal">0</strong></div>
       <div><span>排除记录</span><strong id="excludedTotal">0</strong></div>

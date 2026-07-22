@@ -1,0 +1,42 @@
+{
+  "items": [
+    {
+      "event_id": "qa-example-camera-lens-001",
+      "idempotency_key": "sha256:qa-example-camera-lens-001",
+      "source_system": "second-part",
+      "redaction_status": "redacted",
+      "record": {
+        "工单ID": "WO-REDACTED-001",
+        "聊天内容": "镜片表面有斑点，需要确认检查方法。",
+        "图片链接": "",
+        "产品类型": "相机镜头",
+        "产品类型编码": "camera_lens",
+        "核心问题": "镜片斑点如何核验",
+        "判定结论": "待人工确认",
+        "判定依据": "当前没有足够图片证据",
+        "历史实际回复": "请补充镜片正面全景和斑点位置近景后再确认。",
+        "一级分类": "外观问题",
+        "二级分类": "镜片外观"
+      }
+    },
+    {
+      "event_id": "qa-example-laptop-001",
+      "idempotency_key": "sha256:qa-example-laptop-001",
+      "source_system": "second-part",
+      "redaction_status": "redacted",
+      "record": {
+        "工单ID": "WO-REDACTED-002",
+        "聊天内容": "笔记本无法充电，需要确认检测步骤。",
+        "图片链接": "",
+        "产品类型": "笔记本",
+        "产品类型编码": "laptop",
+        "核心问题": "无法充电如何排查",
+        "判定结论": "待检测",
+        "判定依据": "需要交叉验证充电器、接口和电池状态",
+        "历史实际回复": "请先更换已确认正常的充电器和线材，再检查接口与电池状态。",
+        "一级分类": "功能问题",
+        "二级分类": "充电功能"
+      }
+    }
+  ]
+}

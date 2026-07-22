@@ -347,7 +347,7 @@ class _FallbackRequestHandler(BaseHTTPRequestHandler):
                 source_upload = files.get("source")
                 if source_upload is None:
                     raise ValueError("请上传第二部分数据表")
-                product_type = (fields.get("product_type") or "手机").strip() or "手机"
+                product_type = (fields.get("product_type") or "").strip()
                 min_confidence = _threshold(fields.get("min_confidence"))
                 use_mimo = (fields.get("use_mimo") or "true").lower() not in {"false", "0", "off"}
                 with TemporaryDirectory(prefix="answer-hub-preview-") as temp_dir:
@@ -361,7 +361,7 @@ class _FallbackRequestHandler(BaseHTTPRequestHandler):
                 source_upload = files.get("source")
                 if source_upload is None:
                     raise ValueError("请上传第二部分数据表")
-                product_type = (fields.get("product_type") or "手机").strip() or "手机"
+                product_type = (fields.get("product_type") or "").strip()
                 workbook = _review_workbook_bytes(
                     source_upload,
                     files.get("standards"),
@@ -372,7 +372,7 @@ class _FallbackRequestHandler(BaseHTTPRequestHandler):
                 self._send_bytes(
                     workbook,
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    f"{product_type}-候选知识复核表.xlsx",
+                    f"{product_type or '全部品类'}-候选知识复核表.xlsx",
                 )
                 return
             if self.path == "/api/review-queue":
@@ -389,7 +389,7 @@ class _FallbackRequestHandler(BaseHTTPRequestHandler):
                 self._send_bytes(
                     workbook,
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "手机-已复标候选知识表.xlsx",
+                    "多品类-已复标候选知识表.xlsx",
                 )
                 return
             self._send_json({"error": "未找到接口"}, 404)
@@ -421,7 +421,7 @@ def create_app() -> Flask:
         if source_upload is None or not source_upload.filename:
             return jsonify({"error": "请上传第二部分数据表"}), 400
 
-        product_type = (request.form.get("product_type") or "手机").strip() or "手机"
+        product_type = (request.form.get("product_type") or "").strip()
         min_confidence = _threshold(request.form.get("min_confidence"))
         use_mimo = request.form.get("use_mimo", "true").lower() not in {"false", "0", "off"}
         with TemporaryDirectory(prefix="answer-hub-preview-") as temp_dir:
@@ -437,7 +437,7 @@ def create_app() -> Flask:
         if source_upload is None or not source_upload.filename:
             return jsonify({"error": "请上传第二部分数据表"}), 400
 
-        product_type = (request.form.get("product_type") or "手机").strip() or "手机"
+        product_type = (request.form.get("product_type") or "").strip()
         min_confidence = _threshold(request.form.get("min_confidence"))
         use_mimo = request.form.get("use_mimo", "true").lower() not in {"false", "0", "off"}
         with TemporaryDirectory(prefix="answer-hub-review-") as temp_dir:
@@ -458,7 +458,7 @@ def create_app() -> Flask:
         return send_file(
             BytesIO(workbook),
             as_attachment=True,
-            download_name=f"{product_type}-候选知识复核表.xlsx",
+            download_name=f"{product_type or '全部品类'}-候选知识复核表.xlsx",
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -527,7 +527,7 @@ def create_app() -> Flask:
         return send_file(
             output,
             as_attachment=True,
-            download_name="手机-已复标候选知识表.xlsx",
+            download_name="多品类-已复标候选知识表.xlsx",
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
