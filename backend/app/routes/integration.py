@@ -9,7 +9,7 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.core.integration_auth import require_integration_key
 from app.models.integration import IntegrationIngestion, RetrievalQualityEvent
-from app.models.knowledge import Category, Knowledge, KnowledgeLayer, KnowledgeStatus, TagDimension
+from app.models.knowledge import Category, Knowledge, KnowledgeStatus, TagDimension
 from app.models.user import User
 from app.routes.auth import get_current_user, require_permission
 from app.routes.knowledge import _generate_knowledge_id, _normalize_content
@@ -28,7 +28,6 @@ from app.schemas.integration import (
     IntegrationDedupMatch,
     IntegrationDedupResponse,
     IntegrationIngestionResponse,
-    IntegrationLayerDefinition,
     IntegrationTaxonomyResponse,
     RetrievalQualityEventBatch,
     RetrievalQualityEventBatchResponse,
@@ -39,7 +38,7 @@ from app.schemas.knowledge import CategoryResponse, TagDimensionResponse, TagVal
 
 router = APIRouter(prefix="/integration", tags=["自动化接入"])
 
-TAXONOMY_VERSION = "automation-v1"
+TAXONOMY_VERSION = "automation-v3"
 
 
 def _to_dedup_response(decision: DedupDecision) -> IntegrationDedupResponse:
@@ -55,7 +54,6 @@ def _to_dedup_response(decision: DedupDecision) -> IntegrationDedupResponse:
                 title=match.title,
                 status=match.status,
                 category_id=match.category_id,
-                layer=match.layer,
                 match_type=match.match_type,
                 similarity=match.similarity,
                 title_similarity=match.title_similarity,
@@ -209,23 +207,6 @@ def get_taxonomy(
     dimensions = db.query(TagDimension).all()
     return IntegrationTaxonomyResponse(
         version=TAXONOMY_VERSION,
-        layers=[
-            IntegrationLayerDefinition(
-                value="L1",
-                label="通用规则",
-                description="长期稳定、可反复使用的规则和流程",
-            ),
-            IntegrationLayerDefinition(
-                value="L2",
-                label="问题处理",
-                description="典型问题的排查步骤和解决办法",
-            ),
-            IntegrationLayerDefinition(
-                value="L3",
-                label="高频变更",
-                description="版本、政策或活动等经常更新的内容",
-            ),
-        ],
         categories=[CategoryResponse.model_validate(item) for item in categories],
         tag_dimensions=[
             TagDimensionResponse(
@@ -395,14 +376,12 @@ def submit_knowledge_candidates(
             title=candidate.knowledge.title,
             subtitles=candidate.knowledge.subtitles,
             content=_normalize_content(candidate.knowledge.content),
-            layer=KnowledgeLayer(candidate.knowledge.layer),
             category_id=candidate.knowledge.category_id,
             status=KnowledgeStatus.REVIEW,
             source="automation",
             source_session_id=candidate.source.conversation_id,
             quality_score=candidate.selection.confidence,
             applicable_scenes=candidate.knowledge.scene_tags,
-            applicable_business_types=candidate.knowledge.applicable_business_types,
             applicable_categories=candidate.knowledge.applicable_categories,
             applicable_brands=candidate.knowledge.applicable_brands,
             applicable_models=candidate.knowledge.applicable_models,

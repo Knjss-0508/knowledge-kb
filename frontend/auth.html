@@ -40,9 +40,9 @@
       <p class="sub">使用后台账号进入知识运营工作台</p>
       <form id="login-form">
         <label for="username">账号</label>
-        <input id="username" autocomplete="username" value="Weichizhuo" required>
+        <input id="username" autocomplete="username" required>
         <label for="password">密码</label>
-        <input id="password" type="password" autocomplete="current-password" value="123456" required>
+        <input id="password" type="password" autocomplete="current-password" required>
         <button id="btn" type="submit">登录</button>
         <div id="msg" class="msg" role="alert" aria-live="polite"></div>
       </form>
@@ -55,6 +55,11 @@
     var form = document.getElementById('login-form');
     var button = document.getElementById('btn');
     var message = document.getElementById('msg');
+    var usernameInput = document.getElementById('username');
+    var passwordInput = document.getElementById('password');
+
+    usernameInput.value = localStorage.getItem('kb_saved_username') || '';
+    localStorage.removeItem('kb_saved_password');
 
     function setMessage(text) {
       message.textContent = text || '';
@@ -62,8 +67,8 @@
 
     form.addEventListener('submit', function(event) {
       event.preventDefault();
-      var username = document.getElementById('username').value.trim();
-      var password = document.getElementById('password').value;
+      var username = usernameInput.value.trim();
+      var password = passwordInput.value;
       if (!username || !password) {
         setMessage('请输入账号和密码。');
         return;
@@ -82,6 +87,7 @@
           });
         })
         .then(function(data) {
+          localStorage.setItem('kb_saved_username', username);
           localStorage.setItem('kb_token', data.token);
           localStorage.setItem('kb_user', JSON.stringify(data.user));
           window.location.assign(window.location.origin + '/app');

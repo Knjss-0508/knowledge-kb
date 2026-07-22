@@ -80,47 +80,51 @@ Content-Type: application/json
 - 每个副标题单独生成一个“问法向量”。
 - 正文按默认 800 个中文字符分块，分块间保留 120 个字符重叠。
 
-分类、层级等字段用于筛选，不拼入正文语义向量。
+分类等字段用于筛选，不拼入正文语义向量。
 
 ## 4. 上游接口
 
-### 4.1 获取分类、层级与标签字典
+### 4.1 获取分类与标签字典
 
 ```http
 GET /integration/taxonomy
 ```
 
-用途：上游在自动标注和改写前获取可用的 `category_id`、知识层级和标签维度。
+用途：上游在自动标注和改写前获取可用的 `category_id` 和标签维度。
 
 响应示例：
 
 ```json
 {
-  "version": "automation-v1",
-  "layers": [
-    {
-      "value": "L1",
-      "label": "通用规则",
-      "description": "长期稳定、可重复使用的规则和流程"
-    },
-    {
-      "value": "L2",
-      "label": "问题处理",
-      "description": "典型问题的排查步骤和解决办法"
-    },
-    {
-      "value": "L3",
-      "label": "高频变更",
-      "description": "版本、政策或活动等经常更新的内容"
-    }
-  ],
+  "version": "automation-v3",
   "categories": [
     {
-      "id": "cat-phone",
-      "name": "手机",
+      "id": "cat-qc-standard",
+      "name": "质检标准",
       "parent_id": null,
       "level": 1,
       "sort_order": 10
+    },
+    {
+      "id": "cat-qc-process",
+      "name": "操作流程",
+      "parent_id": null,
+      "level": 1,
+      "sort_order": 20
+    },
+    {
+      "id": "cat-case-analysis",
+      "name": "案例解析",
+      "parent_id": null,
+      "level": 1,
+      "sort_order": 30
+    },
+    {
+      "id": "cat-extra-knowledge",
+      "name": "课外常识",
+      "parent_id": null,
+      "level": 1,
+      "sort_order": 40
     }
   ],
   "tag_dimensions": []
@@ -153,10 +157,8 @@ POST /integration/knowledge-dedup:check
         }
       ]
     },
-    "category_id": "cat-phone",
-    "layer": "L2",
+    "category_id": "cat-qc-standard",
     "scene_tags": ["无法开机", "售后咨询"],
-    "applicable_business_types": [],
     "applicable_categories": [],
     "applicable_brands": [],
     "applicable_models": [],
@@ -191,8 +193,7 @@ POST /integration/knowledge-dedup:check
       "knowledge_id": "A-00001",
       "title": "手机开机异常处理规则",
       "status": "published",
-      "category_id": "cat-phone",
-      "layer": "L2",
+      "category_id": "cat-qc-standard",
       "match_type": "semantic",
       "similarity": 0.913421
     }
@@ -257,10 +258,8 @@ POST /integration/knowledge-candidates:batch
             }
           ]
         },
-        "category_id": "cat-phone",
-        "layer": "L2",
+        "category_id": "cat-qc-standard",
         "scene_tags": ["无法开机", "售后咨询"],
-        "applicable_business_types": [],
         "applicable_categories": [],
         "applicable_brands": ["品牌示例"],
         "applicable_models": ["机型示例"],
@@ -285,7 +284,6 @@ POST /integration/knowledge-candidates:batch
 | `knowledge.subtitles` | 否 | 可检索的用户问法或别名；不要堆砌关键词 |
 | `knowledge.content` | 是 | 改写后的知识正文；支持字符串或 `blocks` 富文本结构 |
 | `knowledge.category_id` | 是 | 必须来自 `/integration/taxonomy` |
-| `knowledge.layer` | 是 | `L1`、`L2` 或 `L3` |
 | `knowledge.evidence_excerpt` | 否 | 不超过 4000 字的脱敏证据摘要 |
 
 响应示例：
@@ -379,8 +377,7 @@ POST /knowledge/search
 ```json
 {
   "query": "手机黑屏无法开机应该怎么排查",
-  "category_id": "cat-phone",
-  "layer": "L2",
+  "category_id": "cat-qc-standard",
   "top_k": 5
 }
 ```
@@ -391,7 +388,6 @@ POST /knowledge/search
 |---|---:|---|
 | `query` | 是 | 下游用户问题或改写后的检索问题 |
 | `category_id` | 否 | 限定分类 |
-| `layer` | 否 | 限定知识层级：`L1`、`L2`、`L3` |
 | `top_k` | 否 | 返回条数，默认 10，最大 50 |
 | `tags` | 否 | 标签值 ID 列表；命中其中任一标签的已发布知识才会参与召回 |
 
@@ -414,9 +410,8 @@ POST /knowledge/search
         ]
       },
       "score": 0.912345,
-      "layer": "L2",
       "status": "published",
-      "category_id": "cat-phone"
+      "category_id": "cat-qc-standard"
     }
   ]
 }
@@ -426,7 +421,7 @@ POST /knowledge/search
 
 ### 5.2 调用建议
 
-1. 下游先根据业务上下文传入 `category_id`、`layer` 等可确定的过滤条件。
+1. 下游先根据业务上下文传入 `category_id` 等可确定的过滤条件。
 2. 以 `score` 排序取回 `top_k` 条候选知识。
 3. 后续接入 Reranker 后，将候选集交由 Reranker 二次排序，再选择最终知识。
 4. 将用户是否采纳、人工选择结果和最终得分回传给知识库，用于分析检索质量。
@@ -544,7 +539,7 @@ curl -X POST "$KB_BASE_URL/api/v1/knowledge/search" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "手机黑屏无法开机应该怎么排查",
-    "category_id": "cat-phone",
+    "category_id": "cat-qc-standard",
     "top_k": 5
   }'
 ```

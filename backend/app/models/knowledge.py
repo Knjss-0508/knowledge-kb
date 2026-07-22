@@ -12,11 +12,6 @@ from app.core.database import Base
 from app.core.config import settings
 
 
-class KnowledgeLayer(str, enum.Enum):
-    L1 = "L1"
-    L2 = "L2"
-    L3 = "L3"
-
 class KnowledgeStatus(str, enum.Enum):
     DRAFT = "draft"
     REVIEW = "review"
@@ -35,19 +30,16 @@ class Knowledge(Base):
     # {"type":"text", "value":"文本内容"}
     # {"type":"image", "media_id":"media-xxx", "alt":"图片描述", "caption":"图片说明文字"}
     # {"type":"video", "media_id":"media-xxx", "alt":"视频描述", "caption":"视频说明文字", "duration":"03:20"}
-    layer = Column(Enum(KnowledgeLayer), nullable=False, index=True)
     category_id = Column(String(64), ForeignKey("categories.id"), nullable=False, index=True)
     status = Column(Enum(KnowledgeStatus), default=KnowledgeStatus.DRAFT, index=True)
     source = Column(String(32), default="manual")
     source_session_id = Column(String(128), nullable=True)
     quality_score = Column(Float, default=0.0)
     applicable_scenes = Column(JSON, default=list)
-    applicable_business_types = Column(JSON, default=list)
     applicable_categories = Column(JSON, default=list)
     applicable_brands = Column(JSON, default=list)
     applicable_models = Column(JSON, default=list)
     deduplication_metadata = Column(JSON, default=dict)
-    is_model_personal = Column(String(16), default="false")
     created_by = Column(String(128), nullable=False)
     updated_by = Column(String(128), nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

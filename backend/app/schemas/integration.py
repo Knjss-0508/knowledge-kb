@@ -39,9 +39,7 @@ class IntegrationKnowledgePayload(BaseModel):
     subtitles: list[str] = Field(default=[], description="副标题列表")
     content: Any = Field(..., description="改写后的知识内容，支持富文本 blocks 结构")
     category_id: str = Field(..., min_length=1, max_length=64, description="知识库分类ID")
-    layer: str = Field(..., pattern=r"^L[1-3]$", description="L1/L2/L3 知识层级")
     scene_tags: list[str] = Field(default=[], description="场景标签")
-    applicable_business_types: list[Any] = Field(default=[], description="适用业务")
     applicable_categories: list[Any] = Field(default=[], description="适用类目")
     applicable_brands: list[Any] = Field(default=[], description="适用品牌")
     applicable_models: list[Any] = Field(default=[], description="适用机型")
@@ -80,7 +78,6 @@ class IntegrationDedupMatch(BaseModel):
     title: str
     status: Literal["review", "published"]
     category_id: str
-    layer: Literal["L1", "L2", "L3"]
     match_type: Literal["exact", "semantic", "content_containment"]
     similarity: float = Field(..., ge=0, le=1)
     title_similarity: float | None = Field(None, ge=0, le=1)
@@ -137,15 +134,8 @@ class IntegrationIngestionResponse(BaseModel):
     updated_at: datetime
 
 
-class IntegrationLayerDefinition(BaseModel):
-    value: Literal["L1", "L2", "L3"]
-    label: str
-    description: str
-
-
 class IntegrationTaxonomyResponse(BaseModel):
     version: str
-    layers: list[IntegrationLayerDefinition]
     categories: list[CategoryResponse]
     tag_dimensions: list[TagDimensionResponse]
 
