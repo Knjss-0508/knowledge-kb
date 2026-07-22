@@ -38,7 +38,7 @@ from app.schemas.knowledge import CategoryResponse, TagDimensionResponse, TagVal
 
 router = APIRouter(prefix="/integration", tags=["自动化接入"])
 
-TAXONOMY_VERSION = "automation-v2"
+TAXONOMY_VERSION = "automation-v3"
 
 
 def _to_dedup_response(decision: DedupDecision) -> IntegrationDedupResponse:
@@ -382,7 +382,6 @@ def submit_knowledge_candidates(
             source_session_id=candidate.source.conversation_id,
             quality_score=candidate.selection.confidence,
             applicable_scenes=candidate.knowledge.scene_tags,
-            applicable_business_types=candidate.knowledge.applicable_business_types,
             applicable_categories=candidate.knowledge.applicable_categories,
             applicable_brands=candidate.knowledge.applicable_brands,
             applicable_models=candidate.knowledge.applicable_models,

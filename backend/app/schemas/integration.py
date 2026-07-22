@@ -40,7 +40,6 @@ class IntegrationKnowledgePayload(BaseModel):
     content: Any = Field(..., description="改写后的知识内容，支持富文本 blocks 结构")
     category_id: str = Field(..., min_length=1, max_length=64, description="知识库分类ID")
     scene_tags: list[str] = Field(default=[], description="场景标签")
-    applicable_business_types: list[Any] = Field(default=[], description="适用业务")
     applicable_categories: list[Any] = Field(default=[], description="适用类目")
     applicable_brands: list[Any] = Field(default=[], description="适用品牌")
     applicable_models: list[Any] = Field(default=[], description="适用机型")

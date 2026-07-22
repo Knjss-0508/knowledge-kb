@@ -19,11 +19,9 @@ HEADER_ALIASES = {
     "content": {"正文", "知识正文", "知识内容", "内容"},
     "subtitles": {"副标题", "副标题列表"},
     "scenes": {"场景标签", "适用场景"},
-    "business_types": {"适用业务", "业务类型"},
     "applicable_categories": {"适用类目"},
     "brands": {"适用品牌", "品牌"},
     "models": {"适用机型", "机型"},
-    "is_model_personal": {"机型个性化", "是否机型个性化"},
 }
 
 
@@ -45,11 +43,9 @@ class ExcelKnowledgeRow:
     content: str = ""
     subtitles: list[str] | None = None
     applicable_scenes: list[str] | None = None
-    applicable_business_types: list[str] | None = None
     applicable_categories: list[str] | None = None
     applicable_brands: list[str] | None = None
     applicable_models: list[str] | None = None
-    is_model_personal: bool = False
     error_code: str | None = None
     error_message: str | None = None
 
@@ -77,20 +73,6 @@ def _split_values(value) -> list[str]:
     if not text:
         return []
     return [item.strip() for item in re.split(r"[；;|\n]+", text) if item.strip()]
-
-
-def _parse_bool(value) -> bool:
-    text = _cell_text(value).lower()
-    if not text:
-        return False
-    if text in {"1", "true", "yes", "y", "是", "有"}:
-        return True
-    if text in {"0", "false", "no", "n", "否", "无"}:
-        return False
-    raise KnowledgeExcelRowError(
-        "INVALID_BOOLEAN",
-        "机型个性化仅支持：是/否、true/false、1/0。",
-    )
 
 
 def _category_records(categories) -> tuple[dict[str, object], dict[str, list[str]], dict[str, str]]:
@@ -264,17 +246,11 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
             result.content = content
             result.subtitles = _split_values(value_at(values, "subtitles"))
             result.applicable_scenes = _split_values(value_at(values, "scenes"))
-            result.applicable_business_types = _split_values(
-                value_at(values, "business_types")
-            )
             result.applicable_categories = _split_values(
                 value_at(values, "applicable_categories")
             )
             result.applicable_brands = _split_values(value_at(values, "brands"))
             result.applicable_models = _split_values(value_at(values, "models"))
-            result.is_model_personal = _parse_bool(
-                value_at(values, "is_model_personal")
-            )
         except KnowledgeExcelRowError as exc:
             result.error_code = exc.code
             result.error_message = str(exc)
@@ -298,22 +274,19 @@ def build_knowledge_import_template(categories) -> bytes:
         "正文",
         "副标题",
         "场景标签",
-        "适用业务",
         "适用类目",
         "适用品牌",
         "适用机型",
-        "机型个性化",
     ]
     import_sheet.append(headers)
     import_sheet.freeze_panes = "A2"
-    import_sheet.auto_filter.ref = f"A1:J1"
+    import_sheet.auto_filter.ref = "A1:H1"
     import_sheet.row_dimensions[1].height = 28
     import_sheet.column_dimensions["A"].width = 32
     import_sheet.column_dimensions["B"].width = 28
     import_sheet.column_dimensions["C"].width = 70
-    for column in ("D", "E", "F", "G", "H", "I"):
+    for column in ("D", "E", "F", "G", "H"):
         import_sheet.column_dimensions[column].width = 24
-    import_sheet.column_dimensions["J"].width = 16
 
     required_fill = PatternFill("solid", fgColor="0F766E")
     optional_fill = PatternFill("solid", fgColor="475569")
@@ -329,12 +302,11 @@ def build_knowledge_import_template(categories) -> bytes:
     )
     import_sheet["C1"].comment = Comment("必填，纯文本正文。", "知识库")
     import_sheet["D1"].comment = Comment("多项请使用中文分号“；”分隔。", "知识库")
-    for cell_ref in ("E1", "F1", "G1", "H1", "I1"):
+    for cell_ref in ("E1", "F1", "G1", "H1"):
         import_sheet[cell_ref].comment = Comment(
             "多项请使用中文分号“；”分隔。",
             "知识库",
         )
-    import_sheet["J1"].comment = Comment("填写“是”或“否”，留空默认为否。", "知识库")
 
     dictionary_sheet.append(["分类ID", "分类名称", "完整分类路径"])
     by_id, _, path_by_id = _category_records(categories)

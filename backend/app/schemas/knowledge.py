@@ -46,7 +46,6 @@ class KnowledgeCreate(BaseModel):
     content: Any = Field(..., description="知识内容，支持富文本: 纯字符串 或 {blocks:[...]} 结构")
     category_id: str = Field(..., description="所属分类ID")
     applicable_scenes: list[str] = Field(default=[], description="场景标签列表")
-    applicable_business_types: list[Any] = Field(default=[], description="适用业务")
     applicable_categories: list[Any] = Field(default=[], description="适用类目")
     applicable_brands: list[Any] = Field(default=[], description="适用品牌")
     applicable_models: list[Any] = Field(default=[], description="适用机型")
@@ -54,7 +53,6 @@ class KnowledgeCreate(BaseModel):
         False,
         description="语义重复对比后，创建人确认仍需提交审核",
     )
-    is_model_personal: bool = Field(False, description="机型个性化信息")
     created_by: str = Field("system", description="创建人")
 
     @field_validator("category_id")
@@ -73,11 +71,9 @@ class KnowledgeUpdate(BaseModel):
     category_id: Optional[str] = Field(None, description="所属分类ID")
     status: Optional[str] = Field(None, description="状态: draft/review/published/deprecated")
     applicable_scenes: Optional[list[str]] = Field(None, description="场景标签列表")
-    applicable_business_types: Optional[list[Any]] = Field(None, description="适用业务")
     applicable_categories: Optional[list[Any]] = Field(None, description="适用类目")
     applicable_brands: Optional[list[Any]] = Field(None, description="适用品牌")
     applicable_models: Optional[list[Any]] = Field(None, description="适用机型")
-    is_model_personal: Optional[bool] = Field(None, description="机型个性化信息")
 
     @field_validator("category_id")
     @classmethod
@@ -100,12 +96,10 @@ class KnowledgeResponse(BaseModel):
     source: str = Field(description="来源")
     quality_score: float = Field(description="质量评分")
     applicable_scenes: list[str] = Field(default=[], description="场景标签")
-    applicable_business_types: list[Any] = Field(default=[], description="适用业务")
     applicable_categories: list[Any] = Field(default=[], description="适用类目")
     applicable_brands: list[Any] = Field(default=[], description="适用品牌")
     applicable_models: list[Any] = Field(default=[], description="适用机型")
     deduplication_metadata: dict[str, Any] = Field(default={}, description="提交审核时的查重结果")
-    is_model_personal: bool = Field(False, description="机型个性化信息")
     created_by: str = Field(description="创建人")
     updated_by: Optional[str] = Field(None, description="最近变更人")
     created_at: datetime = Field(description="创建时间")

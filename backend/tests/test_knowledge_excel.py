@@ -56,6 +56,8 @@ class KnowledgeExcelTests(unittest.TestCase):
         ]
         self.assertIn("知识分类", headers)
         self.assertNotIn("知识层级", headers)
+        self.assertNotIn("适用业务", headers)
+        self.assertNotIn("机型个性化", headers)
         dictionary_rows = list(
             workbook["分类字典"].iter_rows(min_row=2, values_only=True)
         )
@@ -63,7 +65,7 @@ class KnowledgeExcelTests(unittest.TestCase):
 
     def test_parse_accepts_category_id_and_splits_multi_value_fields(self):
         payload = self.workbook_bytes(
-            ["标题", "知识分类", "正文", "副标题", "场景标签", "机型个性化"],
+            ["标题", "知识分类", "正文", "副标题", "场景标签"],
             [
                 [
                     "设备无法开机",
@@ -71,7 +73,6 @@ class KnowledgeExcelTests(unittest.TestCase):
                     "先检查电量，再执行强制重启。",
                     "黑屏怎么办；无法启动",
                     "无法开机；售后咨询",
-                    "是",
                 ]
             ],
         )
@@ -83,7 +84,6 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertEqual(rows[0].category_id, "cat-process")
         self.assertEqual(rows[0].subtitles, ["黑屏怎么办", "无法启动"])
         self.assertEqual(rows[0].applicable_scenes, ["无法开机", "售后咨询"])
-        self.assertTrue(rows[0].is_model_personal)
 
     def test_parse_accepts_full_category_path(self):
         payload = self.workbook_bytes(

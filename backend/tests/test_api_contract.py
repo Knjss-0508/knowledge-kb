@@ -14,6 +14,10 @@ class ApiContractTests(unittest.TestCase):
         specification = json.dumps(app.openapi(), ensure_ascii=False)
         self.assertNotIn('"layer"', specification)
         self.assertNotIn("知识层级", specification)
+        self.assertNotIn("applicable_business_types", specification)
+        self.assertNotIn("is_model_personal", specification)
+        self.assertNotIn("适用业务", specification)
+        self.assertNotIn("机型个性化", specification)
 
 
 if __name__ == "__main__":

@@ -285,12 +285,10 @@ def _to_response(item: Knowledge) -> dict:
         "source": item.source,
         "quality_score": item.quality_score or 0.0,
         "applicable_scenes": item.applicable_scenes or [],
-        "applicable_business_types": item.applicable_business_types or [],
         "applicable_categories": item.applicable_categories or [],
         "applicable_brands": item.applicable_brands or [],
         "applicable_models": item.applicable_models or [],
         "deduplication_metadata": item.deduplication_metadata or {},
-        "is_model_personal": item.is_model_personal == "true",
         "created_by": item.created_by,
         "updated_by": item.updated_by,
         "created_at": item.created_at,
@@ -334,12 +332,10 @@ def _create_knowledge_item(
         status=KnowledgeStatus.REVIEW,
         source=source,
         applicable_scenes=body.applicable_scenes,
-        applicable_business_types=body.applicable_business_types,
         applicable_categories=body.applicable_categories,
         applicable_brands=body.applicable_brands,
         applicable_models=body.applicable_models,
         deduplication_metadata=_deduplication_metadata(decision),
-        is_model_personal="true" if body.is_model_personal else "false",
         created_by=current_user.username,
         updated_by=current_user.username,
     )
@@ -430,11 +426,9 @@ async def import_knowledge_excel(
                 content=row.content,
                 category_id=row.category_id,
                 applicable_scenes=row.applicable_scenes or [],
-                applicable_business_types=row.applicable_business_types or [],
                 applicable_categories=row.applicable_categories or [],
                 applicable_brands=row.applicable_brands or [],
                 applicable_models=row.applicable_models or [],
-                is_model_personal=row.is_model_personal,
             )
             item = _create_knowledge_item(
                 body,
@@ -610,11 +604,9 @@ def _knowledge_snapshot(item: Knowledge) -> dict:
         "category_id": item.category_id,
         "status": item.status.value,
         "applicable_scenes": deepcopy(item.applicable_scenes or []),
-        "applicable_business_types": deepcopy(item.applicable_business_types or []),
         "applicable_categories": deepcopy(item.applicable_categories or []),
         "applicable_brands": deepcopy(item.applicable_brands or []),
         "applicable_models": deepcopy(item.applicable_models or []),
-        "is_model_personal": item.is_model_personal == "true",
     }
 
 
@@ -718,8 +710,6 @@ def update_knowledge(
             _sync_media_meta(db, item.id, normalized)
         elif field == "status":
             setattr(item, field, KnowledgeStatus(val))
-        elif field == "is_model_personal":
-            setattr(item, field, "true" if val else "false")
         else:
             setattr(item, field, val)
     after_data = _knowledge_snapshot(item)

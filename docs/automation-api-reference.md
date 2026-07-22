@@ -96,7 +96,7 @@ GET /integration/taxonomy
 
 ```json
 {
-  "version": "automation-v2",
+  "version": "automation-v3",
   "categories": [
     {
       "id": "cat-phone",
@@ -138,7 +138,6 @@ POST /integration/knowledge-dedup:check
     },
     "category_id": "cat-phone",
     "scene_tags": ["无法开机", "售后咨询"],
-    "applicable_business_types": [],
     "applicable_categories": [],
     "applicable_brands": [],
     "applicable_models": [],
@@ -240,7 +239,6 @@ POST /integration/knowledge-candidates:batch
         },
         "category_id": "cat-phone",
         "scene_tags": ["无法开机", "售后咨询"],
-        "applicable_business_types": [],
         "applicable_categories": [],
         "applicable_brands": ["品牌示例"],
         "applicable_models": ["机型示例"],
