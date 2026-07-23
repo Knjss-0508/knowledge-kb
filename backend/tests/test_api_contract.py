@@ -23,6 +23,30 @@ class ApiContractTests(unittest.TestCase):
             }.issubset(parameter_names)
         )
 
+    def test_candidate_review_routes_are_exposed(self):
+        paths = app.openapi()["paths"]
+
+        self.assertIn(
+            "post",
+            paths["/api/v1/integration/knowledge-review-candidates:batch"],
+        )
+        self.assertIn("get", paths["/api/v1/integration/candidate-reviews"])
+        self.assertIn(
+            "patch",
+            paths["/api/v1/integration/candidate-reviews/{ingestion_id}"],
+        )
+        self.assertIn(
+            "post",
+            paths["/api/v1/integration/candidate-reviews:batch-submit"],
+        )
+
+    def test_integration_processing_exposes_plugin_contract(self):
+        schemas = app.openapi()["components"]["schemas"]
+        processing = schemas["IntegrationProcessing"]["properties"]
+
+        self.assertIn("plugin_name", processing)
+        self.assertIn("plugin_version", processing)
+
     def test_openapi_no_longer_exposes_knowledge_layer(self):
         specification = json.dumps(app.openapi(), ensure_ascii=False)
         self.assertNotIn('"layer"', specification)

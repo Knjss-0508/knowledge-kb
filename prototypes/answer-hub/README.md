@@ -50,7 +50,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_release.ps1
 
 This repository implements the third-part knowledge ingestion workflow for the answer hub:
 
-`第二部分数据 -> 数据预处理 -> 无标准案例改写 -> 人工复核 -> Qwen3查重拦截 -> CZ待审核 -> 发布`
+`第二部分数据 -> 数据预处理 -> 无标准案例改写 -> 候选价值复核 -> Qwen3查重拦截 -> CZ发布审核 -> 发布`
 
 ## What it does
 
@@ -200,7 +200,7 @@ Set-Location "C:\Users\admin\Desktop\答疑中台知识库"
 1. `自动化看板`：上传脱敏会话与标准目录，一次运行完成输入快照、清洗、语义标注、主题聚类、知识转写和待审核队列生成。
 2. `聚类验证`：对边界样本执行聚类判断并收集人工反馈。
 3. `生成主题候选`：手动运行原有主题候选流程，便于调参与单步验证。
-4. `审核与反馈`：审核 `topic_review_queue.xlsx`，下载审核底稿、13 列候选知识和训练反馈样本。
+4. `候选复核与反馈`：复核 `topic_review_queue.xlsx`，下载复核底稿、13 列候选知识和训练反馈样本。
 
 没有聊天内容且没有可用现场图片的记录只进入 `evidence_gap_rows`，不会独立生成主题候选。若电脑无法访问 PyPI，请使用公司镜像或由管理员提供 `streamlit` 的离线 wheel 安装包。
 

@@ -1361,7 +1361,7 @@ def _render_automation() -> None:
         st.metric("最近主题候选", latest_topics, border=True)
 
     st.info(
-        "当前自动化边界：生成待审核知识并保留全链路记录；人工确认后可提交 cz 待审核队列，但不会自动发布。",
+        "当前自动化边界：生成待发布审核知识并保留全链路记录；人工确认后可提交 CZ 发布审核队列，但不会自动发布。",
         icon=":material/info:",
     )
     st.success(
@@ -1522,7 +1522,7 @@ def _render_automation() -> None:
                 st.session_state.generated_topic_workbook = topic_review_path.read_bytes()
                 st.session_state.generated_topic_summary = manifest.get("summary") or {}
                 st.session_state.generated_topic_run_dir = _text(manifest.get("run_dir"))
-            st.success("知识候选已进入待审核队列，可切换到“审核与反馈”继续处理。")
+            st.success("知识候选已生成，可切换到“候选复核与反馈”继续处理。")
         else:
             status_box.update(label="自动化流程执行失败", state="error", expanded=True)
             st.error(f"运行失败：{_text(manifest.get('error')) or '请查看阶段记录'}")
@@ -2275,7 +2275,7 @@ def _render_generation() -> None:
         st.session_state.generated_topic_workbook = workbook_bytes
         st.session_state.generated_topic_summary = summary
         st.session_state.generated_topic_run_dir = str(run_dir)
-        st.success("主题候选已生成，可切换到“审核与反馈”继续审核。")
+        st.success("主题候选已生成，可切换到“候选复核与反馈”继续处理。")
 
     summary = st.session_state.get("generated_topic_summary")
     workbook_bytes = st.session_state.get("generated_topic_workbook")
@@ -2407,7 +2407,7 @@ def _render_review() -> None:
         st.session_state.topic_pending_cluster_rows = pending_cluster_rows
         st.session_state.topic_model_draft_rows = model_draft_rows
         st.session_state.topic_review_changes = {}
-        st.session_state.cz_submit_result = None
+        st.session_state.cz_review_sync_result = None
         draft_by_topic = {
             _text(draft.get("主题ID")): draft
             for draft in model_draft_rows
@@ -2953,57 +2953,52 @@ def _render_review() -> None:
     )
     st.caption(
         f"组员验证反馈 {len(feedback_rows)} 条；可进入训练集 {len(training_rows)} 条；"
-        f"已确认值得沉淀且可提交 cz 待审核队列 {len(submittable_rows)} 条。"
+        f"已确认值得沉淀且可直接通过门禁 {len(submittable_rows)} 条；当前共 {len(rows)} 条候选可同步到主系统候选价值复核。"
     )
 
     with st.container(border=True):
-        st.markdown("#### 提交 cz 待审核队列")
+        st.markdown("#### 同步到主系统候选价值复核")
         if auto_policy.enabled:
-            st.caption("无标准引用模式优先提交已完成案例证据核验且通过人工验证的候选；风险候选继续留在人工例外队列。")
+            st.caption("全部候选会携带模型初标和人工验证结果同步；自动门禁通过项可在主系统直接批量送审，风险项继续人工复核。")
         else:
-            st.caption("当前为验证模式，仅提交组员确认“值得沉淀”且验证通过的试运行候选；准确率达标并启用生产策略后，将改为模型自动放行。")
-        submit_clicked = st.button(
-            "提交模型自动通过候选" if auto_policy.enabled else "提交验证通过候选",
+            st.caption("当前为验证模式，全部候选先进入主系统候选价值复核；由组员确认“值得沉淀”和“可用”后再统一送入知识发布审核队列。")
+        st.info("最终知识送审统一在主系统“候选价值复核”页面完成，本工作台不再绕过价值门禁直接创建待发布审核知识。")
+        sync_clicked = st.button(
+            "同步全部候选到主系统",
             type="primary",
             icon=":material/send:",
             width="stretch",
-            key="submit_reviewed_candidates_to_cz",
-            disabled=not api_configured or not submittable_rows,
+            key="sync_review_candidates_to_cz",
+            disabled=not api_configured or not rows,
         )
-        if submit_clicked:
-            with st.spinner("正在读取 cz 分类字典并提交候选..."):
+        if sync_clicked:
+            with st.spinner("正在读取主系统分类字典并同步候选审核队列..."):
                 try:
-                    st.session_state.cz_submit_result = cz_adapter.submit_candidates(
-                        submittable_rows
+                    st.session_state.cz_review_sync_result = cz_adapter.sync_review_candidates(
+                        rows
                     )
                 except Exception as exc:
-                    st.session_state.cz_submit_result = None
-                    st.error(f"提交 cz 失败：{exc}")
+                    st.session_state.cz_review_sync_result = None
+                    st.error(f"同步主系统候选价值复核失败：{exc}")
                 else:
-                    st.success("候选提交完成，结果如下。")
+                    st.success("候选审核队列同步完成，结果如下。")
 
-        submit_result = st.session_state.get("cz_submit_result")
-        if submit_result:
+        sync_result = st.session_state.get("cz_review_sync_result")
+        if sync_result:
             with st.container(horizontal=True):
-                st.metric("进入待审核", int(submit_result.get("accepted") or 0), border=True)
-                st.metric("Qwen3疑似重复拦截", int(submit_result.get("intercepted") or 0), border=True)
-                st.metric("明确重复阻断", int(submit_result.get("blocked") or 0), border=True)
-                st.metric("幂等复用", int(submit_result.get("reused") or 0), border=True)
-                st.metric("已拒绝", int(submit_result.get("rejected") or 0), border=True)
-            result_rows = submit_result.get("results") or []
+                st.metric("等待人工确认", int(sync_result.get("queued") or 0), border=True)
+                st.metric("门禁已通过", int(sync_result.get("ready") or 0), border=True)
+                st.metric("明确不沉淀", int(sync_result.get("rejected") or 0), border=True)
+                st.metric("幂等复用", int(sync_result.get("reused") or 0), border=True)
+            result_rows = sync_result.get("results") or []
             if result_rows:
                 st.dataframe(
                     [
                         {
                             "事件 ID": _text(item.get("event_id")),
-                            "状态": _text(item.get("status")),
-                            "知识 ID": _text(item.get("knowledge_id")),
-                            "入库 ID": _text(item.get("ingestion_id")),
-                            "Qwen3拦截": _text(
-                                (item.get("deduplication") or {}).get("action")
-                            ),
-                            "错误码": _text(item.get("error_code")),
-                            "错误信息": _text(item.get("error_message")),
+                            "同步结果": _text(item.get("status")),
+                            "审核状态": _text(item.get("review_status")),
+                            "候选审核 ID": _text(item.get("ingestion_id")),
                         }
                         for item in result_rows
                     ],
@@ -3032,7 +3027,7 @@ st.markdown(
 )
 page = st.segmented_control(
     "工作区",
-    ["自动化看板", "转人工分析", "聚类验证", "生成主题候选", "审核与反馈"],
+    ["自动化看板", "转人工分析", "聚类验证", "生成主题候选", "候选复核与反馈"],
     default="自动化看板",
     key="workspace_page",
     label_visibility="collapsed",
