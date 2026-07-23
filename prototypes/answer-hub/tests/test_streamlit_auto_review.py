@@ -53,7 +53,7 @@ def _topic_workbook_bytes() -> bytes:
 
 def test_streamlit_auto_review_workspace_renders_validation_metrics() -> None:
     app = AppTest.from_file("streamlit_app.py")
-    app.session_state["workspace_page"] = "审核与反馈"
+    app.session_state["workspace_page"] = "候选复核与反馈"
     app.session_state["generated_topic_workbook"] = _topic_workbook_bytes()
     app.run(timeout=30)
 

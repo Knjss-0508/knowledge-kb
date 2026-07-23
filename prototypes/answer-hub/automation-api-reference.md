@@ -283,9 +283,7 @@ POST /integration/knowledge-candidates:batch
           ]
         },
         "category_id": "cat-phone",
-        "layer": "L2",
         "scene_tags": ["无法开机", "售后咨询"],
-        "applicable_business_types": [],
         "applicable_categories": [],
         "applicable_brands": ["品牌示例"],
         "applicable_models": ["机型示例"],
@@ -312,10 +310,9 @@ POST /integration/knowledge-candidates:batch
 | `knowledge.subtitles` | 否 | 可检索的用户问法或别名；不要堆砌关键词 |
 | `knowledge.content` | 是 | 改写后的知识正文；支持字符串或 `blocks` 富文本结构 |
 | `knowledge.category_id` | 是 | 必须来自 `/integration/taxonomy` |
-| `knowledge.layer` | 是 | `L1`、`L2` 或 `L3` |
 | `knowledge.evidence_excerpt` | 否 | 不超过 4000 字的脱敏证据摘要 |
 
-兼容期内CZ仍接收旧字段`skill_name`和`skill_version`，但服务端会统一转换为`plugin_name`和`plugin_version`保存。新接入不得继续发送旧字段。
+兼容期内 CZ 仍接收成对出现的旧字段 `skill_name` 和 `skill_version`；新接入必须发送 `plugin_name` 和 `plugin_version`。
 
 响应示例：
 
@@ -346,7 +343,7 @@ POST /integration/knowledge-candidates:batch
 
 计数说明：
 
-- `accepted`：已经创建CZ待审核知识的总数，其中可能包含疑似重复拦截项。
+- `accepted`：已经创建 CZ 待发布审核知识的总数，其中可能包含疑似重复拦截项。
 - `intercepted`：Qwen3查重命中`review_duplicate`，已进入人工终审拦截的数量，是`accepted`的子集。
 - `blocked`：Qwen3或精确查重命中`block_duplicate`、未创建知识的数量，是`rejected`的子集。
 
@@ -370,7 +367,67 @@ POST /integration/knowledge-candidates:batch
 
 > 注意：当查重动作为 `review_duplicate` 时，返回记录仍是 `review_submitted`，具体疑似重复信息在 `deduplication` 中。
 
-### 4.4 查询入库处理状态
+### 4.4 同步候选到价值复核队列
+
+Answer Hub 等需要保留模型初标、组员验证和人工例外处理的上游，应使用价值复核队列接口，不要直接创建待发布审核知识：
+
+```http
+POST /integration/knowledge-review-candidates:batch
+X-Integration-Key: <integration-key>
+```
+
+请求体沿用 `IntegrationCandidateBatch`，并可增加：
+
+```json
+{
+  "model_review": {
+    "status": "topic_initial_reviewed_model",
+    "decision": "建议沉淀",
+    "knowledge_value": "worthy",
+    "reason": "案例证据充分",
+    "confidence": 0.93,
+    "priority_review": true,
+    "provider": "mimo",
+    "model_name": "model-name",
+    "prompt_version": "prompt-v1",
+    "run_id": "run-123"
+  },
+  "human_review": {
+    "knowledge_value": "pending",
+    "usability": "pending",
+    "modification_notes": "",
+    "feedback": "",
+    "decision": null,
+    "error_type": null,
+    "training_eligible": null,
+    "notes": null,
+    "reviewer": null,
+    "reviewed_at": null
+  }
+}
+```
+
+同步响应包含：
+
+| 字段 | 说明 |
+|---|---|
+| `queued` | 尚未通过门禁，等待主系统人工确认 |
+| `ready` | 上游自动门禁或人工验证已经通过，可在主系统批量送审 |
+| `rejected` | 上游或人工已明确判定不沉淀 |
+| `reused` | 相同业务幂等键已存在；主系统人工保存前允许上游刷新，保存后不再覆盖 |
+| `results[].review_status` | `pending`、`ready`、`rejected` 或 `submitted` |
+
+主系统用户端接口需要登录令牌和 `knowledge:submit` 权限：
+
+```http
+GET /integration/candidate-reviews
+PATCH /integration/candidate-reviews/{ingestion_id}
+POST /integration/candidate-reviews:batch-submit
+```
+
+`batch-submit` 只接受 `review_status=ready` 的候选，并统一执行分类校验、Qwen3 查重、向量保存和知识创建。创建后的知识状态仍为 `review`，不会直接发布。
+
+### 4.5 查询入库处理状态
 
 ```http
 GET /integration/ingestions/{ingestion_id}

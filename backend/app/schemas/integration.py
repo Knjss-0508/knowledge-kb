@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.knowledge import CategoryResponse, TagDimensionResponse
 
@@ -17,12 +17,26 @@ class IntegrationSource(BaseModel):
 
 
 class IntegrationProcessing(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     summary_version: str = Field(..., min_length=1, max_length=64, description="会话浓缩版本")
     label_model: str = Field(..., min_length=1, max_length=128, description="自动标注模型或规则版本")
-    skill_name: str = Field(..., min_length=1, max_length=128, description="知识改写 Skill 名称")
-    skill_version: str = Field(..., min_length=1, max_length=64, description="知识改写 Skill 版本")
+    skill_name: str | None = Field(None, min_length=1, max_length=128, description="兼容旧调用的知识改写 Skill 名称")
+    skill_version: str | None = Field(None, min_length=1, max_length=64, description="兼容旧调用的知识改写 Skill 版本")
+    plugin_name: str | None = Field(None, min_length=1, max_length=128, description="知识改写插件名称")
+    plugin_version: str | None = Field(None, min_length=1, max_length=64, description="知识改写插件版本")
     prompt_version: str | None = Field(None, max_length=64, description="改写提示词版本")
     model_name: str | None = Field(None, max_length=128, description="执行改写的模型")
+
+    @model_validator(mode="after")
+    def processing_extension_must_be_complete(self):
+        if bool(self.plugin_name) != bool(self.plugin_version):
+            raise ValueError("plugin_name and plugin_version must be provided together")
+        if bool(self.skill_name) != bool(self.skill_version):
+            raise ValueError("skill_name and skill_version must be provided together")
+        if not self.plugin_name and not self.skill_name:
+            raise ValueError("plugin_name/plugin_version are required")
+        return self
 
 
 class IntegrationSelection(BaseModel):
@@ -34,6 +48,40 @@ class IntegrationSelection(BaseModel):
     reasons: list[str] = Field(default=[], description="筛选或质量判断依据")
 
 
+class IntegrationModelReview(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    status: str | None = Field(None, max_length=64, description="模型初标状态")
+    decision: str | None = Field(None, max_length=64, description="模型初标结论")
+    knowledge_value: str | None = Field(None, max_length=64, description="模型判断的沉淀价值")
+    reason: str | None = Field(None, max_length=4000, description="模型初标原因")
+    error_type: str | None = Field(None, max_length=128, description="模型识别的错误类型")
+    standard_consistency: str | None = Field(None, max_length=64)
+    evidence_sufficiency: str | None = Field(None, max_length=64)
+    content_consistency: str | None = Field(None, max_length=64)
+    image_necessity: str | None = Field(None, max_length=64)
+    title_quality: str | None = Field(None, max_length=64)
+    confidence: float | None = Field(None, ge=0, le=1)
+    priority_review: bool = False
+    provider: str | None = Field(None, max_length=128)
+    model_name: str | None = Field(None, max_length=128)
+    prompt_version: str | None = Field(None, max_length=128)
+    run_id: str | None = Field(None, max_length=128)
+
+
+class IntegrationHumanReview(BaseModel):
+    knowledge_value: str | None = Field(None, max_length=32)
+    usability: str | None = Field(None, max_length=32)
+    modification_notes: str | None = Field(None, max_length=4000)
+    feedback: str | None = Field(None, max_length=4000)
+    decision: str | None = Field(None, max_length=64)
+    error_type: str | None = Field(None, max_length=128)
+    training_eligible: str | None = Field(None, max_length=32)
+    notes: str | None = Field(None, max_length=4000)
+    reviewer: str | None = Field(None, max_length=128)
+    reviewed_at: datetime | None = None
+
+
 class IntegrationKnowledgePayload(BaseModel):
     title: str = Field(..., min_length=1, max_length=256, description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表")
@@ -43,6 +91,7 @@ class IntegrationKnowledgePayload(BaseModel):
     applicable_categories: list[Any] = Field(default=[], description="适用类目")
     applicable_brands: list[Any] = Field(default=[], description="适用品牌")
     applicable_models: list[Any] = Field(default=[], description="适用机型")
+    recommended_reply: str | None = Field(None, max_length=4000, description="推荐回复")
     evidence_excerpt: str | None = Field(
         None, max_length=4000, description="已脱敏的关键证据摘要"
     )
@@ -57,6 +106,8 @@ class IntegrationKnowledgePayload(BaseModel):
 
 
 class IntegrationCandidate(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     event_id: str = Field(..., min_length=1, max_length=128, description="上游事件ID")
     idempotency_key: str = Field(
         ..., min_length=1, max_length=128, description="幂等键，同一业务事件必须稳定不变"
@@ -65,6 +116,8 @@ class IntegrationCandidate(BaseModel):
     processing: IntegrationProcessing
     selection: IntegrationSelection
     knowledge: IntegrationKnowledgePayload
+    model_review: IntegrationModelReview | None = None
+    human_review: IntegrationHumanReview | None = None
 
 
 class IntegrationCandidateBatch(BaseModel):
@@ -118,6 +171,101 @@ class IntegrationCandidateBatchResponse(BaseModel):
     rejected: int
     reused: int
     results: list[IntegrationCandidateResult]
+
+
+class IntegrationCandidateQueueResult(BaseModel):
+    event_id: str
+    idempotency_key: str
+    status: Literal["queued", "ready", "rejected", "reused"]
+    ingestion_id: str
+    review_status: str
+
+
+class IntegrationCandidateQueueBatchResponse(BaseModel):
+    queued: int
+    ready: int
+    rejected: int
+    reused: int
+    results: list[IntegrationCandidateQueueResult]
+
+
+class CandidateReviewUpdate(BaseModel):
+    title: str | None = Field(None, min_length=1, max_length=256)
+    subtitles: list[str] | None = None
+    content: Any | None = None
+    category_id: str | None = Field(None, min_length=1, max_length=64)
+    applicable_scenes: list[str] | None = None
+    applicable_categories: list[Any] | None = None
+    applicable_brands: list[Any] | None = None
+    applicable_models: list[Any] | None = None
+    recommended_reply: str | None = Field(None, max_length=4000)
+    knowledge_value: str | None = Field(None, max_length=32)
+    usability: str | None = Field(None, max_length=32)
+    modification_notes: str | None = Field(None, max_length=4000)
+    feedback: str | None = Field(None, max_length=4000)
+    decision: str | None = Field(None, max_length=64)
+    error_type: str | None = Field(None, max_length=128)
+    training_eligible: str | None = Field(None, max_length=32)
+    notes: str | None = Field(None, max_length=4000)
+
+
+class CandidateReviewListItem(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    id: str
+    event_id: str
+    source_system: str
+    source_conversation_id: str
+    source_conversation_url: str | None = None
+    review_status: str
+    status: str
+    title: str
+    subtitles: list[str] = Field(default_factory=list)
+    content: Any
+    category_id: str
+    applicable_scenes: list[str] = Field(default_factory=list)
+    applicable_categories: list[Any] = Field(default_factory=list)
+    applicable_brands: list[Any] = Field(default_factory=list)
+    applicable_models: list[Any] = Field(default_factory=list)
+    recommended_reply: str | None = None
+    evidence_excerpt: str | None = None
+    selection: dict[str, Any] = Field(default_factory=dict)
+    model_review: dict[str, Any] = Field(default_factory=dict)
+    human_review: dict[str, Any] = Field(default_factory=dict)
+    priority_review: bool = False
+    knowledge_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    submitted_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CandidateReviewListResponse(BaseModel):
+    total: int
+    summary: dict[str, int]
+    items: list[CandidateReviewListItem]
+
+
+class CandidateReviewBatchSubmit(BaseModel):
+    ingestion_ids: list[str] = Field(..., min_length=1, max_length=100)
+
+
+class CandidateReviewSubmitResult(BaseModel):
+    ingestion_id: str
+    status: Literal["submitted", "failed", "reused"]
+    knowledge_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class CandidateReviewBatchSubmitResponse(BaseModel):
+    submitted: int
+    failed: int
+    reused: int
+    results: list[CandidateReviewSubmitResult]
 
 
 class IntegrationIngestionResponse(BaseModel):

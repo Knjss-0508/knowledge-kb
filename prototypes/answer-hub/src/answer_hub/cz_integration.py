@@ -15,6 +15,9 @@ import time
 
 from .auto_review import (
     AutoReviewPolicy,
+    UNUSABLE_VALUES,
+    UNWORTHY_VALUES,
+    USABLE_VALUES,
     WORTHY_VALUES,
     select_candidates_for_submission,
 )
@@ -150,6 +153,7 @@ class CzIntegrationAdapter:
     qc_standards_search_path = "/api/v1/integration/qc-standards:search"
     dedup_path = "/api/v1/integration/knowledge-dedup:check"
     candidates_path = "/api/v1/integration/knowledge-candidates:batch"
+    review_candidates_path = "/api/v1/integration/knowledge-review-candidates:batch"
     second_part_path = "/api/v1/integration/second-part/records:batch"
     ingestion_path = "/api/v1/integration/ingestions"
 
@@ -164,6 +168,7 @@ class CzIntegrationAdapter:
             "qc_standards_endpoint": self.qc_standards_path,
             "dedup_endpoint": self.dedup_path,
             "candidate_endpoint": self.candidates_path,
+            "review_candidate_endpoint": self.review_candidates_path,
             "second_part_endpoint": self.second_part_path,
         }
 
@@ -305,6 +310,8 @@ class CzIntegrationAdapter:
         candidate: dict[str, Any],
         category_id: str,
         idempotency_key: str,
+        *,
+        require_eligible: bool = True,
     ) -> list[str]:
         errors: list[str] = []
         if not category_id:
@@ -313,7 +320,7 @@ class CzIntegrationAdapter:
             errors.append("缺少主标题。")
         if not _text(candidate.get("知识内容")):
             errors.append("缺少知识内容。")
-        if (
+        if require_eligible and (
             _text(candidate.get("自动审核状态")) != "auto_approved"
             and _text(candidate.get("是否值得沉淀")).lower() not in WORTHY_VALUES
         ):
@@ -326,6 +333,8 @@ class CzIntegrationAdapter:
         self,
         candidates: list[dict[str, Any]],
         category_mapping: dict[str, str],
+        *,
+        require_eligible: bool = True,
     ) -> list[dict[str, Any]]:
         payload: list[dict[str, Any]] = []
         for candidate in candidates:
@@ -337,8 +346,13 @@ class CzIntegrationAdapter:
                 or ""
             )
             topic_id = _text(candidate.get("主题ID")) or _text(candidate.get("主标题"))
-            idempotency_key = f"sha256:{_stable_hash(topic_id, candidate.get('主标题'), candidate.get('知识内容'), candidate.get('来源版本'))}"
-            errors = self.validate_candidate(candidate, category_id, idempotency_key)
+            idempotency_key = f"sha256:{_stable_hash('knowledge-candidate', topic_id, candidate.get('来源版本'))}"
+            errors = self.validate_candidate(
+                candidate,
+                category_id,
+                idempotency_key,
+                require_eligible=require_eligible,
+            )
             if errors:
                 raise ValueError("；".join(errors))
             subtitles = _split_values(candidate.get("副标题"))
@@ -439,6 +453,71 @@ class CzIntegrationAdapter:
                             if value
                         ],
                     },
+                    "model_review": {
+                        "status": _text(candidate.get("模型初标状态")) or None,
+                        "decision": _text(candidate.get("模型初标结论")) or None,
+                        "knowledge_value": (
+                            "worthy"
+                            if _text(candidate.get("模型初标是否值得沉淀")).lower()
+                            in WORTHY_VALUES
+                            else (
+                                "unworthy"
+                                if _text(candidate.get("模型初标是否值得沉淀")).lower()
+                                in UNWORTHY_VALUES
+                                else None
+                            )
+                        ),
+                        "reason": _text(candidate.get("模型初标原因")) or None,
+                        "error_type": _text(candidate.get("模型初标错误类型")) or None,
+                        "standard_consistency": _text(candidate.get("模型初标标准一致性")) or None,
+                        "evidence_sufficiency": _text(candidate.get("模型初标证据充分性")) or None,
+                        "content_consistency": _text(candidate.get("模型初标内容一致性")) or None,
+                        "image_necessity": _text(candidate.get("模型初标图片必要性")) or None,
+                        "title_quality": _text(candidate.get("模型初标标题质量")) or None,
+                        "confidence": (
+                            _safe_float(candidate.get("模型初标置信度"))
+                            if _text(candidate.get("模型初标置信度"))
+                            else None
+                        ),
+                        "priority_review": _text(candidate.get("模型初标重点复核")) == "是",
+                        "provider": _text(candidate.get("模型初标提供方")) or None,
+                        "model_name": _text(candidate.get("模型初标模型名称")) or None,
+                        "prompt_version": _text(candidate.get("模型初标Prompt版本")) or None,
+                        "run_id": _text(candidate.get("模型初标运行ID")) or None,
+                    },
+                    "human_review": {
+                        "knowledge_value": (
+                            "worthy"
+                            if knowledge_value.lower() in WORTHY_VALUES
+                            else (
+                                "unworthy"
+                                if knowledge_value.lower() in UNWORTHY_VALUES
+                                else "pending"
+                            )
+                        ),
+                        "usability": (
+                            "usable"
+                            if usable.lower() in USABLE_VALUES
+                            else (
+                                "unusable"
+                                if usable.lower() in UNUSABLE_VALUES
+                                else "pending"
+                            )
+                        ),
+                        "modification_notes": _text(candidate.get("如何修改")) or None,
+                        "feedback": _text(candidate.get("问题反馈")) or None,
+                        "decision": {
+                            "通过": "approved",
+                            "修改后通过": "approved_with_changes",
+                            "驳回": "rejected",
+                            "标记Bad Case": "bad_case",
+                        }.get(decision),
+                        "error_type": _text(candidate.get("错误类型")) or None,
+                        "training_eligible": _text(candidate.get("是否进入训练集")) or None,
+                        "notes": _text(candidate.get("审核备注")) or None,
+                        "reviewer": _text(candidate.get("审核人")) or None,
+                        "reviewed_at": _text(candidate.get("审核时间")) or None,
+                    },
                     "knowledge": {
                         "title": _text(candidate.get("主标题")),
                         "subtitles": subtitles,
@@ -452,9 +531,7 @@ class CzIntegrationAdapter:
                         },
                         "recommended_reply": _text(candidate.get("推荐回复")) or None,
                         "category_id": category_id,
-                        "layer": "L2",
                         "scene_tags": scene_tags,
-                        "applicable_business_types": [],
                         "applicable_categories": [product_type] if product_type else [],
                         "applicable_brands": (
                             [scope_parts[1]]
@@ -497,6 +574,33 @@ class CzIntegrationAdapter:
                 {"items": batch},
             )
             for key in ("accepted", "rejected", "reused", "intercepted", "blocked"):
+                totals[key] += int(response.get(key) or 0)
+            totals["results"].extend(response.get("results") or [])
+        return totals
+
+    def sync_review_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        category_mapping: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        mapping = (
+            category_mapping
+            if category_mapping is not None
+            else self.category_mapping()
+        )
+        totals = {"queued": 0, "ready": 0, "rejected": 0, "reused": 0, "results": []}
+        for start in range(0, len(candidates), 100):
+            batch = self.build_batch_payload(
+                candidates[start : start + 100],
+                mapping,
+                require_eligible=False,
+            )
+            response = self._request_json(
+                "POST",
+                self.review_candidates_path,
+                {"items": batch},
+            )
+            for key in ("queued", "ready", "rejected", "reused"):
                 totals[key] += int(response.get(key) or 0)
             totals["results"].extend(response.get("results") or [])
         return totals

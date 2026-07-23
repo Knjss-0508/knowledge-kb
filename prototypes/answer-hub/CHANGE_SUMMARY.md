@@ -8,7 +8,7 @@
 → 10项候选审核
 → 批量提交CZ
 → Qwen3语义查重拦截
-→ CZ待审核与人工发布
+→ CZ发布审核与人工发布
 ```
 
 ## 主要变更
@@ -64,7 +64,7 @@
 
 ### Qwen3拦截
 
-- `create`：正常进入CZ待审核。
+- `create`：正常进入 CZ 发布审核。
 - `review_duplicate`：进入待审核，但标记为疑似重复拦截。
 - `block_duplicate`：明确重复，阻断入库。
 - 批量响应增加`intercepted`和`blocked`计数。

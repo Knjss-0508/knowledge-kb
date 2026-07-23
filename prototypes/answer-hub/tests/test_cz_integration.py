@@ -98,6 +98,37 @@ class CzIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["processing"]["plugin_version"], "2026-07-22")
         self.assertNotIn("skill_name", payload["processing"])
         self.assertNotIn("skill_version", payload["processing"])
+        self.assertNotIn("layer", payload["knowledge"])
+        self.assertNotIn("applicable_business_types", payload["knowledge"])
+
+    def test_candidate_payload_carries_model_and_human_review_metadata(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+
+        payload = adapter.build_batch_payload(
+            [
+                {
+                    **_candidate(),
+                    "模型初标状态": "topic_initial_reviewed_model",
+                    "模型初标结论": "建议沉淀",
+                    "模型初标是否值得沉淀": "是",
+                    "模型初标置信度": "0.93",
+                    "模型初标重点复核": "是",
+                    "模型初标原因": "案例证据充分",
+                    "如何修改": "精简首段",
+                    "问题反馈": "标题可更具体",
+                    "审核结论": "修改后通过",
+                    "是否进入训练集": "是",
+                }
+            ],
+            {"手机": "cat-phone"},
+        )[0]
+
+        self.assertEqual(payload["model_review"]["knowledge_value"], "worthy")
+        self.assertEqual(payload["model_review"]["confidence"], 0.93)
+        self.assertTrue(payload["model_review"]["priority_review"])
+        self.assertEqual(payload["human_review"]["decision"], "approved_with_changes")
+        self.assertEqual(payload["human_review"]["modification_notes"], "精简首段")
+        self.assertEqual(payload["human_review"]["training_eligible"], "是")
 
     def test_select_submittable_candidates_maps_simple_teammate_review(self) -> None:
         selected = select_submittable_candidates(
@@ -128,6 +159,44 @@ class CzIntegrationTests(unittest.TestCase):
                 [{**_candidate(), "是否值得沉淀": ""}],
                 {"手机": "cat-phone"},
             )
+
+    def test_review_queue_payload_allows_pending_human_annotation(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+
+        payload = adapter.build_batch_payload(
+            [{**_candidate(), "是否值得沉淀": "", "是否可用": "", "审核结论": ""}],
+            {"手机": "cat-phone"},
+            require_eligible=False,
+        )[0]
+
+        self.assertFalse(payload["selection"]["eligible"])
+        self.assertEqual(payload["human_review"]["knowledge_value"], "pending")
+        self.assertEqual(payload["human_review"]["usability"], "pending")
+
+    def test_candidate_idempotency_is_stable_when_reviewers_edit_content(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+
+        first = adapter.build_batch_payload(
+            [_candidate()],
+            {"手机": "cat-phone"},
+        )[0]
+        second = adapter.build_batch_payload(
+            [
+                {
+                    **_candidate(),
+                    "主标题": "审核后更新的标题",
+                    "知识内容": "审核后更新的正文",
+                    "如何修改": "已完成修改",
+                }
+            ],
+            {"手机": "cat-phone"},
+        )[0]
+
+        self.assertEqual(first["idempotency_key"], second["idempotency_key"])
+        self.assertNotEqual(
+            first["selection"]["duplicate_fingerprint"],
+            second["selection"]["duplicate_fingerprint"],
+        )
 
     def test_fetch_all_qc_standards_merges_stable_snapshot_pages(self) -> None:
         adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
@@ -198,6 +267,39 @@ class CzIntegrationTests(unittest.TestCase):
         self.assertEqual(result["rejected"], 0)
         self.assertEqual(result["intercepted"], 1)
         self.assertEqual(result["blocked"], 0)
+
+    def test_sync_review_candidates_splits_batches_at_one_hundred(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+        request_sizes: list[int] = []
+        request_paths: list[str] = []
+
+        def fake_request(method, path, payload, **kwargs):
+            del method, kwargs
+            request_paths.append(path)
+            request_sizes.append(len(payload["items"]))
+            return {
+                "queued": 0,
+                "ready": len(payload["items"]),
+                "rejected": 0,
+                "reused": 0,
+                "results": [],
+            }
+
+        adapter._request_json = Mock(side_effect=fake_request)
+
+        result = adapter.sync_review_candidates(
+            [_candidate(index) for index in range(1, 206)],
+            {"手机": "cat-phone"},
+        )
+
+        self.assertEqual(request_sizes, [100, 100, 5])
+        self.assertEqual(
+            request_paths,
+            [adapter.review_candidates_path] * 3,
+        )
+        self.assertEqual(result["ready"], 205)
+        self.assertEqual(result["queued"], 0)
+        self.assertEqual(result["rejected"], 0)
 
     def test_submit_second_part_records_batches_case_only_generation(self) -> None:
         adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
