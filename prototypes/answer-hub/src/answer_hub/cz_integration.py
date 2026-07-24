@@ -320,6 +320,8 @@ class CzIntegrationAdapter:
             errors.append("缺少主标题。")
         if not _text(candidate.get("知识内容")):
             errors.append("缺少知识内容。")
+        if require_eligible and _text(candidate.get("关联标准项")):
+            errors.append("已有标准关联，必须留在标准关联搁置流程，禁止直接送审。")
         if require_eligible and (
             _text(candidate.get("自动审核状态")) != "auto_approved"
             and _text(candidate.get("是否值得沉淀")).lower() not in WORTHY_VALUES
@@ -346,7 +348,10 @@ class CzIntegrationAdapter:
                 or ""
             )
             topic_id = _text(candidate.get("主题ID")) or _text(candidate.get("主标题"))
-            idempotency_key = f"sha256:{_stable_hash('knowledge-candidate', topic_id, candidate.get('来源版本'))}"
+            idempotency_key = (
+                "sha256:"
+                f"{_stable_hash('knowledge-candidate', topic_id, candidate.get('来源版本'))}"
+            )
             errors = self.validate_candidate(
                 candidate,
                 category_id,
@@ -379,6 +384,7 @@ class CzIntegrationAdapter:
             decision = _text(candidate.get("审核结论"))
             usable = _text(candidate.get("是否可用"))
             knowledge_value = _text(candidate.get("是否值得沉淀"))
+            standard_reference = _text(candidate.get("关联标准项"))
             auto_review_status = _text(candidate.get("自动审核状态"))
             eligible = (
                 (
@@ -389,7 +395,7 @@ class CzIntegrationAdapter:
                     )
                 )
                 or auto_review_status == "auto_approved"
-            )
+            ) and not standard_reference
             payload.append(
                 {
                     "event_id": topic_id,
@@ -449,6 +455,12 @@ class CzIntegrationAdapter:
                                     else ""
                                 ),
                                 _text(candidate.get("模型初标原因")),
+                                (
+                                    "已有标准关联（仅审计，未自动映射）："
+                                    f"{standard_reference}"
+                                    if standard_reference
+                                    else ""
+                                ),
                             )
                             if value
                         ],
@@ -469,20 +481,36 @@ class CzIntegrationAdapter:
                         ),
                         "reason": _text(candidate.get("模型初标原因")) or None,
                         "error_type": _text(candidate.get("模型初标错误类型")) or None,
-                        "standard_consistency": _text(candidate.get("模型初标标准一致性")) or None,
-                        "evidence_sufficiency": _text(candidate.get("模型初标证据充分性")) or None,
-                        "content_consistency": _text(candidate.get("模型初标内容一致性")) or None,
-                        "image_necessity": _text(candidate.get("模型初标图片必要性")) or None,
-                        "title_quality": _text(candidate.get("模型初标标题质量")) or None,
+                        "standard_consistency": (
+                            _text(candidate.get("模型初标标准一致性")) or None
+                        ),
+                        "evidence_sufficiency": (
+                            _text(candidate.get("模型初标证据充分性")) or None
+                        ),
+                        "content_consistency": (
+                            _text(candidate.get("模型初标内容一致性")) or None
+                        ),
+                        "image_necessity": (
+                            _text(candidate.get("模型初标图片必要性")) or None
+                        ),
+                        "title_quality": (
+                            _text(candidate.get("模型初标标题质量")) or None
+                        ),
                         "confidence": (
                             _safe_float(candidate.get("模型初标置信度"))
                             if _text(candidate.get("模型初标置信度"))
                             else None
                         ),
-                        "priority_review": _text(candidate.get("模型初标重点复核")) == "是",
+                        "priority_review": (
+                            _text(candidate.get("模型初标重点复核")) == "是"
+                        ),
                         "provider": _text(candidate.get("模型初标提供方")) or None,
-                        "model_name": _text(candidate.get("模型初标模型名称")) or None,
-                        "prompt_version": _text(candidate.get("模型初标Prompt版本")) or None,
+                        "model_name": (
+                            _text(candidate.get("模型初标模型名称")) or None
+                        ),
+                        "prompt_version": (
+                            _text(candidate.get("模型初标Prompt版本")) or None
+                        ),
                         "run_id": _text(candidate.get("模型初标运行ID")) or None,
                     },
                     "human_review": {
@@ -504,7 +532,9 @@ class CzIntegrationAdapter:
                                 else "pending"
                             )
                         ),
-                        "modification_notes": _text(candidate.get("如何修改")) or None,
+                        "modification_notes": (
+                            _text(candidate.get("如何修改")) or None
+                        ),
                         "feedback": _text(candidate.get("问题反馈")) or None,
                         "decision": {
                             "通过": "approved",
@@ -513,7 +543,9 @@ class CzIntegrationAdapter:
                             "标记Bad Case": "bad_case",
                         }.get(decision),
                         "error_type": _text(candidate.get("错误类型")) or None,
-                        "training_eligible": _text(candidate.get("是否进入训练集")) or None,
+                        "training_eligible": (
+                            _text(candidate.get("是否进入训练集")) or None
+                        ),
                         "notes": _text(candidate.get("审核备注")) or None,
                         "reviewer": _text(candidate.get("审核人")) or None,
                         "reviewed_at": _text(candidate.get("审核时间")) or None,
@@ -588,21 +620,73 @@ class CzIntegrationAdapter:
             if category_mapping is not None
             else self.category_mapping()
         )
-        totals = {"queued": 0, "ready": 0, "rejected": 0, "reused": 0, "results": []}
-        for start in range(0, len(candidates), 100):
-            batch = self.build_batch_payload(
-                candidates[start : start + 100],
-                mapping,
-                require_eligible=False,
-            )
-            response = self._request_json(
-                "POST",
-                self.review_candidates_path,
-                {"items": batch},
-            )
-            for key in ("queued", "ready", "rejected", "reused"):
+        totals = {
+            "queued": 0,
+            "ready": 0,
+            "rejected": 0,
+            "reused": 0,
+            "failed": 0,
+            "results": [],
+        }
+        valid_items: list[dict[str, Any]] = []
+        for candidate in candidates:
+            try:
+                valid_items.extend(
+                    self.build_batch_payload(
+                        [candidate],
+                        mapping,
+                        require_eligible=False,
+                    )
+                )
+            except ValueError as exc:
+                totals["failed"] += 1
+                totals["results"].append(
+                    {
+                        "event_id": (
+                            _text(candidate.get("主题ID"))
+                            or _text(candidate.get("主标题"))
+                        ),
+                        "status": "failed",
+                        "error_code": "LOCAL_VALIDATION_ERROR",
+                        "error_message": str(exc),
+                    }
+                )
+
+        def sync_batch(batch: list[dict[str, Any]]) -> None:
+            try:
+                response = self._request_json(
+                    "POST",
+                    self.review_candidates_path,
+                    {"items": batch},
+                )
+            except RuntimeError as exc:
+                message = str(exc)
+                is_item_validation_error = (
+                    "HTTP 400" in message or "HTTP 422" in message
+                )
+                if is_item_validation_error and len(batch) > 1:
+                    midpoint = max(1, len(batch) // 2)
+                    sync_batch(batch[:midpoint])
+                    sync_batch(batch[midpoint:])
+                    return
+                if is_item_validation_error and len(batch) == 1:
+                    totals["failed"] += 1
+                    totals["results"].append(
+                        {
+                            "event_id": _text(batch[0].get("event_id")),
+                            "status": "failed",
+                            "error_code": "REMOTE_VALIDATION_ERROR",
+                            "error_message": message,
+                        }
+                    )
+                    return
+                raise
+            for key in ("queued", "ready", "rejected", "reused", "failed"):
                 totals[key] += int(response.get(key) or 0)
             totals["results"].extend(response.get("results") or [])
+
+        for start in range(0, len(valid_items), 100):
+            sync_batch(valid_items[start : start + 100])
         return totals
 
     def build_second_part_payload(

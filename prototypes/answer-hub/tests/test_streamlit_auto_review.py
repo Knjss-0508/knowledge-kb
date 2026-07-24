@@ -53,10 +53,17 @@ def _topic_workbook_bytes() -> bytes:
 
 def test_streamlit_auto_review_workspace_renders_validation_metrics() -> None:
     app = AppTest.from_file("streamlit_app.py")
-    app.session_state["workspace_page"] = "候选复核与反馈"
+    app.session_state["workspace_page"] = "审核与反馈"
     app.session_state["generated_topic_workbook"] = _topic_workbook_bytes()
     app.run(timeout=30)
 
     assert not app.exception
     assert any(metric.label == "模型可自动放行" for metric in app.metric)
-    assert any(button.label == "提交验证通过候选" for button in app.button)
+    assert not any(
+        button.label in {"提交验证通过候选", "提交模型自动通过候选"}
+        for button in app.button
+    )
+    assert any(
+        "Streamlit 仅用于准确性验证" in element.value
+        for element in [*app.info, *app.warning]
+    )

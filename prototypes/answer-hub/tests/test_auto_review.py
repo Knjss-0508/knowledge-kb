@@ -3,6 +3,7 @@ from __future__ import annotations
 from answer_hub.auto_review import (
     AutoReviewPolicy,
     apply_auto_review_annotation,
+    assess_auto_review_candidate,
     evaluate_auto_review_validation,
     partition_auto_review_candidates,
     select_candidates_for_submission,
@@ -25,6 +26,10 @@ def _model_pass(**overrides):
         "模型初标置信度": 0.93,
         "模型初标重点复核": "否",
         "是否重点复核": "否",
+        "主题分类状态": "topic_stage_classified_model",
+        "主题分类提供方": "mimo",
+        "主题分类置信度": 0.93,
+        "主题分类重点复核": "否",
         "模型初标标准一致性": "一致",
         "模型初标证据充分性": "充分",
         "模型初标内容一致性": "一致",
@@ -88,6 +93,28 @@ def test_auto_review_does_not_release_knowledge_without_deposition_value() -> No
     assert "值得沉淀" in exceptions[0]["自动审核原因"]
 
 
+def test_auto_review_requires_successful_high_confidence_topic_classification() -> None:
+    approved, exceptions = partition_auto_review_candidates(
+        [
+            _model_pass(主题ID="TOP-LOW", 主题分类置信度=0.7),
+            _model_pass(主题ID="TOP-FOCUS", 主题分类重点复核="是"),
+            _model_pass(
+                主题ID="TOP-FALLBACK",
+                主题分类状态="topic_stage_classified_rule",
+                主题分类提供方="stage-rule",
+            ),
+        ],
+        _policy(enabled=True),
+    )
+
+    assert approved == []
+    assert {row["主题ID"] for row in exceptions} == {
+        "TOP-LOW",
+        "TOP-FOCUS",
+        "TOP-FALLBACK",
+    }
+
+
 def test_validation_treats_teammate_modification_as_not_ready_for_auto_release() -> None:
     report = evaluate_auto_review_validation(
         [
@@ -131,3 +158,31 @@ def test_annotation_marks_validation_and_production_modes_differently() -> None:
 
     assert validation_row["自动审核状态"] == "validation_auto_approve"
     assert production_row["自动审核状态"] == "auto_approved"
+
+
+def test_auto_review_canary_is_limited_by_product_type() -> None:
+    policy = AutoReviewPolicy(
+        enabled=True,
+        enabled_product_types=("手机",),
+        validated_model="mimo-v2.5-pro",
+        validated_prompt_version="multi-category-topic-initial-review-v3",
+    )
+
+    approved, reasons = assess_auto_review_candidate(
+        _model_pass(产品类型="平板"),
+        policy,
+        enforce_deployment_version=True,
+    )
+
+    assert approved is False
+    assert reasons == ["当前品类未进入自动审核灰度范围"]
+
+
+def test_auto_review_kill_switch_overrides_enabled_flag(monkeypatch) -> None:
+    monkeypatch.setenv("AUTO_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("AUTO_REVIEW_KILL_SWITCH", "true")
+
+    policy = AutoReviewPolicy.from_env()
+
+    assert policy.enabled is False
+    assert policy.kill_switch is True

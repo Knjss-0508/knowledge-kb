@@ -1,0 +1,304 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Answer Hub Automation",
+    "version": "1.0.0",
+    "description": "Upload second-part Excel workbooks, query workflow status, retry failed jobs, and download model-review or CZ submission artifacts."
+  },
+  "servers": [
+    {
+      "url": "http://host.docker.internal:8780",
+      "description": "Answer Hub service running on the Docker host"
+    }
+  ],
+  "security": [
+    {
+      "AnswerHubKey": []
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "answerHubHealth",
+        "summary": "Check Answer Hub API health",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Service health",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/automation/jobs": {
+      "post": {
+        "operationId": "createAnswerHubJob",
+        "summary": "Upload a second-part workbook and create an automation job",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "source_file"
+                ],
+                "properties": {
+                  "source_file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Second-part workbook in .xlsx or .xlsm format"
+                  },
+                  "product_type": {
+                    "type": "string"
+                  },
+                  "use_mimo": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "clustering_mode": {
+                    "type": "string",
+                    "enum": [
+                      "direct_mimo",
+                      "semantic_mimo",
+                      "semantic",
+                      "rule"
+                    ],
+                    "default": "direct_mimo"
+                  },
+                  "semantic_threshold": {
+                    "type": "number",
+                    "default": 0.84
+                  },
+                  "cluster_review_floor": {
+                    "type": "number",
+                    "default": 0.75
+                  },
+                  "cluster_auto_merge_threshold": {
+                    "type": "number",
+                    "default": 0.92
+                  },
+                  "cluster_review_limit": {
+                    "type": "integer",
+                    "default": 100
+                  },
+                  "sync_to_cz_review": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Job created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationJob"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/automation/jobs/{job_id}": {
+      "get": {
+        "operationId": "getAnswerHubJob",
+        "summary": "Get automation job status and artifact URLs",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/JobId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current job status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationJob"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/automation/jobs/{job_id}/retry": {
+      "post": {
+        "operationId": "retryAnswerHubJob",
+        "summary": "Move a failed job back to the pending queue",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/JobId"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Job requeued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationJob"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/automation/jobs/{job_id}/artifacts/{artifact_name}": {
+      "get": {
+        "operationId": "downloadAnswerHubArtifact",
+        "summary": "Download a generated workbook or JSON result",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/JobId"
+          },
+          {
+            "name": "artifact_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "record_review",
+                "topic_review",
+                "candidate_knowledge",
+                "model_review",
+                "cz_submission",
+                "summary"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Artifact file",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "AnswerHubKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Answer-Hub-Key"
+      }
+    },
+    "parameters": {
+      "JobId": {
+        "name": "job_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "AutomationJob": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "processing",
+              "completed",
+              "failed"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "current_stage": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "summary": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "artifact_urls": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Request failed",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "error": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

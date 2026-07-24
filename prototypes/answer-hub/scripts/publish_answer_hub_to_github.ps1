@@ -76,24 +76,35 @@ function Copy-AnswerHubSource {
         ".agents",
         ".claude",
         ".codex",
+        ".codex_stage",
         ".codex_tmp_sheet",
         ".pytest_cache",
         ".venv",
         ".cz_test_venv",
         "__pycache__",
         "github-cli",
+        "*.egg-info",
         (Join-Path $SourcePath "cz-knowledge-kb"),
         (Join-Path $SourcePath "data"),
         (Join-Path $SourcePath "handoff"),
         (Join-Path $SourcePath "node_modules"),
         (Join-Path $SourcePath "outputs"),
+        (Join-Path $SourcePath "tools\dify"),
         (Join-Path $SourcePath "tools\github-cli")
     )
     $excludedFiles = @(
         ".env",
         ".codex_last_clone_path",
+        ".codex_last_app_publish_path",
+        "codex_test_*.patch",
+        "update_pr12_with_cz_interfaces.ps1",
+        "更新PR12合并CZ接口.cmd",
+        "*.db",
+        "*.log",
         "*.pyc",
-        "*.pyo"
+        "*.pyo",
+        "*.sqlite",
+        "*.sqlite3"
     )
 
     New-Item -ItemType Directory -Force -Path $DestinationPath | Out-Null
@@ -130,7 +141,9 @@ function Assert-StagingSafety {
         ".venv",
         ".cz_test_venv",
         "__pycache__",
-        "github-cli"
+        "dify",
+        "github-cli",
+        ".codex_stage"
     )
     $forbiddenRootDirectories = @(
         "cz-knowledge-kb",
@@ -141,15 +154,23 @@ function Assert-StagingSafety {
     )
     $forbiddenFileNames = @(
         ".env",
-        ".codex_last_clone_path"
+        ".codex_last_clone_path",
+        ".codex_last_app_publish_path",
+        "update_pr12_with_cz_interfaces.ps1",
+        "更新PR12合并CZ接口.cmd"
     )
     $forbiddenExtensions = @(
         ".key",
+        ".log",
         ".p12",
         ".pfx",
         ".pem",
         ".pyc",
-        ".pyo"
+        ".pyo",
+        ".patch",
+        ".db",
+        ".sqlite",
+        ".sqlite3"
     )
 
     $stagingFullPath = [IO.Path]::GetFullPath($StagingPath).TrimEnd("\") + "\"
@@ -158,6 +179,7 @@ function Assert-StagingSafety {
             $relativePath = $_.FullName.Substring($stagingFullPath.Length)
             $isRootEntry = $relativePath -notmatch "[\\/]"
             ($_.PSIsContainer -and $forbiddenDirectoryNamesAnywhere -contains $_.Name) -or
+            ($_.PSIsContainer -and $_.Name -like "*.egg-info") -or
             ($_.PSIsContainer -and $isRootEntry -and $forbiddenRootDirectories -contains $_.Name) -or
             (-not $_.PSIsContainer -and $forbiddenFileNames -contains $_.Name) -or
             (-not $_.PSIsContainer -and $forbiddenExtensions -contains $_.Extension.ToLowerInvariant())
@@ -317,7 +339,7 @@ if ($stagedOutsideTarget.Count -gt 0) {
     throw "Files outside $TargetPath were staged:`n$($stagedOutsideTarget -join "`n")"
 }
 
-$commitMessage = "feat: 增加知识沉淀价值标注与送审门禁"
+$commitMessage = "feat: 接通 CZ 候选价值复核队列"
 Invoke-CheckedCommand "Create the Git commit" {
     & $Git -C $cloneRoot commit -m $commitMessage
 }
@@ -331,14 +353,14 @@ $pullRequestBody = @"
 
 - 在聚类、标注、转写流程中增加“知识点是否值得沉淀”
 - 增加模型初标、人工标注及批量送审门禁
-- 接通候选知识导出和 CZ 接口的沉淀价值字段
+- 接通候选知识导出和 CZ 候选价值复核接口的沉淀价值字段
 - 更新相关测试、操作文档和交付说明
 
 ## 上传范围
 
-- 完整替换 $TargetPath
+- 仅完整替换 $TargetPath
 - 清理远端旧版本残留文件
-- 未上传 CZ 源码、历史交付包、`.env`、业务数据、输出文件、虚拟环境或缓存
+- 明确不修改或上传 CZ 源码目录、历史交付包、`.env`、业务数据、输出文件、虚拟环境或缓存
 
 ## 验证
 

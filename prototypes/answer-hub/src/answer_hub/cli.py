@@ -5,7 +5,13 @@ import json
 from pathlib import Path
 import sys
 
-from .automation import run_automation_pipeline
+from .automation import (
+    list_automation_runs,
+    resume_automation_pipeline,
+    run_automation_pipeline,
+)
+from .automation_queue import process_automation_queue
+from .operations import apply_retention_cleanup, write_operations_report
 from .transfer_analysis import (
     TransferAnalysisStore,
     build_weekly_report,
@@ -81,6 +87,110 @@ def build_parser() -> argparse.ArgumentParser:
     automate.add_argument("--cluster-review-floor", type=float, default=0.75)
     automate.add_argument("--cluster-auto-merge-threshold", type=float, default=0.92)
     automate.add_argument("--cluster-review-limit", type=int, default=100)
+
+    automation_queue = subparsers.add_parser(
+        "automation-queue",
+        help="Process unattended source workbooks from a durable inbox queue",
+    )
+    automation_queue.add_argument(
+        "--queue-dir",
+        default="data/automation-queue",
+        help="Queue root containing pending, processing, completed and failed folders",
+    )
+    automation_queue.add_argument(
+        "--standards",
+        default="",
+        help="Optional standard catalog path; omit for case-only knowledge generation",
+    )
+    automation_queue.add_argument(
+        "--output-dir",
+        default="outputs/automation-runs",
+        help="Automation run root directory",
+    )
+    automation_queue.add_argument("--product-type", default="")
+    automation_queue.add_argument("--rule-only", action="store_true")
+    automation_queue.add_argument(
+        "--clustering-mode",
+        choices=["direct_mimo", "semantic_mimo", "semantic", "rule"],
+        default="direct_mimo",
+    )
+    automation_queue.add_argument("--semantic-threshold", type=float, default=0.84)
+    automation_queue.add_argument("--cluster-review-floor", type=float, default=0.75)
+    automation_queue.add_argument(
+        "--cluster-auto-merge-threshold",
+        type=float,
+        default=0.92,
+    )
+    automation_queue.add_argument("--cluster-review-limit", type=int, default=100)
+    automation_queue.add_argument(
+        "--max-files",
+        type=int,
+        default=10,
+        help="Maximum workbooks handled in one scheduled batch",
+    )
+    automation_queue.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Also retry workbooks currently in the failed folder",
+    )
+    automation_queue.add_argument(
+        "--sync-to-cz-review",
+        "--submit-to-cz",
+        dest="submit_to_cz",
+        action="store_true",
+        help=(
+            "Model-review all candidates and sync them to the CZ candidate "
+            "value-review queue; --submit-to-cz is kept as a compatibility alias"
+        ),
+    )
+    automation_queue.add_argument(
+        "--stale-after-seconds",
+        type=int,
+        default=7200,
+        help="Recover stale processing files and stale runner locks after this age",
+    )
+
+    retry_run = subparsers.add_parser(
+        "retry-run",
+        help="Resume a failed automation run from its latest workflow checkpoint",
+    )
+    retry_run.add_argument("--run-id", required=True)
+    retry_run.add_argument(
+        "--output-dir",
+        default="outputs/automation-runs",
+        help="Automation run root directory",
+    )
+
+    operations_report = subparsers.add_parser(
+        "operations-report",
+        help="Summarize automation success, latency, fallback, model usage and SLA alerts",
+    )
+    operations_report.add_argument(
+        "--output-dir",
+        default="outputs/automation-runs",
+        help="Automation run root directory",
+    )
+    operations_report.add_argument(
+        "--output",
+        default="outputs/operations/automation_metrics.json",
+    )
+    operations_report.add_argument("--limit", type=int, default=1000)
+
+    retention = subparsers.add_parser(
+        "retention-cleanup",
+        help="Preview or execute cleanup of expired automation run directories",
+    )
+    retention.add_argument(
+        "--output-dir",
+        default="outputs/automation-runs",
+        help="Automation run root directory",
+    )
+    retention.add_argument("--days", type=int, default=0)
+    retention.add_argument(
+        "--execute",
+        action="store_true",
+        help="Delete candidates; without this flag the command is a dry run",
+    )
 
     transfer_discover = subparsers.add_parser(
         "transfer-discover",
@@ -229,6 +339,52 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(manifest, ensure_ascii=False, indent=2))
         return 1 if manifest["status"] == "failed" else 0
+
+    if args.command == "automation-queue":
+        summary = process_automation_queue(
+            queue_root=Path(args.queue_dir),
+            standards_path=Path(args.standards) if args.standards else None,
+            output_root=Path(args.output_dir),
+            product_type=args.product_type,
+            use_mimo=not args.rule_only,
+            clustering_mode=args.clustering_mode,
+            semantic_threshold=args.semantic_threshold,
+            cluster_review_floor=args.cluster_review_floor,
+            cluster_auto_merge_threshold=args.cluster_auto_merge_threshold,
+            cluster_review_limit=args.cluster_review_limit,
+            max_files=args.max_files,
+            retry_failed=args.retry_failed,
+            stale_after_seconds=args.stale_after_seconds,
+            submit_to_cz=args.submit_to_cz,
+        )
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 1 if summary["failed"] else 0
+
+    if args.command == "retry-run":
+        manifest = resume_automation_pipeline(
+            Path(args.output_dir),
+            args.run_id,
+        )
+        print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        return 1 if manifest["status"] == "failed" else 0
+
+    if args.command == "operations-report":
+        manifests = list_automation_runs(
+            Path(args.output_dir),
+            limit=max(1, args.limit),
+        )
+        summary = write_operations_report(manifests, Path(args.output))
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "retention-cleanup":
+        summary = apply_retention_cleanup(
+            Path(args.output_dir),
+            retention_days=args.days or None,
+            execute=args.execute,
+        )
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
 
     if args.command == "transfer-discover":
         profile_dir = (

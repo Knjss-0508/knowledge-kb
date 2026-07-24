@@ -11,13 +11,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+import copy
 import json
 import os
 import re
+import threading
+import time
 
 from .catalog import StandardCatalogItem
-from .images import ImageEvidence
+from .images import ImageEvidence, split_image_urls
 from .product_taxonomy import (
     UNKNOWN_PRODUCT_NAME,
     canonical_product_name,
@@ -27,11 +31,14 @@ from .product_taxonomy import (
 
 
 PROMPT_VERSION = "multi-category-topic-transcription-v2"
-TOPIC_REVIEW_PROMPT_VERSION = "multi-category-topic-initial-review-v3"
-CLUSTER_PAIR_REVIEW_PROMPT_VERSION = "knowledge-cluster-membership-review-v3"
+TOPIC_REVIEW_PROMPT_VERSION = "multi-category-topic-content-quality-review-v4"
+TOPIC_STAGE_PROMPT_VERSION = "multi-category-topic-stage-value-v4"
+TOPIC_DISPLAY_QUESTION_PROMPT_VERSION = "topic-display-question-v1"
+CLUSTER_PAIR_REVIEW_PROMPT_VERSION = "knowledge-cluster-membership-review-v5-chat-only"
 TOPIC_SIGNAL_PROMPT_VERSION = "multi-category-conversation-topic-signal-v4"
-CLUSTER_UNIT_PROMPT_VERSION = "multi-category-conversation-cluster-units-v3"
-ATOMIC_TOPIC_CLUSTER_PROMPT_VERSION = "atomic-knowledge-topic-clustering-v2"
+CLUSTER_UNIT_PROMPT_VERSION = "multi-category-conversation-cluster-units-v10-chat-scope-multitopic"
+CLUSTER_FUSION_PROMPT_VERSION = "multi-category-conversation-cluster-fusion-v4-media-second-topic"
+ATOMIC_TOPIC_CLUSTER_PROMPT_VERSION = "atomic-knowledge-topic-clustering-v3-chat-evidence"
 
 
 class MimoError(RuntimeError):
@@ -59,7 +66,13 @@ class MimoConfig:
     api_key: str
     base_url: str
     model: str
+    media_model: str = ""
     timeout_seconds: int = 60
+    max_retries: int = 2
+    retry_backoff_seconds: float = 0.75
+    max_requests_per_second: float = 2.0
+    input_cost_per_million_tokens: float = 0.0
+    output_cost_per_million_tokens: float = 0.0
 
     @classmethod
     def from_env(cls) -> "MimoConfig | None":
@@ -67,13 +80,59 @@ class MimoConfig:
         api_key = os.getenv("MIMO_API_KEY", "").strip()
         base_url = os.getenv("MIMO_BASE_URL", "").strip()
         model = os.getenv("MIMO_MODEL", "").strip()
+        media_model = os.getenv("MIMO_MEDIA_MODEL", "").strip()
         if not (api_key and base_url and model):
             return None
+        if not media_model:
+            media_model = "mimo-v2.5" if model.startswith("mimo-v2.5") else model
         try:
             timeout = max(10, min(int(os.getenv("MIMO_TIMEOUT_SECONDS", "60")), 180))
         except ValueError:
             timeout = 60
-        return cls(api_key=api_key, base_url=base_url, model=model, timeout_seconds=timeout)
+        try:
+            max_retries = max(0, min(int(os.getenv("MIMO_MAX_RETRIES", "2")), 6))
+        except ValueError:
+            max_retries = 2
+        try:
+            retry_backoff = max(
+                0.1,
+                min(float(os.getenv("MIMO_RETRY_BACKOFF_SECONDS", "0.75")), 30.0),
+            )
+        except ValueError:
+            retry_backoff = 0.75
+        try:
+            max_rps = max(
+                0.1,
+                min(float(os.getenv("MIMO_MAX_REQUESTS_PER_SECOND", "2")), 50.0),
+            )
+        except ValueError:
+            max_rps = 2.0
+        try:
+            input_cost = max(
+                0.0,
+                float(os.getenv("MIMO_INPUT_COST_PER_MILLION_TOKENS", "0")),
+            )
+        except ValueError:
+            input_cost = 0.0
+        try:
+            output_cost = max(
+                0.0,
+                float(os.getenv("MIMO_OUTPUT_COST_PER_MILLION_TOKENS", "0")),
+            )
+        except ValueError:
+            output_cost = 0.0
+        return cls(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            media_model=media_model,
+            timeout_seconds=timeout,
+            max_retries=max_retries,
+            retry_backoff_seconds=retry_backoff,
+            max_requests_per_second=max_rps,
+            input_cost_per_million_tokens=input_cost,
+            output_cost_per_million_tokens=output_cost,
+        )
 
     def chat_completions_url(self) -> str:
         base = self.base_url.rstrip("/")
@@ -91,6 +150,59 @@ def _text(value: Any, limit: int = 7000) -> str:
     if value is None:
         return ""
     return str(value).strip()[:limit]
+
+
+_TRANSFER_METADATA_LINE_RE = re.compile(
+    r"^\s*"
+    r"(?:\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}(?::\d{2})?\s*)?"
+    r"(?:问题类型|问题描述|转人工原因)\s*[:：]"
+)
+
+
+def _primary_conversation_evidence(
+    value: Any,
+    limit: int = 9000,
+) -> str:
+    """Return actual dialogue without the untrusted transfer-trigger header."""
+    raw_text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    dialogue_lines = [
+        line.strip()
+        for line in raw_text.splitlines()
+        if line.strip() and not _TRANSFER_METADATA_LINE_RE.match(line)
+    ]
+    dialogue = "\n".join(dialogue_lines)
+    if len(dialogue) <= limit:
+        return dialogue
+    marker = "\n……中间部分已截断……\n"
+    available = max(0, limit - len(marker))
+    head_length = int(available * 0.68)
+    tail_length = available - head_length
+    return f"{dialogue[:head_length]}{marker}{dialogue[-tail_length:]}"
+
+
+def _cluster_review_evidence_payload(value: Any) -> Any:
+    """Sanitize clustering review payloads so chat evidence stays primary."""
+    if isinstance(value, list):
+        return [_cluster_review_evidence_payload(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    payload: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in {"source_conversation", "聊天内容", "conversation"}:
+            payload["primary_conversation_evidence"] = (
+                _primary_conversation_evidence(item)
+            )
+        elif key in {
+            "source_core_problem",
+            "核心问题",
+            "upstream_core_problem",
+            "quality_question_description",
+        }:
+            continue
+        else:
+            payload[key] = _cluster_review_evidence_payload(item)
+    return payload
 
 
 def _standard_ref(item: StandardCatalogItem) -> str:
@@ -130,6 +242,40 @@ def _source_payload(source_row: dict[str, Any]) -> dict[str, str]:
 
 def _image_metadata(images: list[ImageEvidence]) -> list[dict[str, Any]]:
     return [image.metadata() for image in images]
+
+
+def _remote_media_urls(value: Any, limit: int) -> list[str]:
+    urls: list[str] = []
+    for raw_url in split_image_urls(_text(value, 12000)):
+        parsed = urlparse(raw_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        if parsed.username or parsed.password:
+            continue
+        urls.append(raw_url)
+        if len(urls) >= limit:
+            break
+    return list(dict.fromkeys(urls))
+
+
+def _cluster_media_parts(
+    source_row: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    image_urls = _remote_media_urls(source_row.get("图片链接"), 4)
+    video_urls = _remote_media_urls(source_row.get("视频链接"), 2)
+    parts = [
+        {"type": "image_url", "image_url": {"url": url}}
+        for url in image_urls
+    ]
+    parts.extend(
+        {"type": "video_url", "video_url": {"url": url}}
+        for url in video_urls
+    )
+    return parts, {
+        "mode": "mimo-direct-multimodal" if parts else "text-only",
+        "images": [{"url": url, "status": "attached"} for url in image_urls],
+        "videos": [{"url": url, "status": "attached"} for url in video_urls],
+    }
 
 
 def _topic_signal_source_payload(source_row: dict[str, Any]) -> dict[str, Any]:
@@ -417,9 +563,11 @@ def _build_topic_review_prompt(
         else "【标准引用模式】\n本次关闭标准检索与标准引用，不得因缺少标准而否决草稿。"
     )
     retry_instruction = f"\n【上次输出不合格原因】\n{retry_reason}" if retry_reason else ""
-    return f"""你是答疑中台的多品类质检知识初审员。现在需要审核一条已经转写完成的主题级知识草稿。当前生效品类为：{product_category_prompt()}。
+    return f"""你是答疑中台的多品类质检知识内容质量初审员。现在需要审核一条已经转写完成的主题级知识草稿。当前生效品类为：{product_category_prompt()}。
 
 你的职责是“审核标注”，不是改写知识：{responsibility}；只判断草稿能否进入人工复标。
+
+该主题的沉淀价值已经在转写前完成，并且只有标注为“值得沉淀”的主题才会进入本环节。你不得重新判断是否值得沉淀，knowledge_value 固定返回“值得沉淀”。
 
 审核规则：
 1. {evidence_rule}，不得补充未提供的事实。
@@ -429,8 +577,8 @@ def _build_topic_review_prompt(
 5. 必须审核知识内容是否准确覆盖规则、处理步骤和限制条件，不能只检查格式和字段完整性。
 6. 必须审核主标题是否自然清楚、副标题是否只是关键词堆砌；主标题清楚时不应强行要求副标题。
 7. 必须审核图片必要性：文字能说清时不应要求图片；依赖视觉差异时没有保留图片，应标记需修改或证据不足。
-9. 必须标注知识点是否值得沉淀：只有问题清楚、处理方式可复用、不是仅对单个工单有效，且后续答疑存在复用价值时，才标记“值得沉淀”；纯个案结论、无有效处理信息或明显无复用价值时标记“不值得沉淀”；证据尚不足时标记“待确认”。
-10. 标记“不值得沉淀”时 decision 必须为“驳回”；标记“待确认”时 decision 不能为“通过”。
+9. 本环节只审核标题、正文、分类、推荐回复、证据一致性和图片必要性；不得因为重新评价沉淀价值而驳回草稿。
+10. knowledge_value 只是兼容字段，必须固定返回“值得沉淀”。
 11. 只输出一个 JSON 对象，不要 Markdown。字段必须完整：
 {{
   "decision": "通过 / 需修改 / 驳回 / 证据不足待补充",
@@ -457,6 +605,96 @@ def _build_topic_review_prompt(
 """
 
 
+def _build_topic_stage_prompt(
+    topic: dict[str, Any],
+    retry_reason: str = "",
+) -> str:
+    retry_instruction = f"\n【上次输出不合格原因】\n{retry_reason}" if retry_reason else ""
+    return f"""你是答疑中台的主题分类与知识沉淀价值标注员。输入是已经完成原子问题拆分和聚类的一个主题，可能包含 1～N 个来源案例。
+
+请完成两个互相独立的判断：
+1. 判断该主题主要属于哪个环节：质检标准、质检流程、案例解析、课外常识。
+2. 判断该主题是否值得沉淀为可复用知识：值得沉淀、不值得沉淀。
+
+证据优先级：
+- conversation_evidence、historical_replies、evidence_summaries，以及从完整会话提取的 intents、subjects、phenomena、resolution_modes 是主要判断依据。
+- normalized_issues、judgment_targets、上游核心问题/判定/分类字段和 standard_paths 只属于弱参考与审计信息；只有与主要证据一致时才能辅助理解，发生冲突时必须忽略。
+- 弱参考字段或已有标准路径不得作为“值得沉淀”的直接依据，也不得据此补写标准、阈值、边界或步骤。
+
+环节定义：
+- 质检标准：核心在“判什么、算不算、是否合格、应选哪个质检项、等级/阈值/边界是什么”；可复用答案应是判定口径、适用条件或例外边界。
+- 质检流程：核心在“怎么查、怎么测、怎么操作、先后步骤、使用什么入口或工具”；可复用答案应是检查或操作步骤，而不是某台设备的最终结论。
+- 案例解析：核心结论依赖当前案例的图片、视频、实物状态或上下文，只能分析这一个案例；离开该案例证据无法直接得出同样结论。
+- 课外常识：核心是型号、版本、功能、配件、行业常识等信息，不是在询问质检判定标准、质检操作流程，也不是要求分析当前具体案例。
+
+冲突处理顺序：
+1. 不要因为文本出现“标准、流程、案例”等字样直接分类，要判断回答该主题真正需要输出什么。
+2. 若问题由具体案例触发，但可以抽象成稳定的判定口径，标“质检标准”；只有结论主要依赖该案例独有证据时才标“案例解析”。
+3. 同时包含“怎么检查”和“检查后判什么”时，以主要诉求为准；无法确认主要诉求时选择证据更充分的一类，并将 needs_human_review=true。
+4. 机型/版本查询若只是回答产品事实，标“课外常识”；若是在说明质检项如何读取或核对，标“质检流程”。
+5. 若证据摘要显示后台只是查看当前图片/视频后回复“正常、异常、可以、没事”等结论，且没有给出通用判断条件，必须标“案例解析”，不能仅因 normalized_issue 或 intent 中出现“标准判定”而标“质检标准”。
+
+沉淀价值规则：
+- 值得沉淀：能形成稳定、清楚、可复用的判定口径、操作流程、查询方法或高频基础知识；适用于后续多个类似问题，而不是只记录一个工单答案。
+- 不值得沉淀：只有单个案例结论、缺少可复用规则或步骤、证据冲突/严重不足、主题过于模糊，或内容只是“看图后正常/异常”且无法说明可复用依据。
+- “案例解析”并不自动等于不值得沉淀。若该案例具有代表性，能够提炼出明确边界、核验要点或反例说明，仍可标“值得沉淀”。
+- 不得为了提高沉淀率而补写输入中没有的标准、事实、阈值或处理步骤。
+- 必须依据当前输入已经包含的信息判断，不能因为“该问题高频、以后补充标准后可能有价值”就标“值得沉淀”。
+- 单成员主题中的个案回复不能自动外推为平台通用标准。只有输入明确提供了可复用条件、检查步骤、定义/边界，或同一主题内至少两个独立案例形成一致规则时，才可标“值得沉淀”。
+- 单成员主题若只是“某个具体现象 → 正常/异常/某分类”的直接映射，且没有可信标准来源、多个适用条件或可执行核验步骤，必须标“不值得沉淀”。“工具结果与人工复核冲突时以谁为准”这类通用冲突处理原则，或包含明确先后步骤的方法，可以作为例外。
+- 若 standard_paths、thresholds_or_exceptions 等关键字段为“待确认/无明确阈值”，且当前输入没有其他明确规则或方法，应标“不值得沉淀”。
+- reusable_knowledge 只能总结输入中已经出现的规则或步骤。若输入不足，直接说明缺失项，禁止推测可能原因、行业惯例或平台标准。
+- 主题来源字段互相冲突、上游需要复核、或你的结论依赖把单案例外推为通用规则时，needs_human_review 必须为 true。
+
+只输出一个 JSON 对象，不要 Markdown。字段必须完整：
+{{
+  "topic_stage": "质检标准 / 质检流程 / 案例解析 / 课外常识",
+  "knowledge_value": "值得沉淀 / 不值得沉淀",
+  "stage_reason": "string",
+  "value_reason": "string",
+  "reusable_knowledge": "可沉淀的规则、步骤或知识摘要；不值得沉淀时说明缺失项",
+  "confidence": 0.0,
+  "needs_human_review": true
+}}
+
+【主题输入】
+{json.dumps(topic, ensure_ascii=False, indent=2)}
+{retry_instruction}
+"""
+
+
+def _build_topic_display_questions_prompt(
+    topics: list[dict[str, Any]],
+    retry_reason: str = "",
+) -> str:
+    retry_instruction = f"\n【上次输出不合格原因】\n{retry_reason}" if retry_reason else ""
+    return f"""你是答疑中台的主题问句改写员。请把每个规范化主题改写成组员一眼能懂的一句现场提问。
+
+改写要求：
+1. 每个主题只输出一个问句，必须保留 theme_id。
+2. 问句必须以中文问号“？”结尾，建议 8～28 个汉字，最长不超过 40 个字符。
+3. 使用现场自然说法，优先采用以下句式：
+   - “防水标变红怎么判？”
+   - “电池健康度读不出来怎么办？”
+   - “自动检测异常但人工复检正常时怎么判？”
+   - “型号ZP是什么版本？”
+4. 保留必要的对象、现象和判断目标；删除机型年份、尺寸等不影响理解的冗余信息。
+5. 不要出现“回收师、用户、咨询、希望、主题、标准判定、案例解析、知识沉淀”等后台术语。
+6. 不要写答案、结论、原因或操作步骤，不要补充输入中没有的事实。
+7. 多个来源问题属于同一主题时，概括它们共同的问题，不要逐个罗列案例。
+8. 只输出一个 JSON 对象，不要 Markdown：
+{{
+  "questions": [
+    {{"theme_id": "C001", "question": "防水标变红怎么判？"}}
+  ]
+}}
+
+【待改写主题】
+{json.dumps(topics, ensure_ascii=False, indent=2)}
+{retry_instruction}
+"""
+
+
 def _build_cluster_pair_review_prompt(
     left: dict[str, Any],
     right: dict[str, Any],
@@ -465,6 +703,8 @@ def _build_cluster_pair_review_prompt(
     retry_reason: str = "",
 ) -> str:
     retry_instruction = f"\n【上次输出不合格原因】\n{retry_reason}" if retry_reason else ""
+    left_payload = _cluster_review_evidence_payload(left)
+    right_payload = _cluster_review_evidence_payload(right)
     return f"""你是人工答疑知识库的主题聚类审核员。请判断候选原子知识 A 是否能够加入主题簇 B。
 
 主题簇 B 可以包含 1 到 N 个知识点。不得只挑选其中最相似的一条进行判断；只有候选 A 能够与簇内所有成员共用同一条标准答疑知识时，才允许加入。
@@ -487,7 +727,14 @@ def _build_cluster_pair_review_prompt(
 - 合并后需要写多个互不相关的处理结论。
 - 只是出现“屏幕、摄像头、拆修、异常”等相同宽泛词语。
 
-完整聊天、已经提取出的图片/视频事实摘要和结构化问题单元是主要证据。不得猜测未解析的图片或视频内容，不得补充输入中没有的业务标准。
+证据优先级：
+1. primary_conversation_evidence 中的实际问答、追问、澄清和客服答复是第一主证据。
+2. 已经提取出的图片/视频事实是第二主证据。
+3. 转人工问题描述、上游核心问题摘要和旧分类已从审核输入中移除，因为它们可能只是工程师为快速转人工而乱填、乱选或在百晓生中询问的最后一句话。
+4. 聊天中的“问题类型、问题描述、转人工原因”属于系统转人工元数据，不是实际会话发言。
+5. 结构化问题字段必须能够被聊天或可靠媒体证据支持；发生明显冲突时判断为“不确定”或“不同主题”。
+
+不得猜测未解析的图片或视频内容，不得补充输入中没有的业务标准。
 
 不要根据相似度直接下结论。相似度只用于候选召回，不是合并证据。
 
@@ -505,10 +752,10 @@ def _build_cluster_pair_review_prompt(
 当前阈值：{threshold:.4f}
 
 【记录 A】
-{json.dumps(left, ensure_ascii=False, indent=2)}
+{json.dumps(left_payload, ensure_ascii=False, indent=2)}
 
 【记录 B】
-{json.dumps(right, ensure_ascii=False, indent=2)}
+{json.dumps(right_payload, ensure_ascii=False, indent=2)}
 {retry_instruction}
 """
 
@@ -516,47 +763,57 @@ def _build_cluster_pair_review_prompt(
 def _build_cluster_unit_prompt(
     source_row: dict[str, Any],
     retry_reason: str = "",
+    attached_image_count: int = 0,
+    attached_video_count: int = 0,
 ) -> str:
     retry_instruction = f"\n【上次输出不合格原因】\n{retry_reason}" if retry_reason else ""
     payload = {
         "work_order_id": _text(source_row.get("工单ID")),
         "product_type": _text(source_row.get("产品类型")),
         "device_model": _text(source_row.get("机型")),
-        "legacy_category_l1": _text(source_row.get("一级分类")),
-        "legacy_category_l2": _text(source_row.get("二级分类")),
-        "conversation": _text(source_row.get("聊天内容"), 9000),
-        "upstream_core_problem": _text(source_row.get("核心问题"), 1200),
-        "upstream_judgment": _text(source_row.get("判定结论"), 1200),
-        "upstream_media_fact_summary": _text(source_row.get("上游媒体分析摘要"), 2400),
+        "primary_conversation_evidence": _primary_conversation_evidence(
+            source_row.get("聊天内容"),
+            9000,
+        ),
         "has_image_links": bool(_text(source_row.get("图片链接"))),
         "has_video_links": bool(_text(source_row.get("视频链接"))),
+        "attached_image_count": attached_image_count,
+        "attached_video_count": attached_video_count,
     }
     return f"""你是人工答疑知识库新版聚类流程的原子知识提取器。请判断一条会话包含一个还是多个可以独立沉淀的知识主题，并输出用于聚类的原子知识点。
 
 证据使用规则：
-1. 完整聊天是主证据。
-2. upstream_core_problem、upstream_judgment 和 upstream_media_fact_summary 是第二部分已经结合图片或视频生成的分析结果，可作为重要媒体语义证据。
-3. product_type 和 device_model 用于判断适用品类、平台、品牌和机型范围。
-4. legacy_category_l1、legacy_category_l2 只能作为弱参考，不得覆盖实际聊天内容。
-4. 不重新猜测图片或视频内容；只能使用输入中已经提取出的媒体事实。
+1. primary_conversation_evidence 是去除转人工系统头部后的完整实际聊天，是第一主证据。必须综合阅读整段问答、追问、澄清、图片上下文和客服答复，不能只抓取最后一句或某个关键词。
+2. 本轮消息中附带的图片和视频也是主证据。必须直接识别与用户问题有关的外观、部位、文字、操作过程、动态异常、字幕和可听语音；只记录确实可见或可听到的事实。
+3. 聊天原文开头的“问题类型、问题描述、转人工原因”是系统转人工元数据，不是工程师与客服的实际发言，已经从 primary_conversation_evidence 中排除。
+4. 转人工问题描述、上游核心问题摘要、历史判定、上游媒体摘要和旧分类不会传入本任务，因为它们可能由错误问题描述衍生，不能作为主题证据。
+5. 实际聊天和本轮直接读取的媒体不足以确认问题时，必须输出 uncertain 或“待确认”，不得使用缺失的旧字段补全主题。
+6. product_type 和 device_model 用于判断适用品类、平台、品牌和机型范围。
+7. 不得根据旧分类习惯猜测一级分类或二级分类。
+8. 媒体无法读取、画面模糊、关键动作未拍到、声音不清或不足以支持结论时，不得猜测；在 media_analysis 中说明并设置 requires_review=true。
+9. 媒体中出现清晰的第二个独立质检问题时，必须按多主题拆分；媒体只是同一问题的补充角度、操作过程或证明材料时不得重复拆题。
+10. 每个输出主题必须能在实际聊天或可靠媒体中找到独立证据；evidence_summary 应概括真实对话证据，不得把转人工问题描述当作唯一依据。
+11. 术语必须结合聊天和媒体消歧：“一根线”“靓机助手”“验机精灵”“爬虫”“工具读出”“用户判断”通常指验机工具、检测程序或工具结果，不代表屏幕上出现物理线条。只有实际聊天或图片明确提到屏幕、显示线条、贯穿线、亮线等现象时，才能提取为屏幕线条问题。
 
 主题拆分规则：
 1. 同一对象、同一异常的追问、澄清、补充图片或处理过程属于一个主题。
 2. 同一对象、同一现象在两个质检选项中进行选择，通常属于一个主题。
 3. 需要不同知识正文、不同判断对象或不同处理标准的问题必须拆开。
-3. 即使最终客服只回答了其中一个问题，也不能丢弃会话中清晰存在的另一个独立问题。
-4. 能明确识别多个独立问题时标记 multi_topic；不是 uncertain。
-5. 只有聊天或媒体证据不足、无法判断真实问题时才标记 uncertain。
-6. 最多提取 3 个主题。寒暄、催促、致谢和系统提示不作为主题。
+4. 即使最终客服只回答了其中一个问题，也不能丢弃会话中清晰存在的另一个独立问题。
+5. 能明确识别多个独立问题时标记 multi_topic；不是 uncertain。
+6. 只有聊天或媒体证据不足、无法判断真实问题时才标记 uncertain。
+7. 最多提取 3 个主题。寒暄、催促、致谢和系统提示不作为主题。
+8. 同一会话并列询问两个可以独立检测、独立判定的硬件功能时必须拆分，例如“振动功能”和“熄屏/距离感应功能”、“摄像头”和“扬声器”。两个可以独立核对的配置信息也必须拆分，例如“硬盘信息和显卡信息”。不得使用“整机功能异常”“设备功能是否正常”或“硬件配置是否正常”等宽泛主题将它们合并。
+9. 孤立的单个词或客服简短回复不能自动成为独立主题。例如只出现一次“闪屏、正常、没事”，但没有对应独立提问、追问、检查过程或媒体证据时，不得单独拆题。
 
 适用范围规则：
 1. 默认不同一级品类不能共用一条知识。
 2. 苹果手机、安卓手机、鸿蒙设备或其他平台标准不一致时，必须保留平台范围。
-3. device_model 只是当前案例设备，不代表知识天然为机型专用。没有明确的品牌/机型特殊标准时，默认标记为“品类专用”或“平台专用”。
+3. 案例设备是iPhone、华为或具体机型，不代表主题必须品牌专用或机型专用。询问通用全新机判定且没有品牌特殊规则时，应标为“品类专用”；只有平台处理方式确实不同时才标为“平台专用”。
 4. 只有输入明确说明某品牌或某机型存在特殊阈值、例外或操作路径时，才能标记为“品牌专用”或“机型专用”。
-4. 只有输入证据明确说明各品类处理标准完全一致时，才能标记为通用。
-5. 无法确认品类、平台或标准路径时填写“待确认”，并将 requires_review 设为 true。
-6. 已知品牌应填写正确平台：Apple/iPhone/iPad 对应 iOS；小米、红米、OPPO、vivo、三星、一加、realme、努比亚等手机对应 Android；华为设备有明确鸿蒙证据时填 HarmonyOS，否则填待确认。
+5. 只有输入证据明确说明各品类处理标准完全一致时，才能标记为通用。
+6. 无法确认品类、平台或标准路径时填写“待确认”，并将 requires_review 设为 true。
+7. 已知品牌应填写正确平台：Apple/iPhone/iPad 对应 iOS；小米、红米、OPPO、vivo、三星、一加、realme、努比亚等手机对应 Android；华为设备有明确鸿蒙证据时填 HarmonyOS，否则填待确认。
 
 知识分类规则：
 1. category_l1 只能为：基本情况、成色与回收标准、外观问题、显示问题、功能问题、拆修问题、信息查询、流程操作、其他待确认。
@@ -565,6 +822,7 @@ def _build_cluster_unit_prompt(
 4. 摄像头、扬声器、充电、按键等功能是否正常属于“功能问题”。
 5. 非原装部件、更换、维修痕迹、拆机痕迹等属于“拆修问题”。
 6. 不得因为上游分类或标准名称中出现“拆修”就覆盖实际聊天中的显示、功能或外观问题。
+7. 包装盒防拆标签是否影响全新机状态、塑封是否完整、是否属于全新未拆封，应归入“成色与回收标准”＋“标准判定”，不能仅因出现“防拆”归入拆修问题或信息查询。
 
 标准和阈值规则：
 1. standard_path 只能概括输入已经明确提供的统一处理路径；证据不足时填“待确认”。
@@ -580,6 +838,13 @@ def _build_cluster_unit_prompt(
 {{
   "conversation_type": "single_topic / multi_topic / uncertain",
   "reason": "简短说明为什么单主题、拆分或不确定，不超过240字",
+  "media_analysis": {{
+    "image_summary": "图片中与主题有关的可见事实；无图片填无图片；无法读取需说明",
+    "video_summary": "视频画面、操作、字幕和可听语音中的相关事实；无视频填无视频；无法读取需说明",
+    "media_relevance": "相关 / 不相关 / 无法读取 / 无媒体",
+    "used_for_topic_split": false,
+    "requires_review": false
+  }},
   "topics": [
     {{
       "normalized_issue": "可独立聚类的核心问题，不超过80字",
@@ -597,7 +862,7 @@ def _build_cluster_unit_prompt(
       "resolution_mode": "应沉淀的处理方式",
       "standard_path": "适用的标准处理路径；无法确认填待确认",
       "threshold_or_exception": "输入中明确出现的阈值或例外；没有填无明确阈值；无法确认填待确认",
-      "evidence_summary": "支持该问题单元的聊天及上游媒体事实摘要，不超过300字",
+      "evidence_summary": "支持该问题单元的聊天及本轮媒体事实摘要，不超过300字",
       "confidence": 0.0,
       "requires_review": true
     }}
@@ -610,9 +875,189 @@ def _build_cluster_unit_prompt(
 """
 
 
+def _build_cluster_fusion_prompt(
+    source_row: dict[str, Any],
+    text_candidate: dict[str, Any],
+    media_candidate: dict[str, Any],
+    media_audit: dict[str, Any],
+    retry_reason: str = "",
+) -> str:
+    retry_instruction = (
+        f"\n【上次输出不合格原因】\n{retry_reason}"
+        if retry_reason
+        else ""
+    )
+    payload = {
+        "source": {
+            "work_order_id": _text(source_row.get("工单ID")),
+            "product_type": _text(source_row.get("产品类型")),
+            "device_model": _text(source_row.get("机型")),
+            "primary_conversation_evidence": _primary_conversation_evidence(
+                source_row.get("聊天内容"),
+                9000,
+            ),
+        },
+        "text_pro_candidate": text_candidate,
+        "media_candidate": media_candidate,
+        "media_audit": media_audit,
+    }
+    return f"""你是人工答疑知识库的多模态主题融合裁决器。
+
+输入包括：
+1. MiMo Pro仅依据完整文字提取的主题；
+2. 全模态MiMo提取的图片/视频事实和候选主题；
+3. 原始聊天与业务字段。
+
+融合硬规则：
+1. primary_conversation_evidence 中明确存在的独立问题不得因为图片或视频没有展示而被删除。媒体“未看到”不等于文字问题不存在。
+2. 图片或视频清晰展示文字中没有的第二个独立质检问题时，可以新增主题。
+3. 最终主题集合原则上是“明确文字主题”和“可靠媒体新增主题”的去重并集。
+4. text_pro_candidate 已经是 multi_topic 时，不得降为 single_topic，除非两个文字主题实际是同一对象、同一异常、同一处理路径的重复表达。
+5. media_candidate 是 multi_topic 且 media_analysis.used_for_topic_split=true 时，必须保留媒体新增的独立主题。
+6. 产品类型、机型或部位与媒体冲突时，不允许直接用媒体覆盖文字结论；保留文字主题并设置 requires_review=true。
+7. 视频或图片无法读取时，保留文字提取结果，并设置 requires_review=true。
+8. 最多保留3个独立主题。只做主题提取，不发明标准、阈值或业务结论。
+9. 转人工问题描述、上游核心问题摘要和旧分类不会传入融合任务；原始聊天头部的“问题类型、问题描述、转人工原因”也已排除。
+10. text_pro_candidate 或 media_candidate 若无法从实际聊天或本轮媒体中找到支持，必须删除该候选主题或标记人工复核。
+11. “一根线、靓机助手、验机精灵、爬虫、工具读出、用户判断”应优先理解为验机工具或检测结果；没有明确屏幕线条证据时，不得融合成屏生线、亮线等显示主题。
+12. 文字询问相机倍数，但图片清晰显示屏幕亮线时，保留相机问题并新增屏幕显示问题；不得用媒体主题覆盖或删除文字主题。
+
+只返回一个JSON对象，不要Markdown：
+{{
+  "conversation_type": "single_topic / multi_topic / uncertain",
+  "reason": "融合依据，不超过240字",
+  "media_analysis": {{
+    "image_summary": "图片事实摘要",
+    "video_summary": "视频事实摘要",
+    "media_relevance": "相关 / 不相关 / 无法读取 / 无媒体",
+    "used_for_topic_split": false,
+    "requires_review": false
+  }},
+  "topics": [
+    {{
+      "normalized_issue": "可独立聚类的核心问题，不超过80字",
+      "product_category": "只能为{product_category_prompt()}或{UNKNOWN_PRODUCT_NAME}",
+      "scope_type": "通用 / 品类专用 / 平台专用 / 品牌专用 / 机型专用 / 待确认",
+      "platform": "iOS / Android / HarmonyOS / Windows / macOS / 通用 / 待确认",
+      "brand": "品牌名称、通用或待确认",
+      "model_scope": "机型范围、通用或待确认",
+      "category_l1": "基本情况 / 成色与回收标准 / 外观问题 / 显示问题 / 功能问题 / 拆修问题 / 信息查询 / 流程操作 / 其他待确认",
+      "category_l2": "知识二级分类",
+      "intent": "标准判定 / 检测核验 / 信息查询 / 流程操作 / 其他待确认",
+      "subject": "实际对象或部位",
+      "phenomenon": "异常现象或查询目标",
+      "judgment_target": "希望得到的统一判定目标",
+      "resolution_mode": "应沉淀的处理方式",
+      "standard_path": "输入明确的处理路径；无法确认填待确认",
+      "threshold_or_exception": "明确阈值；没有填无明确阈值；无法确认填待确认",
+      "evidence_summary": "聊天和媒体证据摘要，不超过300字",
+      "confidence": 0.0,
+      "requires_review": true
+    }}
+  ]
+}}
+
+【输入】
+{json.dumps(payload, ensure_ascii=False, indent=2)}
+{retry_instruction}
+"""
+
+
+def _fusion_media_analysis(media_candidate: dict[str, Any]) -> dict[str, Any]:
+    analysis = media_candidate.get("media_analysis")
+    if isinstance(analysis, dict):
+        return copy.deepcopy(analysis)
+    return {
+        "image_summary": "媒体候选未返回图片摘要",
+        "video_summary": "媒体候选未返回视频摘要",
+        "media_relevance": "无法读取",
+        "used_for_topic_split": False,
+        "requires_review": True,
+    }
+
+
+def _enforce_cluster_fusion_guardrails(
+    fused_candidate: dict[str, Any],
+    text_candidate: dict[str, Any],
+    media_candidate: dict[str, Any],
+    media_audit: dict[str, Any],
+) -> dict[str, Any]:
+    text_type = _text(text_candidate.get("conversation_type"), 32)
+    media_type = _text(media_candidate.get("conversation_type"), 32)
+    fused_type = _text(fused_candidate.get("conversation_type"), 32)
+    text_topics = list(text_candidate.get("topics") or [])
+    media_topics = list(media_candidate.get("topics") or [])
+    media_analysis = _fusion_media_analysis(media_candidate)
+    media_added_topic = bool(media_analysis.get("used_for_topic_split"))
+
+    selected = copy.deepcopy(fused_candidate)
+    guardrail_reason = ""
+    if text_type == "multi_topic" and (
+        fused_type != "multi_topic"
+        or len(selected.get("topics") or []) < len(text_topics)
+    ):
+        selected = copy.deepcopy(text_candidate)
+        guardrail_reason = "硬规则保留MiMo Pro从文字中识别出的多个独立主题。"
+    elif media_type == "multi_topic" and media_added_topic and (
+        fused_type != "multi_topic"
+        or len(selected.get("topics") or []) < len(media_topics)
+    ):
+        selected = copy.deepcopy(media_candidate)
+        guardrail_reason = "硬规则保留媒体中清晰新增的独立主题。"
+
+    selected["media_analysis"] = media_analysis
+    if guardrail_reason:
+        selected["reason"] = _text(
+            f"{guardrail_reason}{_text(selected.get('reason'), 180)}",
+            240,
+        )
+
+    text_categories = {
+        _text(topic.get("product_category"), 80)
+        for topic in text_topics
+        if _text(topic.get("product_category"), 80)
+        not in {"", UNKNOWN_PRODUCT_NAME}
+    }
+    media_categories = {
+        _text(topic.get("product_category"), 80)
+        for topic in media_topics
+        if _text(topic.get("product_category"), 80)
+        not in {"", UNKNOWN_PRODUCT_NAME}
+    }
+    product_conflict = bool(
+        text_categories
+        and media_categories
+        and text_categories.isdisjoint(media_categories)
+    )
+    unavailable_media = any(
+        item.get("status") == "unavailable"
+        for media_type_key in ("images", "videos")
+        for item in media_audit.get(media_type_key, [])
+    )
+    if product_conflict or unavailable_media:
+        selected["media_analysis"]["requires_review"] = True
+        for topic in selected.get("topics") or []:
+            topic["requires_review"] = True
+        reason = (
+            "文字与媒体产品/对象冲突，需人工复核。"
+            if product_conflict
+            else "存在无法读取的媒体，已保留文字主题并转人工复核。"
+        )
+        selected["reason"] = _text(
+            f"{reason}{_text(selected.get('reason'), 190)}",
+            240,
+        )
+    return selected
+
+
 def _atomic_unit_payload(unit: dict[str, Any]) -> dict[str, Any]:
     return {
         "atomic_id": _text(unit.get("unit_id") or unit.get("atomic_id"), 120),
+        "conversation_evidence_excerpt": _primary_conversation_evidence(
+            unit.get("source_conversation"),
+            1200,
+        ),
+        "evidence_summary": _text(unit.get("evidence_summary"), 500),
         "normalized_issue": _text(unit.get("normalized_issue"), 160),
         "product_category": _text(unit.get("product_category"), 80),
         "scope_type": _text(unit.get("scope_type"), 32),
@@ -655,25 +1100,29 @@ def _build_atomic_topic_cluster_prompt(
 5. 阈值、例外条件不会导致不同答疑结论。
 
 以下情况必须拆分：
-1. 苹果、安卓、鸿蒙或通用标准不同；
-2. 功能问题与外观问题、显示问题、拆修问题不同；
-3. 判定阈值不同；
-4. 标准处理路径不同；
-5. 合并后需要在一条知识中写多个互不相关的处理结论。
+1. 产品品类不同，例如手机与平板、电脑与游戏机；即使问题文字和处理逻辑相似，也绝对不能跨品类聚类；
+2. 苹果、安卓、鸿蒙或通用标准不同；
+3. 功能问题与外观问题、显示问题、拆修问题不同；
+4. 判定阈值不同；
+5. 标准处理路径不同；
+6. 合并后需要在一条知识中写多个互不相关的处理结论。
 
 执行规则：
 1. 允许单知识点独立成簇。
-2. 不得按关键词或字面相似直接合并，优先依据对象、判定目标、标准处理路径和阈值例外。
-3. standard_path、resolution_mode 或 threshold_or_exception 的文字不同不代表一定不同；必须判断语义和最终答疑结论是否一致。
-4. 不得发明输入中没有的阈值、例外、适用范围或业务规则。
-5. 多成员簇的五个一致性字段必须全部为 true；任一项不一致时不得合并，应拆为单成员簇。
-6. 如果一个原子知识点本身仍包含多个独立主题，放入 split_requests，不得直接聚类。
-7. 每个 atomic_id 必须且只能出现在 clusters、split_requests、review_requests 三者之一。
-8. 不得遗漏、重复或改写 atomic_id。
-9. theme_name 应概括可直接沉淀的一条标准答疑知识，不要使用宽泛对象名。
-10. “无法与其他知识点合并”不等于“不确定”。只要该原子知识点自身主题清楚，就必须建立单成员簇。
-11. review_requests 仅用于输入字段自身矛盾、缺失或无法判断适用范围/路径/阈值的情况；不得用于存放清晰但独立的知识点。
-12. 只输出一个 JSON 对象，不要 Markdown。
+2. conversation_evidence_excerpt 和 evidence_summary 是核对真实问题的主证据；normalized_issue 等结构化字段只是聚类索引，必须能被聊天或可靠媒体证据支持。
+3. 不得按关键词或字面相似直接合并，优先依据真实聊天中的对象、判定目标、标准处理路径和阈值例外。
+4. 若结构化字段与聊天证据明显冲突，不得按结构化字段强行合并；应放入 review_requests。
+5. 聊天原文中的“问题类型、问题描述、转人工原因”是系统转人工元数据，可能为快速转人工而乱填，不得作为聚类依据。
+6. standard_path、resolution_mode 或 threshold_or_exception 的文字不同不代表一定不同；必须判断语义和最终答疑结论是否一致。
+7. 不得发明输入中没有的阈值、例外、适用范围或业务规则。
+8. 多成员簇的五个一致性字段必须全部为 true；任一项不一致时不得合并，应拆为单成员簇。
+9. 如果一个原子知识点本身仍包含多个独立主题，放入 split_requests，不得直接聚类。
+10. 每个 atomic_id 必须且只能出现在 clusters、split_requests、review_requests 三者之一。
+11. 不得遗漏、重复或改写 atomic_id。
+12. theme_name 应概括可直接沉淀的一条标准答疑知识，不要使用宽泛对象名。
+13. “无法与其他知识点合并”不等于“不确定”。只要该原子知识点自身主题清楚，就必须建立单成员簇。
+14. review_requests 仅用于输入字段自身矛盾、缺失或无法判断适用范围/路径/阈值的情况；不得用于存放清晰但独立的知识点。
+15. 只输出一个 JSON 对象，不要 Markdown。
 
 输出结构：
 {{
@@ -859,6 +1308,88 @@ def _validate_topic_review(value: Any) -> dict[str, Any]:
     }
 
 
+def _validate_topic_stage(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise MimoError("MiMo 主题环节输出不是 JSON 对象")
+    topic_stage = _text(value.get("topic_stage"), 32)
+    if topic_stage not in {"质检标准", "质检流程", "案例解析", "课外常识"}:
+        raise MimoError("MiMo 主题环节 topic_stage 不合法")
+    knowledge_value = _text(value.get("knowledge_value"), 32)
+    if knowledge_value not in {"值得沉淀", "不值得沉淀"}:
+        raise MimoError("MiMo 主题环节 knowledge_value 不合法")
+    stage_reason = _text(value.get("stage_reason"), 500)
+    value_reason = _text(value.get("value_reason"), 500)
+    reusable_knowledge = _text(value.get("reusable_knowledge"), 800)
+    if not stage_reason or not value_reason or not reusable_knowledge:
+        raise MimoError("MiMo 主题环节缺少判断依据或可复用知识摘要")
+    try:
+        confidence = float(value.get("confidence"))
+    except (TypeError, ValueError) as exc:
+        raise MimoError("MiMo 主题环节 confidence 必须是 0~1 数字") from exc
+    if not 0 <= confidence <= 1:
+        raise MimoError("MiMo 主题环节 confidence 必须在 0~1")
+    return {
+        "topic_stage": topic_stage,
+        "knowledge_value": knowledge_value,
+        "stage_reason": stage_reason,
+        "value_reason": value_reason,
+        "reusable_knowledge": reusable_knowledge,
+        "confidence": round(confidence, 3),
+        "needs_human_review": _as_bool(value.get("needs_human_review")),
+    }
+
+
+def _validate_topic_display_questions(
+    value: Any,
+    allowed_theme_ids: set[str],
+) -> list[dict[str, str]]:
+    if not isinstance(value, dict):
+        raise MimoError("MiMo 主题问句输出不是 JSON 对象")
+    questions = value.get("questions")
+    if not isinstance(questions, list):
+        raise MimoError("MiMo 主题问句 questions 必须是数组")
+    result: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    banned_words = {
+        "回收师",
+        "用户",
+        "咨询",
+        "希望",
+        "主题",
+        "标准判定",
+        "案例解析",
+        "知识沉淀",
+    }
+    for item in questions:
+        if not isinstance(item, dict):
+            raise MimoError("MiMo 主题问句数组项必须是 JSON 对象")
+        theme_id = _text(item.get("theme_id"), 80)
+        question = re.sub(r"\s+", "", _text(item.get("question"), 80))
+        if theme_id not in allowed_theme_ids:
+            raise MimoError(f"MiMo 主题问句包含未知 theme_id：{theme_id}")
+        if theme_id in seen_ids:
+            raise MimoError(f"MiMo 主题问句 theme_id 重复：{theme_id}")
+        if question.endswith("?"):
+            question = f"{question[:-1]}？"
+        if not question.endswith("？"):
+            raise MimoError(f"MiMo 主题问句必须以中文问号结尾：{theme_id}")
+        if question.count("？") != 1 or "?" in question:
+            raise MimoError(f"MiMo 每个主题只能输出一个问句：{theme_id}")
+        if not 5 <= len(question) <= 40:
+            raise MimoError(f"MiMo 主题问句长度必须为 5～40 个字符：{theme_id}")
+        hit = next((word for word in banned_words if word in question), "")
+        if hit:
+            raise MimoError(f"MiMo 主题问句包含后台术语“{hit}”：{theme_id}")
+        seen_ids.add(theme_id)
+        result.append({"theme_id": theme_id, "question": question})
+    missing_ids = allowed_theme_ids - seen_ids
+    if missing_ids:
+        raise MimoError(
+            f"MiMo 主题问句缺少 theme_id：{', '.join(sorted(missing_ids))}"
+        )
+    return result
+
+
 def _validate_cluster_pair_review(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise MimoError("聚类标注输出不是 JSON 对象")
@@ -884,7 +1415,11 @@ def _validate_cluster_pair_review(value: Any) -> dict[str, Any]:
     }
 
 
-def _validate_cluster_units(value: Any) -> dict[str, Any]:
+def _validate_cluster_units(
+    value: Any,
+    *,
+    require_media_analysis: bool = False,
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise MimoError("聚类问题单元输出不是 JSON 对象")
     conversation_type = _text(value.get("conversation_type"), 32)
@@ -893,6 +1428,52 @@ def _validate_cluster_units(value: Any) -> dict[str, Any]:
     reason = _text(value.get("reason"), 240)
     if not reason:
         raise MimoError("聚类问题单元缺少 reason")
+    raw_media_analysis = value.get("media_analysis")
+    if require_media_analysis and not isinstance(raw_media_analysis, dict):
+        raise MimoError("包含媒体的聚类问题单元必须返回 media_analysis")
+    if isinstance(raw_media_analysis, dict):
+        image_summary = _text(raw_media_analysis.get("image_summary"), 800)
+        video_summary = _text(raw_media_analysis.get("video_summary"), 800)
+        raw_media_relevance = _text(
+            raw_media_analysis.get("media_relevance"),
+            32,
+        )
+        if raw_media_relevance in {"相关", "不相关", "无法读取", "无媒体"}:
+            media_relevance = raw_media_relevance
+        elif any(
+            marker in raw_media_relevance
+            for marker in ("无法", "不可读", "未读取", "读取失败")
+        ):
+            media_relevance = "无法读取"
+        elif "不相关" in raw_media_relevance or "无关" in raw_media_relevance:
+            media_relevance = "不相关"
+        elif "相关" in raw_media_relevance:
+            media_relevance = "相关"
+        elif "无媒体" in raw_media_relevance:
+            media_relevance = "无媒体"
+        else:
+            media_relevance = ""
+        if not image_summary or not video_summary:
+            raise MimoError("media_analysis 缺少图片或视频摘要")
+        if not media_relevance:
+            raise MimoError("media_analysis.media_relevance 不合法")
+        media_analysis = {
+            "image_summary": image_summary,
+            "video_summary": video_summary,
+            "media_relevance": media_relevance,
+            "used_for_topic_split": _as_bool(
+                raw_media_analysis.get("used_for_topic_split")
+            ),
+            "requires_review": _as_bool(raw_media_analysis.get("requires_review")),
+        }
+    else:
+        media_analysis = {
+            "image_summary": "无图片",
+            "video_summary": "无视频",
+            "media_relevance": "无媒体",
+            "used_for_topic_split": False,
+            "requires_review": False,
+        }
     topics = value.get("topics")
     if not isinstance(topics, list):
         raise MimoError("聚类问题单元 topics 必须为数组")
@@ -924,6 +1505,17 @@ def _validate_cluster_units(value: Any) -> dict[str, Any]:
         "流程操作",
         "其他待确认",
     }
+    category_l1_aliases = {
+        "基本信息": "基本情况",
+        "基本信息问题": "基本情况",
+        "成色问题": "成色与回收标准",
+        "回收标准": "成色与回收标准",
+        "外观": "外观问题",
+        "显示": "显示问题",
+        "功能": "功能问题",
+        "拆修": "拆修问题",
+        "其他问题": "其他待确认",
+    }
     normalized_topics: list[dict[str, Any]] = []
     for topic in topics:
         if not isinstance(topic, dict):
@@ -938,7 +1530,8 @@ def _validate_cluster_units(value: Any) -> dict[str, Any]:
         platform = _text(topic.get("platform"), 80)
         brand = _text(topic.get("brand"), 80)
         model_scope = _text(topic.get("model_scope"), 120)
-        category_l1 = _text(topic.get("category_l1"), 80)
+        raw_category_l1 = _text(topic.get("category_l1"), 80)
+        category_l1 = category_l1_aliases.get(raw_category_l1, raw_category_l1)
         category_l2 = _text(topic.get("category_l2"), 80)
         intent = _text(topic.get("intent"), 32)
         subject = _text(topic.get("subject"), 120)
@@ -948,26 +1541,30 @@ def _validate_cluster_units(value: Any) -> dict[str, Any]:
         standard_path = _text(topic.get("standard_path"), 200)
         threshold_or_exception = _text(topic.get("threshold_or_exception"), 200)
         evidence_summary = _text(topic.get("evidence_summary"), 300)
-        if not all(
-            (
-                normalized_issue,
-                product_category,
-                scope_type,
-                platform,
-                brand,
-                model_scope,
-                category_l1,
-                category_l2,
-                subject,
-                phenomenon,
-                judgment_target,
-                resolution_mode,
-                standard_path,
-                threshold_or_exception,
-                evidence_summary,
+        required_text_fields = {
+            "normalized_issue": normalized_issue,
+            "product_category": product_category,
+            "scope_type": scope_type,
+            "platform": platform,
+            "brand": brand,
+            "model_scope": model_scope,
+            "category_l1": category_l1,
+            "category_l2": category_l2,
+            "subject": subject,
+            "phenomenon": phenomenon,
+            "judgment_target": judgment_target,
+            "resolution_mode": resolution_mode,
+            "standard_path": standard_path,
+            "threshold_or_exception": threshold_or_exception,
+            "evidence_summary": evidence_summary,
+        }
+        missing_fields = [
+            key for key, field_value in required_text_fields.items() if not field_value
+        ]
+        if missing_fields:
+            raise MimoError(
+                "聚类问题单元缺少必要文本字段：" + ", ".join(missing_fields)
             )
-        ):
-            raise MimoError("聚类问题单元缺少必要文本字段")
         if intent not in allowed_intents:
             raise MimoError("聚类问题单元 intent 不合法")
         if product_category not in allowed_product_categories:
@@ -1030,7 +1627,10 @@ def _validate_cluster_units(value: Any) -> dict[str, Any]:
             raise MimoError("聚类问题单元 confidence 必须是 0~1 数字") from exc
         if not 0 <= confidence <= 1:
             raise MimoError("聚类问题单元 confidence 必须在 0~1")
-        requires_review = _as_bool(topic.get("requires_review")) or any(
+        requires_review = (
+            _as_bool(topic.get("requires_review"))
+            or media_analysis["requires_review"]
+            or any(
             "待确认" in item
             for item in (
                 product_category,
@@ -1043,6 +1643,7 @@ def _validate_cluster_units(value: Any) -> dict[str, Any]:
                 judgment_target,
                 standard_path,
                 threshold_or_exception,
+            )
             )
         )
         normalized_topics.append(
@@ -1070,6 +1671,7 @@ def _validate_cluster_units(value: Any) -> dict[str, Any]:
     return {
         "conversation_type": conversation_type,
         "reason": reason,
+        "media_analysis": media_analysis,
         "topics": normalized_topics,
     }
 
@@ -1274,11 +1876,101 @@ def _validate_topic_signal(value: Any, allowed_refs: set[str]) -> dict[str, Any]
 class MimoClient:
     def __init__(self, config: MimoConfig) -> None:
         self.config = config
+        self._metrics_lock = threading.Lock()
+        self._rate_limit_lock = threading.Lock()
+        self._last_request_at = 0.0
+        self._metrics: dict[str, float | int] = {
+            "model_calls": 0,
+            "model_failed_calls": 0,
+            "model_retries": 0,
+            "model_input_tokens": 0,
+            "model_output_tokens": 0,
+            "model_total_tokens": 0,
+            "model_latency_ms": 0.0,
+            "model_estimated_cost": 0.0,
+        }
 
     @classmethod
     def from_env(cls) -> "MimoClient | None":
         config = MimoConfig.from_env()
         return cls(config) if config else None
+
+    def metrics_snapshot(self) -> dict[str, Any]:
+        with self._metrics_lock:
+            snapshot = dict(self._metrics)
+        calls = int(snapshot["model_calls"])
+        snapshot["model_average_latency_ms"] = (
+            round(float(snapshot["model_latency_ms"]) / calls, 3)
+            if calls
+            else 0.0
+        )
+        snapshot["model_latency_ms"] = round(float(snapshot["model_latency_ms"]), 3)
+        snapshot["model_estimated_cost"] = round(
+            float(snapshot["model_estimated_cost"]),
+            6,
+        )
+        return snapshot
+
+    def _throttle(self) -> None:
+        interval = 1.0 / max(0.1, self.config.max_requests_per_second)
+        with self._rate_limit_lock:
+            now = time.monotonic()
+            wait_seconds = interval - (now - self._last_request_at)
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+            self._last_request_at = time.monotonic()
+
+    def _record_call_metrics(
+        self,
+        response: dict[str, Any] | None,
+        *,
+        latency_ms: float,
+        failed: bool = False,
+        retried: bool = False,
+    ) -> None:
+        usage = response.get("usage") if isinstance(response, dict) else {}
+        usage = usage if isinstance(usage, dict) else {}
+        input_tokens = int(
+            usage.get("prompt_tokens")
+            or usage.get("input_tokens")
+            or 0
+        )
+        output_tokens = int(
+            usage.get("completion_tokens")
+            or usage.get("output_tokens")
+            or 0
+        )
+        total_tokens = int(
+            usage.get("total_tokens")
+            or input_tokens + output_tokens
+        )
+        cost = (
+            input_tokens * self.config.input_cost_per_million_tokens
+            + output_tokens * self.config.output_cost_per_million_tokens
+        ) / 1_000_000
+        with self._metrics_lock:
+            self._metrics["model_calls"] = int(self._metrics["model_calls"]) + 1
+            self._metrics["model_failed_calls"] = int(
+                self._metrics["model_failed_calls"]
+            ) + int(failed)
+            self._metrics["model_retries"] = int(
+                self._metrics["model_retries"]
+            ) + int(retried)
+            self._metrics["model_input_tokens"] = int(
+                self._metrics["model_input_tokens"]
+            ) + input_tokens
+            self._metrics["model_output_tokens"] = int(
+                self._metrics["model_output_tokens"]
+            ) + output_tokens
+            self._metrics["model_total_tokens"] = int(
+                self._metrics["model_total_tokens"]
+            ) + total_tokens
+            self._metrics["model_latency_ms"] = float(
+                self._metrics["model_latency_ms"]
+            ) + latency_ms
+            self._metrics["model_estimated_cost"] = float(
+                self._metrics["model_estimated_cost"]
+            ) + cost
 
     def label(
         self,
@@ -1392,20 +2084,43 @@ class MimoClient:
         validation_error = ""
         last_response: dict[str, Any] = {}
         request_audit: dict[str, Any] = {}
-        for attempt in range(2):
-            prompt = _build_cluster_unit_prompt(source_row, retry_reason=validation_error)
+        media_parts, media_audit = _cluster_media_parts(source_row)
+        active_media_parts = list(media_parts)
+        had_media = bool(media_parts)
+        request_model = (
+            (self.config.media_model or self.config.model)
+            if had_media
+            else self.config.model
+        )
+        for attempt in range(3):
+            attached_image_count = sum(
+                part.get("type") == "image_url" for part in active_media_parts
+            )
+            attached_video_count = sum(
+                part.get("type") == "video_url" for part in active_media_parts
+            )
+            prompt = _build_cluster_unit_prompt(
+                source_row,
+                retry_reason=validation_error,
+                attached_image_count=attached_image_count,
+                attached_video_count=attached_video_count,
+            )
+            content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+            content.extend(active_media_parts)
             payload = {
-                "model": self.config.model,
+                "model": request_model,
                 "messages": [
                     {"role": "system", "content": "你是严谨的知识主题聚类问题单元提取器。"},
-                    {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                    {"role": "user", "content": content},
                 ],
                 "temperature": 0.1,
                 "response_format": {"type": "json_object"},
             }
             request_audit = {
                 "endpoint": self.config.chat_completions_url(),
-                "model": self.config.model,
+                "model": request_model,
+                "configured_text_model": self.config.model,
+                "configured_media_model": self.config.media_model,
                 "prompt_version": CLUSTER_UNIT_PROMPT_VERSION,
                 "source": {
                     "工单ID": _text(source_row.get("工单ID")),
@@ -1417,6 +2132,7 @@ class MimoClient:
                     "有图片链接": bool(_text(source_row.get("图片链接"))),
                     "有视频链接": bool(_text(source_row.get("视频链接"))),
                 },
+                "media": media_audit,
                 "attempt": attempt + 1,
             }
             try:
@@ -1424,10 +2140,150 @@ class MimoClient:
                 last_response = raw_response
                 raw_content = _content_from_response(raw_response)
                 cluster_units = _validate_cluster_units(
-                    json.loads(_strip_json_fence(raw_content))
+                    json.loads(_strip_json_fence(raw_content)),
+                    require_media_analysis=had_media,
                 )
+                unavailable_media = [
+                    item
+                    for media_type in ("images", "videos")
+                    for item in media_audit[media_type]
+                    if item.get("status") == "unavailable"
+                ]
+                if unavailable_media:
+                    cluster_units["media_analysis"]["requires_review"] = True
+                    unavailable_videos = [
+                        item
+                        for item in media_audit["videos"]
+                        if item.get("status") == "unavailable"
+                    ]
+                    if (
+                        unavailable_videos
+                        and cluster_units["media_analysis"]["video_summary"]
+                        in {"无视频", "无视频。"}
+                    ):
+                        cluster_units["media_analysis"]["video_summary"] = (
+                            f"{len(unavailable_videos)}个视频无法读取，"
+                            "已降级使用图片和聊天内容分析。"
+                        )
+                    for topic in cluster_units["topics"]:
+                        topic["requires_review"] = True
                 return MimoLabelResult(
                     candidate=cluster_units,
+                    request_audit=request_audit,
+                    response_audit=raw_response,
+                )
+            except (json.JSONDecodeError, MimoError) as exc:
+                error_text = str(exc)
+                corrupted_media = (
+                    "Multimodal data is corrupted" in error_text
+                    or "cannot be processed" in error_text
+                )
+                active_video_parts = [
+                    part
+                    for part in active_media_parts
+                    if part.get("type") == "video_url"
+                ]
+                active_image_parts = [
+                    part
+                    for part in active_media_parts
+                    if part.get("type") == "image_url"
+                ]
+                if corrupted_media and active_video_parts:
+                    active_media_parts = active_image_parts
+                    for video in media_audit["videos"]:
+                        video["status"] = "unavailable"
+                        video["error"] = "MiMo 无法解析该视频，已降级为图片和文本分析"
+                    media_audit["mode"] = "mimo-direct-multimodal-video-fallback"
+                    validation_error = (
+                        "视频附件无法读取，已移除视频并保留图片和文本。"
+                        "video_summary 必须明确写“视频无法读取”，并设置 requires_review=true。"
+                    )
+                    continue
+                if corrupted_media and active_image_parts:
+                    active_media_parts = []
+                    for image in media_audit["images"]:
+                        image["status"] = "unavailable"
+                        image["error"] = "MiMo 无法解析该图片，已降级为文本分析"
+                    media_audit["mode"] = "mimo-direct-multimodal-text-fallback"
+                    validation_error = (
+                        "媒体附件无法读取，已降级为文本分析。"
+                        "media_analysis 必须说明媒体无法读取，并设置 requires_review=true。"
+                    )
+                    continue
+                validation_error = error_text
+                if attempt == 2:
+                    raise MimoError(
+                        f"MiMo 聚类问题单元 JSON 校验失败（已重试两次）：{validation_error}"
+                    ) from exc
+            except Exception as exc:
+                raise MimoError(f"MiMo 聚类问题单元调用失败：{exc}") from exc
+        raise MimoError(f"MiMo 聚类问题单元未产生有效结果：{last_response}")
+
+    def fuse_cluster_units(
+        self,
+        source_row: dict[str, Any],
+        text_candidate: dict[str, Any],
+        media_candidate: dict[str, Any],
+        media_audit: dict[str, Any],
+    ) -> MimoLabelResult:
+        """Fuse text-Pro topics with media facts without deleting explicit text topics."""
+        validation_error = ""
+        last_response: dict[str, Any] = {}
+        request_audit: dict[str, Any] = {}
+        for attempt in range(2):
+            prompt = _build_cluster_fusion_prompt(
+                source_row,
+                text_candidate,
+                media_candidate,
+                media_audit,
+                retry_reason=validation_error,
+            )
+            payload = {
+                "model": self.config.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "你是严格执行文字主题保留与媒体增量规则的融合裁决器。",
+                    },
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}],
+                    },
+                ],
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+            }
+            request_audit = {
+                "endpoint": self.config.chat_completions_url(),
+                "model": self.config.model,
+                "prompt_version": CLUSTER_FUSION_PROMPT_VERSION,
+                "text_conversation_type": _text(
+                    text_candidate.get("conversation_type"),
+                    32,
+                ),
+                "media_conversation_type": _text(
+                    media_candidate.get("conversation_type"),
+                    32,
+                ),
+                "media": media_audit,
+                "attempt": attempt + 1,
+            }
+            try:
+                raw_response = self._post(payload)
+                last_response = raw_response
+                raw_content = _content_from_response(raw_response)
+                fused = _validate_cluster_units(
+                    json.loads(_strip_json_fence(raw_content)),
+                    require_media_analysis=True,
+                )
+                fused = _enforce_cluster_fusion_guardrails(
+                    fused,
+                    text_candidate,
+                    media_candidate,
+                    media_audit,
+                )
+                return MimoLabelResult(
+                    candidate=fused,
                     request_audit=request_audit,
                     response_audit=raw_response,
                 )
@@ -1435,11 +2291,12 @@ class MimoClient:
                 validation_error = str(exc)
                 if attempt == 1:
                     raise MimoError(
-                        f"MiMo 聚类问题单元 JSON 校验失败（已重试一次）：{validation_error}"
+                        "MiMo媒体融合JSON校验失败（已重试一次）："
+                        f"{validation_error}"
                     ) from exc
             except Exception as exc:
-                raise MimoError(f"MiMo 聚类问题单元调用失败：{exc}") from exc
-        raise MimoError(f"MiMo 聚类问题单元未产生有效结果：{last_response}")
+                raise MimoError(f"MiMo媒体融合调用失败：{exc}") from exc
+        raise MimoError(f"MiMo媒体融合未产生有效结果：{last_response}")
 
     def cluster_atomic_units(
         self,
@@ -1595,6 +2452,14 @@ class MimoClient:
                 last_response = raw_response
                 raw_content = _content_from_response(raw_response)
                 review = _validate_topic_review(json.loads(_strip_json_fence(raw_content)))
+                expected_knowledge_value = _text(topic.get("knowledge_value"), 32)
+                if (
+                    expected_knowledge_value == "值得沉淀"
+                    and review.get("knowledge_value") != expected_knowledge_value
+                ):
+                    raise MimoError(
+                        "内容质量初标不得重新修改主题沉淀价值，knowledge_value 必须为值得沉淀"
+                    )
                 return MimoLabelResult(candidate=review, request_audit=request_audit, response_audit=raw_response)
             except (json.JSONDecodeError, MimoError) as exc:
                 validation_error = str(exc)
@@ -1603,6 +2468,116 @@ class MimoClient:
             except Exception as exc:
                 raise MimoError(f"MiMo 主题初标调用失败：{exc}") from exc
         raise MimoError(f"MiMo 主题初标未产生有效结果：{last_response}")
+
+    def classify_topic_stage(
+        self,
+        topic: dict[str, Any],
+    ) -> MimoLabelResult:
+        """Classify a clustered topic by lifecycle stage and reuse value."""
+        validation_error = ""
+        last_response: dict[str, Any] = {}
+        request_audit: dict[str, Any] = {}
+        for attempt in range(2):
+            prompt = _build_topic_stage_prompt(
+                topic,
+                retry_reason=validation_error,
+            )
+            payload = {
+                "model": self.config.model,
+                "messages": [
+                    {"role": "system", "content": "你是严谨的主题环节与知识沉淀价值标注员。"},
+                    {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                ],
+                "temperature": 0.0,
+                "response_format": {"type": "json_object"},
+            }
+            request_audit = {
+                "endpoint": self.config.chat_completions_url(),
+                "model": self.config.model,
+                "prompt_version": TOPIC_STAGE_PROMPT_VERSION,
+                "topic": topic,
+                "attempt": attempt + 1,
+            }
+            try:
+                raw_response = self._post(payload)
+                last_response = raw_response
+                raw_content = _content_from_response(raw_response)
+                classification = _validate_topic_stage(
+                    json.loads(_strip_json_fence(raw_content))
+                )
+                return MimoLabelResult(
+                    candidate=classification,
+                    request_audit=request_audit,
+                    response_audit=raw_response,
+                )
+            except (json.JSONDecodeError, MimoError) as exc:
+                validation_error = str(exc)
+                if attempt == 1:
+                    raise MimoError(
+                        f"MiMo 主题环节 JSON 校验失败（已重试一次）：{validation_error}"
+                    ) from exc
+            except Exception as exc:
+                raise MimoError(f"MiMo 主题环节调用失败：{exc}") from exc
+        raise MimoError(f"MiMo 主题环节调用未产生有效结果：{last_response}")
+
+    def rewrite_topic_display_questions(
+        self,
+        topics: list[dict[str, Any]],
+    ) -> MimoLabelResult:
+        """Rewrite clustered topics into short frontline questions."""
+        allowed_theme_ids = {
+            _text(topic.get("theme_id"), 80)
+            for topic in topics
+            if _text(topic.get("theme_id"), 80)
+        }
+        if not topics or len(allowed_theme_ids) != len(topics):
+            raise MimoError("主题问句改写要求 theme_id 非空且不重复")
+        validation_error = ""
+        last_response: dict[str, Any] = {}
+        request_audit: dict[str, Any] = {}
+        for attempt in range(2):
+            prompt = _build_topic_display_questions_prompt(
+                topics,
+                retry_reason=validation_error,
+            )
+            payload = {
+                "model": self.config.model,
+                "messages": [
+                    {"role": "system", "content": "你是简洁准确的中文主题问句改写员。"},
+                    {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                ],
+                "temperature": 0.0,
+                "response_format": {"type": "json_object"},
+            }
+            request_audit = {
+                "endpoint": self.config.chat_completions_url(),
+                "model": self.config.model,
+                "prompt_version": TOPIC_DISPLAY_QUESTION_PROMPT_VERSION,
+                "topics": topics,
+                "attempt": attempt + 1,
+            }
+            try:
+                raw_response = self._post(payload)
+                last_response = raw_response
+                raw_content = _content_from_response(raw_response)
+                questions = _validate_topic_display_questions(
+                    json.loads(_strip_json_fence(raw_content)),
+                    allowed_theme_ids,
+                )
+                return MimoLabelResult(
+                    candidate={"questions": questions},
+                    request_audit=request_audit,
+                    response_audit=raw_response,
+                )
+            except (json.JSONDecodeError, MimoError) as exc:
+                validation_error = str(exc)
+                if attempt == 1:
+                    raise MimoError(
+                        f"MiMo 主题问句 JSON 校验失败（已重试一次）：{validation_error}"
+                    ) from exc
+            except Exception as exc:
+                raise MimoError(f"MiMo 主题问句调用失败：{exc}") from exc
+        raise MimoError(f"MiMo 主题问句调用未产生有效结果：{last_response}")
 
     def review_cluster_pair(
         self,
@@ -1689,28 +2664,62 @@ class MimoClient:
         raise MimoError(f"MiMo 聚类标注未产生有效结果：{last_response}")
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        request = Request(
-            self.config.chat_completions_url(),
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.config.api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=self.config.timeout_seconds) as response:
-                raw = response.read().decode("utf-8", errors="replace")
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:600]
-            raise MimoError(f"MiMo HTTP {exc.code}: {detail}") from exc
-        except URLError as exc:
-            raise MimoError(f"MiMo 网络错误：{exc.reason}") from exc
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise MimoError(f"MiMo 返回非 JSON 响应：{raw[:300]}") from exc
-        if not isinstance(parsed, dict):
-            raise MimoError("MiMo 返回的根节点不是对象")
-        return parsed
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        last_error: Exception | None = None
+        for attempt in range(self.config.max_retries + 1):
+            self._throttle()
+            request = Request(
+                self.config.chat_completions_url(),
+                data=body,
+                headers={
+                    "Authorization": f"Bearer {self.config.api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                method="POST",
+            )
+            started = time.monotonic()
+            try:
+                with urlopen(request, timeout=self.config.timeout_seconds) as response:
+                    raw = response.read().decode("utf-8", errors="replace")
+                parsed = json.loads(raw)
+                if not isinstance(parsed, dict):
+                    raise MimoError("MiMo 返回的根节点不是对象")
+                latency_ms = (time.monotonic() - started) * 1000
+                self._record_call_metrics(
+                    parsed,
+                    latency_ms=latency_ms,
+                    retried=attempt > 0,
+                )
+                parsed.setdefault(
+                    "_answer_hub_metrics",
+                    {
+                        "latency_ms": round(latency_ms, 3),
+                        "attempt": attempt + 1,
+                    },
+                )
+                return parsed
+            except HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:600]
+                last_error = MimoError(f"MiMo HTTP {exc.code}: {detail}")
+                retryable = exc.code == 429 or 500 <= exc.code < 600
+            except URLError as exc:
+                last_error = MimoError(f"MiMo 网络错误：{exc.reason}")
+                retryable = True
+            except json.JSONDecodeError as exc:
+                last_error = MimoError(f"MiMo 返回非 JSON 响应：{raw[:300]}")
+                retryable = False
+            except MimoError as exc:
+                last_error = exc
+                retryable = False
+            latency_ms = (time.monotonic() - started) * 1000
+            if not retryable or attempt >= self.config.max_retries:
+                self._record_call_metrics(
+                    None,
+                    latency_ms=latency_ms,
+                    failed=True,
+                    retried=attempt > 0,
+                )
+                raise last_error
+            time.sleep(self.config.retry_backoff_seconds * (2**attempt))
+        raise last_error or MimoError("MiMo 调用失败")

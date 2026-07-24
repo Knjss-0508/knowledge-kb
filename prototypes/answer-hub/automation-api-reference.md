@@ -233,7 +233,67 @@ POST /integration/knowledge-dedup:check
 | `review_duplicate` | 达到审核阈值并通过文本证据门禁，或正文存在包含关系 | 可以送审，同时保留`matches`供审核人员比较 |
 | `block_duplicate` | 内容完全相同，或达到拦截阈值并通过文本证据门禁 | 不要送审，记录命中的知识ID |
 
-### 4.3 批量提交候选知识
+### 4.3 同步候选价值复核队列（当前默认）
+
+```http
+POST /integration/knowledge-review-candidates:batch
+```
+
+用途：Answer Hub 将聚类后的全部主题候选同步到 CZ 原生“候选价值复核”。
+该接口只保存候选和模型/人工复核元数据，不创建正式知识，不执行发布。
+
+与直接送审不同，候选可以带有以下未完成状态：
+
+| 候选状态 | 含义 |
+|---|---|
+| `pending` | 等待人工确认沉淀价值和可用性 |
+| `ready` | 已通过价值门禁，可以批量送审 |
+| `rejected` | 不值得沉淀、不可用或人工驳回 |
+| `submitted` | 已通过批量送审并创建知识库`review`项 |
+
+自动化 API 的`sync_to_cz_review`默认值为`false`。只有明确开启后，
+worker才会把候选同步到CZ；旧字段`submit_to_cz`仅作兼容别名。
+
+请求仍复用`IntegrationCandidate`结构，并额外携带：
+
+```json
+{
+  "model_review": {
+    "knowledge_value": "worthy",
+    "confidence": 0.91,
+    "priority_review": false,
+    "provider": "mimo"
+  },
+  "human_review": {
+    "knowledge_value": "pending",
+    "usability": "pending"
+  }
+}
+```
+
+CZ页面使用以下接口进行人工处理：
+
+```http
+GET   /integration/candidate-reviews
+PATCH /integration/candidate-reviews/{ingestion_id}
+POST  /integration/candidate-reviews:batch-submit
+```
+
+批量送审请求：
+
+```json
+{
+  "ingestion_ids": ["ing-001", "ing-002"]
+}
+```
+
+批量送审最多100条，逐条执行Qwen3查重和写库。只有`ready`候选可以提交；
+成功项状态为`review_submitted`或`review_duplicate`，不会自动发布。
+若候选原本未进入转写、正文为空，或仍带有已有标准关联搁置信息，
+即使人工改判为值得沉淀也会保持`pending`，必须先补齐转写与内容质量初标，
+或进入后续标准关联流程。
+
+### 4.4 兼容：直接批量提交候选知识
 
 ```http
 POST /integration/knowledge-candidates:batch
@@ -283,7 +343,9 @@ POST /integration/knowledge-candidates:batch
           ]
         },
         "category_id": "cat-phone",
+        "layer": "L2",
         "scene_tags": ["无法开机", "售后咨询"],
+        "applicable_business_types": [],
         "applicable_categories": [],
         "applicable_brands": ["品牌示例"],
         "applicable_models": ["机型示例"],
@@ -310,9 +372,10 @@ POST /integration/knowledge-candidates:batch
 | `knowledge.subtitles` | 否 | 可检索的用户问法或别名；不要堆砌关键词 |
 | `knowledge.content` | 是 | 改写后的知识正文；支持字符串或 `blocks` 富文本结构 |
 | `knowledge.category_id` | 是 | 必须来自 `/integration/taxonomy` |
+| `knowledge.layer` | 是 | `L1`、`L2` 或 `L3` |
 | `knowledge.evidence_excerpt` | 否 | 不超过 4000 字的脱敏证据摘要 |
 
-兼容期内 CZ 仍接收成对出现的旧字段 `skill_name` 和 `skill_version`；新接入必须发送 `plugin_name` 和 `plugin_version`。
+兼容期内CZ仍接收旧字段`skill_name`和`skill_version`，但服务端会统一转换为`plugin_name`和`plugin_version`保存。新接入不得继续发送旧字段。
 
 响应示例：
 
@@ -343,7 +406,7 @@ POST /integration/knowledge-candidates:batch
 
 计数说明：
 
-- `accepted`：已经创建 CZ 待发布审核知识的总数，其中可能包含疑似重复拦截项。
+- `accepted`：已经创建CZ待审核知识的总数，其中可能包含疑似重复拦截项。
 - `intercepted`：Qwen3查重命中`review_duplicate`，已进入人工终审拦截的数量，是`accepted`的子集。
 - `blocked`：Qwen3或精确查重命中`block_duplicate`、未创建知识的数量，是`rejected`的子集。
 
@@ -366,66 +429,6 @@ POST /integration/knowledge-candidates:batch
 | `DEDUP_INVALID_CONTENT` | 正文为空或格式无法规范化 | 修复 `knowledge.content` 后重试 |
 
 > 注意：当查重动作为 `review_duplicate` 时，返回记录仍是 `review_submitted`，具体疑似重复信息在 `deduplication` 中。
-
-### 4.4 同步候选到价值复核队列
-
-Answer Hub 等需要保留模型初标、组员验证和人工例外处理的上游，应使用价值复核队列接口，不要直接创建待发布审核知识：
-
-```http
-POST /integration/knowledge-review-candidates:batch
-X-Integration-Key: <integration-key>
-```
-
-请求体沿用 `IntegrationCandidateBatch`，并可增加：
-
-```json
-{
-  "model_review": {
-    "status": "topic_initial_reviewed_model",
-    "decision": "建议沉淀",
-    "knowledge_value": "worthy",
-    "reason": "案例证据充分",
-    "confidence": 0.93,
-    "priority_review": true,
-    "provider": "mimo",
-    "model_name": "model-name",
-    "prompt_version": "prompt-v1",
-    "run_id": "run-123"
-  },
-  "human_review": {
-    "knowledge_value": "pending",
-    "usability": "pending",
-    "modification_notes": "",
-    "feedback": "",
-    "decision": null,
-    "error_type": null,
-    "training_eligible": null,
-    "notes": null,
-    "reviewer": null,
-    "reviewed_at": null
-  }
-}
-```
-
-同步响应包含：
-
-| 字段 | 说明 |
-|---|---|
-| `queued` | 尚未通过门禁，等待主系统人工确认 |
-| `ready` | 上游自动门禁或人工验证已经通过，可在主系统批量送审 |
-| `rejected` | 上游或人工已明确判定不沉淀 |
-| `reused` | 相同业务幂等键已存在；主系统人工保存前允许上游刷新，保存后不再覆盖 |
-| `results[].review_status` | `pending`、`ready`、`rejected` 或 `submitted` |
-
-主系统用户端接口需要登录令牌和 `knowledge:submit` 权限：
-
-```http
-GET /integration/candidate-reviews
-PATCH /integration/candidate-reviews/{ingestion_id}
-POST /integration/candidate-reviews:batch-submit
-```
-
-`batch-submit` 只接受 `review_status=ready` 的候选，并统一执行分类校验、Qwen3 查重、向量保存和知识创建。创建后的知识状态仍为 `review`，不会直接发布。
 
 ### 4.5 查询入库处理状态
 
@@ -598,15 +601,20 @@ GET /integration/retrieval-analytics
 
 ## 7. 典型调用顺序
 
-### 7.1 上游送审
+### 7.1 上游候选复核与送审
 
 ```text
 POST /integration/second-part/records:batch   （第二部分批量接入并生成主题候选）
 GET  /integration/taxonomy
-POST /integration/knowledge-dedup:check        （可选）
-POST /integration/knowledge-candidates:batch
+POST /integration/knowledge-review-candidates:batch
+GET  /integration/candidate-reviews
+PATCH /integration/candidate-reviews/{ingestion_id}
+POST /integration/candidate-reviews:batch-submit
 GET  /integration/ingestions/{ingestion_id}    （按需查询）
 ```
+
+`/integration/knowledge-candidates:batch`仍保留作旧客户端兼容入口；新客户端不要绕过
+候选价值复核直接调用它。
 
 ### 7.2 下游召回与反馈
 
@@ -643,3 +651,61 @@ curl -X POST "$KB_BASE_URL/api/v1/knowledge/search" \
     "top_k": 5
   }'
 ```
+
+## 10. 运行治理和生命周期接口
+
+### 10.1 CZ运营指标
+
+```http
+GET /api/v1/operations/metrics
+Authorization: Bearer <用户会话Token>
+```
+
+返回知识状态、主题审核积压、接入失败、召回接受率、无候选率和平均审核时长。
+
+### 10.2 知识生命周期风险
+
+```http
+GET /api/v1/knowledge/lifecycle/overview
+Authorization: Bearer <用户会话Token>
+```
+
+返回临近失效、已经失效但尚未废弃，以及超过复核周期的知识。
+
+```http
+POST /api/v1/operations/lifecycle/apply-expiry
+Authorization: Bearer <具备 knowledge:deprecate 权限的用户Token>
+```
+
+该接口只处理已发布且 `expires_at` 已到期的知识。
+
+### 10.3 批量保存主题审核结论
+
+```http
+POST /api/v1/topic-candidates/review:batch
+Authorization: Bearer <具备 topic_review:review 权限的用户Token>
+Content-Type: application/json
+```
+
+```json
+{
+  "candidate_ids": ["tpc-001", "tpc-002"],
+  "reviewer_decision": "驳回",
+  "reviewer_error_type": "证据不足",
+  "reviewer_error_reason": "缺少完整会话",
+  "reviewer_notes": "",
+  "include_in_training": true,
+  "redaction_confirmed": true
+}
+```
+
+批量“通过”只适用于已经设置最终草稿和CZ目标分类的候选；单条失败不会回滚其他候选。
+
+### 10.4 召回质量分析窗口
+
+```http
+GET /api/v1/integration/retrieval-analytics?days=30
+Authorization: Bearer <用户会话Token>
+```
+
+返回接受率、Top1选择率、无候选率、来源系统分布、热门知识和风险查询。

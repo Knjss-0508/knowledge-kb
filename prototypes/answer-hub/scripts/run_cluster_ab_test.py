@@ -11,12 +11,21 @@ from pathlib import Path
 import re
 from typing import Any
 
-from answer_hub.mimo import CLUSTER_UNIT_PROMPT_VERSION, MimoClient, MimoError
+from answer_hub.mimo import (
+    CLUSTER_UNIT_PROMPT_VERSION,
+    MimoClient,
+    MimoError,
+    MimoLabelResult,
+    _primary_conversation_evidence,
+)
+from answer_hub.workflow import _direct_mimo_topic_groups
 
 
 DEFAULT_OLD_THRESHOLD = 0.24
 DEFAULT_NEW_THRESHOLD = 0.04
+TEXT_ONLY_PROMPT_VERSION = f"{CLUSTER_UNIT_PROMPT_VERSION}-text-only-pro-v1"
 GENERIC_SCOPE_VALUES = {"", "通用", "不限", "全部", "待确认", "未知", "无"}
+INVALID_PRODUCT_CATEGORY_VALUES = {"", "待确认", "未知", "无"}
 SCOPE_LEVELS = {
     "通用": 0,
     "品类专用": 1,
@@ -257,6 +266,22 @@ def _is_generic_scope_value(value: Any) -> bool:
     }
 
 
+def _product_categories_match(
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> bool:
+    left_value = str(left.get("product_category", "")).strip()
+    right_value = str(right.get("product_category", "")).strip()
+    if (
+        left_value in INVALID_PRODUCT_CATEGORY_VALUES
+        or right_value in INVALID_PRODUCT_CATEGORY_VALUES
+    ):
+        return False
+    return _normalized_scope_value(left_value) == _normalized_scope_value(
+        right_value
+    )
+
+
 def _field_conflicts(left: dict[str, Any], right: dict[str, Any], field: str) -> bool:
     left_value = left.get(field)
     right_value = right.get(field)
@@ -292,13 +317,12 @@ def _normalize_unit_scope(unit: dict[str, Any]) -> None:
 
 
 def _units_hard_compatible(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if not _product_categories_match(left, right):
+        return False
     left_scope = str(left.get("scope_type", "")).strip()
     right_scope = str(right.get("scope_type", "")).strip()
     left_level = SCOPE_LEVELS.get(left_scope, -1)
     right_level = SCOPE_LEVELS.get(right_scope, -1)
-    both_universal = left_scope == "通用" and right_scope == "通用"
-    if _field_conflicts(left, right, "product_category") and not both_universal:
-        return False
     if left_level >= 0 and right_level >= 0 and left_scope != right_scope:
         return False
     if min(left_level, right_level) >= 2 and _field_conflicts(left, right, "platform"):
@@ -328,8 +352,44 @@ def _units_hard_compatible(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return True
 
 
+def _invalid_source_reason(row: dict[str, Any]) -> str:
+    core_problem = str(row.get("核心问题", "")).strip()
+    conclusion = str(row.get("判定结论", "")).strip()
+    basis = str(row.get("判定依据", "")).strip()
+    evidence = "\n".join(
+        (
+            core_problem,
+            conclusion,
+            basis,
+            str(row.get("上游媒体分析摘要", "")).strip(),
+        )
+    )
+    missing_dialogue = (
+        "仅包含工单元数据" in evidence
+        and "历史咨询会话记录" in evidence
+        and "缺失" in evidence
+    ) or (
+        "未提供一线回收师与后台答疑人员的聊天记录原文" in evidence
+        and "无法提取" in evidence
+    )
+    no_judgment = any(
+        marker in conclusion
+        for marker in (
+            "无法基于现有信息作出判定",
+            "无法根据现有信息作出判定",
+            "无法作出判定",
+        )
+    )
+    if missing_dialogue and no_judgment:
+        return "缺少有效咨询会话和具体问题，只有工单元数据，无法形成主题"
+    return ""
+
+
 def _fallback_units(row: dict[str, Any], error: str) -> dict[str, Any]:
-    core_problem = str(row.get("核心问题", "")).strip() or "问题待人工确认"
+    conversation_evidence = _primary_conversation_evidence(
+        row.get("聊天内容"),
+        300,
+    )
     media_summary = str(row.get("上游媒体分析摘要", "")).strip()
     scope_fields = _fallback_scope_fields(row)
     return {
@@ -337,27 +397,48 @@ def _fallback_units(row: dict[str, Any], error: str) -> dict[str, Any]:
         "reason": f"MiMo 问题单元提取失败，需人工确认：{error[:180]}",
         "topics": [
             {
-                "normalized_issue": core_problem[:80],
+                "normalized_issue": "问题待人工确认",
                 **scope_fields,
                 "intent": "其他待确认",
                 "subject": "待确认",
                 "phenomenon": "待确认",
                 "resolution_mode": "转人工确认",
-                "evidence_summary": (media_summary or core_problem)[:300],
+                "evidence_summary": (
+                    conversation_evidence
+                    or media_summary
+                    or "缺少可靠聊天与媒体证据"
+                )[:300],
                 "confidence": 0.0,
+                "requires_review": True,
             }
         ],
     }
 
 
-def _analyze_row(client: MimoClient, row: dict[str, Any]) -> dict[str, Any]:
+def _analyze_row(
+    client: MimoClient,
+    row: dict[str, Any],
+    *,
+    text_only: bool = False,
+) -> dict[str, Any]:
+    source_row = dict(row)
+    prompt_version = CLUSTER_UNIT_PROMPT_VERSION
+    if text_only:
+        source_row["图片链接"] = ""
+        source_row["视频链接"] = ""
+        source_row["上游媒体分析摘要"] = ""
+        prompt_version = TEXT_ONLY_PROMPT_VERSION
     try:
-        result = client.analyze_cluster_units(row)
+        result = client.analyze_cluster_units(source_row)
         return {
             "status": "ok",
             "candidate": result.candidate,
-            "model": client.config.model,
-            "prompt_version": CLUSTER_UNIT_PROMPT_VERSION,
+            "model": result.request_audit.get("model", client.config.model),
+            "configured_text_model": client.config.model,
+            "configured_media_model": client.config.media_model,
+            "media": result.request_audit.get("media", {}),
+            "prompt_version": prompt_version,
+            "analysis_mode": "text_only" if text_only else "multimodal",
         }
     except MimoError as exc:
         return {
@@ -365,8 +446,45 @@ def _analyze_row(client: MimoClient, row: dict[str, Any]) -> dict[str, Any]:
             "error": str(exc),
             "candidate": _fallback_units(row, str(exc)),
             "model": client.config.model,
-            "prompt_version": CLUSTER_UNIT_PROMPT_VERSION,
+            "configured_text_model": client.config.model,
+            "configured_media_model": client.config.media_model,
+            "media": {"mode": "failed", "images": [], "videos": []},
+            "prompt_version": prompt_version,
+            "analysis_mode": "text_only" if text_only else "multimodal",
         }
+
+
+def _cache_entry_is_current(
+    row: dict[str, Any],
+    cache: dict[str, Any],
+    *,
+    text_only: bool = False,
+) -> bool:
+    entry = cache.get(row["样本ID"])
+    expected_prompt_version = (
+        TEXT_ONLY_PROMPT_VERSION
+        if text_only
+        else CLUSTER_UNIT_PROMPT_VERSION
+    )
+    return bool(
+        isinstance(entry, dict)
+        and entry.get("prompt_version") == expected_prompt_version
+    )
+
+
+def _cache_entry_needs_refresh(
+    row: dict[str, Any],
+    cache: dict[str, Any],
+    *,
+    retry_errors: bool = False,
+    text_only: bool = False,
+) -> bool:
+    if not _cache_entry_is_current(row, cache, text_only=text_only):
+        return True
+    return bool(
+        retry_errors
+        and cache[row["样本ID"]].get("status") == "error"
+    )
 
 
 @dataclass
@@ -445,6 +563,119 @@ def _run_new_scheme(
             unit["semantic_text"] = _new_semantic_text(unit)
             units.append(unit)
     return _cluster_units(units, threshold, enforce_business_rules=True)
+
+
+class _CachedAtomicAnalysisReviewer:
+    def __init__(
+        self,
+        reviewer: MimoClient,
+        cache: dict[str, Any],
+    ) -> None:
+        self._reviewer = reviewer
+        self._cache = cache
+        self.config = reviewer.config
+
+    def analyze_cluster_units(
+        self,
+        row: dict[str, Any],
+    ) -> MimoLabelResult:
+        sample_id = str(
+            row.get("数据ID")
+            or row.get("样本ID")
+            or row.get("工单ID")
+            or ""
+        ).strip()
+        entry = self._cache.get(sample_id)
+        if not isinstance(entry, dict) or not isinstance(
+            entry.get("candidate"),
+            dict,
+        ):
+            raise MimoError(f"缺少样本 {sample_id} 的原子问题缓存")
+        return MimoLabelResult(
+            candidate=entry["candidate"],
+            request_audit={"source": "cached_cluster_ab_analysis"},
+            response_audit={},
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._reviewer, name)
+
+
+def _run_new_scheme_direct_mimo(
+    rows: list[dict[str, Any]],
+    cache: dict[str, Any],
+    reviewer: MimoClient,
+) -> tuple[SchemeResult, dict[str, Any]]:
+    input_rows = [
+        {
+            **row,
+            "数据ID": row["样本ID"],
+        }
+        for row in rows
+    ]
+    topic_groups, meta = _direct_mimo_topic_groups(
+        input_rows,
+        _CachedAtomicAnalysisReviewer(reviewer, cache),
+    )
+
+    units: list[dict[str, Any]] = []
+    assignments: dict[str, int] = {}
+    for cluster_index, (_key, member_rows) in enumerate(
+        topic_groups,
+        start=1,
+    ):
+        cluster_id = f"C{cluster_index:03d}"
+        for member in member_rows:
+            sample_id = str(member.get("数据ID") or "").strip()
+            atomic_id = str(member.get("_原子知识ID") or "").strip()
+            conversation_type = str(
+                cache.get(sample_id, {})
+                .get("candidate", {})
+                .get("conversation_type", "uncertain")
+            )
+            unit = {
+                "unit_id": atomic_id,
+                "sample_id": sample_id,
+                "conversation_type": conversation_type,
+                "normalized_issue": str(member.get("核心问题") or ""),
+                "product_category": str(member.get("产品类型") or ""),
+                "scope_type": str(member.get("_原子适用范围类型") or ""),
+                "platform": str(member.get("_原子平台") or ""),
+                "brand": str(member.get("_原子品牌") or ""),
+                "model_scope": str(member.get("_原子机型范围") or ""),
+                "category_l1": str(member.get("模型主题一级分类") or ""),
+                "category_l2": str(member.get("模型主题二级分类") or ""),
+                "intent": str(member.get("问题意图") or ""),
+                "subject": str(member.get("对象/部位") or ""),
+                "phenomenon": str(member.get("异常现象") or ""),
+                "resolution_mode": str(member.get("解题方式") or ""),
+                "standard_path": str(member.get("主标准路径") or ""),
+                "threshold_or_exception": str(
+                    member.get("_原子阈值例外") or ""
+                ),
+                "evidence_summary": str(member.get("语义标注依据") or ""),
+                "source_conversation": str(member.get("聊天内容") or ""),
+                "cluster_id": cluster_id,
+            }
+            units.append(unit)
+            assignments[atomic_id] = cluster_index
+
+    similarities: dict[tuple[str, str], float] = {}
+    for left_index, left in enumerate(units):
+        for right in units[left_index + 1 :]:
+            similarities[(left["unit_id"], right["unit_id"])] = (
+                1.0
+                if left["cluster_id"] == right["cluster_id"]
+                else 0.0
+            )
+    return (
+        SchemeResult(
+            units=units,
+            assignments=assignments,
+            similarities=similarities,
+        ),
+        meta,
+    )
 
 
 def _cluster_units(
@@ -651,22 +882,50 @@ def _finalize(
     output_path: Path,
     old_threshold: float,
     new_threshold: float,
+    excluded_rows: list[dict[str, str]] | None = None,
+    new_cluster_mode: str = "tfidf",
+    reviewer: MimoClient | None = None,
 ) -> None:
+    excluded_rows = excluded_rows or []
     old_scheme = _run_old_scheme(rows, old_threshold)
-    new_scheme = _run_new_scheme(rows, cache, new_threshold)
+    direct_meta: dict[str, Any] = {}
+    if new_cluster_mode == "direct_mimo":
+        if reviewer is None:
+            raise RuntimeError("生产版MiMo聚类需要已配置MiMo")
+        new_scheme, direct_meta = _run_new_scheme_direct_mimo(
+            rows,
+            cache,
+            reviewer,
+        )
+    else:
+        new_scheme = _run_new_scheme(rows, cache, new_threshold)
     pairs = _select_pairs(rows, old_scheme, new_scheme)
     payload = {
         "metadata": {
+            "source_sample_size": len(rows) + len(excluded_rows),
             "sample_size": len(rows),
+            "excluded_sample_count": len(excluded_rows),
+            "excluded_samples": excluded_rows,
             "pair_count": len(pairs),
             "old_threshold": old_threshold,
             "new_threshold": new_threshold,
-            "vectorizer": "local-chinese-char-tfidf-2-4gram",
+            "new_cluster_mode": new_cluster_mode,
+            "vectorizer": (
+                "mimo-direct-1-to-n"
+                if new_cluster_mode == "direct_mimo"
+                else "local-chinese-char-tfidf-2-4gram"
+            ),
             "old_flow": "清洗聊天内容 → TF-IDF → 余弦平均链接聚类",
             "new_flow": (
                 "聊天 + 第二部分媒体分析 → MiMo原子知识/多主题识别 "
-                "→ 品类与适用范围硬门槛 → 标准化问题TF-IDF → 余弦平均链接聚类"
+                "→ MiMo直接1-N聚类 → 单例跨桶二次复核"
+                if new_cluster_mode == "direct_mimo"
+                else (
+                    "聊天 + 第二部分媒体分析 → MiMo原子知识/多主题识别 "
+                    "→ 品类与适用范围硬门槛 → 标准化问题TF-IDF → 余弦平均链接聚类"
+                )
             ),
+            "direct_mimo": direct_meta,
             "mimo_model": next(iter(cache.values())).get("model", "") if cache else "",
             "mimo_prompt_version": CLUSTER_UNIT_PROMPT_VERSION,
             "accuracy_status": "待人工标注",
@@ -705,6 +964,16 @@ def main() -> None:
     parser.add_argument("--max-new", type=int, default=12)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument(
+        "--retry-errors",
+        action="store_true",
+        help="只重新调用当前缓存中 status=error 的样本",
+    )
+    parser.add_argument(
+        "--text-only",
+        action="store_true",
+        help="移除图片、视频和上游媒体摘要，仅使用文字与结构化字段提取主题",
+    )
+    parser.add_argument(
         "--old-threshold",
         type=float,
         default=DEFAULT_OLD_THRESHOLD,
@@ -714,52 +983,150 @@ def main() -> None:
         type=float,
         default=DEFAULT_NEW_THRESHOLD,
     )
+    parser.add_argument(
+        "--new-cluster-mode",
+        choices=["tfidf", "direct_mimo"],
+        default="tfidf",
+        help="新版聚类方式；direct_mimo与生产默认链路一致",
+    )
     args = parser.parse_args()
 
-    rows = _read_json(args.sample_json)
+    source_rows = _read_json(args.sample_json)
+    excluded_rows = [
+        {
+            "sample_id": row.get("样本ID", ""),
+            "reason": reason,
+        }
+        for row in source_rows
+        if (reason := _invalid_source_reason(row))
+    ]
+    excluded_ids = {item["sample_id"] for item in excluded_rows}
+    rows = [
+        row
+        for row in source_rows
+        if row.get("样本ID", "") not in excluded_ids
+    ]
     cache: dict[str, Any] = (
         _read_json(args.cache_json) if args.cache_json.exists() else {}
     )
     missing_rows = [
         row
         for row in rows
-        if row["样本ID"] not in cache
-        or cache[row["样本ID"]].get("prompt_version") != CLUSTER_UNIT_PROMPT_VERSION
+        if _cache_entry_needs_refresh(
+            row,
+            cache,
+            retry_errors=args.retry_errors,
+            text_only=args.text_only,
+        )
     ]
     batch = missing_rows[: max(0, args.max_new)]
+    client: MimoClient | None = None
     if batch:
         client = MimoClient.from_env()
         if client is None:
             raise RuntimeError("MiMo 未配置，无法运行新版聚类流程")
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
             futures = {
-                executor.submit(_analyze_row, client, row): row
+                executor.submit(
+                    _analyze_row,
+                    client,
+                    row,
+                    text_only=args.text_only,
+                ): row
                 for row in batch
             }
-            for future in as_completed(futures):
+            for completed, future in enumerate(as_completed(futures), start=1):
                 row = futures[future]
-                cache[row["样本ID"]] = future.result()
+                result = future.result()
+                cache[row["样本ID"]] = result
                 _write_json(args.cache_json, cache)
+                print(
+                    json.dumps(
+                        {
+                            "progress": f"{completed}/{len(batch)}",
+                            "sample_id": row["样本ID"],
+                            "status": result.get("status"),
+                            "model": result.get("model"),
+                            "media_mode": result.get("media", {}).get("mode"),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
 
-    remaining = [row["样本ID"] for row in rows if row["样本ID"] not in cache]
+    remaining = [
+        row["样本ID"]
+        for row in rows
+        if not _cache_entry_is_current(
+            row,
+            cache,
+            text_only=args.text_only,
+        )
+    ]
+    current_entries = [
+        cache[row["样本ID"]]
+        for row in rows
+        if _cache_entry_is_current(
+            row,
+            cache,
+            text_only=args.text_only,
+        )
+    ]
     print(
         json.dumps(
             {
                 "sample_rows": len(rows),
-                "cached_rows": len(cache),
+                "source_rows": len(source_rows),
+                "excluded_rows": len(excluded_rows),
+                "excluded_samples": excluded_rows,
+                "cached_rows": len(current_entries),
                 "remaining_rows": len(remaining),
-                "errors": sum(item.get("status") == "error" for item in cache.values()),
+                "errors": sum(
+                    item.get("status") == "error"
+                    for item in current_entries
+                ),
+                "analysis_mode": (
+                    "text_only"
+                    if args.text_only
+                    else "multimodal"
+                ),
+                "media_rows": sum(
+                    str(item.get("media", {}).get("mode", "")).startswith(
+                        "mimo-direct-multimodal"
+                    )
+                    for item in current_entries
+                ),
+                "image_attachments": sum(
+                    len(item.get("media", {}).get("images", []))
+                    for item in current_entries
+                ),
+                "video_attachments": sum(
+                    len(item.get("media", {}).get("videos", []))
+                    for item in current_entries
+                ),
+                "video_unavailable": sum(
+                    media_item.get("status") == "unavailable"
+                    for item in current_entries
+                    for media_item in item.get("media", {}).get("videos", [])
+                ),
             },
             ensure_ascii=False,
         )
     )
     if not remaining:
+        if args.new_cluster_mode == "direct_mimo" and client is None:
+            client = MimoClient.from_env()
+            if client is None:
+                raise RuntimeError("MiMo 未配置，无法运行生产版1-N聚类")
         _finalize(
             rows,
             cache,
             args.output_json,
             args.old_threshold,
             args.new_threshold,
+            excluded_rows=excluded_rows,
+            new_cluster_mode=args.new_cluster_mode,
+            reviewer=client,
         )
 
 

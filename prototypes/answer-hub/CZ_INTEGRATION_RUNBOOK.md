@@ -1,17 +1,20 @@
 # CZ、本地工作台与第二部分批量链路运行手册
 
-更新日期：2026-07-22
+更新日期：2026-07-24
 
 ## 1. 当前生产链路
 
 ```text
 第二部分已脱敏答疑记录
-→ POST /api/v1/integration/second-part/records:batch
+→ Answer Hub Automation API / 无人值守队列
 → 完整会话、历史实际回复和案例图进入无标准引用工作流
 → 原子问题拆分与 1～N 主题聚类
-→ 生成10项候选知识
-→ 组员验证或人工例外审核
-→ 批量提交 CZ 待审核队列
+→ 标注主题问题分类和是否值得沉淀
+→ 仅对值得沉淀主题生成10项候选知识
+→ 模型初标转写内容质量
+→ POST /api/v1/integration/knowledge-review-candidates:batch
+→ 答疑中台“候选价值复核”
+→ 人工复核后点击“批量送审至知识库管理”
 → Qwen3 Embedding 查重拦截
 → CZ 人工终审与发布
 ```
@@ -33,8 +36,8 @@ CZ 使用 `Qwen/Qwen3-Embedding-0.6B` 对“主标题 + 知识正文”查重：
 
 | 结果 | 默认阈值 | 处理方式 |
 |---|---:|---|
-| `create` | 小于0.88，或仅有同品类/同模板语义相似但缺少有效文本重合 | 正常进入 CZ 发布审核 |
-| `review_duplicate` | 0.88～0.96，且标题和正文具备有效文本重合；或正文存在包含关系 | 进入 CZ 发布审核，但标记为疑似重复拦截 |
+| `create` | 小于0.88，或仅有同品类/同模板语义相似但缺少有效文本重合 | 正常进入CZ待审核 |
+| `review_duplicate` | 0.88～0.96，且标题和正文具备有效文本重合；或正文存在包含关系 | 进入CZ待审核，但标记为疑似重复拦截 |
 | `block_duplicate` | 大于等于0.96且具备有效文本重合，或标题与正文完全相同 | 阻断入库 |
 
 批量接口会分别返回：
@@ -136,7 +139,7 @@ Invoke-RestMethod http://127.0.0.1:8000/ready
 
 `/ready`必须同时确认数据库和Qwen3 Embedding可用。Embedding不可用时批量导入应返回`DEDUP_UNAVAILABLE`，不能跳过查重。
 
-## 5. 第二部分批量接入
+## 5. 兼容：第二部分批量接入
 
 接口：
 
@@ -157,30 +160,53 @@ X-Integration-Key: <INTEGRATION_API_KEY>
 
 请求示例见`examples/second_part_batch.example.json`。
 
-## 6. 审核后批量导入
+该接口保留给旧调用方；当前推荐由 Answer Hub 自己完成聚类、分类、转写和内容初标，
+然后使用第6节的候选价值复核接口同步到CZ。
 
-CZ页面“主题审核”提供：
+## 6. 候选价值复核与批量送审
 
-1. 接收第二部分Excel并批量生成候选。
-2. 导入已有`topic_review_queue.xlsx`。
-3. 人工复标候选。
-4. 点击“批量提交待 cz 终审”。
-
-批量接口：
+Answer Hub 完成“主题分类 → 值得沉淀判断 → 选择性转写 → 内容质量初标”后，
+调用 CZ 原生候选队列接口。**这一步只保存候选，不创建正式知识，也不会发布。**
 
 ```http
-POST /api/v1/topic-candidates/submit-to-cz-review:batch
+POST /api/v1/integration/knowledge-review-candidates:batch
+X-Integration-Key: <INTEGRATION_API_KEY>
 ```
 
-请求：
+响应状态：
+
+| 状态 | 含义 |
+|---|---|
+| `queued` / `pending` | 等待人工确认是否值得沉淀、是否可用 |
+| `ready` | 已满足价值门禁，可以批量送审 |
+| `rejected` | 人工确认不值得沉淀、不可用或驳回 |
+| `reused` | 相同幂等键已存在，安全重试 |
+
+CZ页面“候选价值复核”通过以下接口加载和编辑候选：
+
+```http
+GET   /api/v1/integration/candidate-reviews
+PATCH /api/v1/integration/candidate-reviews/{ingestion_id}
+```
+
+人工复核完成后，页面按钮调用：
+
+```http
+POST /api/v1/integration/candidate-reviews:batch-submit
+```
+
+请求示例：
 
 ```json
 {
-  "candidate_ids": ["tpc-001", "tpc-002"]
+  "ingestion_ids": ["ing-001", "ing-002"]
 }
 ```
 
-单次最多100个候选ID。接口逐条隔离失败，不会因一条重复导致整批回滚。
+单次最多100个候选ID；接口逐条隔离查重和写库失败。成功项只创建
+`review`待审核知识，Qwen3不可用或明确重复时不会绕过查重，也不会自动发布。
+
+旧的`/api/v1/topic-candidates/*`接口保留作本地兼容，不是 Answer Hub 新链路的默认入口。
 
 ## 7. 上线前验证
 

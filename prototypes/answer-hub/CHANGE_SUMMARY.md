@@ -1,5 +1,15 @@
 # 2026-07-22 版本变更说明
 
+## 2026-07-24 CZ 接通补充
+
+- CZ 新版新增原生候选价值复核接口：
+  `/api/v1/integration/knowledge-review-candidates:batch`。
+- Answer Hub 自动化现在同步全部主题候选到该队列；待确认、风险和不值得沉淀项不会直接创建知识。
+- CZ页面改用`/api/v1/integration/candidate-reviews`加载和编辑候选，
+  人工完成后调用`/api/v1/integration/candidate-reviews:batch-submit`。
+- 只有`ready`候选经过Qwen3查重后创建`review`待审核知识，系统不会自动发布。
+- GitHub发布脚本仍只替换`prototypes/answer-hub`，不会覆盖CZ源码目录。
+
 ## 当前主链路
 
 ```text
@@ -8,7 +18,7 @@
 → 10项候选审核
 → 批量提交CZ
 → Qwen3语义查重拦截
-→ CZ发布审核与人工发布
+→ CZ待审核与人工发布
 ```
 
 ## 主要变更
@@ -18,7 +28,8 @@
 - 默认不读取、不检索、不引用质检标准。
 - 完整会话、历史实际回复和脱敏案例图作为主证据。
 - 模型初标新增“是否值得沉淀”，区分值得沉淀、不值得沉淀和待确认。
-- 组员验证新增“是否值得沉淀”；未确认值得沉淀或明确不值得沉淀的候选不会进入批量送审。
+- 组员验证新增“是否值得沉淀”；未确认值得沉淀或明确不值得沉淀的候选不会直接进入知识库批量送审，
+  但会保留在CZ候选价值复核队列等待人工处理。
 - 候选字段固定为：
   - 知识ID
   - 主标题
@@ -43,8 +54,9 @@
 
 ### CZ批量导入
 
-- 新增`/api/v1/topic-candidates/submit-to-cz-review:batch`。
-- CZ页面新增“批量提交待 cz 终审”按钮。
+- 新增`/api/v1/integration/knowledge-review-candidates:batch`候选价值复核接入。
+- CZ页面新增原生候选价值复核列表、人工编辑和“批量送审至知识库管理”按钮。
+- 旧`/api/v1/topic-candidates/*`接口保留作兼容，不是新链路默认入口。
 - 批量知识接入按候选逐条提交事务，单条向量生成、写库或提交失败不会导致整批回滚。
 - 相同幂等键在批内和重试时均只创建一条知识。
 
@@ -64,7 +76,7 @@
 
 ### Qwen3拦截
 
-- `create`：正常进入 CZ 发布审核。
+- `create`：正常进入CZ待审核。
 - `review_duplicate`：进入待审核，但标记为疑似重复拦截。
 - `block_duplicate`：明确重复，阻断入库。
 - 批量响应增加`intercepted`和`blocked`计数。
