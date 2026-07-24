@@ -75,7 +75,11 @@ def _hard_bucket_key(unit: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
-def _unit_review_reason(unit: dict[str, Any]) -> str:
+def _unit_review_reason(
+    unit: dict[str, Any],
+    *,
+    include_review_flagged: bool = False,
+) -> str:
     required_fields = (
         "product_category",
         "scope_type",
@@ -83,10 +87,14 @@ def _unit_review_reason(unit: dict[str, Any]) -> str:
         "intent",
         "subject",
         "judgment_target",
-        "resolution_mode",
-        "standard_path",
-        "threshold_or_exception",
     )
+    if not include_review_flagged:
+        required_fields = (
+            *required_fields,
+            "resolution_mode",
+            "standard_path",
+            "threshold_or_exception",
+        )
     uncertain_fields = [
         field
         for field in required_fields
@@ -95,7 +103,7 @@ def _unit_review_reason(unit: dict[str, Any]) -> str:
     ]
     if uncertain_fields:
         return f"关键聚类字段待确认：{', '.join(uncertain_fields)}"
-    if bool(unit.get("requires_review")):
+    if bool(unit.get("requires_review")) and not include_review_flagged:
         return "原子知识提取阶段已标记需要人工复核，不能自动合并"
     if _text(unit.get("scope_type")) not in SCOPE_LEVELS:
         return "适用范围类型不合法或无法识别"
@@ -113,6 +121,8 @@ def _bucket_id(bucket_key: tuple[str, ...], atomic_ids: list[str]) -> str:
 
 def _bucket_units(
     units: list[dict[str, Any]],
+    *,
+    include_review_flagged: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     review_units: list[dict[str, Any]] = []
     grouped: dict[tuple[str, ...], list[dict[str, Any]]] = {}
@@ -122,7 +132,10 @@ def _bucket_units(
         if not atomic_id:
             raise ValueError("输入原子知识点缺少 unit_id")
         unit["unit_id"] = atomic_id
-        review_reason = _unit_review_reason(unit)
+        review_reason = _unit_review_reason(
+            unit,
+            include_review_flagged=include_review_flagged,
+        )
         if review_reason:
             unit["_review_reason"] = review_reason
             review_units.append(unit)
@@ -169,6 +182,62 @@ def _singleton_candidate(unit: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _chunked_cluster_candidate(
+    client: MimoClient,
+    bucket: dict[str, Any],
+    *,
+    chunk_size: int = 10,
+) -> tuple[dict[str, Any], int]:
+    clusters: list[dict[str, Any]] = []
+    split_requests: list[dict[str, Any]] = []
+    review_requests: list[dict[str, Any]] = []
+    failed_chunks = 0
+    units = bucket["units"]
+    for chunk_index, start in enumerate(
+        range(0, len(units), max(1, chunk_size)),
+        start=1,
+    ):
+        chunk = units[start : start + max(1, chunk_size)]
+        if len(chunk) == 1:
+            candidate = _singleton_candidate(chunk[0])
+        else:
+            try:
+                candidate = client.cluster_atomic_units(chunk).candidate
+            except MimoError:
+                failed_chunks += 1
+                candidate = {
+                    "clusters": [
+                        _singleton_candidate(unit)["clusters"][0]
+                        for unit in chunk
+                    ],
+                    "split_requests": [],
+                    "review_requests": [],
+                }
+        for cluster_index, cluster in enumerate(
+            candidate["clusters"],
+            start=1,
+        ):
+            clusters.append(
+                {
+                    **cluster,
+                    "cluster_id": (
+                        f"CHUNK-{chunk_index:02d}-"
+                        f"{_text(cluster.get('cluster_id')) or cluster_index}"
+                    ),
+                }
+            )
+        split_requests.extend(candidate["split_requests"])
+        review_requests.extend(candidate["review_requests"])
+    return (
+        {
+            "clusters": clusters,
+            "split_requests": split_requests,
+            "review_requests": review_requests,
+        },
+        failed_chunks,
+    )
+
+
 def _analyze_bucket(client: MimoClient, bucket: dict[str, Any]) -> dict[str, Any]:
     try:
         result = client.cluster_atomic_units(bucket["units"])
@@ -184,14 +253,21 @@ def _analyze_bucket(client: MimoClient, bucket: dict[str, Any]) -> dict[str, Any
             "response_audit": result.response_audit,
         }
     except MimoError as exc:
+        candidate, failed_chunks = _chunked_cluster_candidate(
+            client,
+            bucket,
+        )
         return {
-            "status": "error",
+            "status": "ok",
             "prompt_version": ATOMIC_TOPIC_CLUSTER_PROMPT_VERSION,
             "model": client.config.model,
             "bucket_id": bucket["bucket_id"],
             "bucket_key": bucket["bucket_key"],
             "atomic_ids": bucket["atomic_ids"],
-            "error": str(exc),
+            "candidate": candidate,
+            "fallback_mode": "chunked_after_direct_failure",
+            "direct_error": str(exc),
+            "failed_chunk_count": failed_chunks,
         }
 
 
@@ -271,6 +347,12 @@ def _cluster_program_conflicts(
         for atomic_id in cluster["member_atomic_ids"]
     ]
     reasons: list[str] = []
+    product_category_values = {
+        _normalized_key_value(member.get("product_category"))
+        for member in members
+    }
+    if len(product_category_values) > 1:
+        reasons.append("产品品类不同")
     category_l2_values = {
         _normalized_key_value(member.get("category_l2"))
         for member in members
@@ -532,10 +614,18 @@ def main() -> None:
     parser.add_argument("--max-new-buckets", type=int, default=1)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--retry-errors", action="store_true")
+    parser.add_argument(
+        "--include-review-flagged",
+        action="store_true",
+        help="验证模式：关键主题字段清晰时，允许带上游复核标记的原子问题进入保守聚类",
+    )
     args = parser.parse_args()
 
     units = _load_units(args.input_json)
-    buckets, review_units = _bucket_units(units)
+    buckets, review_units = _bucket_units(
+        units,
+        include_review_flagged=args.include_review_flagged,
+    )
     cache: dict[str, Any] = (
         _read_json(args.cache_json) if args.cache_json.exists() else {}
     )
@@ -563,10 +653,22 @@ def main() -> None:
                 executor.submit(_analyze_bucket, client, bucket): bucket
                 for bucket in batch
             }
-            for future in as_completed(futures):
+            for completed, future in enumerate(as_completed(futures), start=1):
                 bucket = futures[future]
                 cache[bucket["bucket_id"]] = future.result()
                 _write_json(args.cache_json, cache)
+                print(
+                    json.dumps(
+                        {
+                            "progress": f"{completed}/{len(futures)}",
+                            "bucket_id": bucket["bucket_id"],
+                            "member_count": len(bucket["units"]),
+                            "status": cache[bucket["bucket_id"]].get("status"),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
 
     output = _build_output(
         input_path=args.input_json,
@@ -575,6 +677,9 @@ def main() -> None:
         review_units=review_units,
         cache=cache,
     )
+    input_payload = _read_json(args.input_json)
+    output["source_metadata"] = input_payload.get("metadata") or {}
+    output["excluded_rows"] = input_payload.get("excluded_rows") or []
     _write_json(args.output_json, output)
     metadata = output["metadata"]
     print(

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "answer-hub"
-version = "0.1.0"
+version = "0.2.0"
 description = "Answer hub workflow skeleton for model labeling, human review, and feedback loop"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,6 +28,7 @@ collector = [
 [project.scripts]
 answer-hub = "answer_hub.cli:main"
 answer-hub-web = "answer_hub.web:main"
+answer-hub-api = "answer_hub.automation_api:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

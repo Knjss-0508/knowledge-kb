@@ -10,9 +10,11 @@ from answer_hub.mimo import (
     MimoClient,
     MimoConfig,
     MimoError,
+    _atomic_unit_payload,
     _validate_atomic_topic_clusters,
 )
 from scripts.run_atomic_topic_clustering import (
+    _analyze_bucket,
     _bucket_units,
     _build_output,
     _cluster_program_conflicts,
@@ -85,6 +87,25 @@ def test_atomic_cluster_validation_accepts_one_to_many_cluster() -> None:
     )
 
     assert result["clusters"][0]["member_atomic_ids"] == ["A", "B", "C"]
+
+
+def test_atomic_cluster_payload_uses_chat_and_ignores_transfer_description() -> None:
+    unit = _unit("CHAT-PRIMARY")
+    unit["source_conversation"] = (
+        "26/07/15 18:05:00:00 问题类型：质检问题 "
+        "问题描述：IMEI号全是0怎么判 "
+        "转人工原因：问题复杂不确定怎么问\n"
+        "26/07/15 18:05:51:51 屏幕边缘发红是不是算老化\n"
+        "26/07/15 18:06:20:20 后壳有保护壳留下的印怎么判"
+    )
+    unit["evidence_summary"] = "真实聊天包含屏幕显示和后壳外观两个问题。"
+
+    payload = _atomic_unit_payload(unit)
+
+    assert "IMEI号全是0" not in payload["conversation_evidence_excerpt"]
+    assert "屏幕边缘发红" in payload["conversation_evidence_excerpt"]
+    assert "后壳有保护壳留下的印" in payload["conversation_evidence_excerpt"]
+    assert payload["evidence_summary"] == "真实聊天包含屏幕显示和后壳外观两个问题。"
 
 
 def test_atomic_cluster_validation_rejects_failed_hard_rule_flag() -> None:
@@ -167,6 +188,22 @@ def test_uncertain_units_go_to_review_instead_of_automatic_cluster() -> None:
     assert output["metadata"]["duplicate_assignment_count"] == 0
 
 
+def test_validation_mode_can_cluster_review_flagged_unit_when_core_fields_are_clear() -> None:
+    review_flagged = _unit(
+        "REVIEW",
+        standard_path="待确认",
+        requires_review=True,
+    )
+
+    buckets, review_units = _bucket_units(
+        [review_flagged],
+        include_review_flagged=True,
+    )
+
+    assert len(buckets) == 1
+    assert not review_units
+
+
 def test_program_gate_rejects_different_secondary_categories() -> None:
     unit_by_id = {
         "A": _unit("A", category_l2="屏幕颜色异常"),
@@ -179,6 +216,20 @@ def test_program_gate_rejects_different_secondary_categories() -> None:
     )
 
     assert "知识二级分类不同" in reasons
+
+
+def test_program_gate_rejects_different_product_categories() -> None:
+    unit_by_id = {
+        "PHONE": _unit("PHONE", product_category="手机"),
+        "TABLET": _unit("TABLET", product_category="平板"),
+    }
+
+    reasons = _cluster_program_conflicts(
+        _valid_cluster_result("PHONE", "TABLET")["clusters"][0],
+        unit_by_id,
+    )
+
+    assert "产品品类不同" in reasons
 
 
 def test_program_gate_rejects_different_thresholds() -> None:
@@ -219,3 +270,44 @@ def test_mimo_client_directly_clusters_complete_bucket() -> None:
     result = client.cluster_atomic_units([_unit("A"), _unit("B")])
 
     assert result.candidate["clusters"][0]["member_atomic_ids"] == ["A", "B"]
+
+
+def test_failed_large_bucket_falls_back_to_chunked_clustering() -> None:
+    class FakeConfig:
+        model = "mimo-test"
+
+    class FakeResult:
+        def __init__(self, atomic_ids: list[str]) -> None:
+            self.candidate = _valid_cluster_result(*atomic_ids)
+            self.request_audit = {}
+            self.response_audit = {}
+
+    class FakeClient:
+        config = FakeConfig()
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def cluster_atomic_units(self, units):
+            self.calls += 1
+            if self.calls == 1:
+                raise MimoError("整桶输出遗漏ID")
+            return FakeResult([unit["unit_id"] for unit in units])
+
+    units = [_unit(f"A{index:02d}") for index in range(12)]
+    bucket = {
+        "bucket_id": "B-TEST",
+        "bucket_key": ["手机"],
+        "atomic_ids": [unit["unit_id"] for unit in units],
+        "units": units,
+    }
+
+    result = _analyze_bucket(FakeClient(), bucket)
+
+    assert result["status"] == "ok"
+    assert result["fallback_mode"] == "chunked_after_direct_failure"
+    assert {
+        atomic_id
+        for cluster in result["candidate"]["clusters"]
+        for atomic_id in cluster["member_atomic_ids"]
+    } == set(bucket["atomic_ids"])

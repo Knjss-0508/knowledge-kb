@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from difflib import SequenceMatcher
 from heapq import heappop, heappush
 from pathlib import Path
 from typing import Any, Callable, Iterable
 import hashlib
 import inspect
 import json
+import os
 import re
 import uuid
 
@@ -33,7 +36,9 @@ from .mimo import (
     PROMPT_VERSION,
     TOPIC_REVIEW_PROMPT_VERSION,
     TOPIC_SIGNAL_PROMPT_VERSION,
+    TOPIC_STAGE_PROMPT_VERSION,
 )
+from .operations import enforce_redaction
 from .product_taxonomy import (
     UNKNOWN_PRODUCT_NAME,
     canonical_product_code,
@@ -61,6 +66,19 @@ DEFAULT_CLUSTER_REVIEW_FLOOR = 0.75
 DEFAULT_CLUSTER_AUTO_MERGE_THRESHOLD = 0.92
 DEFAULT_CLUSTER_REVIEW_LIMIT = 100
 MAX_CLUSTER_REVIEW_CANDIDATES = 3
+DEFAULT_DIRECT_RECONCILE_FLOOR = 0.40
+DEFAULT_DIRECT_RECONCILE_LIMIT = 100
+CLUSTER_V1_ACCURACY_THRESHOLD = 0.80
+CLUSTER_V1_MIN_DECISIVE_PAIRS = 20
+GENERIC_TOPIC_RULE_VALUES = {
+    "",
+    "待确认",
+    "未知",
+    "无",
+    "无明确阈值",
+    "无明确标准",
+    "不适用",
+}
 BROAD_RETRIEVAL_TERMS = {
     "设备",
     "屏幕",
@@ -211,6 +229,23 @@ TOPIC_MODEL_INITIAL_REVIEW_COLUMNS = [
     "自动审核策略版本",
 ]
 
+TOPIC_STAGE_CLASSIFICATION_COLUMNS = [
+    "主题问题分类",
+    "主题沉淀价值",
+    "主题分类原因",
+    "主题价值原因",
+    "主题可复用知识摘要",
+    "主题分类置信度",
+    "主题分类重点复核",
+    "主题分类提供方",
+    "主题分类模型名称",
+    "主题分类Prompt版本",
+    "主题分类运行ID",
+    "主题分类状态",
+    "主题分类错误",
+    "主题转写状态",
+]
+
 CLUSTER_VALIDATION_COLUMNS = [
     "验证对ID",
     "样本类型",
@@ -343,6 +378,7 @@ TOPIC_CANDIDATE_COLUMNS = [
     "主题标准版本",
     "主题置信度",
     "是否重点复核",
+    *TOPIC_STAGE_CLASSIFICATION_COLUMNS,
     "主题模型提供方",
     "主题模型名称",
     "主题Prompt版本",
@@ -400,6 +436,9 @@ TOPIC_SOURCE_MAPPING_COLUMNS = [
 
 TOPIC_MODEL_DRAFT_COLUMNS = [
     "主题ID",
+    "主题问题分类",
+    "主题沉淀价值",
+    "转写状态",
     "转写提供方",
     "转写模型名称",
     "转写Prompt版本",
@@ -2650,6 +2689,263 @@ def _direct_atomic_bucket_key(unit: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def _direct_reconcile_bucket_compatible(
+    left_bucket: list[str] | tuple[str, ...],
+    right_bucket: list[str] | tuple[str, ...],
+) -> bool:
+    if len(left_bucket) < 7 or len(right_bucket) < 7:
+        return False
+    comparable_indices = (0, 5, 6)
+    for index in comparable_indices:
+        left_value = _normalized_direct_reconcile_value(left_bucket[index])
+        right_value = _normalized_direct_reconcile_value(right_bucket[index])
+        if not left_value or not right_value or left_value != right_value:
+            return False
+    return True
+
+
+def _normalized_direct_reconcile_value(value: Any) -> str:
+    return re.sub(r"[\W_]+", "", _clean_text(value).lower(), flags=re.UNICODE)
+
+
+def _direct_reconcile_text(row: dict[str, Any]) -> str:
+    fields = (
+        "模型主题一级分类",
+        "模型主题二级分类",
+        "问题意图",
+        "对象/部位",
+        "异常现象",
+        "解题方式",
+        "主标准路径",
+    )
+    return "|".join(
+        normalized
+        for field in fields
+        if (normalized := _normalized_direct_reconcile_value(row.get(field)))
+    )
+
+
+def _direct_reconcile_similarity(
+    left_rows: list[dict[str, Any]],
+    right_rows: list[dict[str, Any]],
+) -> float:
+    scores = [
+        SequenceMatcher(
+            None,
+            _direct_reconcile_text(left),
+            _direct_reconcile_text(right),
+        ).ratio()
+        for left in left_rows
+        for right in right_rows
+        if _direct_reconcile_text(left) and _direct_reconcile_text(right)
+    ]
+    return max(scores, default=0.0)
+
+
+def _direct_reconcile_has_hard_conflict(
+    candidate: dict[str, Any],
+    cluster_rows: list[dict[str, Any]],
+) -> bool:
+    unknown_values = {"", "待确认", "未知", "通用", "不限"}
+    scope_fields = (
+        "产品类型",
+        "_原子平台",
+        "_原子品牌",
+        "_原子机型范围",
+    )
+    for member in cluster_rows:
+        for field in scope_fields:
+            candidate_value = _clean_text(candidate.get(field))
+            member_value = _clean_text(member.get(field))
+            if (
+                candidate_value not in unknown_values
+                and member_value not in unknown_values
+                and candidate_value != member_value
+            ):
+                return True
+        candidate_thresholds = set(
+            re.findall(r"\d+(?:\.\d+)?", _clean_text(candidate.get("_原子阈值例外")))
+        )
+        member_thresholds = set(
+            re.findall(r"\d+(?:\.\d+)?", _clean_text(member.get("_原子阈值例外")))
+        )
+        if candidate_thresholds and member_thresholds and candidate_thresholds != member_thresholds:
+            return True
+    return False
+
+
+def _reconcile_direct_topic_groups(
+    topic_groups: list[tuple[tuple[str, ...], list[dict[str, Any]]]],
+    reviewer: MimoClient,
+    meta: dict[str, Any],
+    *,
+    review_floor: float = DEFAULT_DIRECT_RECONCILE_FLOOR,
+    review_limit: int = DEFAULT_DIRECT_RECONCILE_LIMIT,
+) -> list[tuple[tuple[str, ...], list[dict[str, Any]]]]:
+    meta.update(
+        {
+            "direct_reconcile_floor": review_floor,
+            "direct_reconcile_limit": review_limit,
+            "direct_reconcile_candidates": 0,
+            "direct_reconcile_calls": 0,
+            "direct_reconcile_approved": 0,
+            "direct_reconcile_rejected": 0,
+            "direct_reconcile_uncertain": 0,
+            "direct_reconcile_failed": 0,
+            "direct_reconcile_hard_rejected": 0,
+            "direct_reconcile_limit_reached": 0,
+        }
+    )
+    if not (
+        hasattr(reviewer, "review_cluster_membership")
+        or hasattr(reviewer, "review_cluster_pair")
+    ):
+        return topic_groups
+
+    records = [
+        {
+            "key": key,
+            "bucket_key": key[1:8],
+            "rows": list(rows),
+            "reconcilable": all(
+                _clean_text(row.get("_聚类裁决提供方")) == "mimo-direct"
+                for row in rows
+            ),
+        }
+        for key, rows in topic_groups
+    ]
+    candidates: list[tuple[float, int, int]] = []
+    for left_index, left in enumerate(records):
+        if not left["reconcilable"]:
+            continue
+        for right_index in range(left_index + 1, len(records)):
+            right = records[right_index]
+            if (
+                not right["reconcilable"]
+                or not _direct_reconcile_bucket_compatible(
+                    left["bucket_key"],
+                    right["bucket_key"],
+                )
+                or (len(left["rows"]) > 1 and len(right["rows"]) > 1)
+            ):
+                continue
+            similarity = _direct_reconcile_similarity(left["rows"], right["rows"])
+            if similarity >= review_floor:
+                candidates.append((similarity, left_index, right_index))
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+    meta["direct_reconcile_candidates"] = len(candidates)
+
+    parent = list(range(len(records)))
+    cluster_rows = {index: list(record["rows"]) for index, record in enumerate(records)}
+    cluster_indices = {index: {index} for index in range(len(records))}
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for similarity, left_index, right_index in candidates:
+        left_root = find(left_index)
+        right_root = find(right_index)
+        if left_root == right_root:
+            continue
+        left_rows = cluster_rows[left_root]
+        right_rows = cluster_rows[right_root]
+        if len(left_rows) > 1 and len(right_rows) > 1:
+            continue
+        if len(left_rows) == len(right_rows) == 1:
+            candidate_root = max(left_root, right_root)
+            target_root = min(left_root, right_root)
+        elif len(left_rows) == 1:
+            candidate_root, target_root = left_root, right_root
+        else:
+            candidate_root, target_root = right_root, left_root
+
+        candidate_row = cluster_rows[candidate_root][0]
+        target_rows = cluster_rows[target_root]
+        if _direct_reconcile_has_hard_conflict(candidate_row, target_rows):
+            meta["direct_reconcile_hard_rejected"] += 1
+            continue
+        if meta["direct_reconcile_calls"] >= review_limit:
+            meta["direct_reconcile_limit_reached"] += 1
+            break
+
+        meta["direct_reconcile_calls"] += 1
+        try:
+            if hasattr(reviewer, "review_cluster_membership"):
+                review = reviewer.review_cluster_membership(
+                    _cluster_validation_payload(candidate_row),
+                    [
+                        _cluster_membership_member_payload(member)
+                        for member in target_rows
+                    ],
+                    similarity,
+                    review_floor,
+                ).candidate
+            else:
+                review = reviewer.review_cluster_pair(
+                    _cluster_validation_payload(candidate_row),
+                    _cluster_validation_payload(target_rows[0]),
+                    similarity,
+                    review_floor,
+                ).candidate
+        except MimoError:
+            meta["direct_reconcile_failed"] += 1
+            continue
+
+        decision = _clean_text(review.get("decision"))
+        if decision == "同一主题":
+            candidate_row.update(
+                {
+                    "_聚类决策": "单例二次裁决确认合并",
+                    "_聚类候选相似度": round(similarity, 4),
+                    "_聚类裁决提供方": "mimo-direct-reconcile",
+                    "_聚类裁决原因": _clean_text(review.get("reason")),
+                    "_聚类裁决置信度": review.get("confidence", ""),
+                }
+            )
+            parent[candidate_root] = target_root
+            cluster_rows[target_root].extend(cluster_rows[candidate_root])
+            cluster_rows[candidate_root] = []
+            cluster_indices[target_root].update(cluster_indices[candidate_root])
+            cluster_indices[candidate_root] = set()
+            meta["direct_reconcile_approved"] += 1
+        elif decision == "不同主题":
+            meta["direct_reconcile_rejected"] += 1
+        else:
+            meta["direct_reconcile_uncertain"] += 1
+
+    reconciled: list[tuple[tuple[str, ...], list[dict[str, Any]]]] = []
+    for index, record in enumerate(records):
+        if find(index) != index:
+            continue
+        rows = cluster_rows[index]
+        member_ids = sorted(
+            {
+                _clean_text(row.get("_原子知识ID"))
+                for row in rows
+                if _clean_text(row.get("_原子知识ID"))
+            }
+        )
+        merged = len(cluster_indices[index]) > 1
+        key = (
+            (
+                "direct_mimo",
+                *record["bucket_key"],
+                "reconciled",
+                f"cluster-{min(cluster_indices[index]) + 1}",
+                *member_ids,
+            )
+            if merged
+            else record["key"]
+        )
+        reconciled.append((key, rows))
+    if meta["direct_reconcile_calls"]:
+        meta["provider"] = "mimo-atomic-extraction+direct-topic-clustering+singleton-reconciliation"
+    return reconciled
+
+
 def _direct_mimo_topic_groups(
     rows: list[dict[str, Any]],
     reviewer: MimoClient,
@@ -2671,22 +2967,49 @@ def _direct_mimo_topic_groups(
         "direct_batch_size": batch_size,
     }
 
-    for source_index, source_row in enumerate(rows, start=1):
+    try:
+        max_workers = max(
+            1,
+            min(int(os.getenv("ANSWER_HUB_MIMO_MAX_WORKERS", "1")), 8),
+        )
+    except ValueError:
+        max_workers = 1
+    meta["max_workers"] = max_workers
+
+    def extract_atomic_topics(
+        item: tuple[int, dict[str, Any]],
+    ) -> tuple[int, dict[str, Any], list[dict[str, Any]], bool]:
+        source_index, source_row = item
+        try:
+            result = reviewer.analyze_cluster_units(source_row)
+            topics = list(result.candidate.get("topics") or [])
+            failed = False
+        except (AttributeError, MimoError):
+            topics = [_direct_atomic_fallback(source_row)]
+            failed = True
+        if not topics:
+            topics = [_direct_atomic_fallback(source_row)]
+        return source_index, source_row, topics, failed
+
+    indexed_rows = list(enumerate(rows, start=1))
+    if max_workers == 1:
+        extracted_rows = [extract_atomic_topics(item) for item in indexed_rows]
+    else:
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="answer-hub-atomic",
+        ) as executor:
+            extracted_rows = list(executor.map(extract_atomic_topics, indexed_rows))
+
+    for source_index, source_row, topics, failed in extracted_rows:
         base_id = (
             _clean_text(source_row.get("数据ID"))
             or _clean_text(source_row.get("工单ID"))
             or f"ROW-{source_index:05d}"
         )
-        topics: list[dict[str, Any]]
         meta["atomic_extraction_calls"] += 1
-        try:
-            result = reviewer.analyze_cluster_units(source_row)
-            topics = list(result.candidate.get("topics") or [])
-        except (AttributeError, MimoError):
+        if failed:
             meta["atomic_extraction_failed"] += 1
-            topics = [_direct_atomic_fallback(source_row)]
-        if not topics:
-            topics = [_direct_atomic_fallback(source_row)]
         for topic_index, topic in enumerate(topics, start=1):
             atomic_id = f"{base_id}-U{topic_index}"
             unit = {
@@ -2696,6 +3019,7 @@ def _direct_mimo_topic_groups(
             }
             atomic_units.append(unit)
             atomic_row = dict(source_row)
+            atomic_row.pop("标签聚类键", None)
             atomic_row.update(
                 {
                     "_原子知识ID": atomic_id,
@@ -2729,6 +3053,7 @@ def _direct_mimo_topic_groups(
                     ),
                 }
             )
+            atomic_row["标签聚类键"] = _topic_tag_cluster_key(atomic_row)
             row_by_atomic_id[atomic_id] = atomic_row
 
     meta["atomic_unit_count"] = len(atomic_units)
@@ -2742,6 +3067,7 @@ def _direct_mimo_topic_groups(
         ordered = sorted(bucket_units, key=lambda unit: _clean_text(unit.get("unit_id")))
         for batch_index in range(0, len(ordered), max(1, batch_size)):
             batch = ordered[batch_index : batch_index + max(1, batch_size)]
+            batch_failed = False
             if len(batch) == 1:
                 candidate = {
                     "clusters": [{"member_atomic_ids": [batch[0]["unit_id"]]}],
@@ -2753,6 +3079,7 @@ def _direct_mimo_topic_groups(
                 try:
                     candidate = reviewer.cluster_atomic_units(batch).candidate
                 except (AttributeError, MimoError):
+                    batch_failed = True
                     meta["direct_cluster_failed"] += 1
                     candidate = {
                         "clusters": [
@@ -2777,11 +3104,23 @@ def _direct_mimo_topic_groups(
                 for member_row in member_rows:
                     member_row.update(
                         {
-                            "_聚类决策": "纯大模型1-N聚类",
+                            "_聚类决策": (
+                                "聚类失败后保守单例"
+                                if batch_failed
+                                else "纯大模型1-N聚类"
+                            ),
                             "_聚类候选相似度": "",
-                            "_聚类裁决提供方": "mimo-direct",
-                            "_聚类裁决原因": _clean_text(cluster.get("merge_basis"))
-                            or "原子问题满足适用范围、对象、目标、标准路径和阈值例外一致性。",
+                            "_聚类裁决提供方": (
+                                "mimo-direct-failed"
+                                if batch_failed
+                                else "mimo-direct"
+                            ),
+                            "_聚类裁决原因": (
+                                "整批聚类调用失败，已保守保留为单成员主题，不参与自动二次合并。"
+                                if batch_failed
+                                else _clean_text(cluster.get("merge_basis"))
+                                or "原子问题满足适用范围、对象、目标、标准路径和阈值例外一致性。"
+                            ),
                             "_聚类裁决置信度": "",
                         }
                     )
@@ -2830,6 +3169,7 @@ def _direct_mimo_topic_groups(
                     )
                 )
 
+    topic_groups = _reconcile_direct_topic_groups(topic_groups, reviewer, meta)
     meta["cluster_count"] = len(topic_groups)
     return topic_groups, meta
 
@@ -3163,6 +3503,7 @@ def _cluster_validation_payload(row: dict[str, Any]) -> dict[str, str]:
     return {
         field: _clean_text(row.get(field))
         for field in (
+            "_原子知识ID",
             "数据ID",
             "工单ID",
             "核心问题",
@@ -3199,6 +3540,7 @@ def _cluster_membership_member_payload(row: dict[str, Any]) -> dict[str, str]:
     return {
         field: _clean_text(row.get(field))
         for field in (
+            "_原子知识ID",
             "数据ID",
             "工单ID",
             "产品类型",
@@ -3607,6 +3949,18 @@ def evaluate_cluster_validation_rows(rows: list[dict[str, Any]]) -> dict[str, An
         for row in reviewed
         if _clean_text(row.get("人工判断")) == "不确定"
     ]
+    clustering_accuracy = round(clustering_correct / len(decisive), 4) if decisive else None
+    release_ready = (
+        len(decisive) >= CLUSTER_V1_MIN_DECISIVE_PAIRS
+        and clustering_accuracy is not None
+        and clustering_accuracy >= CLUSTER_V1_ACCURACY_THRESHOLD
+    )
+    if release_ready:
+        release_status = "可上线第一版"
+    elif len(decisive) < CLUSTER_V1_MIN_DECISIVE_PAIRS:
+        release_status = "待补足人工标注"
+    else:
+        release_status = "准确率未达80%"
     return {
         "total_pairs": len(rows),
         "reviewed_pairs": len(reviewed),
@@ -3614,7 +3968,11 @@ def evaluate_cluster_validation_rows(rows: list[dict[str, Any]]) -> dict[str, An
         "uncertain_pairs": len(uncertain),
         "decisive_pairs": len(decisive),
         "clustering_correct": clustering_correct,
-        "clustering_accuracy": round(clustering_correct / len(decisive), 4) if decisive else None,
+        "clustering_accuracy": clustering_accuracy,
+        "v1_release_ready": release_ready,
+        "v1_release_status": release_status,
+        "v1_release_accuracy_threshold": CLUSTER_V1_ACCURACY_THRESHOLD,
+        "v1_release_min_decisive_pairs": CLUSTER_V1_MIN_DECISIVE_PAIRS,
         "large_model_labeled_pairs": len(model_labeled),
         "large_model_correct": model_correct,
         "large_model_accuracy": round(model_correct / len(model_labeled), 4) if model_labeled else None,
@@ -4047,6 +4405,413 @@ def _compact_recommended_reply(value: Any) -> str:
     head = reply[:180]
     boundary = max(head.rfind(marker) for marker in ("。", "；", "，", ","))
     return (head[: boundary + 1] if boundary >= 80 else head).rstrip()
+
+
+def _unique_topic_values(
+    rows: list[dict[str, Any]],
+    field: str,
+    *,
+    limit: int = 20,
+    max_chars: int = 1200,
+) -> list[str]:
+    values: list[str] = []
+    for row in rows:
+        value = _clean_text(row.get(field))[:max_chars]
+        if value and value not in values:
+            values.append(value)
+        if len(values) >= limit:
+            break
+    return values
+
+
+def _topic_stage_payload(
+    topic_id: str,
+    rows: list[dict[str, Any]],
+    *,
+    use_standard_references: bool = True,
+) -> dict[str, Any]:
+    return {
+        "theme_id": topic_id,
+        "member_count": len(rows),
+        "source_sample_ids": _unique_topic_values(rows, "数据ID"),
+        "source_unit_ids": _unique_topic_values(rows, "_原子知识ID"),
+        "product_categories": _unique_topic_values(rows, "产品类型"),
+        "scope_types": _unique_topic_values(rows, "_原子适用范围类型"),
+        "normalized_issues": _unique_topic_values(rows, "核心问题", limit=8),
+        "category_l1": _unique_topic_values(rows, "模型主题一级分类"),
+        "category_l2": _unique_topic_values(rows, "模型主题二级分类"),
+        "intents": _unique_topic_values(rows, "问题意图"),
+        "subjects": _unique_topic_values(rows, "对象/部位"),
+        "phenomena": _unique_topic_values(rows, "异常现象"),
+        "judgment_targets": _unique_topic_values(rows, "核心问题"),
+        "resolution_modes": _unique_topic_values(rows, "解题方式"),
+        "standard_paths": (
+            _unique_topic_values(rows, "主标准路径")
+            if use_standard_references
+            else []
+        ),
+        "thresholds_or_exceptions": _unique_topic_values(rows, "_原子阈值例外"),
+        "evidence_summaries": _unique_topic_values(
+            rows,
+            "语义标注依据",
+            limit=6,
+            max_chars=800,
+        ),
+        "historical_replies": list(
+            dict.fromkeys(
+                reply
+                for row in rows
+                if (reply := _historical_actual_reply(row))
+            )
+        )[:6],
+        "conversation_evidence": _unique_topic_values(
+            rows,
+            "聊天内容",
+            limit=6,
+            max_chars=1800,
+        ),
+        "upstream_requires_review": any(
+            _clean_text(row.get("是否重点复核")) == "是"
+            or _clean_text(row.get("_原子适用范围类型")) == "待确认"
+            for row in rows
+        ),
+    }
+
+
+def _topic_has_explicit_reusable_rule(topic_payload: dict[str, Any]) -> bool:
+    fields = [
+        *topic_payload.get("resolution_modes", []),
+        *topic_payload.get("thresholds_or_exceptions", []),
+        *topic_payload.get("evidence_summaries", []),
+        *topic_payload.get("historical_replies", []),
+        *topic_payload.get("conversation_evidence", []),
+    ]
+    text = "\n".join(_clean_text(value) for value in fields)
+    threshold_values = {
+        _clean_text(value)
+        for value in topic_payload.get("thresholds_or_exceptions", [])
+    }
+    if any(value not in GENERIC_TOPIC_RULE_VALUES for value in threshold_values):
+        return True
+    if re.search(
+        r"\d+(?:\.\d+)?\s*(?:mm|毫米|cm|厘米|%|次|个|GB|TB|分钟|小时|天)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    return bool(
+        re.search(
+            r"(以.+为准|优先采用|优先按|先.+再|依次|步骤|进入.+页面|"
+            r"读取.+信息|核对.+信息|检查.+后|检测.+后|大于|小于|"
+            r"不超过|不少于|至少|必须|不得|复测|"
+            r"(?:打开|进入).{0,30}(?:查看|读取)|查看.{0,20}(?:型号|信息)|"
+            r"再.{0,30}核对|补充.{0,20}(?:图片|截图|全景|近景)|"
+            r"拍摄.{0,20}(?:图片|截图|全景|近景))",
+            text,
+        )
+    )
+
+
+def _rule_topic_stage_classification(
+    topic_payload: dict[str, Any],
+) -> dict[str, Any]:
+    text = "\n".join(
+        _clean_text(value)
+        for field in (
+            "intents",
+            "subjects",
+            "phenomena",
+            "resolution_modes",
+            "evidence_summaries",
+            "historical_replies",
+            "conversation_evidence",
+        )
+        for value in topic_payload.get(field, [])
+    )
+    if any(marker in text for marker in ("型号", "版本", "配置", "是什么", "是否支持")):
+        topic_stage = "课外常识"
+    elif any(
+        marker in text
+        for marker in ("怎么查", "如何查", "怎么测", "步骤", "操作", "读取", "核对")
+    ):
+        topic_stage = "质检流程"
+    elif int(topic_payload.get("member_count") or 0) == 1 and any(
+        marker in text for marker in ("图片", "视频", "当前案例", "看图", "这台")
+    ):
+        topic_stage = "案例解析"
+    else:
+        topic_stage = "质检标准"
+
+    reusable = (
+        int(topic_payload.get("member_count") or 0) > 1
+        or _topic_has_explicit_reusable_rule(topic_payload)
+    )
+    return {
+        "topic_stage": topic_stage,
+        "knowledge_value": "值得沉淀" if reusable else "不值得沉淀",
+        "stage_reason": "根据主题主要诉求和现有证据进行规则分类。",
+        "value_reason": (
+            "主题包含可复用规则、步骤或多个一致案例。"
+            if reusable
+            else "当前证据只能支持个案结论，缺少可复用规则或步骤。"
+        ),
+        "reusable_knowledge": (
+            "可根据现有证据提炼稳定的判定口径、操作步骤或基础知识。"
+            if reusable
+            else "当前缺少可复用的阈值、边界、处理规则或操作步骤。"
+        ),
+        "confidence": 0.55 if reusable else 0.45,
+        "needs_human_review": True,
+    }
+
+
+def _apply_topic_stage_guard(
+    topic_payload: dict[str, Any],
+    classification: dict[str, Any],
+) -> dict[str, Any]:
+    guarded = dict(classification)
+    if (
+        int(topic_payload.get("member_count") or 0) != 1
+        or _clean_text(guarded.get("knowledge_value")) != "值得沉淀"
+        or _topic_has_explicit_reusable_rule(topic_payload)
+    ):
+        return guarded
+    guarded.update(
+        {
+            "knowledge_value": "不值得沉淀",
+            "value_reason": _safe_join(
+                [
+                    guarded.get("value_reason"),
+                    "单案例主题缺少明确阈值、通用规则或可执行步骤，禁止直接外推为可复用知识。",
+                ],
+                "；",
+            ),
+            "reusable_knowledge": "当前只有单个案例结论，缺少可复用的阈值、边界、通用处理规则或操作步骤。",
+            "needs_human_review": True,
+        }
+    )
+    return guarded
+
+
+def _attach_topic_stage_classification(
+    topic: dict[str, Any],
+    classification: dict[str, Any],
+    *,
+    provider: str,
+    model_name: str,
+    prompt_version: str,
+    model_run_id: str,
+    status: str,
+    error: str,
+    transcription_status: str,
+) -> None:
+    topic.update(
+        {
+            "主题问题分类": _clean_text(classification.get("topic_stage")),
+            "主题沉淀价值": _clean_text(classification.get("knowledge_value")),
+            "主题分类原因": _clean_text(classification.get("stage_reason")),
+            "主题价值原因": _clean_text(classification.get("value_reason")),
+            "主题可复用知识摘要": _clean_text(
+                classification.get("reusable_knowledge")
+            ),
+            "主题分类置信度": classification.get("confidence", ""),
+            "主题分类重点复核": (
+                "是" if classification.get("needs_human_review") else "否"
+            ),
+            "主题分类提供方": provider,
+            "主题分类模型名称": model_name,
+            "主题分类Prompt版本": prompt_version,
+            "主题分类运行ID": model_run_id,
+            "主题分类状态": status,
+            "主题分类错误": error,
+            "主题转写状态": transcription_status,
+        }
+    )
+
+
+def _untranscribed_topic_candidate_row(
+    topic_id: str,
+    key: tuple[str, ...],
+    rows: list[dict[str, Any]],
+    classification: dict[str, Any],
+) -> dict[str, Any]:
+    query = _topic_query(rows)
+    source_ids = list(
+        dict.fromkeys(
+            _clean_text(row.get("数据ID")) or _clean_text(row.get("工单ID"))
+            for row in rows
+            if _clean_text(row.get("数据ID")) or _clean_text(row.get("工单ID"))
+        )
+    )
+    work_order_ids = list(
+        dict.fromkeys(
+            _clean_text(row.get("工单ID"))
+            for row in rows
+            if _clean_text(row.get("工单ID"))
+        )
+    )
+    title = (
+        _clean_text(query.get("核心问题")).split("；", 1)[0][:120]
+        or _safe_join(
+            [
+                _clean_text(query.get("对象/部位")),
+                _clean_text(query.get("异常现象")),
+            ],
+            "：",
+        )
+        or f"{_topic_product_type(query, rows)}主题待复核"
+    )
+    keywords = _merge_unique_keywords(
+        [
+            query.get("问题意图"),
+            query.get("对象/部位"),
+            query.get("异常现象"),
+        ]
+    )
+    image_links = _topic_image_links(rows)
+    requires_images = _topic_needs_images(rows)
+    preserved_standard_refs = _merge_unique_text(
+        [row.get("关联标准项") for row in rows],
+        separator="；",
+    )
+    preserved_source_versions = _merge_unique_text(
+        [row.get("来源版本") for row in rows],
+        separator="；",
+    )
+    preserved_topic_standard_versions = _merge_unique_text(
+        [row.get("主题标准版本") for row in rows],
+        separator="；",
+    )
+    note = (
+        "该主题在知识转写前被标注为不值得沉淀，因此未生成知识草稿。"
+        "请在候选价值复核中确认主题价值；如改判为值得沉淀，需要补充完整知识内容后再送审。"
+    )
+    return {
+        "主题ID": topic_id,
+        "知识ID": topic_id,
+        "主题状态": "value_review_pending",
+        "主题样本数": len(rows),
+        "主题来源记录ID": "\n".join(source_ids),
+        "主题工单ID": "\n".join(work_order_ids),
+        "主题聚类键": " | ".join(key),
+        "主题问题意图": _clean_text(query.get("问题意图")),
+        "主题对象/部位": _clean_text(query.get("对象/部位")),
+        "主题异常现象": _clean_text(query.get("异常现象")),
+        "主题解题方式": _clean_text(query.get("解题方式")),
+        "主题证据等级": "、".join(
+            dict.fromkeys(_topic_evidence(row)[0] for row in rows)
+        ),
+        "主题证据摘要": _topic_evidence_summary(rows),
+        "主题图片链接": "\n".join(image_links),
+        "主题图片必要性": "需要保留" if requires_images else "不需要保留",
+        "主题图片说明": (
+            "保留脱敏案例图，供候选价值复核确认主题和沉淀价值。"
+            if requires_images
+            else "主题未进入知识转写。"
+        ),
+        "主题标准版本": (
+            preserved_topic_standard_versions or preserved_source_versions
+        ),
+        "主题置信度": classification.get("confidence", ""),
+        "是否重点复核": "是",
+        "主题模型提供方": "未执行",
+        "主题模型名称": "",
+        "主题Prompt版本": "",
+        "主题模型运行ID": "",
+        "模型初标结论": "未执行",
+        "模型初标是否值得沉淀": _clean_text(
+            classification.get("knowledge_value")
+        ),
+        "模型初标错误类型": "",
+        "模型初标原因": note,
+        "模型初标标准一致性": "",
+        "模型初标证据充分性": "",
+        "模型初标内容一致性": "",
+        "模型初标图片必要性": "",
+        "模型初标标题质量": "",
+        "模型初标置信度": "",
+        "模型初标重点复核": "是",
+        "模型初标提供方": "未执行",
+        "模型初标模型名称": "",
+        "模型初标Prompt版本": "",
+        "模型初标运行ID": "",
+        "模型初标状态": "topic_initial_review_skipped",
+        "主标题": title,
+        "副标题": "",
+        "知识内容": note,
+        "图例": "\n".join(image_links) if requires_images else "",
+        "推荐回复": "",
+        "知识分类": "",
+        "知识来源": "方向二主题价值候选",
+        "关联标准项": preserved_standard_refs,
+        "适用范围": "",
+        "生效状态": "待审核",
+        "来源版本": preserved_source_versions,
+        "变更类型": "新增",
+        "失效原因": "",
+        "检索关键词": keywords,
+        "关键词": keywords,
+        "校验备注": note,
+        "是否值得沉淀": "",
+        "是否可用": "",
+        "如何修改": "",
+        "问题反馈": "",
+    }
+
+
+def _topic_source_mapping_rows(
+    topic_id: str,
+    rows: list[dict[str, Any]],
+    topic: dict[str, Any],
+    model_run_id: str,
+) -> list[dict[str, Any]]:
+    mapping_rows: list[dict[str, Any]] = []
+    for row in rows:
+        evidence_level, _eligible, reason = _topic_evidence(row)
+        mapping_rows.append(
+            {
+                "主题ID": topic_id,
+                "来源记录ID": _clean_text(row.get("数据ID")),
+                "工单ID": _clean_text(row.get("工单ID")),
+                "核心问题": _clean_text(row.get("核心问题")),
+                "聊天内容": _clean_text(row.get("聊天内容")),
+                "历史实际回复": _historical_actual_reply(row),
+                "图片链接": _clean_text(row.get("图片链接")),
+                "视频链接": _clean_text(row.get("视频链接")),
+                "图片处理状态": _clean_text(row.get("图片处理状态")),
+                "视频处理状态": _clean_text(row.get("视频处理状态")),
+                "产品类型": _clean_text(row.get("产品类型")),
+                "一级分类": _clean_text(row.get("一级分类")),
+                "二级分类": _clean_text(row.get("二级分类")),
+                "模型主题一级分类": _clean_text(row.get("模型主题一级分类")),
+                "模型主题二级分类": _clean_text(row.get("模型主题二级分类")),
+                "主题标签": _clean_text(row.get("主题标签")),
+                "标签聚类键": _topic_tag_cluster_key(row),
+                "语义标注依据": _clean_text(row.get("语义标注依据")),
+                "语义标注置信度": row.get("语义标注置信度", ""),
+                "语义标注图片必要性": _clean_text(row.get("语义标注图片必要性")),
+                "语义标注提供方": _clean_text(row.get("语义标注提供方")),
+                "语义标注模型": _clean_text(row.get("语义标注模型")),
+                "语义标注Prompt版本": _clean_text(row.get("语义标注Prompt版本")),
+                "语义标注状态": _clean_text(row.get("语义标注状态")),
+                "语义标注错误": _clean_text(row.get("语义标注错误")),
+                "主标准路径": _clean_text(row.get("主标准路径")),
+                "证据等级": evidence_level,
+                "纳入主题原因": reason,
+                "聚类决策": _clean_text(row.get("_聚类决策")),
+                "聚类候选相似度": row.get("_聚类候选相似度", ""),
+                "聚类裁决提供方": _clean_text(row.get("_聚类裁决提供方")),
+                "聚类裁决原因": _clean_text(row.get("_聚类裁决原因")),
+                "聚类裁决置信度": row.get("_聚类裁决置信度", ""),
+                "问题意图": _clean_text(row.get("问题意图")),
+                "对象/部位": _clean_text(row.get("对象/部位")),
+                "异常现象": _clean_text(row.get("异常现象")),
+                "解题方式": _clean_text(row.get("解题方式")),
+                "关联标准项": _clean_text(topic.get("关联标准项")),
+                "模型运行ID": model_run_id,
+            }
+        )
+    return mapping_rows
 
 
 def _topic_candidate_row(
@@ -4603,6 +5368,97 @@ def build_topic_review_rows(
     for key, rows in topic_groups:
         topic_id = _topic_id(key)
         query = _topic_query(rows)
+        topic_stage_input = _topic_stage_payload(
+            topic_id,
+            rows,
+            use_standard_references=use_standard_references,
+        )
+        topic_stage = _rule_topic_stage_classification(topic_stage_input)
+        topic_stage_provider = "stage-rule"
+        topic_stage_model = "topic-stage-rule-v1"
+        topic_stage_prompt = ""
+        topic_stage_status = "topic_stage_classified_rule"
+        topic_stage_error = ""
+        topic_stage_run_id = uuid.uuid4().hex
+        topic_stage_request_audit: dict[str, Any] = {
+            "topic_id": topic_id,
+            "topic": topic_stage_input,
+        }
+        topic_stage_response_audit: dict[str, Any] = {}
+        apply_stage_guard = True
+        if client and hasattr(client, "classify_topic_stage"):
+            topic_stage_provider = "mimo"
+            topic_stage_model = client.config.model
+            topic_stage_prompt = TOPIC_STAGE_PROMPT_VERSION
+            try:
+                topic_stage_result = client.classify_topic_stage(topic_stage_input)
+                topic_stage = topic_stage_result.candidate
+                topic_stage_request_audit = topic_stage_result.request_audit
+                topic_stage_response_audit = topic_stage_result.response_audit
+                topic_stage_status = "topic_stage_classified_model"
+            except Exception as exc:
+                topic_stage_status = "topic_stage_classification_failed"
+                topic_stage_error = f"{type(exc).__name__}: {exc}"
+        elif client:
+            apply_stage_guard = False
+            topic_stage.update(
+                {
+                    "knowledge_value": "值得沉淀",
+                    "value_reason": "当前调用方未提供主题价值分类能力，按兼容模式继续转写并强制人工复核。",
+                    "needs_human_review": True,
+                }
+            )
+            topic_stage_provider = "legacy-compatible"
+            topic_stage_model = _clean_text(getattr(client.config, "model", ""))
+            topic_stage_status = "topic_stage_legacy_compatible"
+        if apply_stage_guard:
+            topic_stage = _apply_topic_stage_guard(topic_stage_input, topic_stage)
+
+        if _clean_text(topic_stage.get("knowledge_value")) != "值得沉淀":
+            topic = _untranscribed_topic_candidate_row(
+                topic_id,
+                key,
+                rows,
+                topic_stage,
+            )
+            _attach_topic_stage_classification(
+                topic,
+                topic_stage,
+                provider=topic_stage_provider,
+                model_name=topic_stage_model,
+                prompt_version=topic_stage_prompt,
+                model_run_id=topic_stage_run_id,
+                status=topic_stage_status,
+                error=topic_stage_error,
+                transcription_status="skipped_not_worthy",
+            )
+            apply_auto_review_annotation(topic, auto_review_policy)
+            topic_rows.append(topic)
+            source_mapping_rows.extend(
+                _topic_source_mapping_rows(topic_id, rows, topic, "")
+            )
+            if audit_store:
+                audit_store.record_model_run(
+                    model_run_id=topic_stage_run_id,
+                    run_id=run_id or "",
+                    record_id=topic_id,
+                    provider=topic_stage_provider,
+                    model_name=topic_stage_model,
+                    prompt_version=topic_stage_prompt,
+                    status=topic_stage_status,
+                    retrieved_standards=[],
+                    request_audit=topic_stage_request_audit,
+                    response_audit=topic_stage_response_audit,
+                    error=topic_stage_error,
+                )
+                audit_store.save_candidate(
+                    topic_stage_run_id,
+                    run_id or "",
+                    topic_id,
+                    topic,
+                )
+            continue
+
         matches = (
             retrieve_standard_matches(query, catalog, top_k=5)
             if use_standard_references
@@ -4641,6 +5497,15 @@ def build_topic_review_rows(
                     "source_record_ids": [_clean_text(row.get("数据ID")) for row in rows],
                     "features": query,
                     "evidence_summary": _topic_evidence_summary(rows),
+                    "topic_stage": _clean_text(topic_stage.get("topic_stage")),
+                    "knowledge_value": _clean_text(
+                        topic_stage.get("knowledge_value")
+                    ),
+                    "stage_reason": _clean_text(topic_stage.get("stage_reason")),
+                    "value_reason": _clean_text(topic_stage.get("value_reason")),
+                    "reusable_knowledge": _clean_text(
+                        topic_stage.get("reusable_knowledge")
+                    ),
                 }
                 if "use_standard_references" in inspect.signature(label_topic).parameters:
                     result = label_topic(
@@ -4660,9 +5525,9 @@ def build_topic_review_rows(
                 request_audit = result.request_audit
                 response_audit = result.response_audit
                 stage_status = "topic_model_labeled"
-            except MimoError as exc:
+            except Exception as exc:
                 stage_status = "topic_model_failed"
-                model_error = str(exc)
+                model_error = f"{type(exc).__name__}: {exc}"
         else:
             model_error = "未配置 MiMo，使用主题级规则草稿。"
 
@@ -4670,6 +5535,17 @@ def build_topic_review_rows(
             topic_id, key, rows, matches, candidate, provider, model_name, prompt_version, model_run_id,
             model_error, stage_status, min_confidence,
             use_standard_references=use_standard_references,
+        )
+        _attach_topic_stage_classification(
+            topic,
+            topic_stage,
+            provider=topic_stage_provider,
+            model_name=topic_stage_model,
+            prompt_version=topic_stage_prompt,
+            model_run_id=topic_stage_run_id,
+            status=topic_stage_status,
+            error=topic_stage_error,
+            transcription_status=stage_status,
         )
         initial_review = _rule_topic_initial_review(
             topic,
@@ -4722,6 +5598,19 @@ def build_topic_review_rows(
                         "source_record_ids": [_clean_text(row.get("数据ID")) for row in rows],
                         "features": query,
                         "evidence_summary": _topic_evidence_summary(rows),
+                        "topic_stage": _clean_text(topic_stage.get("topic_stage")),
+                        "knowledge_value": _clean_text(
+                            topic_stage.get("knowledge_value")
+                        ),
+                        "stage_reason": _clean_text(
+                            topic_stage.get("stage_reason")
+                        ),
+                        "value_reason": _clean_text(
+                            topic_stage.get("value_reason")
+                        ),
+                        "reusable_knowledge": _clean_text(
+                            topic_stage.get("reusable_knowledge")
+                        ),
                     },
                     {field: _clean_text(topic.get(field)) for field in KNOWLEDGE_MASTER_COLUMNS},
                     review_matches,
@@ -4737,11 +5626,16 @@ def build_topic_review_rows(
                 review_request_audit = review_result.request_audit
                 review_response_audit = review_result.response_audit
                 initial_review_status = "topic_initial_reviewed_model"
-            except MimoError as exc:
+            except Exception as exc:
                 initial_review_status = "topic_initial_review_failed"
-                initial_review_error = str(exc)
+                initial_review_error = f"{type(exc).__name__}: {exc}"
         else:
             initial_review_error = "未配置支持主题初标的 MiMo，使用规则模型初标。"
+        initial_review = {
+            **initial_review,
+            "knowledge_value": _clean_text(topic_stage.get("knowledge_value"))
+            or "值得沉淀",
+        }
         initial_review = _apply_topic_initial_review_guard(
             initial_review,
             topic,
@@ -4760,6 +5654,19 @@ def build_topic_review_rows(
         apply_auto_review_annotation(topic, auto_review_policy)
         topic_rows.append(topic)
         if audit_store:
+            audit_store.record_model_run(
+                model_run_id=topic_stage_run_id,
+                run_id=run_id or "",
+                record_id=topic_id,
+                provider=topic_stage_provider,
+                model_name=topic_stage_model,
+                prompt_version=topic_stage_prompt,
+                status=topic_stage_status,
+                retrieved_standards=[],
+                request_audit=topic_stage_request_audit,
+                response_audit=topic_stage_response_audit,
+                error=topic_stage_error,
+            )
             audit_store.record_model_run(
                 model_run_id=model_run_id,
                 run_id=run_id or "",
@@ -4789,50 +5696,14 @@ def build_topic_review_rows(
             )
             audit_store.save_candidate(initial_review_run_id, run_id or "", topic_id, topic)
 
-        for row in rows:
-            evidence_level, _eligible, reason = _topic_evidence(row)
-            source_mapping_rows.append(
-                {
-                    "主题ID": topic_id,
-                    "来源记录ID": _clean_text(row.get("数据ID")),
-                    "工单ID": _clean_text(row.get("工单ID")),
-                    "核心问题": _clean_text(row.get("核心问题")),
-                    "聊天内容": _clean_text(row.get("聊天内容")),
-                    "历史实际回复": _historical_actual_reply(row),
-                    "图片链接": _clean_text(row.get("图片链接")),
-                    "图片处理状态": _clean_text(row.get("图片处理状态")),
-                    "产品类型": _clean_text(row.get("产品类型")),
-                    "一级分类": _clean_text(row.get("一级分类")),
-                    "二级分类": _clean_text(row.get("二级分类")),
-                    "模型主题一级分类": _clean_text(row.get("模型主题一级分类")),
-                    "模型主题二级分类": _clean_text(row.get("模型主题二级分类")),
-                    "主题标签": _clean_text(row.get("主题标签")),
-                    "标签聚类键": _topic_tag_cluster_key(row),
-                    "语义标注依据": _clean_text(row.get("语义标注依据")),
-                    "语义标注置信度": row.get("语义标注置信度", ""),
-                    "语义标注图片必要性": _clean_text(row.get("语义标注图片必要性")),
-                    "语义标注提供方": _clean_text(row.get("语义标注提供方")),
-                    "语义标注模型": _clean_text(row.get("语义标注模型")),
-                    "语义标注Prompt版本": _clean_text(row.get("语义标注Prompt版本")),
-                    "语义标注状态": _clean_text(row.get("语义标注状态")),
-                    "语义标注错误": _clean_text(row.get("语义标注错误")),
-                    "主标准路径": _clean_text(row.get("主标准路径")),
-                    "证据等级": evidence_level,
-                    "纳入主题原因": reason,
-                    "聚类决策": _clean_text(row.get("_聚类决策")),
-                    "聚类候选相似度": row.get("_聚类候选相似度", ""),
-                    "聚类裁决提供方": _clean_text(row.get("_聚类裁决提供方")),
-                    "聚类裁决原因": _clean_text(row.get("_聚类裁决原因")),
-                    "聚类裁决置信度": row.get("_聚类裁决置信度", ""),
-                    "问题意图": _clean_text(row.get("问题意图")),
-                    "对象/部位": _clean_text(row.get("对象/部位")),
-                    "异常现象": _clean_text(row.get("异常现象")),
-                    "解题方式": _clean_text(row.get("解题方式")),
-                    "主标准路径": _clean_text(row.get("主标准路径")),
-                    "关联标准项": _clean_text(topic.get("关联标准项")),
-                    "模型运行ID": model_run_id,
-                }
+        source_mapping_rows.extend(
+            _topic_source_mapping_rows(
+                topic_id,
+                rows,
+                topic,
+                model_run_id,
             )
+        )
     return topic_rows, source_mapping_rows, evidence_gap_rows, pending_cluster_rows
 
 
@@ -4840,8 +5711,10 @@ def _topic_guide_sheet() -> tuple[list[str], list[dict[str, Any]]]:
     rows = [
         {"说明": "topic_review_queue 是 1～N 个原子问题形成的主题级候选，不按固定两两配对。"},
         {"说明": "完整会话或有可用现场图片的记录可形成主题候选；证据不足的记录进入 evidence_gap_rows。"},
-        {"说明": "topic_model_drafts 保存主题级转写草稿、案例图和推荐回复；模型初标不直接修改候选知识内容。"},
-        {"说明": "发给组员时标注“是否值得沉淀、是否可用、如何修改、问题反馈”；不值得沉淀的纯个案知识不进入送审，这些字段同时作为模型自动审核准确率的验证金标。"},
+        {"说明": "主题聚类后先标注问题分类和是否值得沉淀；只有值得沉淀的主题才进入知识转写。"},
+        {"说明": "topic_model_drafts 保存值得沉淀主题的转写草稿、案例图和推荐回复；不值得沉淀主题仅保留价值复核记录。"},
+        {"说明": "知识转写后再执行模型内容质量初标；内容质量初标不得重新修改主题沉淀价值。"},
+        {"说明": "发给组员时复核“是否值得沉淀、是否可用、如何修改、问题反馈”；不值得沉淀的主题不进入批量送审。"},
         {"说明": "验证模式下组员标注用于计算准确率；生产自动审核启用后，模型通过候选替代第三部分人工复标，风险候选进入人工例外队列。"},
         {"说明": "无标准引用模式导出知识ID、主标题、副标题、知识内容、图例、推荐回复、知识分类、关联标准项、适用范围和关键词共10项；本流程不新增标准关联，已有值保留并单独搁置。"},
     ]
@@ -4888,6 +5761,9 @@ def write_topic_review_workbook(
     model_draft_rows = [
         {
             "主题ID": _clean_text(topic.get("主题ID")),
+            "主题问题分类": _clean_text(topic.get("主题问题分类")),
+            "主题沉淀价值": _clean_text(topic.get("主题沉淀价值")),
+            "转写状态": _clean_text(topic.get("主题转写状态")),
             "转写提供方": _clean_text(topic.get("主题模型提供方")),
             "转写模型名称": _clean_text(topic.get("主题模型名称")),
             "转写Prompt版本": _clean_text(topic.get("主题Prompt版本")),
@@ -4923,6 +5799,26 @@ def write_topic_review_workbook(
     )
     return {
         "topic_rows": len(topic_rows),
+        "topic_stage_classified_rows": sum(
+            bool(_clean_text(row.get("主题问题分类")))
+            for row in topic_rows
+        ),
+        "topic_worthy_rows": sum(
+            _clean_text(row.get("主题沉淀价值")) == "值得沉淀"
+            for row in topic_rows
+        ),
+        "topic_unworthy_rows": sum(
+            _clean_text(row.get("主题沉淀价值")) == "不值得沉淀"
+            for row in topic_rows
+        ),
+        "topic_transcribed_rows": sum(
+            _clean_text(row.get("主题转写状态")) != "skipped_not_worthy"
+            for row in topic_rows
+        ),
+        "topic_transcription_skipped_rows": sum(
+            _clean_text(row.get("主题转写状态")) == "skipped_not_worthy"
+            for row in topic_rows
+        ),
         "topic_source_rows": len(mapping_rows),
         "evidence_gap_rows": len(evidence_gap_rows),
         "pending_cluster_rows": len(pending_cluster_rows),
@@ -4967,6 +5863,21 @@ def write_topic_review_workbook(
         "direct_cluster_calls": clustering_meta.get("direct_cluster_calls", 0),
         "direct_cluster_failed": clustering_meta.get("direct_cluster_failed", 0),
         "direct_review_singletons": clustering_meta.get("direct_review_singletons", 0),
+        "direct_reconcile_floor": clustering_meta.get("direct_reconcile_floor", ""),
+        "direct_reconcile_candidates": clustering_meta.get("direct_reconcile_candidates", 0),
+        "direct_reconcile_calls": clustering_meta.get("direct_reconcile_calls", 0),
+        "direct_reconcile_approved": clustering_meta.get("direct_reconcile_approved", 0),
+        "direct_reconcile_rejected": clustering_meta.get("direct_reconcile_rejected", 0),
+        "direct_reconcile_uncertain": clustering_meta.get("direct_reconcile_uncertain", 0),
+        "direct_reconcile_failed": clustering_meta.get("direct_reconcile_failed", 0),
+        "direct_reconcile_hard_rejected": clustering_meta.get(
+            "direct_reconcile_hard_rejected",
+            0,
+        ),
+        "direct_reconcile_limit_reached": clustering_meta.get(
+            "direct_reconcile_limit_reached",
+            0,
+        ),
         "standard_references_enabled": use_standard_references,
     }
 
@@ -5070,12 +5981,24 @@ def write_topic_candidate_knowledge_workbook(
     use_standard_references: bool = True,
 ) -> None:
     """Export either the legacy standard-aware contract or the case-only contract."""
+    transcribed_rows = [
+        row
+        for row in topic_rows
+        if (
+            not _clean_text(row.get("主题沉淀价值"))
+            or (
+                _clean_text(row.get("主题沉淀价值")) == "值得沉淀"
+                and _clean_text(row.get("主题转写状态"))
+                != "skipped_not_worthy"
+            )
+        )
+    ]
     if not use_standard_references:
         write_rows_to_workbook(
             {
                 "候选知识": (
                     CASE_KNOWLEDGE_COLUMNS,
-                    build_case_knowledge_rows(topic_rows),
+                    build_case_knowledge_rows(transcribed_rows),
                 )
             },
             workbook_path,
@@ -5090,12 +6013,51 @@ def write_topic_candidate_knowledge_workbook(
                         column: _clean_text(row.get(column))
                         for column in KNOWLEDGE_MASTER_COLUMNS + KNOWLEDGE_REVIEW_EXTENSION_COLUMNS
                     }
-                    for row in topic_rows
+                    for row in transcribed_rows
                 ],
             )
         },
         workbook_path,
     )
+
+
+def _workflow_checkpoint_path(output_path: Path) -> Path:
+    return output_path / "workflow_checkpoint.json"
+
+
+def _write_workflow_checkpoint(
+    output_path: Path,
+    stage: str,
+    payload: dict[str, Any],
+) -> None:
+    checkpoint_path = _workflow_checkpoint_path(output_path)
+    temporary_path = checkpoint_path.with_suffix(".json.tmp")
+    temporary_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "stage": stage,
+                "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                **payload,
+            },
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+    temporary_path.replace(checkpoint_path)
+
+
+def _load_workflow_checkpoint(output_path: Path) -> dict[str, Any]:
+    checkpoint_path = _workflow_checkpoint_path(output_path)
+    if not checkpoint_path.is_file():
+        return {}
+    try:
+        payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def initial_label_from_workbook(
@@ -5114,6 +6076,7 @@ def initial_label_from_workbook(
     embedding_client: EmbeddingClient | None = None,
     progress_callback: Callable[[str, str, str, dict[str, Any]], None] | None = None,
     use_standard_references: bool | None = None,
+    resume: bool = False,
 ) -> dict[str, Any]:
     def report(
         stage_id: str,
@@ -5129,6 +6092,16 @@ def initial_label_from_workbook(
         if use_standard_references is None
         else bool(use_standard_references)
     )
+    output_path = _ensure_output_dir(output_dir)
+    checkpoint = _load_workflow_checkpoint(output_path) if resume else {}
+    checkpoint_stage = _clean_text(checkpoint.get("stage"))
+    stage_rank = {
+        "": 0,
+        "preprocess": 1,
+        "semantic_label": 2,
+        "topic_build": 3,
+        "export_review": 4,
+    }
     report(
         "load_input",
         "running",
@@ -5138,6 +6111,7 @@ def initial_label_from_workbook(
     )
     standard_catalog = load_standard_catalog(standards_path) if standards_enabled else []
     source_rows = _read_source_rows(source_path)
+    redaction_audit = enforce_redaction(source_rows)
     report(
         "load_input",
         "completed",
@@ -5145,23 +6119,46 @@ def initial_label_from_workbook(
         {
             "source_rows": len(source_rows),
             "standards": len(standard_catalog),
+            "redaction_blocking_findings": redaction_audit["blocking_count"],
+            "redaction_warning_findings": redaction_audit["warning_count"],
         },
     )
 
-    report("preprocess", "running", "正在执行品类筛选、字段清洗和证据校验。")
-    selected_rows, excluded_rows = filter_source_rows_by_product_type(source_rows, product_type)
-    preprocessed_rows = preprocess_source_rows(selected_rows)
-    eligible_rows, validation_excluded_rows = filter_preprocessed_rows_for_model(preprocessed_rows)
-    excluded_rows.extend(validation_excluded_rows)
-    eligible_raw_rows = [
-        source_row
-        for source_row, preprocessed_row in zip(selected_rows, preprocessed_rows)
-        if _clean_text(preprocessed_row.get("可进入模型初标")) == "是"
-    ]
+    if stage_rank.get(checkpoint_stage, 0) >= stage_rank["preprocess"]:
+        report("preprocess", "running", "正在从运行检查点恢复清洗结果。")
+        preprocessed_rows = list(checkpoint.get("preprocessed_rows") or [])
+        eligible_rows = list(checkpoint.get("eligible_rows") or [])
+        eligible_raw_rows = list(checkpoint.get("eligible_raw_rows") or [])
+        excluded_rows = list(checkpoint.get("excluded_rows") or [])
+        selected_rows = list(checkpoint.get("selected_rows") or [])
+        preprocess_detail = "已从检查点恢复清洗与证据分流结果。"
+    else:
+        report("preprocess", "running", "正在执行品类筛选、字段清洗和证据校验。")
+        selected_rows, excluded_rows = filter_source_rows_by_product_type(source_rows, product_type)
+        preprocessed_rows = preprocess_source_rows(selected_rows)
+        eligible_rows, validation_excluded_rows = filter_preprocessed_rows_for_model(preprocessed_rows)
+        excluded_rows.extend(validation_excluded_rows)
+        eligible_raw_rows = [
+            source_row
+            for source_row, preprocessed_row in zip(selected_rows, preprocessed_rows)
+            if _clean_text(preprocessed_row.get("可进入模型初标")) == "是"
+        ]
+        _write_workflow_checkpoint(
+            output_path,
+            "preprocess",
+            {
+                "selected_rows": selected_rows,
+                "preprocessed_rows": preprocessed_rows,
+                "eligible_rows": eligible_rows,
+                "eligible_raw_rows": eligible_raw_rows,
+                "excluded_rows": excluded_rows,
+            },
+        )
+        preprocess_detail = "清洗与证据分流完成。"
     report(
         "preprocess",
         "completed",
-        "清洗与证据分流完成。",
+        preprocess_detail,
         {
             "selected_rows": len(selected_rows),
             "eligible_rows": len(eligible_rows),
@@ -5170,7 +6167,7 @@ def initial_label_from_workbook(
     )
 
     audit_store = AuditStore.from_env(audit_db_path)
-    active_run_id = uuid.uuid4().hex
+    active_run_id = _clean_text(checkpoint.get("run_id")) or uuid.uuid4().hex
     for index, row in enumerate(excluded_rows, start=1):
         audit_store.record_excluded(
             active_run_id,
@@ -5178,27 +6175,49 @@ def initial_label_from_workbook(
             row,
             _clean_text(row.get("排除原因")) or "未通过候选生成校验",
         )
-    report(
-        "semantic_label",
-        "running",
-        "正在提取会话语义、证据特征并检索标准。"
-        if standards_enabled
-        else "正在从会话、历史回复和案例图中提取语义与证据特征。",
-    )
-    feature_rows, run_id = generate_phone_candidate_rows(
-        eligible_rows,
-        standard_catalog,
-        min_confidence=min_confidence,
-        raw_source_rows=eligible_raw_rows,
-        use_mimo=use_mimo,
-        audit_store=audit_store,
-        run_id=active_run_id,
-        use_standard_references=standards_enabled,
-    )
+    mimo_client = MimoClient.from_env() if use_mimo else None
+    if stage_rank.get(checkpoint_stage, 0) >= stage_rank["semantic_label"]:
+        report("semantic_label", "running", "正在从运行检查点恢复会话语义标注结果。")
+        feature_rows = list(checkpoint.get("feature_rows") or [])
+        run_id = active_run_id
+        semantic_detail = "已从检查点恢复会话语义标注结果。"
+    else:
+        report(
+            "semantic_label",
+            "running",
+            "正在提取会话语义、证据特征并检索标准。"
+            if standards_enabled
+            else "正在从会话、历史回复和案例图中提取语义与证据特征。",
+        )
+        feature_rows, run_id = generate_phone_candidate_rows(
+            eligible_rows,
+            standard_catalog,
+            min_confidence=min_confidence,
+            raw_source_rows=eligible_raw_rows,
+            use_mimo=use_mimo,
+            mimo_client=mimo_client,
+            audit_store=audit_store,
+            run_id=active_run_id,
+            use_standard_references=standards_enabled,
+        )
+        _write_workflow_checkpoint(
+            output_path,
+            "semantic_label",
+            {
+                "selected_rows": selected_rows,
+                "preprocessed_rows": preprocessed_rows,
+                "eligible_rows": eligible_rows,
+                "eligible_raw_rows": eligible_raw_rows,
+                "excluded_rows": excluded_rows,
+                "feature_rows": feature_rows,
+                "run_id": run_id,
+            },
+        )
+        semantic_detail = "会话语义标注完成。"
     report(
         "semantic_label",
         "completed",
-        "会话语义标注完成。",
+        semantic_detail,
         {
             "feature_rows": len(feature_rows),
             "model_labeled_rows": sum(
@@ -5208,36 +6227,73 @@ def initial_label_from_workbook(
         },
     )
 
-    output_path = _ensure_output_dir(output_dir)
     workbook_path = output_path / "review_queue.xlsx"
     topic_workbook_path = output_path / "topic_review_queue.xlsx"
     candidate_workbook_path = output_path / "candidate_knowledge.xlsx"
     write_review_workbook(preprocessed_rows, feature_rows, excluded_rows, workbook_path)
-    report("topic_build", "running", "正在聚类主题、转写知识并执行模型初标。")
-    topic_summary = write_topic_review_workbook(
-        preprocessed_rows,
-        feature_rows,
-        excluded_rows,
-        topic_workbook_path,
-        standard_catalog=standard_catalog,
-        min_confidence=min_confidence,
-        use_mimo=use_mimo,
-        audit_store=audit_store,
-        run_id=run_id,
-        clustering_mode=clustering_mode,
-        semantic_threshold=semantic_threshold,
-        cluster_review_floor=cluster_review_floor,
-        cluster_auto_merge_threshold=cluster_auto_merge_threshold,
-        cluster_review_limit=cluster_review_limit,
-        embedding_client=embedding_client,
-        use_standard_references=standards_enabled,
-    )
+    if (
+        stage_rank.get(checkpoint_stage, 0) >= stage_rank["topic_build"]
+        and topic_workbook_path.is_file()
+    ):
+        report("topic_build", "running", "正在从运行检查点恢复主题候选结果。")
+        topic_summary = dict(checkpoint.get("topic_summary") or {})
+        topic_detail = "已从检查点恢复主题聚类、知识转写和模型初标结果。"
+    else:
+        report("topic_build", "running", "正在聚类主题、转写知识并执行模型初标。")
+        topic_summary = write_topic_review_workbook(
+            preprocessed_rows,
+            feature_rows,
+            excluded_rows,
+            topic_workbook_path,
+            standard_catalog=standard_catalog,
+            min_confidence=min_confidence,
+            use_mimo=use_mimo,
+            mimo_client=mimo_client,
+            audit_store=audit_store,
+            run_id=run_id,
+            clustering_mode=clustering_mode,
+            semantic_threshold=semantic_threshold,
+            cluster_review_floor=cluster_review_floor,
+            cluster_auto_merge_threshold=cluster_auto_merge_threshold,
+            cluster_review_limit=cluster_review_limit,
+            embedding_client=embedding_client,
+            use_standard_references=standards_enabled,
+        )
+        _write_workflow_checkpoint(
+            output_path,
+            "topic_build",
+            {
+                "selected_rows": selected_rows,
+                "preprocessed_rows": preprocessed_rows,
+                "eligible_rows": eligible_rows,
+                "eligible_raw_rows": eligible_raw_rows,
+                "excluded_rows": excluded_rows,
+                "feature_rows": feature_rows,
+                "run_id": run_id,
+                "topic_summary": topic_summary,
+            },
+        )
+        topic_detail = "主题聚类与知识转写完成。"
     report(
         "topic_build",
         "completed",
-        "主题聚类与知识转写完成。",
+        topic_detail,
         {
             "topic_rows": topic_summary.get("topic_rows", 0),
+            "topic_stage_classified_rows": topic_summary.get(
+                "topic_stage_classified_rows",
+                0,
+            ),
+            "topic_worthy_rows": topic_summary.get("topic_worthy_rows", 0),
+            "topic_unworthy_rows": topic_summary.get("topic_unworthy_rows", 0),
+            "topic_transcribed_rows": topic_summary.get(
+                "topic_transcribed_rows",
+                0,
+            ),
+            "topic_transcription_skipped_rows": topic_summary.get(
+                "topic_transcription_skipped_rows",
+                0,
+            ),
             "evidence_gap_rows": topic_summary.get("evidence_gap_rows", 0),
             "pending_cluster_rows": topic_summary.get("pending_cluster_rows", 0),
         },
@@ -5265,12 +6321,25 @@ def initial_label_from_workbook(
             "eligible_rows": len(eligible_rows),
             "run_id": run_id,
             "audit_db": str(audit_store.path),
-            "mimo_configured": bool(MimoClient.from_env()) if use_mimo else False,
+            "mimo_configured": bool(mimo_client),
             "standard_references_enabled": standards_enabled,
+            "redaction_audit": redaction_audit,
+            "resumed_from_checkpoint": bool(checkpoint),
         }
     )
     summary.update(topic_summary)
+    if mimo_client:
+        summary.update(mimo_client.metrics_snapshot())
     (output_path / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_workflow_checkpoint(
+        output_path,
+        "export_review",
+        {
+            "run_id": run_id,
+            "topic_summary": topic_summary,
+            "summary": summary,
+        },
+    )
     report(
         "export_review",
         "completed",

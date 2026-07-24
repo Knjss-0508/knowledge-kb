@@ -5,9 +5,10 @@ from types import SimpleNamespace
 import json
 import sqlite3
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 import pytest
 
+import answer_hub.mimo as mimo_module
 from answer_hub.audit import AuditStore
 from answer_hub.catalog import StandardCatalogItem, load_standard_catalog
 from answer_hub.images import ImageEvidence
@@ -16,7 +17,11 @@ from answer_hub.mimo import (
     MimoConfig,
     MimoError,
     MimoLabelResult,
+    TOPIC_DISPLAY_QUESTION_PROMPT_VERSION,
+    TOPIC_STAGE_PROMPT_VERSION,
     _topic_signal_source_payload,
+    _validate_topic_display_questions,
+    _validate_topic_stage,
     _validate_topic_review,
 )
 from answer_hub.workflow import (
@@ -27,6 +32,7 @@ from answer_hub.workflow import (
     generate_phone_candidate_rows,
     initial_label_rows,
     preprocess_source_rows,
+    write_topic_candidate_knowledge_workbook,
 )
 
 
@@ -56,6 +62,68 @@ def test_case_only_topic_signal_payload_treats_historical_reply_as_primary_evide
 
     assert payload["primary_evidence"]["historical_actual_reply"] == "请拍摄清晰屏幕图片"
     assert "legacy_script" not in payload["legacy_reference_only"]
+
+
+def test_cluster_unit_prompt_prioritizes_chat_and_disambiguates_tool_terms() -> None:
+    prompt = mimo_module._build_cluster_unit_prompt(
+        {
+            "工单ID": "CHAT-PRIMARY-001",
+            "产品类型": "平板",
+            "聊天内容": (
+                "26/07/15 17:50:00:00 问题类型：质检问题 "
+                "问题描述：一根线读出用户判断怎么选 "
+                "转人工原因：回答内容无法理解\n"
+                "26/07/15 17:51:03:03 这个是异常吗\n"
+                "26/07/15 17:51:24:24 数据正常 默认那里默认异常"
+            ),
+            "核心问题": "屏幕出现一根线条怎么判",
+        }
+    )
+
+    assert "一根线读出用户判断怎么选" not in (
+        mimo_module._primary_conversation_evidence(
+            "26/07/15 17:50:00:00 问题类型：质检问题 "
+            "问题描述：一根线读出用户判断怎么选 "
+            "转人工原因：回答内容无法理解\n"
+            "26/07/15 17:51:03:03 这个是异常吗"
+        )
+    )
+    assert "通常指验机工具、检测程序或工具结果" in prompt
+    assert "不代表屏幕上出现物理线条" in prompt
+    assert "屏幕出现一根线条怎么判" not in prompt
+    assert "两个可以独立检测、独立判定的硬件功能时必须拆分" in prompt
+    assert "硬盘信息和显卡信息" in prompt
+    assert "孤立的单个词或客服简短回复" in prompt
+    assert "包装盒防拆标签是否影响全新机状态" in prompt
+    assert "案例设备是iPhone" in prompt
+
+
+def test_cluster_fusion_prompt_keeps_media_second_topic_example() -> None:
+    prompt = mimo_module._build_cluster_fusion_prompt(
+        {
+            "工单ID": "MEDIA-SECOND-TOPIC",
+            "产品类型": "手机",
+            "聊天内容": "这个手机相机倍数正常吗？",
+        },
+        {
+            "conversation_type": "single_topic",
+            "topics": [{"normalized_issue": "相机倍数是否正常"}],
+        },
+        {
+            "conversation_type": "multi_topic",
+            "media_analysis": {
+                "used_for_topic_split": True,
+            },
+            "topics": [
+                {"normalized_issue": "相机倍数是否正常"},
+                {"normalized_issue": "屏幕垂直彩色亮线怎么判"},
+            ],
+        },
+        {"images": [], "videos": []},
+    )
+
+    assert "文字询问相机倍数" in prompt
+    assert "图片清晰显示屏幕亮线" in prompt
 
 
 def test_case_only_topic_generation_rejects_model_standard_references() -> None:
@@ -342,7 +410,7 @@ def test_mimo_cluster_units_keeps_clear_secondary_topics() -> None:
                                     "threshold_or_exception": "待确认",
                                     "evidence_summary": "聊天明确询问前摄像头是否正常，但没有形成最终结论。",
                                     "confidence": 0.78,
-                                    "requires_review": True,
+                                    "requires_review": False,
                                 },
                                 {
                                     "normalized_issue": "按开机键触发屏幕闪烁的判定",
@@ -390,6 +458,322 @@ def test_mimo_cluster_units_keeps_clear_secondary_topics() -> None:
     assert result.candidate["topics"][1]["subject"] == "屏幕"
 
 
+def test_mimo_cluster_units_sends_images_and_videos_to_media_model() -> None:
+    client = MimoClient(
+        MimoConfig(
+            api_key="test",
+            base_url="https://example.com/v1",
+            model="mimo-v2.5-pro",
+            media_model="mimo-v2.5",
+        )
+    )
+    captured_payloads: list[dict[str, object]] = []
+
+    def fake_post(payload):
+        captured_payloads.append(payload)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "conversation_type": "single_topic",
+                                "reason": "聊天、图片和视频均在询问屏幕闪烁问题。",
+                                "media_analysis": {
+                                    "image_summary": "图片显示设备设置页面。",
+                                    "video_summary": "视频显示按下开机键后屏幕闪烁。",
+                                    "media_relevance": "高度相关",
+                                    "used_for_topic_split": False,
+                                    "requires_review": False,
+                                },
+                                "topics": [
+                                    {
+                                        "normalized_issue": "手机｜屏幕｜按键触发闪烁｜判断显示异常",
+                                        "product_category": "手机",
+                                        "scope_type": "品类专用",
+                                        "platform": "通用",
+                                        "brand": "通用",
+                                        "model_scope": "通用",
+                                        "category_l1": "显示问题",
+                                        "category_l2": "屏幕闪烁",
+                                        "intent": "标准判定",
+                                        "subject": "屏幕",
+                                        "phenomenon": "按下开机键后闪烁",
+                                        "judgment_target": "判断是否属于显示异常",
+                                        "resolution_mode": "结合视频现象对照标准判定",
+                                        "standard_path": "屏幕显示异常判定",
+                                        "threshold_or_exception": "仅按下开机键时触发",
+                                        "evidence_summary": "视频直接显示按下开机键后屏幕闪烁。",
+                                        "confidence": 0.94,
+                                        "requires_review": False,
+                                    }
+                                ],
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    client._post = fake_post  # type: ignore[method-assign]
+    result = client.analyze_cluster_units(
+        {
+            "工单ID": "PHONE-MEDIA-001",
+            "产品类型": "手机",
+            "聊天内容": "按下开机键后屏幕会闪，请看图片和视频。",
+            "图片链接": "https://example.com/screen.jpg",
+            "视频链接": "https://example.com/screen.mp4",
+        }
+    )
+
+    assert captured_payloads[0]["model"] == "mimo-v2.5"
+    content = captured_payloads[0]["messages"][1]["content"]
+    assert [part["type"] for part in content] == ["text", "image_url", "video_url"]
+    assert result.request_audit["media"]["mode"] == "mimo-direct-multimodal"
+    assert result.request_audit["media"]["images"][0]["status"] == "attached"
+    assert result.request_audit["media"]["videos"][0]["status"] == "attached"
+    assert result.candidate["media_analysis"]["media_relevance"] == "相关"
+    assert result.candidate["media_analysis"]["video_summary"] == "视频显示按下开机键后屏幕闪烁。"
+
+
+def test_mimo_cluster_units_drops_corrupted_video_and_keeps_images() -> None:
+    client = MimoClient(
+        MimoConfig(
+            api_key="test",
+            base_url="https://example.com/v1",
+            model="mimo-v2.5-pro",
+            media_model="mimo-v2.5",
+        )
+    )
+    payloads: list[dict[str, object]] = []
+
+    def fake_post(payload):
+        payloads.append(payload)
+        if len(payloads) == 1:
+            raise MimoError(
+                "MiMo HTTP 400: Multimodal data is corrupted or cannot be processed."
+            )
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "conversation_type": "single_topic",
+                                "reason": "视频不可读，图片和聊天仍指向同一外观问题。",
+                                "media_analysis": {
+                                    "image_summary": "图片显示相机型号标签。",
+                                    "video_summary": "视频无法读取。",
+                                    "media_relevance": "相关",
+                                    "used_for_topic_split": False,
+                                    "requires_review": True,
+                                },
+                                "topics": [
+                                    {
+                                        "normalized_issue": "相机机身｜型号标签｜型号不一致｜确认型号",
+                                        "product_category": "相机机身",
+                                        "scope_type": "品类专用",
+                                        "platform": "通用",
+                                        "brand": "通用",
+                                        "model_scope": "通用",
+                                        "category_l1": "基本情况",
+                                        "category_l2": "型号确认",
+                                        "intent": "检测核验",
+                                        "subject": "型号标签",
+                                        "phenomenon": "外观型号与标签型号不一致",
+                                        "judgment_target": "确认实际型号",
+                                        "resolution_mode": "结合图片和查询结果核验",
+                                        "standard_path": "相机型号核验",
+                                        "threshold_or_exception": "无明确阈值",
+                                        "evidence_summary": "图片和聊天显示型号信息不一致。",
+                                        "confidence": 0.82,
+                                        "requires_review": False,
+                                    }
+                                ],
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    client._post = fake_post  # type: ignore[method-assign]
+    result = client.analyze_cluster_units(
+        {
+            "工单ID": "CAMERA-MEDIA-001",
+            "产品类型": "相机机身",
+            "聊天内容": "外观型号和标签型号不一致，请结合图片视频确认。",
+            "图片链接": "https://example.com/camera.jpg",
+            "视频链接": "https://example.com/broken.mp4",
+        }
+    )
+
+    first_content = payloads[0]["messages"][1]["content"]
+    second_content = payloads[1]["messages"][1]["content"]
+    assert [part["type"] for part in first_content] == [
+        "text",
+        "image_url",
+        "video_url",
+    ]
+    assert [part["type"] for part in second_content] == ["text", "image_url"]
+    assert result.request_audit["media"]["mode"] == (
+        "mimo-direct-multimodal-video-fallback"
+    )
+    assert result.request_audit["media"]["videos"][0]["status"] == "unavailable"
+    assert result.candidate["media_analysis"]["requires_review"] is True
+    assert result.candidate["topics"][0]["requires_review"] is True
+
+
+def test_cluster_unit_validation_normalizes_basic_information_category() -> None:
+    payload = {
+        "conversation_type": "single_topic",
+        "reason": "会话只询问一个基本信息问题。",
+        "topics": [
+            {
+                "normalized_issue": "手机｜包装｜塑封状态｜判断是否全新",
+                "product_category": "手机",
+                "scope_type": "品类专用",
+                "platform": "通用",
+                "brand": "通用",
+                "model_scope": "通用",
+                "category_l1": "基本信息",
+                "category_l2": "全新机判定",
+                "intent": "标准判定",
+                "subject": "包装",
+                "phenomenon": "存在塑封",
+                "judgment_target": "判断是否为全新机",
+                "resolution_mode": "根据包装状态判断",
+                "standard_path": "全新机判定",
+                "threshold_or_exception": "无明确阈值",
+                "evidence_summary": "聊天明确询问塑封机器是否为全新机。",
+                "confidence": 0.8,
+                "requires_review": False,
+            }
+        ],
+    }
+
+    result = mimo_module._validate_cluster_units(payload)
+
+    assert result["topics"][0]["category_l1"] == "成色与回收标准"
+
+
+def test_cluster_fusion_guardrail_keeps_explicit_text_multi_topics() -> None:
+    text_candidate = {
+        "conversation_type": "multi_topic",
+        "reason": "文字明确包含屏幕漏液和电池健康度两个问题。",
+        "topics": [
+            {
+                "normalized_issue": "平板｜屏幕｜漏液｜判定标准",
+                "product_category": "平板",
+                "requires_review": False,
+            },
+            {
+                "normalized_issue": "平板｜电池｜健康度无法读取｜操作指引",
+                "product_category": "平板",
+                "requires_review": False,
+            },
+        ],
+    }
+    media_candidate = {
+        "conversation_type": "single_topic",
+        "reason": "图片只展示电池健康度。",
+        "media_analysis": {
+            "image_summary": "图片展示电池健康度页面。",
+            "video_summary": "无视频",
+            "media_relevance": "相关",
+            "used_for_topic_split": False,
+            "requires_review": False,
+        },
+        "topics": [
+            {
+                "normalized_issue": "平板｜电池｜健康度无法读取｜操作指引",
+                "product_category": "平板",
+                "requires_review": False,
+            }
+        ],
+    }
+    fused_candidate = {
+        "conversation_type": "single_topic",
+        "reason": "融合模型错误地只保留电池问题。",
+        "topics": media_candidate["topics"],
+    }
+
+    result = mimo_module._enforce_cluster_fusion_guardrails(
+        fused_candidate,
+        text_candidate,
+        media_candidate,
+        {"images": [], "videos": []},
+    )
+
+    assert result["conversation_type"] == "multi_topic"
+    assert len(result["topics"]) == 2
+    assert "保留MiMo Pro" in result["reason"]
+
+
+def test_cluster_fusion_guardrail_keeps_new_media_topic_and_flags_conflict() -> None:
+    text_candidate = {
+        "conversation_type": "single_topic",
+        "reason": "文字只询问相机倍数。",
+        "topics": [
+            {
+                "normalized_issue": "手机｜相机｜倍数是否正常｜判定",
+                "product_category": "手机",
+                "requires_review": False,
+            }
+        ],
+    }
+    media_candidate = {
+        "conversation_type": "multi_topic",
+        "reason": "图片还显示屏幕亮线。",
+        "media_analysis": {
+            "image_summary": "图片显示相机界面和垂直亮线。",
+            "video_summary": "无视频",
+            "media_relevance": "相关",
+            "used_for_topic_split": True,
+            "requires_review": False,
+        },
+        "topics": [
+            {
+                "normalized_issue": "手机｜相机｜倍数是否正常｜判定",
+                "product_category": "手机",
+                "requires_review": False,
+            },
+            {
+                "normalized_issue": "手机｜屏幕｜垂直亮线｜判定",
+                "product_category": "手机",
+                "requires_review": False,
+            },
+        ],
+    }
+    fused_candidate = {
+        "conversation_type": "single_topic",
+        "reason": "融合模型遗漏媒体新增主题。",
+        "topics": text_candidate["topics"],
+    }
+
+    result = mimo_module._enforce_cluster_fusion_guardrails(
+        fused_candidate,
+        text_candidate,
+        media_candidate,
+        {
+            "images": [],
+            "videos": [
+                {
+                    "status": "unavailable",
+                    "url": "https://example.com/broken.mp4",
+                }
+            ],
+        },
+    )
+
+    assert result["conversation_type"] == "multi_topic"
+    assert len(result["topics"]) == 2
+    assert result["media_analysis"]["requires_review"] is True
+    assert all(topic["requires_review"] for topic in result["topics"])
+
+
 def test_single_record_only_extracts_features_and_topic_model_saves_audit(tmp_path: Path) -> None:
     audit = AuditStore(tmp_path / "phone_mvp.db")
     features, run_id = generate_phone_candidate_rows(
@@ -432,7 +816,12 @@ def test_single_record_only_extracts_features_and_topic_model_saves_audit(tmp_pa
     connection = sqlite3.connect(audit.path)
     try:
         assert connection.execute("SELECT COUNT(*) FROM ingestion_records").fetchone()[0] == 1
-        assert connection.execute("SELECT COUNT(*) FROM model_runs").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM model_runs").fetchone()[0] == 3
+        statuses = {
+            row[0]
+            for row in connection.execute("SELECT status FROM model_runs").fetchall()
+        }
+        assert "topic_stage_legacy_compatible" in statuses
         assert connection.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 2
     finally:
         connection.close()
@@ -475,6 +864,549 @@ def test_topic_review_validation_rejects_unworthy_pass_decision() -> None:
                 "priority_review": False,
             }
         )
+
+
+def test_topic_stage_validation_accepts_supported_labels() -> None:
+    classification = _validate_topic_stage(
+        {
+            "topic_stage": "质检流程",
+            "knowledge_value": "值得沉淀",
+            "stage_reason": "主要诉求是如何读取并核对设备信息。",
+            "value_reason": "可形成稳定的检查步骤供后续复用。",
+            "reusable_knowledge": "按设备页面、检测工具和实物信息依次核对。",
+            "confidence": 0.91,
+            "needs_human_review": False,
+        }
+    )
+
+    assert classification["topic_stage"] == "质检流程"
+    assert classification["knowledge_value"] == "值得沉淀"
+    assert classification["confidence"] == 0.91
+
+
+def test_topic_stage_validation_rejects_unknown_stage() -> None:
+    with pytest.raises(MimoError, match="topic_stage 不合法"):
+        _validate_topic_stage(
+            {
+                "topic_stage": "售后服务",
+                "knowledge_value": "值得沉淀",
+                "stage_reason": "不在允许范围内。",
+                "value_reason": "存在复用价值。",
+                "reusable_knowledge": "测试内容。",
+                "confidence": 0.8,
+                "needs_human_review": True,
+            }
+        )
+
+
+def test_classify_topic_stage_uses_dedicated_prompt_and_validator() -> None:
+    client = MimoClient(
+        MimoConfig(
+            api_key="test-key",
+            base_url="https://example.com/v1",
+            model="mimo-test",
+        )
+    )
+    captured_payloads: list[dict[str, object]] = []
+
+    def fake_post(payload: dict[str, object]) -> dict[str, object]:
+        captured_payloads.append(payload)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "topic_stage": "案例解析",
+                                "knowledge_value": "不值得沉淀",
+                                "stage_reason": "最终结论依赖当前案例图片。",
+                                "value_reason": "缺少可复用的判定边界或核验步骤。",
+                                "reusable_knowledge": "仅记录了单个案例结论，无法提炼通用知识。",
+                                "confidence": 0.88,
+                                "needs_human_review": True,
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    client._post = fake_post  # type: ignore[method-assign]
+    result = client.classify_topic_stage(
+        {
+            "theme_id": "C001",
+            "normalized_issues": ["请看图片判断该处是否属于磕碰"],
+            "evidence_summaries": ["当前设备提供了一张现场图片。"],
+        }
+    )
+
+    assert result.candidate["topic_stage"] == "案例解析"
+    assert result.candidate["knowledge_value"] == "不值得沉淀"
+    assert result.request_audit["prompt_version"] == TOPIC_STAGE_PROMPT_VERSION
+    assert captured_payloads[0]["temperature"] == 0.0
+    user_content = captured_payloads[0]["messages"][1]["content"][0]["text"]  # type: ignore[index]
+    assert "质检标准、质检流程、案例解析、课外常识" in user_content
+    assert "弱参考与审计信息" in user_content
+    assert "弱参考字段或已有标准路径不得作为" in user_content
+    assert "直接依据" in user_content
+
+
+def test_unworthy_topic_is_classified_before_transcription_and_skips_draft_generation() -> None:
+    class UnworthyTopicMimo:
+        config = SimpleNamespace(model="mimo-topic-value-test")
+
+        def classify_topic_stage(self, topic):
+            assert topic["member_count"] == 1
+            assert topic["standard_paths"] == []
+            return MimoLabelResult(
+                candidate={
+                    "topic_stage": "案例解析",
+                    "knowledge_value": "不值得沉淀",
+                    "stage_reason": "结论依赖当前单个案例。",
+                    "value_reason": "缺少可复用的判断边界或操作步骤。",
+                    "reusable_knowledge": "当前只有单个案例结论。",
+                    "confidence": 0.92,
+                    "needs_human_review": True,
+                },
+                request_audit={"prompt_version": TOPIC_STAGE_PROMPT_VERSION},
+                response_audit={},
+            )
+
+        def label_topic(self, *_args, **_kwargs):
+            raise AssertionError("不值得沉淀的主题不应进入知识转写")
+
+        def review_topic(self, *_args, **_kwargs):
+            raise AssertionError("未转写主题不应执行内容质量初标")
+
+    rows = [
+        {
+            "数据ID": "CASE-001",
+            "工单ID": "CASE-001",
+            "聊天内容": "请看这张图片，这个位置算不算磕碰？客服回复这台机器正常。",
+            "核心问题": "当前图片中的位置是否属于磕碰",
+            "产品类型": "手机",
+            "问题意图": "案例判定",
+            "对象/部位": "外壳",
+            "异常现象": "疑似磕碰",
+            "解题方式": "查看当前案例图片",
+            "语义标注依据": "只有当前案例图片和单次结论。",
+            "图片链接": "https://example.com/case.jpg",
+            "图片处理状态": "可用:1",
+            "语义标注图片必要性": "需要",
+            "关联标准项": "历史标准引用需保留",
+            "主标准路径": "历史标准路径仅保留",
+            "来源版本": "qc-old-v1",
+        }
+    ]
+
+    topics, mapping, gaps, pending = build_topic_review_rows(
+        rows,
+        mimo_client=UnworthyTopicMimo(),
+        clustering_mode="rule",
+        use_standard_references=False,
+    )
+
+    assert len(topics) == 1
+    assert len(mapping) == 1
+    assert not gaps
+    assert not pending
+    assert topics[0]["主题问题分类"] == "案例解析"
+    assert topics[0]["主题沉淀价值"] == "不值得沉淀"
+    assert topics[0]["主题转写状态"] == "skipped_not_worthy"
+    assert topics[0]["模型初标状态"] == "topic_initial_review_skipped"
+    assert topics[0]["主题图片链接"] == "https://example.com/case.jpg"
+    assert topics[0]["关联标准项"] == "历史标准引用需保留"
+    assert topics[0]["来源版本"] == "qc-old-v1"
+
+
+def test_unexpected_topic_stage_failure_is_isolated_per_topic() -> None:
+    class PartiallyFailingTopicStageMimo:
+        config = SimpleNamespace(model="mimo-topic-value-test")
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def classify_topic_stage(self, _topic):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("unexpected topic-stage failure")
+            return MimoLabelResult(
+                candidate={
+                    "topic_stage": "案例解析",
+                    "knowledge_value": "不值得沉淀",
+                    "stage_reason": "结论依赖当前单个案例。",
+                    "value_reason": "缺少可复用规则。",
+                    "reusable_knowledge": "当前仅有个案结论。",
+                    "confidence": 0.9,
+                    "needs_human_review": True,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def label_topic(self, *_args, **_kwargs):
+            raise AssertionError("不值得沉淀主题不应进入转写")
+
+        def review_topic(self, *_args, **_kwargs):
+            raise AssertionError("未转写主题不应进入内容质量初标")
+
+    rows = [
+        {
+            "数据ID": "CASE-FAIL-001",
+            "工单ID": "CASE-FAIL-001",
+            "聊天内容": "请看这张图，这处算正常吗？",
+            "核心问题": "当前案例是否正常",
+            "产品类型": "手机",
+            "问题意图": "案例判定",
+            "对象/部位": "外壳",
+            "异常现象": "待确认",
+            "解题方式": "查看当前案例",
+            "语义标注依据": "只有当前案例信息。",
+        },
+        {
+            "数据ID": "CASE-OK-002",
+            "工单ID": "CASE-OK-002",
+            "聊天内容": "请看当前图片，这个位置是什么情况？",
+            "核心问题": "当前案例是什么情况",
+            "产品类型": "平板",
+            "问题意图": "案例判定",
+            "对象/部位": "屏幕",
+            "异常现象": "待确认",
+            "解题方式": "查看当前案例",
+            "语义标注依据": "只有当前案例信息。",
+        },
+    ]
+
+    topics, _mapping, _gaps, _pending = build_topic_review_rows(
+        rows,
+        mimo_client=PartiallyFailingTopicStageMimo(),
+        clustering_mode="rule",
+        use_standard_references=False,
+    )
+
+    assert len(topics) == 2
+    assert {topic["主题分类状态"] for topic in topics} == {
+        "topic_stage_classification_failed",
+        "topic_stage_classified_model",
+    }
+    failed = next(
+        topic
+        for topic in topics
+        if topic["主题分类状态"] == "topic_stage_classification_failed"
+    )
+    assert failed["主题分类重点复核"] == "是"
+    assert "RuntimeError" in failed["主题分类错误"]
+
+
+def test_worthy_topic_is_transcribed_then_receives_content_quality_review() -> None:
+    calls: list[str] = []
+
+    class WorthyTopicMimo:
+        config = SimpleNamespace(model="mimo-topic-value-test")
+
+        def classify_topic_stage(self, topic):
+            calls.append("classify")
+            assert topic["member_count"] == 2
+            return MimoLabelResult(
+                candidate={
+                    "topic_stage": "质检流程",
+                    "knowledge_value": "值得沉淀",
+                    "stage_reason": "主要诉求是如何读取并核对设备信息。",
+                    "value_reason": "两个案例提供了一致且可复用的检查步骤。",
+                    "reusable_knowledge": "先进入设备信息页读取，再用检测工具交叉核对。",
+                    "confidence": 0.94,
+                    "needs_human_review": False,
+                },
+                request_audit={"prompt_version": TOPIC_STAGE_PROMPT_VERSION},
+                response_audit={},
+            )
+
+        def label_topic(self, _topic, _matches, use_standard_references=False):
+            calls.append("transcribe")
+            assert use_standard_references is False
+            return MimoLabelResult(
+                candidate={
+                    "title": "设备信息读取与交叉核对流程",
+                    "subtitles": [],
+                    "content": "1. 进入设备信息页读取配置。\n2. 使用检测工具交叉核对。\n3. 信息不一致时保留截图并人工复核。",
+                    "category_l1": "信息查询",
+                    "category_l2": "设备信息核对",
+                    "layer": "L2",
+                    "knowledge_form": "流程方法",
+                    "standard_refs": [],
+                    "applicable_scope": "手机-通用",
+                    "recommended_reply": "请先进入设备信息页读取配置，再使用检测工具交叉核对；如结果不一致，请保留截图后人工复核。",
+                    "confidence": 0.9,
+                    "reasoning_summary": "两个案例均提供了相同的核对步骤。",
+                    "needs_human_review": False,
+                    "image_evidence_summary": "不依赖图片。",
+                    "requires_images": False,
+                    "image_usage_instruction": "",
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def review_topic(
+            self,
+            topic,
+            _draft,
+            _matches,
+            use_standard_references=False,
+        ):
+            calls.append("quality_review")
+            assert topic["topic_stage"] == "质检流程"
+            assert topic["knowledge_value"] == "值得沉淀"
+            assert use_standard_references is False
+            return MimoLabelResult(
+                candidate={
+                    "decision": "通过",
+                    "knowledge_value": "值得沉淀",
+                    "error_type": "",
+                    "reason": "标题、内容、步骤和推荐回复均与主题证据一致。",
+                    "standard_consistency": "无可信标准",
+                    "evidence_sufficiency": "充分",
+                    "content_consistency": "一致",
+                    "image_necessity": "不需要",
+                    "title_quality": "清晰",
+                    "confidence": 0.93,
+                    "priority_review": False,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    rows = [
+        {
+            "数据ID": record_id,
+            "工单ID": record_id,
+            "聊天内容": conversation,
+            "核心问题": "如何读取并核对设备信息",
+            "产品类型": "手机",
+            "问题意图": "信息查询",
+            "对象/部位": "设备信息",
+            "异常现象": "读取结果需核对",
+            "解题方式": "先进入设备信息页读取，再使用检测工具交叉核对",
+            "语义标注依据": conversation,
+        }
+        for record_id, conversation in (
+            ("FLOW-001", "先进入设备信息页读取配置，再用检测工具核对。"),
+            ("FLOW-002", "设备页面和检测工具需要依次交叉核对。"),
+        )
+    ]
+
+    topics, mapping, gaps, pending = build_topic_review_rows(
+        rows,
+        mimo_client=WorthyTopicMimo(),
+        clustering_mode="rule",
+        use_standard_references=False,
+    )
+
+    assert calls == ["classify", "transcribe", "quality_review"]
+    assert len(topics) == 1
+    assert len(mapping) == 2
+    assert not gaps
+    assert not pending
+    assert topics[0]["主题问题分类"] == "质检流程"
+    assert topics[0]["主题沉淀价值"] == "值得沉淀"
+    assert topics[0]["主题转写状态"] == "topic_model_labeled"
+    assert topics[0]["模型初标结论"] == "通过"
+
+
+def test_topic_quality_review_does_not_reclassify_knowledge_value() -> None:
+    client = MimoClient(
+        MimoConfig(
+            api_key="test-key",
+            base_url="https://example.com/v1",
+            model="mimo-test",
+        )
+    )
+    captured_payloads: list[dict[str, object]] = []
+
+    def fake_post(payload: dict[str, object]) -> dict[str, object]:
+        captured_payloads.append(payload)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "decision": "通过",
+                                "knowledge_value": "值得沉淀",
+                                "error_type": "",
+                                "reason": "草稿内容与主题证据一致。",
+                                "standard_consistency": "无可信标准",
+                                "evidence_sufficiency": "充分",
+                                "content_consistency": "一致",
+                                "image_necessity": "不需要",
+                                "title_quality": "清晰",
+                                "confidence": 0.9,
+                                "priority_review": False,
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    client._post = fake_post  # type: ignore[method-assign]
+    client.review_topic(
+        {
+            "topic_id": "TOP-QUALITY-001",
+            "topic_stage": "质检流程",
+            "knowledge_value": "值得沉淀",
+            "evidence_summary": "两个案例提供了一致的检查步骤。",
+        },
+        {
+            "主标题": "设备信息核对流程",
+            "知识内容": "先读取设备信息，再使用检测工具交叉核对。",
+        },
+        [],
+        use_standard_references=False,
+    )
+
+    prompt = captured_payloads[0]["messages"][1]["content"][0]["text"]  # type: ignore[index]
+    assert "沉淀价值已经在转写前完成" in prompt
+    assert "不得重新判断是否值得沉淀" in prompt
+    assert "knowledge_value 固定返回“值得沉淀”" in prompt
+    assert "必须标注知识点是否值得沉淀" not in prompt
+
+
+def test_candidate_knowledge_export_only_contains_transcribed_worthy_topics(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "candidate_knowledge.xlsx"
+    write_topic_candidate_knowledge_workbook(
+        [
+            {
+                "主题ID": "TOP-WORTHY",
+                "知识ID": "TOP-WORTHY",
+                "主题沉淀价值": "值得沉淀",
+                "主题转写状态": "topic_model_labeled",
+                "主标题": "设备信息核对流程",
+                "知识内容": "先读取设备信息，再使用检测工具交叉核对。",
+                "推荐回复": "请先读取设备信息，再使用检测工具交叉核对。",
+                "知识分类": "检测方法",
+                "适用范围": "手机-通用",
+                "关键词": "设备信息；核对",
+            },
+            {
+                "主题ID": "TOP-UNWORTHY",
+                "知识ID": "TOP-UNWORTHY",
+                "主题沉淀价值": "不值得沉淀",
+                "主题转写状态": "skipped_not_worthy",
+                "主标题": "当前图片中的位置是否属于磕碰",
+                "知识内容": "主题未进入知识转写。",
+            },
+        ],
+        output,
+        use_standard_references=False,
+    )
+
+    workbook = load_workbook(output, read_only=True, data_only=True)
+    sheet = workbook["候选知识"]
+    values = list(sheet.iter_rows(values_only=True))
+    workbook.close()
+
+    assert len(values) == 2
+    assert values[1][0] == "TOP-WORTHY"
+
+
+def test_topic_display_questions_validation_requires_short_questions() -> None:
+    questions = _validate_topic_display_questions(
+        {
+            "questions": [
+                {"theme_id": "C001", "question": "防水标变红怎么判?"},
+                {"theme_id": "C002", "question": "电池健康度读不出来怎么办？"},
+            ]
+        },
+        {"C001", "C002"},
+    )
+
+    assert questions == [
+        {"theme_id": "C001", "question": "防水标变红怎么判？"},
+        {"theme_id": "C002", "question": "电池健康度读不出来怎么办？"},
+    ]
+
+
+def test_topic_display_questions_validation_rejects_missing_theme() -> None:
+    with pytest.raises(MimoError, match="缺少 theme_id"):
+        _validate_topic_display_questions(
+            {
+                "questions": [
+                    {"theme_id": "C001", "question": "防水标变红怎么判？"}
+                ]
+            },
+            {"C001", "C002"},
+        )
+
+
+def test_topic_display_questions_validation_rejects_two_questions() -> None:
+    with pytest.raises(MimoError, match="只能输出一个问句"):
+        _validate_topic_display_questions(
+            {
+                "questions": [
+                    {
+                        "theme_id": "C001",
+                        "question": "存储容量怎么选？主板内存不符是什么意思？",
+                    }
+                ]
+            },
+            {"C001"},
+        )
+
+
+def test_rewrite_topic_display_questions_uses_dedicated_prompt() -> None:
+    client = MimoClient(
+        MimoConfig(
+            api_key="test-key",
+            base_url="https://example.com/v1",
+            model="mimo-test",
+        )
+    )
+    captured_payloads: list[dict[str, object]] = []
+
+    def fake_post(payload: dict[str, object]) -> dict[str, object]:
+        captured_payloads.append(payload)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "questions": [
+                                    {
+                                        "theme_id": "C001",
+                                        "question": "摄像头里面有毛发怎么判？",
+                                    }
+                                ]
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    client._post = fake_post  # type: ignore[method-assign]
+    result = client.rewrite_topic_display_questions(
+        [
+            {
+                "theme_id": "C001",
+                "normalized_issues": ["摄像头内部存在毛发异物，判定是否影响质检"],
+            }
+        ]
+    )
+
+    assert result.candidate["questions"][0]["question"] == "摄像头里面有毛发怎么判？"
+    assert (
+        result.request_audit["prompt_version"]
+        == TOPIC_DISPLAY_QUESTION_PROMPT_VERSION
+    )
+    user_content = captured_payloads[0]["messages"][1]["content"][0]["text"]  # type: ignore[index]
+    assert "防水标变红怎么判？" in user_content
 
 
 def test_topic_signal_uses_conversation_over_legacy_question_and_categories() -> None:
@@ -766,6 +1698,194 @@ def test_direct_mimo_clusters_one_to_many_without_embedding() -> None:
     assert clustering_meta["direct_cluster_calls"] == 1
 
 
+def test_direct_mimo_reconciles_high_similarity_singletons() -> None:
+    class DirectReconcileMimo:
+        config = SimpleNamespace(model="mimo-direct-reconcile-test")
+
+        def analyze_cluster_units(self, row):
+            subject = "电池健康度" if row["数据ID"] == "A" else "电池健康值"
+            return MimoLabelResult(
+                candidate={
+                    "conversation_type": "single_topic",
+                    "reason": "会话包含一个清晰问题。",
+                    "topics": [
+                        {
+                            "normalized_issue": f"华为手机｜{subject}｜显示评估中｜判定标准",
+                            "product_category": "手机",
+                            "scope_type": "品牌专用",
+                            "platform": "待确认",
+                            "brand": "华为",
+                            "model_scope": "通用",
+                            "category_l1": "功能问题",
+                            "category_l2": "电池健康度",
+                            "intent": "标准判定",
+                            "subject": subject,
+                            "phenomenon": "显示评估中",
+                            "judgment_target": "判断电池健康显示评估中时如何处理",
+                            "resolution_mode": "提供电池健康显示评估中时的判定标准和处理方法",
+                            "standard_path": "待确认",
+                            "threshold_or_exception": "无明确阈值",
+                            "evidence_summary": "完整聊天支持该问题。",
+                            "confidence": 0.9,
+                            "requires_review": False,
+                        }
+                    ],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def cluster_atomic_units(self, units):
+            return MimoLabelResult(
+                candidate={
+                    "clusters": [
+                        {
+                            "cluster_id": f"C{index:03d}",
+                            "theme_name": unit["normalized_issue"],
+                            "member_atomic_ids": [unit["unit_id"]],
+                            "merge_basis": "第一轮保守保留为单成员主题。",
+                        }
+                        for index, unit in enumerate(units, start=1)
+                    ],
+                    "split_requests": [],
+                    "review_requests": [],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def review_cluster_membership(self, candidate, cluster_members, _similarity, _threshold):
+            assert candidate["_原子知识ID"] != cluster_members[0]["_原子知识ID"]
+            return MimoLabelResult(
+                candidate={
+                    "decision": "同一主题",
+                    "topic_label": "华为电池健康显示评估中",
+                    "reason": "对象、现象、判定目标和处理方式一致，仅表述不同。",
+                    "key_difference": "",
+                    "confidence": 0.92,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    rows = [
+        {
+            "数据ID": record_id,
+            "工单ID": record_id,
+            "聊天内容": question,
+            "核心问题": question,
+            "产品类型": "手机",
+            "问题意图": "标准判定",
+            "对象/部位": "电池",
+            "异常现象": "显示评估中",
+            "解题方式": "对照标准判定",
+            "标签聚类键": "旧错误键",
+        }
+        for record_id, question in (
+            ("A", "华为手机电池健康度显示评估中怎么处理"),
+            ("B", "华为手机电池健康值显示评估中如何判定"),
+        )
+    ]
+    clustering_meta: dict[str, object] = {}
+
+    topics, mapping, gaps, pending = build_topic_review_rows(
+        rows,
+        use_mimo=False,
+        mimo_client=DirectReconcileMimo(),
+        clustering_mode="direct_mimo",
+        clustering_meta=clustering_meta,
+    )
+
+    assert len(topics) == 1
+    assert topics[0]["主题样本数"] == 2
+    assert not gaps
+    assert not pending
+    assert clustering_meta["direct_reconcile_calls"] == 1
+    assert clustering_meta["direct_reconcile_approved"] == 1
+    assert any(row["聚类裁决提供方"] == "mimo-direct-reconcile" for row in mapping)
+    assert all(row["标签聚类键"] != "旧错误键" for row in mapping)
+
+
+def test_direct_mimo_marks_failed_batches_and_skips_reconciliation() -> None:
+    class FailedDirectMimo:
+        config = SimpleNamespace(model="mimo-direct-failed-test")
+
+        def analyze_cluster_units(self, row):
+            return MimoLabelResult(
+                candidate={
+                    "conversation_type": "single_topic",
+                    "reason": "会话包含一个清晰问题。",
+                    "topics": [
+                        {
+                            "normalized_issue": row["核心问题"],
+                            "product_category": "手机",
+                            "scope_type": "品类专用",
+                            "platform": "通用",
+                            "brand": "通用",
+                            "model_scope": "通用",
+                            "category_l1": "功能问题",
+                            "category_l2": "电池健康度",
+                            "intent": "标准判定",
+                            "subject": "电池健康度",
+                            "phenomenon": "显示评估中",
+                            "judgment_target": "判断显示评估中时如何处理",
+                            "resolution_mode": "对照标准判定",
+                            "standard_path": "待确认",
+                            "threshold_or_exception": "无明确阈值",
+                            "evidence_summary": "完整聊天支持该问题。",
+                            "confidence": 0.9,
+                            "requires_review": False,
+                        }
+                    ],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def cluster_atomic_units(self, _units):
+            raise MimoError("模拟整批聚类失败")
+
+        def review_cluster_membership(self, *_args, **_kwargs):
+            raise AssertionError("失败批次不应参与二次自动合并")
+
+    rows = [
+        {
+            "数据ID": record_id,
+            "工单ID": record_id,
+            "聊天内容": question,
+            "核心问题": question,
+            "产品类型": "手机",
+            "问题意图": "标准判定",
+            "对象/部位": "电池",
+            "异常现象": "显示评估中",
+            "解题方式": "对照标准判定",
+        }
+        for record_id, question in (
+            ("A", "电池健康度显示评估中怎么处理"),
+            ("B", "电池健康值显示评估中如何判定"),
+        )
+    ]
+    clustering_meta: dict[str, object] = {}
+
+    topics, mapping, gaps, pending = build_topic_review_rows(
+        rows,
+        use_mimo=False,
+        mimo_client=FailedDirectMimo(),
+        clustering_mode="direct_mimo",
+        clustering_meta=clustering_meta,
+    )
+
+    assert len(topics) == 2
+    assert not gaps
+    assert not pending
+    assert clustering_meta["direct_cluster_failed"] == 1
+    assert clustering_meta["direct_reconcile_calls"] == 0
+    assert {
+        row["聚类裁决提供方"]
+        for row in mapping
+    } == {"mimo-direct-failed"}
+
+
 def test_cluster_validation_compares_clustering_model_and_human_labels() -> None:
     features, _ = generate_phone_candidate_rows(
         _source_rows(),
@@ -802,6 +1922,7 @@ def test_cluster_validation_compares_clustering_model_and_human_labels() -> None
     evaluation = evaluate_cluster_validation_rows(rows)
     assert evaluation["clustering_accuracy"] == 1.0
     assert evaluation["large_model_accuracy"] == 1.0
+    assert evaluation["v1_release_ready"] is False
 
 
 def test_cluster_validation_reuses_mimo_media_signals_from_workbook(tmp_path: Path) -> None:
@@ -917,6 +2038,23 @@ def test_cluster_validation_evaluation_tracks_annotation_risks() -> None:
     assert evaluation["false_merge_rate"] == 1.0
     assert evaluation["false_split_pairs"] == 1
     assert evaluation["false_split_rate"] == 1.0
+
+
+def test_cluster_validation_releases_v1_at_eighty_percent_with_enough_labels() -> None:
+    rows = [
+        {
+            "聚类预测": "同一主题",
+            "大模型判断": "同一主题",
+            "人工判断": "同一主题" if index < 16 else "不同主题",
+        }
+        for index in range(20)
+    ]
+
+    evaluation = evaluate_cluster_validation_rows(rows)
+
+    assert evaluation["clustering_accuracy"] == 0.8
+    assert evaluation["v1_release_ready"] is True
+    assert evaluation["v1_release_status"] == "可上线第一版"
 
 
 def test_cluster_validation_scales_to_hundreds_without_materializing_all_pairs() -> None:
@@ -1123,3 +2261,44 @@ def test_mimo_cannot_override_uncertainty_process_guardrail() -> None:
     assert candidate["知识分类"] == "检测方法"
     assert candidate["是否重点复核"] == "是"
     assert "强制降级为流程方法" in candidate["校验备注"]
+
+
+def test_mimo_client_records_usage_latency_and_cost(monkeypatch) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "choices": [{"message": {"content": "{}"}}],
+                    "usage": {
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 500,
+                        "total_tokens": 1500,
+                    },
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(mimo_module, "urlopen", lambda *_args, **_kwargs: Response())
+    client = MimoClient(
+        MimoConfig(
+            api_key="test",
+            base_url="https://example.com/v1",
+            model="test-model",
+            max_requests_per_second=50,
+            input_cost_per_million_tokens=2,
+            output_cost_per_million_tokens=4,
+        )
+    )
+
+    response = client._post({"model": "test-model", "messages": []})
+    metrics = client.metrics_snapshot()
+
+    assert response["_answer_hub_metrics"]["attempt"] == 1
+    assert metrics["model_calls"] == 1
+    assert metrics["model_total_tokens"] == 1500
+    assert metrics["model_estimated_cost"] == pytest.approx(0.004)

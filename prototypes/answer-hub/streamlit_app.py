@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from difflib import unified_diff
 from html import escape
 from io import BytesIO
 import json
@@ -44,18 +45,18 @@ from answer_hub.auto_review import (  # noqa: E402
     partition_auto_review_candidates,
     teammate_validation_decision,
 )
-from answer_hub.cz_integration import (  # noqa: E402
-    CzIntegrationAdapter,
-    select_submittable_candidates,
-)
+from answer_hub.cz_integration import select_submittable_candidates  # noqa: E402
 from answer_hub.embedding import EmbeddingClient  # noqa: E402
 from answer_hub.images import split_image_urls  # noqa: E402
 from answer_hub.automation import (  # noqa: E402
     AUTOMATION_STAGES,
     list_automation_runs,
+    resume_automation_pipeline,
     run_automation_pipeline,
 )
+from answer_hub.operations import build_operations_snapshot  # noqa: E402
 from answer_hub.transfer_analysis.ui import render_transfer_analysis  # noqa: E402
+from answer_hub.cluster_annotation_ui import render_cluster_annotation  # noqa: E402
 
 
 st.set_page_config(
@@ -68,11 +69,6 @@ st.set_page_config(
 @st.cache_resource(show_spinner=False)
 def _shared_embedding_client() -> EmbeddingClient | None:
     return EmbeddingClient.from_env()
-
-
-@st.cache_resource(show_spinner=False)
-def _shared_cz_adapter() -> CzIntegrationAdapter:
-    return CzIntegrationAdapter()
 
 
 ACTIVE_STANDARD_CATALOG = ROOT / "data" / "compiled_standards" / "active_standards.json"
@@ -1209,7 +1205,16 @@ def _selected_row(rows: list[dict[str, Any]], row_index: int | None) -> dict[str
     return next((row for row in rows if row["_review_row_index"] == row_index), None)
 
 
-def _filtered_rows(rows: list[dict[str, Any]], keyword: str, decision: str, focus_only: bool) -> list[dict[str, Any]]:
+def _filtered_rows(
+    rows: list[dict[str, Any]],
+    keyword: str,
+    decision: str,
+    focus_only: bool,
+    *,
+    product_type: str = "",
+    min_confidence: float = 0.0,
+    failure_reason: str = "",
+) -> list[dict[str, Any]]:
     query = keyword.strip().lower()
     result = []
     for row in rows:
@@ -1219,6 +1224,30 @@ def _filtered_rows(rows: list[dict[str, Any]], keyword: str, decision: str, focu
         if decision and decision != "未审核" and row_decision != decision:
             continue
         if focus_only and _text(row.get("模型初标重点复核")) != "是":
+            continue
+        row_product = " ".join(
+            _text(row.get(field))
+            for field in ("产品类型", "适用范围", "知识分类", "主题聚类键")
+        )
+        if product_type and product_type not in row_product:
+            continue
+        try:
+            confidence = float(row.get("模型初标置信度") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < min_confidence:
+            continue
+        if failure_reason and failure_reason not in " ".join(
+            _text(row.get(field))
+            for field in (
+                "自动审核原因",
+                "模型初标错误类型",
+                "模型初标原因",
+                "错误类型",
+                "错误原因",
+                "问题反馈",
+            )
+        ):
             continue
         if query and not any(
             query in _text(row.get(field)).lower()
@@ -1266,8 +1295,19 @@ def _automation_metrics_text(metrics: dict[str, Any]) -> str:
         "feature_rows": "语义特征",
         "model_labeled_rows": "模型标注",
         "topic_rows": "主题候选",
+        "topic_stage_classified_rows": "价值分类",
+        "topic_worthy_rows": "值得沉淀",
+        "topic_unworthy_rows": "不值得沉淀",
+        "topic_transcribed_rows": "已转写",
+        "topic_transcription_skipped_rows": "跳过转写",
         "evidence_gap_rows": "证据缺口",
         "pending_cluster_rows": "待聚合",
+        "duration_seconds": "耗时(秒)",
+        "model_calls": "模型调用",
+        "model_failed_calls": "模型失败",
+        "model_total_tokens": "Token",
+        "model_estimated_cost": "估算成本",
+        "redaction_warning_findings": "脱敏提醒",
     }
     parts = [
         f"{labels[key]} {value}"
@@ -1346,22 +1386,56 @@ def _render_automation_artifacts(manifest: dict[str, Any]) -> None:
 
 def _render_automation() -> None:
     _page_heading(
-        "自动化看板",
-        "将脱敏会话自动完成清洗、语义标注、主题聚类和知识转写，最终进入人工审核队列。",
+        "自动化看板（准确性验证）",
+        "验证清洗、语义标注、主题聚类、价值分类、选择性知识转写和内容质量初标的准确性。",
     )
     automation_root = ROOT / "outputs" / "automation-runs"
     history = list_automation_runs(automation_root, limit=30)
     completed_runs = sum(run.get("status") == "review_pending" for run in history)
     failed_runs = sum(run.get("status") == "failed" for run in history)
     latest_topics = int((history[0].get("summary") or {}).get("topic_rows", 0)) if history else 0
+    operations = build_operations_snapshot(history)
     with st.container(horizontal=True):
         st.metric("自动化运行", len(history), border=True)
         st.metric("进入待审核", completed_runs, border=True)
         st.metric("运行失败", failed_runs, border=True)
         st.metric("最近主题候选", latest_topics, border=True)
+        st.metric("成功率", f"{operations['success_rate']:.1%}", border=True)
+        st.metric(
+            "平均耗时",
+            (
+                f"{operations['average_duration_seconds'] / 60:.1f} 分钟"
+                if operations["average_duration_seconds"] is not None
+                else "-"
+            ),
+            border=True,
+        )
+    with st.container(horizontal=True):
+        st.metric("模型调用", operations["model_calls"], border=True)
+        st.metric("模型失败率", f"{operations['model_failure_rate']:.1%}", border=True)
+        st.metric("规则降级率", f"{operations['fallback_rate']:.1%}", border=True)
+        st.metric("估算模型成本", f"{operations['estimated_cost']:.4f}", border=True)
+        st.metric("SLA超限运行", operations["sla_breach_runs"], border=True)
+    if operations["alerts"]:
+        with st.expander(
+            f"运行告警（{len(operations['alerts'])}）",
+            expanded=False,
+            icon=":material/warning:",
+        ):
+            st.dataframe(
+                [
+                    {
+                        "运行ID": item["run_id"],
+                        "告警": "；".join(item["breaches"]),
+                    }
+                    for item in operations["alerts"]
+                ],
+                hide_index=True,
+                width="stretch",
+            )
 
     st.info(
-        "当前自动化边界：生成待发布审核知识并保留全链路记录；人工确认后可提交 CZ 发布审核队列，但不会自动发布。",
+        "Streamlit 仅用于各板块准确性验证，不是正式上线入口。正式候选由服务端同步到答疑中台“候选价值复核”。",
         icon=":material/info:",
     )
     st.success(
@@ -1522,7 +1596,10 @@ def _render_automation() -> None:
                 st.session_state.generated_topic_workbook = topic_review_path.read_bytes()
                 st.session_state.generated_topic_summary = manifest.get("summary") or {}
                 st.session_state.generated_topic_run_dir = _text(manifest.get("run_dir"))
-            st.success("知识候选已生成，可切换到“候选复核与反馈”继续处理。")
+            st.success(
+                "验证流程已完成，可切换到“审核与反馈”检查结果。"
+                "正式流程将在答疑中台“候选价值复核”中处理送审。"
+            )
         else:
             status_box.update(label="自动化流程执行失败", state="error", expanded=True)
             st.error(f"运行失败：{_text(manifest.get('error')) or '请查看阶段记录'}")
@@ -1555,6 +1632,16 @@ def _render_automation() -> None:
                     "可处理记录": (run.get("summary") or {}).get("eligible_rows", 0),
                     "主题候选": (run.get("summary") or {}).get("topic_rows", 0),
                     "证据缺口": (run.get("summary") or {}).get("evidence_gap_rows", 0),
+                    "耗时(分钟)": (
+                        round(float(run.get("duration_seconds") or 0.0) / 60, 2)
+                        if run.get("duration_seconds")
+                        else None
+                    ),
+                    "模型调用": (run.get("summary") or {}).get("model_calls", 0),
+                    "模型失败": (run.get("summary") or {}).get("model_failed_calls", 0),
+                    "规则降级": (run.get("summary") or {}).get("topic_signal_fallback_rows", 0),
+                    "估算成本": (run.get("summary") or {}).get("model_estimated_cost", 0),
+                    "运行次数": run.get("attempt_count", 1),
                     "错误": run.get("error", ""),
                 }
                 for run in history
@@ -1566,6 +1653,42 @@ def _render_automation() -> None:
                 "创建时间": st.column_config.DatetimeColumn("创建时间", format="YYYY-MM-DD HH:mm:ss"),
             },
         )
+        failed_history = [run for run in history if run.get("status") == "failed"]
+        if failed_history:
+            with st.container(border=True):
+                st.markdown("#### 从检查点恢复失败运行")
+                retry_run_id = st.selectbox(
+                    "失败运行",
+                    [run.get("run_id", "") for run in failed_history],
+                    format_func=lambda value: next(
+                        (
+                            f"{value} · {run.get('source_name', '')} · {run.get('error', '')[:80]}"
+                            for run in failed_history
+                            if run.get("run_id") == value
+                        ),
+                        value,
+                    ),
+                    key="automation_retry_run_id",
+                )
+                if st.button(
+                    "从最近检查点继续",
+                    type="primary",
+                    icon=":material/restart_alt:",
+                    key="automation_retry_button",
+                    width="stretch",
+                ):
+                    with st.spinner("正在恢复运行；已完成的模型阶段将读取检查点，不重复调用。"):
+                        resumed = resume_automation_pipeline(
+                            automation_root,
+                            retry_run_id,
+                            embedding_client=_shared_embedding_client(),
+                        )
+                    st.session_state.automation_manifest = resumed
+                    if resumed.get("status") == "review_pending":
+                        st.success("失败运行已从检查点恢复并完成。")
+                    else:
+                        st.error(f"恢复后仍失败：{_text(resumed.get('error'))}")
+                    st.rerun()
     else:
         st.caption("尚无自动化运行记录。")
 
@@ -1824,6 +1947,23 @@ def _render_cluster_validation() -> None:
         f"不确定：{evaluation.get('uncertain_pairs', 0)}",
     ]
     st.caption(" · ".join(accuracy_parts))
+    if evaluation.get("v1_release_ready"):
+        st.success(
+            "第一版上线门槛已达成："
+            f"{evaluation['decisive_pairs']} 对有效人工标注，"
+            f"聚类准确率 {evaluation['clustering_accuracy']:.1%}。"
+        )
+    elif evaluation.get("decisive_pairs", 0) < evaluation.get("v1_release_min_decisive_pairs", 20):
+        st.info(
+            "第一版暂不放行：至少需要 "
+            f"{evaluation.get('v1_release_min_decisive_pairs', 20)} 对明确人工标注，"
+            f"当前为 {evaluation.get('decisive_pairs', 0)} 对。"
+        )
+    else:
+        st.warning(
+            "第一版暂不放行：聚类准确率需要达到 80%，"
+            f"当前为 {evaluation['clustering_accuracy']:.1%}。"
+        )
 
     st.markdown("<div class='section-label'>人工标注</div>", unsafe_allow_html=True)
     st.session_state.setdefault("cluster_validation_reviewer_name", "")
@@ -2275,7 +2415,7 @@ def _render_generation() -> None:
         st.session_state.generated_topic_workbook = workbook_bytes
         st.session_state.generated_topic_summary = summary
         st.session_state.generated_topic_run_dir = str(run_dir)
-        st.success("主题候选已生成，可切换到“候选复核与反馈”继续处理。")
+        st.success("主题候选已生成，可切换到“审核与反馈”继续审核。")
 
     summary = st.session_state.get("generated_topic_summary")
     workbook_bytes = st.session_state.get("generated_topic_workbook")
@@ -2366,19 +2506,21 @@ def _render_review() -> None:
         "自动标注验证与例外处理",
         "组员标注用于验证模型自动审核准确率；生产启用后，仅风险候选进入人工例外处理。",
     )
-    cz_adapter = _shared_cz_adapter()
-    api_state = cz_adapter.readiness()
-    api_configured = bool(api_state["configured"])
     auto_policy = AutoReviewPolicy.from_env()
     review_mode = "生产自动审核模式" if auto_policy.enabled else "组员验证模式"
     st.markdown(
         f"""
         <div class="status-strip">
-          <span class="status-dot {'success' if api_configured else 'warning'}"></span>
-          <span>cz 对接状态：{api_state['status']} · 当前为{review_mode}。{'模型或验证通过后可提交待审核队列。' if api_configured else '请先在服务端配置接口地址和集成密钥。'}</span>
+          <span class="status-dot warning"></span>
+          <span>当前为{review_mode}。Streamlit 仅用于准确性验证，不承担正式候选同步或知识库送审。</span>
         </div>
         """,
         unsafe_allow_html=True,
+    )
+    st.info(
+        "Streamlit 仅用于准确性验证。正式流程会将候选同步到答疑中台“候选价值复核”，"
+        "由审核人员在中台点击“批量送审至知识库管理”。",
+        icon=":material/science:",
     )
     st.markdown("<div class='section-label'>审核数据源</div>", unsafe_allow_html=True)
     generated_bytes = st.session_state.get("generated_topic_workbook")
@@ -2407,7 +2549,7 @@ def _render_review() -> None:
         st.session_state.topic_pending_cluster_rows = pending_cluster_rows
         st.session_state.topic_model_draft_rows = model_draft_rows
         st.session_state.topic_review_changes = {}
-        st.session_state.cz_review_sync_result = None
+        st.session_state.cz_submit_result = None
         draft_by_topic = {
             _text(draft.get("主题ID")): draft
             for draft in model_draft_rows
@@ -2443,7 +2585,35 @@ def _render_review() -> None:
         format_func=lambda value: value or "全部",
     )
     focus_only = filter_focus.checkbox("仅重点复核")
-    filtered_rows = _filtered_rows(rows, keyword, decision, focus_only)
+    filter_product, filter_confidence, filter_failure = st.columns([1, 1, 1.4])
+    product_type = filter_product.selectbox(
+        "产品类型",
+        ["", *configured_product_names()],
+        format_func=lambda value: value or "全部",
+        key="topic_filter_product",
+    )
+    min_confidence = filter_confidence.slider(
+        "最低模型置信度",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.0,
+        step=0.05,
+        key="topic_filter_confidence",
+    )
+    failure_reason = filter_failure.text_input(
+        "风险/失败原因",
+        placeholder="例如：证据不足、标题质量、图片不足",
+        key="topic_filter_failure",
+    )
+    filtered_rows = _filtered_rows(
+        rows,
+        keyword,
+        decision,
+        focus_only,
+        product_type=product_type,
+        min_confidence=min_confidence,
+        failure_reason=failure_reason,
+    )
 
     pending_count = sum(not teammate_validation_decision(row) for row in rows)
     with st.container(horizontal=True):
@@ -2461,6 +2631,27 @@ def _render_review() -> None:
             border=True,
         )
         st.metric("待验证", pending_count, border=True)
+
+    decision_counts: dict[str, int] = {}
+    for candidate in rows:
+        label = teammate_validation_decision(candidate) or "未审核"
+        decision_counts[label] = decision_counts.get(label, 0) + 1
+    modified_count = sum(bool(_text(candidate.get("如何修改"))) for candidate in rows)
+    bad_case_count = decision_counts.get("标记Bad Case", 0)
+    with st.expander("审核运营统计", expanded=False):
+        with st.container(horizontal=True):
+            st.metric("候选可用率", f"{(len(rows) - decision_counts.get('驳回', 0) - bad_case_count) / len(rows):.1%}" if rows else "-", border=True)
+            st.metric("需要修改", modified_count, border=True)
+            st.metric("Bad Case", bad_case_count, border=True)
+            st.metric("待审核", decision_counts.get("未审核", 0), border=True)
+        st.dataframe(
+            [
+                {"审核状态": label, "数量": count}
+                for label, count in sorted(decision_counts.items())
+            ],
+            hide_index=True,
+            width="stretch",
+        )
 
     with st.container(border=True):
         st.markdown("#### 模型自动审核验证")
@@ -2668,6 +2859,33 @@ def _render_review() -> None:
                     row.get("图例") or row.get("主题图片链接") or "当前知识不需要案例图",
                     height=76,
                 )
+                current_draft = {
+                    field: _text(row.get(field))
+                    for field in ("主标题", "副标题", "知识内容", "知识分类", "适用范围")
+                }
+                changed_fields = [
+                    field
+                    for field, before in initial_draft.items()
+                    if field in current_draft and _text(before) != current_draft[field]
+                ]
+                with st.expander(
+                    f"模型草稿与人工版本差异（{len(changed_fields)}项）",
+                    expanded=bool(changed_fields),
+                ):
+                    if not changed_fields:
+                        st.caption("当前尚未修改模型草稿。")
+                    for field in changed_fields:
+                        diff = "\n".join(
+                            unified_diff(
+                                _text(initial_draft.get(field)).splitlines(),
+                                current_draft[field].splitlines(),
+                                fromfile=f"模型_{field}",
+                                tofile=f"人工_{field}",
+                                lineterm="",
+                            )
+                        )
+                        st.markdown(f"**{field}**")
+                        st.code(diff or "内容已修改", language="diff")
 
                 st.markdown("<div class='section-label'>模型初标审核</div>", unsafe_allow_html=True)
                 initial_provider = _text(row.get("模型初标提供方"))
@@ -2953,58 +3171,15 @@ def _render_review() -> None:
     )
     st.caption(
         f"组员验证反馈 {len(feedback_rows)} 条；可进入训练集 {len(training_rows)} 条；"
-        f"已确认值得沉淀且可直接通过门禁 {len(submittable_rows)} 条；当前共 {len(rows)} 条候选可同步到主系统候选价值复核。"
+        f"已确认值得沉淀且可提交 cz 待审核队列 {len(submittable_rows)} 条。"
     )
 
     with st.container(border=True):
-        st.markdown("#### 同步到主系统候选价值复核")
-        if auto_policy.enabled:
-            st.caption("全部候选会携带模型初标和人工验证结果同步；自动门禁通过项可在主系统直接批量送审，风险项继续人工复核。")
-        else:
-            st.caption("当前为验证模式，全部候选先进入主系统候选价值复核；由组员确认“值得沉淀”和“可用”后再统一送入知识发布审核队列。")
-        st.info("最终知识送审统一在主系统“候选价值复核”页面完成，本工作台不再绕过价值门禁直接创建待发布审核知识。")
-        sync_clicked = st.button(
-            "同步全部候选到主系统",
-            type="primary",
-            icon=":material/send:",
-            width="stretch",
-            key="sync_review_candidates_to_cz",
-            disabled=not api_configured or not rows,
+        st.markdown("#### 正式送审位置")
+        st.caption(
+            "本页不直接写入 CZ。请在答疑中台“候选价值复核”完成正式复核，"
+            "再点击“批量送审至知识库管理”。"
         )
-        if sync_clicked:
-            with st.spinner("正在读取主系统分类字典并同步候选审核队列..."):
-                try:
-                    st.session_state.cz_review_sync_result = cz_adapter.sync_review_candidates(
-                        rows
-                    )
-                except Exception as exc:
-                    st.session_state.cz_review_sync_result = None
-                    st.error(f"同步主系统候选价值复核失败：{exc}")
-                else:
-                    st.success("候选审核队列同步完成，结果如下。")
-
-        sync_result = st.session_state.get("cz_review_sync_result")
-        if sync_result:
-            with st.container(horizontal=True):
-                st.metric("等待人工确认", int(sync_result.get("queued") or 0), border=True)
-                st.metric("门禁已通过", int(sync_result.get("ready") or 0), border=True)
-                st.metric("明确不沉淀", int(sync_result.get("rejected") or 0), border=True)
-                st.metric("幂等复用", int(sync_result.get("reused") or 0), border=True)
-            result_rows = sync_result.get("results") or []
-            if result_rows:
-                st.dataframe(
-                    [
-                        {
-                            "事件 ID": _text(item.get("event_id")),
-                            "同步结果": _text(item.get("status")),
-                            "审核状态": _text(item.get("review_status")),
-                            "候选审核 ID": _text(item.get("ingestion_id")),
-                        }
-                        for item in result_rows
-                    ],
-                    hide_index=True,
-                    width="stretch",
-                )
 
 
 st.markdown(
@@ -3027,7 +3202,14 @@ st.markdown(
 )
 page = st.segmented_control(
     "工作区",
-    ["自动化看板", "转人工分析", "聚类验证", "生成主题候选", "候选复核与反馈"],
+    [
+        "自动化看板",
+        "转人工分析",
+        "聚类验证",
+        "完整聚类标注",
+        "生成主题候选",
+        "审核与反馈",
+    ],
     default="自动化看板",
     key="workspace_page",
     label_visibility="collapsed",
@@ -3039,6 +3221,8 @@ elif page == "转人工分析":
     render_transfer_analysis()
 elif page == "聚类验证":
     _render_cluster_validation()
+elif page == "完整聚类标注":
+    render_cluster_annotation()
 elif page == "生成主题候选":
     _render_generation()
 else:

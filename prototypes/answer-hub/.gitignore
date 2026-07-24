@@ -2,6 +2,8 @@
 .cz_test_venv/
 .env
 .claude/
+.codex_stage/
+.codex_last_*_path
 .codex_tmp*/
 __pycache__/
 .pytest_cache/
@@ -17,7 +19,10 @@ data/*.xlsx
 data/*.xls
 data/*.csv
 data/compiled_standards/
+data/automation-queue/
 data/browser_profiles/
+tools/dify/
 handoff/answer-hub-delivery-*/
 handoff/answer-hub-delivery-*.zip
+backups/
 *.log

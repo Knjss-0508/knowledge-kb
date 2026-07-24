@@ -56,6 +56,8 @@ def _env_int(name: str, default: int) -> int:
 @dataclass(frozen=True)
 class AutoReviewPolicy:
     enabled: bool = False
+    kill_switch: bool = False
+    enabled_product_types: tuple[str, ...] = ()
     min_confidence: float = 0.85
     min_validation_samples: int = 40
     min_validation_accuracy: float = 0.90
@@ -66,8 +68,18 @@ class AutoReviewPolicy:
     @classmethod
     def from_env(cls) -> "AutoReviewPolicy":
         load_dotenv()
+        kill_switch = _env_bool("AUTO_REVIEW_KILL_SWITCH", False)
+        enabled_products = tuple(
+            dict.fromkeys(
+                item.strip()
+                for item in os.getenv("AUTO_REVIEW_PRODUCT_TYPES", "").split(",")
+                if item.strip()
+            )
+        )
         return cls(
-            enabled=_env_bool("AUTO_REVIEW_ENABLED", False),
+            enabled=_env_bool("AUTO_REVIEW_ENABLED", False) and not kill_switch,
+            kill_switch=kill_switch,
+            enabled_product_types=enabled_products,
             min_confidence=_env_float("AUTO_REVIEW_MIN_CONFIDENCE", 0.85),
             min_validation_samples=_env_int("AUTO_REVIEW_MIN_VALIDATION_SAMPLES", 40),
             min_validation_accuracy=_env_float(
@@ -112,6 +124,14 @@ def assess_auto_review_candidate(
     enforce_deployment_version: bool = False,
 ) -> tuple[bool, list[str]]:
     reasons: list[str] = []
+    if _text(candidate.get("主题分类状态")) != "topic_stage_classified_model":
+        reasons.append("主题分类未由正式模型成功完成")
+    if _text(candidate.get("主题分类提供方")).lower() != "mimo":
+        reasons.append("主题分类不是 MiMo 正式结果")
+    if _safe_float(candidate.get("主题分类置信度")) < policy.min_confidence:
+        reasons.append(f"主题分类置信度低于 {policy.min_confidence:.2f}")
+    if _text(candidate.get("主题分类重点复核")) == "是":
+        reasons.append("主题分类标记为重点复核")
     if _text(candidate.get("模型初标状态")) != "topic_initial_reviewed_model":
         reasons.append("模型初标未由正式模型成功完成")
     if _text(candidate.get("模型初标提供方")).lower() != "mimo":
@@ -147,6 +167,12 @@ def assess_auto_review_candidate(
         reasons.append("Prompt版本未通过当前验证")
     if enforce_deployment_version and not policy.deployment_ready:
         reasons.append("生产自动放行尚未绑定已验证模型和Prompt版本")
+    if (
+        enforce_deployment_version
+        and policy.enabled_product_types
+        and candidate_product_type(candidate) not in policy.enabled_product_types
+    ):
+        reasons.append("当前品类未进入自动审核灰度范围")
     return not reasons, reasons
 
 

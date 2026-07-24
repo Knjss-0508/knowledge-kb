@@ -2,7 +2,9 @@ param(
     [string]$PackagePath = "",
     [switch]$BuildPackage,
     [string]$Version = (Get-Date -Format "yyyyMMdd-HHmmss"),
-    [switch]$SkipCompose
+    [switch]$SkipCompose,
+    [switch]$RunE2E,
+    [string]$E2EBaseUrl = "http://127.0.0.1:8000"
 )
 
 $ErrorActionPreference = "Stop"
@@ -105,7 +107,9 @@ function Test-DeliveryPackage {
         throw "Delivery package does not exist: $resolvedInput"
     }
 
-    $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+    # Keep package extraction shallow enough for Windows MAX_PATH while still
+    # constraining cleanup to the workspace outputs directory.
+    $tempBase = [System.IO.Path]::GetFullPath($verificationTempParent)
     $tempRoot = Join-Path $tempBase ("kbpa-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
     try {
@@ -288,6 +292,14 @@ try {
         Assert-CommandSucceeded "Python compileall"
     }
 
+    Invoke-ReleaseStep "Sensitive artifact scan" {
+        & $rootPython (Join-Path $workspace "scripts\scan_sensitive_files.py") `
+            --root $workspace `
+            --ignore-local-env `
+            --ignore-local-runtime
+        Assert-CommandSucceeded "Sensitive artifact scan"
+    }
+
     Invoke-ReleaseStep "CZ frontend inline JavaScript syntax" {
         $node = Get-Command node -ErrorAction Stop
         $html = Get-Content -LiteralPath $frontendPath -Raw -Encoding UTF8
@@ -320,6 +332,16 @@ try {
             $docker = Get-Command docker -ErrorAction Stop
             & $docker.Source compose -f $composePath config --quiet
             Assert-CommandSucceeded "Docker Compose configuration"
+        }
+    }
+
+    if ($RunE2E) {
+        Invoke-ReleaseStep "Running-service end-to-end acceptance" {
+            & (Join-Path $PSScriptRoot "e2e_acceptance.ps1") `
+                -BaseUrl $E2EBaseUrl `
+                -IntegrationKey $env:INTEGRATION_API_KEY `
+                -RunMutationTests
+            Assert-CommandSucceeded "Running-service end-to-end acceptance"
         }
     }
 

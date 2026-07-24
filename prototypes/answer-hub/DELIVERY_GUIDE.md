@@ -175,7 +175,7 @@ ANSWER_HUB_PRODUCT_TAXONOMY_PATH=/absolute/path/product_categories.json
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_release.ps1 `
-  -BuildPackage -Version 20260722-qwen3-batch-adapter-v8
+  -BuildPackage -Version 20260722-ai-handoff-v16
 ```
 
 如只需要单独构建：

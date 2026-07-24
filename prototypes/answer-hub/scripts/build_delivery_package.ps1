@@ -90,11 +90,15 @@ $rootFiles = @(
     ".env.example",
     ".gitignore",
     "pyproject.toml",
+    "AI_HANDOFF_LATEST.md",
     "README.md",
     "START_HERE.md",
+    "CHANGE_SUMMARY.md",
     "automation-api-reference.md",
     "CZ_INTEGRATION_RUNBOOK.md",
     "DELIVERY_GUIDE.md",
+    "DIFY_SETUP.md",
+    "OPERATIONS_RUNBOOK.md",
     "USER_OPERATIONS_GUIDE.md",
     "ACCEPTANCE_CHECKLIST.md",
     "TRANSFER_ANALYSIS.md",
@@ -108,10 +112,19 @@ foreach ($relative in $rootFiles) {
     }
 }
 
-# Copy root launchers by extension so Windows PowerShell 5 does not depend on
-# decoding Chinese filename literals from this script.
-foreach ($launcher in Get-ChildItem -LiteralPath $workspace -File -Filter "*.cmd") {
-    Copy-Item -LiteralPath $launcher.FullName -Destination (Join-Path $packageDir $launcher.Name)
+# Only include current runtime and release launchers. Repository upload helpers
+# are intentionally excluded from the portable AI handoff package.
+$launcherNames = @(
+    "启动自动化看板.cmd",
+    "启动本地CZ.cmd",
+    "启动Dify平台.cmd",
+    "发布前验收并打包.cmd"
+)
+foreach ($launcherName in $launcherNames) {
+    $launcher = Join-Path $workspace $launcherName
+    if (Test-Path -LiteralPath $launcher) {
+        Copy-Item -LiteralPath $launcher -Destination (Join-Path $packageDir $launcherName)
+    }
 }
 
 Copy-SafeTree "src\answer_hub" "src\answer_hub"
@@ -119,22 +132,6 @@ Copy-SafeTree "tests" "tests"
 Copy-SafeTree "scripts" "scripts"
 Copy-SafeTree "examples" "examples"
 Copy-SafeTree "config" "config"
-
-$handoffFiles = @(
-    "handoff\docker-compose.embedding-cpu.yml",
-    "handoff\docker-compose.embedding-cpu-offline.yml",
-    "handoff\docker-compose.embedding-gpu.yml",
-    "handoff\setup_home.ps1",
-    "handoff\start_streamlit.ps1"
-)
-foreach ($relative in $handoffFiles) {
-    $source = Join-Path $workspace $relative
-    if (Test-Path -LiteralPath $source) {
-        $destination = Join-Path $packageDir $relative
-        New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-        Copy-Item -LiteralPath $source -Destination $destination
-    }
-}
 
 $czRoot = "cz-knowledge-kb\knowledge-kb-master"
 Copy-SafeTree "$czRoot\backend\app" "$czRoot\backend\app"
@@ -165,14 +162,48 @@ foreach ($relative in $czFiles) {
 }
 
 $taxonomy = Get-Content (Join-Path $workspace "src\answer_hub\product_categories.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+$pyprojectText = Get-Content (Join-Path $workspace "pyproject.toml") -Raw -Encoding UTF8
+$versionMatch = [regex]::Match($pyprojectText, '(?m)^version\s*=\s*"([^"]+)"')
+$projectVersion = if ($versionMatch.Success) { $versionMatch.Groups[1].Value } else { "" }
+$migrationHead = Get-ChildItem (Join-Path $workspace "$czRoot\backend\migrations\versions") -File |
+    Sort-Object Name -Descending |
+    Select-Object -First 1 -ExpandProperty BaseName
+$mimoSource = Get-Content (Join-Path $workspace "src\answer_hub\mimo.py") -Raw -Encoding UTF8
+$promptVersions = [ordered]@{}
+foreach ($constant in @(
+    "PROMPT_VERSION",
+    "TOPIC_REVIEW_PROMPT_VERSION",
+    "TOPIC_SIGNAL_PROMPT_VERSION",
+    "CLUSTER_UNIT_PROMPT_VERSION",
+    "ATOMIC_TOPIC_CLUSTER_PROMPT_VERSION"
+)) {
+    $match = [regex]::Match(
+        $mimoSource,
+        "(?m)^$constant\s*=\s*`"([^`"]+)`""
+    )
+    $promptVersions[$constant] = if ($match.Success) { $match.Groups[1].Value } else { "" }
+}
+$gitCommit = ""
+try {
+    $git = Get-Command git -ErrorAction Stop
+    $gitCommit = (& $git.Source -C $workspace rev-parse HEAD 2>$null).Trim()
+}
+catch {
+    $gitCommit = ""
+}
 $deliveryFiles = Get-ChildItem -LiteralPath $packageDir -Recurse -File
 $manifest = [ordered]@{
     package = $packageName
     built_at = (Get-Date).ToString("o")
+    release_version = $projectVersion
+    git_commit = $gitCommit
+    database_migration = $migrationHead
+    prompt_versions = $promptVersions
     taxonomy_version = $taxonomy.version
     product_categories = @($taxonomy.categories | Where-Object { $_.active } | ForEach-Object {
         [ordered]@{ code = $_.code; name = $_.name }
     })
+    handoff_entrypoint = "AI_HANDOFF_LATEST.md"
     file_count = $deliveryFiles.Count
     excludes_secrets_and_business_data = $true
 }

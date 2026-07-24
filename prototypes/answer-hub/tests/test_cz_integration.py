@@ -56,6 +56,10 @@ class CzIntegrationTests(unittest.TestCase):
         self.assertTrue(readiness["configured"])
         self.assertEqual(readiness["status"], "已配置")
         self.assertEqual(readiness["taxonomy_endpoint"], "/api/v1/integration/taxonomy")
+        self.assertEqual(
+            readiness["review_candidate_endpoint"],
+            "/api/v1/integration/knowledge-review-candidates:batch",
+        )
 
     def test_endpoint_normalizes_api_prefix_and_trailing_slash(self) -> None:
         config = CzIntegrationConfig("https://kb.example/api/v1/", "test-key")
@@ -129,6 +133,27 @@ class CzIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["human_review"]["decision"], "approved_with_changes")
         self.assertEqual(payload["human_review"]["modification_notes"], "精简首段")
         self.assertEqual(payload["human_review"]["training_eligible"], "是")
+
+    def test_existing_standard_reference_is_preserved_as_a_review_hold(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+
+        payload = adapter.build_batch_payload(
+            [{**_candidate(), "关联标准项": "STD-OLD-001"}],
+            {"手机": "cat-phone"},
+            require_eligible=False,
+        )[0]
+
+        self.assertFalse(payload["selection"]["eligible"])
+        self.assertIn(
+            "已有标准关联（仅审计，未自动映射）：STD-OLD-001",
+            payload["selection"]["reasons"],
+        )
+
+        with self.assertRaisesRegex(ValueError, "已有标准关联"):
+            adapter.build_batch_payload(
+                [{**_candidate(), "关联标准项": "STD-OLD-001"}],
+                {"手机": "cat-phone"},
+            )
 
     def test_select_submittable_candidates_maps_simple_teammate_review(self) -> None:
         selected = select_submittable_candidates(
@@ -300,6 +325,77 @@ class CzIntegrationTests(unittest.TestCase):
         self.assertEqual(result["ready"], 205)
         self.assertEqual(result["queued"], 0)
         self.assertEqual(result["rejected"], 0)
+
+    def test_sync_review_candidates_isolates_local_validation_failures(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+        request_event_ids: list[list[str]] = []
+
+        def fake_request(method, path, payload, **kwargs):
+            del method, path, kwargs
+            request_event_ids.append(
+                [item["event_id"] for item in payload["items"]]
+            )
+            return {
+                "queued": 0,
+                "ready": len(payload["items"]),
+                "rejected": 0,
+                "reused": 0,
+                "results": [],
+            }
+
+        adapter._request_json = Mock(side_effect=fake_request)
+
+        result = adapter.sync_review_candidates(
+            [
+                _candidate(1),
+                _candidate(2, product_type="未知品类"),
+                _candidate(3),
+            ],
+            {"手机": "cat-phone"},
+        )
+
+        self.assertEqual(request_event_ids, [["TOP-001", "TOP-003"]])
+        self.assertEqual(result["ready"], 2)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["results"][0]["event_id"], "TOP-002")
+        self.assertEqual(result["results"][0]["status"], "failed")
+
+    def test_sync_review_candidates_isolates_remote_batch_validation_failures(
+        self,
+    ) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+        request_event_ids: list[list[str]] = []
+
+        def fake_request(method, path, payload, **kwargs):
+            del method, path, kwargs
+            event_ids = [item["event_id"] for item in payload["items"]]
+            request_event_ids.append(event_ids)
+            if "TOP-002" in event_ids:
+                raise RuntimeError("CZ接口调用失败：HTTP 422：invalid candidate")
+            return {
+                "queued": 0,
+                "ready": len(event_ids),
+                "rejected": 0,
+                "reused": 0,
+                "results": [],
+            }
+
+        adapter._request_json = Mock(side_effect=fake_request)
+
+        result = adapter.sync_review_candidates(
+            [_candidate(1), _candidate(2), _candidate(3)],
+            {"手机": "cat-phone"},
+        )
+
+        self.assertEqual(result["ready"], 2)
+        self.assertEqual(result["failed"], 1)
+        failed = next(
+            item for item in result["results"] if item["status"] == "failed"
+        )
+        self.assertEqual(failed["event_id"], "TOP-002")
+        self.assertIn(["TOP-001", "TOP-002", "TOP-003"], request_event_ids)
+        self.assertIn(["TOP-001"], request_event_ids)
+        self.assertIn(["TOP-003"], request_event_ids)
 
     def test_submit_second_part_records_batches_case_only_generation(self) -> None:
         adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
