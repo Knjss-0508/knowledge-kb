@@ -174,21 +174,31 @@
     .dashboard-metric-cards .metric-note b,.analysis-metric-cards .metric-note b{color:var(--blue)}
     .dashboard-metric-cards .card:nth-child(2) .metric-note b{color:var(--green)}.dashboard-metric-cards .card:nth-child(3) .metric-note b{color:var(--violet)}.dashboard-metric-cards .card:nth-child(4) .metric-note b{color:var(--orange)}
     .analysis-metric-cards .card:nth-child(2) .metric-note b{color:var(--coral)}.analysis-metric-cards .card:nth-child(3) .metric-note b{color:var(--violet)}.analysis-metric-cards .card:nth-child(4) .metric-note b{color:var(--orange)}
-    .dashboard-grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(320px,.85fr);gap:18px;margin-bottom:18px}
+    .dashboard-summary-grid{display:grid;grid-template-columns:minmax(290px,.78fr) repeat(2,minmax(0,.81fr));gap:18px;margin-bottom:18px}
+    .dashboard-summary-grid.without-review-flow{grid-template-columns:minmax(0,1fr)}
+    .dashboard-asset,.dashboard-flow{background:#fff;border:1px solid var(--line);border-radius:7px;padding:20px 21px}.dashboard-flow{grid-column:2/4}
+    .dashboard-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:17px}.dashboard-section-head h3{margin:0;font-size:16px;color:var(--ink)}.dashboard-section-head p{margin:4px 0 0;color:var(--muted);font-size:12px;line-height:1.5}.dashboard-section-head .hint{margin:0;white-space:nowrap}
+    .asset-main{position:relative;isolation:isolate;width:100%;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:15px 16px;border:1px solid #dce8ff;border-radius:7px;background:radial-gradient(circle at 102% 128%,transparent 0 78px,#dce8ff 79px 112px,transparent 113px),#f7faff;color:var(--ink);cursor:pointer;text-align:left;transition:border-color .18s ease,background-color .18s ease,filter .18s ease}.asset-main:hover{border-color:#9dbfff;filter:brightness(.985)}.asset-main-label{font-size:12px;color:var(--muted)}.asset-main-value{display:block;margin-top:4px;font-size:36px;line-height:1;font-weight:750;font-variant-numeric:tabular-nums}.asset-main-action{color:var(--blue);font-size:12px;font-weight:700}
+    .asset-status-grid{display:grid;grid-template-columns:minmax(120px,.72fr) minmax(0,1.28fr);gap:8px;margin-top:10px}.asset-status,.asset-progress{position:relative;isolation:isolate;min-width:0;min-height:76px;padding:10px 12px;border:1px solid #edf0f2;border-radius:6px;background:#fff;text-align:left;cursor:pointer;transition:border-color .18s ease,filter .18s ease}.asset-status{background:radial-gradient(circle at 108% 132%,transparent 0 46px,#edf0f2 47px 68px,transparent 69px),#fff}.asset-status:hover,.asset-progress:hover{border-color:#b7d4ff;filter:brightness(.985)}.asset-main>*,.asset-status>*,.asset-progress>*,.flow-step>*{position:relative;z-index:1}.asset-status span{display:block;color:var(--muted);font-size:11px;white-space:nowrap}.asset-status b{display:block;margin-top:7px;color:var(--ink);font-size:22px;font-variant-numeric:tabular-nums}.asset-status.draft{background:radial-gradient(circle at 108% 132%,transparent 0 46px,#fff0d3 47px 68px,transparent 69px),#fff}.asset-status.draft b{color:#c65b00}.asset-progress{background:radial-gradient(circle at 110% 142%,transparent 0 56px,#d9f5ed 57px 80px,transparent 81px),#fff}.asset-progress-head{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--muted);font-size:11px}.asset-progress-head b{color:#168f45;font-size:17px;font-variant-numeric:tabular-nums}.asset-progress-track{display:block;height:6px;margin-top:9px;overflow:hidden;border-radius:999px;background:#edf0f2}.asset-progress-track i{display:block;height:100%;min-width:0;border-radius:inherit;background:linear-gradient(90deg,#00a98f,#3bc56f);transition:width .25s ease}.asset-progress small{display:block;margin-top:6px;color:#98a2b3;font-size:10px}
+    .flow-meta{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex-wrap:wrap}.dashboard-chip{height:25px;padding:0 8px;border:1px solid transparent;border-radius:999px;background:#f2f4f7;color:#475467;font-size:11px;font-weight:700;cursor:pointer}.dashboard-chip.violet{background:#eeeafe;color:#644bd1}.dashboard-chip.danger{background:#fff0ed;color:#c83827}.dashboard-chip:hover{filter:brightness(.97)}
+    .flow-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:28px}.flow-step{position:relative;isolation:isolate;min-height:122px;padding:15px 14px;border:1px solid #e7eaee;border-radius:7px;background:radial-gradient(circle at 110% 132%,transparent 0 78px,#edf0f2 79px 108px,transparent 109px),#fff;text-align:left;color:var(--ink);cursor:pointer;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease,filter .18s ease}.flow-step:hover{transform:translateY(-2px);border-color:#a9dcd2;box-shadow:0 8px 20px rgba(16,24,40,.06);filter:brightness(.99)}.flow-step:after{content:"";position:absolute;top:50%;right:-20px;width:10px;height:10px;border-top:2px solid #cbd5df;border-right:2px solid #cbd5df;transform:translateY(-50%) rotate(45deg);pointer-events:none}.flow-step:last-child:after{display:none}.flow-step-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.flow-step-index{width:23px;height:23px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:#f2f4f7;color:#667085;font-size:11px;font-weight:800}.flow-step-state{font-size:10px;font-weight:700;color:#98a2b3}.flow-step strong{display:block;margin-top:12px;font-size:25px;line-height:1;font-variant-numeric:tabular-nums}.flow-step-label{display:block;margin-top:7px;font-size:12px;font-weight:700;color:#344054}.flow-step-note{display:block;margin-top:4px;color:#98a2b3;font-size:10px;line-height:1.45}.flow-step.pending{background:radial-gradient(circle at 110% 132%,transparent 0 78px,#fff0d3 79px 108px,transparent 109px),#fff}.flow-step.ready{background:radial-gradient(circle at 110% 132%,transparent 0 78px,#d9f5ed 79px 108px,transparent 109px),#fff}.flow-step.review{background:radial-gradient(circle at 110% 132%,transparent 0 78px,#e9e4ff 79px 108px,transparent 109px),#fff}.flow-step.published{background:radial-gradient(circle at 110% 132%,transparent 0 78px,#d8f5e1 79px 108px,transparent 109px),#fff}.flow-step.pending .flow-step-index{background:#fff5df;color:#a96800}.flow-step.ready .flow-step-index{background:#e4f8f2;color:#007f6b}.flow-step.review .flow-step-index{background:#eeeafe;color:#644bd1}.flow-step.published .flow-step-index{background:#e5f8e9;color:#168f45}
+    .asset-main:focus-visible,.asset-status:focus-visible,.asset-progress:focus-visible,.flow-step:focus-visible,.dashboard-chip:focus-visible{outline:3px solid rgba(0,155,131,.22);outline-offset:2px}
+    .dashboard-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;margin-bottom:18px}
+    .dashboard-work-grid{grid-template-columns:minmax(290px,.78fr) repeat(2,minmax(0,.81fr));align-items:stretch}.dashboard-work-grid.without-candidates{grid-template-columns:repeat(2,minmax(0,1fr))}
     .insight-panel{background:#fff;border:1px solid var(--line);border-radius:7px;overflow:hidden}
     .insight-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:20px 21px 0}.insight-head h3{font-size:16px;margin:0}.insight-head p{margin:3px 0 0;color:var(--muted);font-size:12px}
     .period{display:flex;padding:3px;border-radius:6px;background:#f1f3f5}.period button{height:28px;padding:0 10px;border:0;border-radius:4px;background:transparent;color:var(--muted);font-size:12px;cursor:pointer}.period button.on{background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(16,24,40,.12);font-weight:600}
     .trend-chart{height:216px;margin:14px 21px 21px;position:relative;border-bottom:1px solid #edf0f2;background:repeating-linear-gradient(to bottom,transparent 0,transparent 52px,#edf0f2 53px)}
     .trend-chart svg{width:100%;height:100%;overflow:visible}.trend-fill{fill:rgba(0,155,131,.1)}.trend-line{fill:none;stroke:var(--teal);stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.trend-dash{fill:none;stroke:var(--coral);stroke-width:2;stroke-dasharray:6 6}.trend-dot{fill:#fff;stroke:var(--teal);stroke-width:3}
     .legend{display:flex;gap:17px;padding:16px 21px 0;font-size:12px;color:var(--muted)}.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--teal);margin-right:6px}.legend i.coral{background:var(--coral)}
-    .todo-list{padding:10px 21px 18px}.todo{display:grid;grid-template-columns:9px minmax(0,1fr) auto;gap:11px;align-items:center;min-height:64px;border-bottom:1px solid #f0f2f4}.todo:last-child{border-bottom:0}.todo-dot{width:9px;height:9px;border-radius:50%;background:var(--coral)}.todo-dot.gold{background:var(--gold)}.todo-dot.violet{background:var(--violet)}.todo-dot.teal{background:var(--teal)}.todo h4{margin:0;font-size:13px;color:#344054}.todo p{margin:3px 0 0;font-size:12px;color:var(--muted)}.todo time{font-size:12px;color:#98a2b3}.todo-link{margin:0 21px 17px;padding-top:13px;border-top:1px solid #f0f2f4;color:var(--teal);font-size:13px;font-weight:600;cursor:pointer}
+    .todo-list{padding:10px 21px 18px}.todo{display:grid;grid-template-columns:9px minmax(0,1fr) auto;gap:11px;align-items:center;min-height:64px;border-bottom:1px solid #f0f2f4}.todo:last-child{border-bottom:0}.todo.clickable{margin:0 -9px;padding:0 9px;border-radius:6px;cursor:pointer}.todo.clickable:hover{background:#f7fbfa}.todo-dot{width:9px;height:9px;border-radius:50%;background:var(--coral)}.todo-dot.gold{background:var(--gold)}.todo-dot.violet{background:var(--violet)}.todo-dot.teal{background:var(--teal)}.todo h4{margin:0;font-size:13px;color:#344054;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.todo p{margin:3px 0 0;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.todo time{font-size:12px;color:#98a2b3}.todo-aside{display:flex;flex-direction:column;align-items:flex-end;gap:5px}.priority-mini{display:inline-flex;padding:2px 6px;border-radius:4px;background:#eeeafe;color:#644bd1;font-size:10px;font-weight:700}.todo-link{margin:0 21px 17px;padding-top:13px;border-top:1px solid #f0f2f4;color:var(--teal);font-size:13px;font-weight:600;cursor:pointer}
     .analysis-note{margin:0 0 18px;color:var(--muted);font-size:13px}.outcome{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600}.outcome-low_score{background:#fff0ed;color:#c83827}.outcome-no_candidates{background:#fff5df;color:#a96800}.outcome-not_selected{background:#eeeafe;color:#644bd1}.risk-query{max-width:420px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.risk-score{font-variant-numeric:tabular-nums}.integration-hint{padding:13px 16px;background:#e4f8f2;border:1px solid #b7e9dd;border-radius:6px;color:#166b5b;font-size:12px;line-height:1.6;margin-bottom:14px}
     .mht-form{display:grid;gap:12px}.mht-form .fi{min-height:92px;resize:vertical}.mht-status{padding:12px;border-radius:6px;background:#f7f8fa;color:#667085;font-size:12px;line-height:1.7}.mht-status strong{color:#009b83}.mht-actions{display:flex;gap:8px;justify-content:flex-end}
     .bar{border-radius:7px;border-color:var(--line);padding:16px 18px}.bar .tt{font-size:16px;color:var(--ink)}.filter-tabs,.tw{border-radius:7px;border-color:var(--line)}.filter-tabs{padding:12px 18px}.tab-btn{border-radius:4px}.tab-btn.on,.bp{background:var(--teal);border-color:var(--teal)}.tab-btn:hover,.bp:hover{background:#007f6b}.btn{border-radius:5px}.btn.bd:hover{border-color:var(--teal);color:var(--teal)}
     .review-metric-cards{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.review-metric-cards .card{min-height:116px;cursor:pointer}.review-metric-cards .card:after{width:82px;height:82px;border-width:15px}.review-metric-cards .card.active{border-color:var(--teal);box-shadow:0 0 0 2px rgba(0,155,131,.1)}.review-metric-cards .card:nth-child(2):after{border-color:#fff0d3}.review-metric-cards .card:nth-child(3):after{border-color:#d9f5ed}.review-metric-cards .card:nth-child(4):after{border-color:#ffe3dd}.review-metric-cards .card:nth-child(5):after{border-color:#dce8ff}.review-metric-cards .card:nth-child(6):after{border-color:#fff0ed}.review-metric-cards .card:nth-child(7):after{border-color:#e9e4ff}
     .review-toolbar{align-items:center}.review-search{width:min(360px,100%)}.review-check-label{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;cursor:pointer}.review-check-label input,.review-checkbox{accent-color:var(--teal)}.review-selected-note{font-size:12px;color:var(--muted)}.review-selected-note b{color:var(--teal)}.review-table{min-width:1220px}.review-title{max-width:360px}.review-title strong{display:block;color:#344054;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-title small{display:block;margin-top:4px;color:#98a2b3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-source{max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-source a{color:var(--teal);text-decoration:none}.review-source a:hover{text-decoration:underline}.review-badge{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}.review-status-pending{background:#fff5df;color:#a96800}.review-status-ready{background:#e4f8f2;color:#007f6b}.review-status-rejected,.review-status-failed{background:#fff0ed;color:#c83827}.review-status-submitted{background:#e8f3ff;color:#245bdb}.review-status-unknown{background:#f2f4f7;color:#667085}.priority-flag{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:4px;background:#eeeafe;color:#644bd1;font-size:11px;font-weight:700}.review-human-summary{line-height:1.65;color:#475467}.review-human-summary b{color:#344054}.review-model-summary{line-height:1.65;color:#475467}.review-model-summary b{color:#344054}.review-empty{padding:52px 18px!important;text-align:center;color:#98a2b3!important}.review-loading{opacity:.62;pointer-events:none}
     .review-dialog{width:min(1160px,100%)}.review-dialog .dlg-b{padding:20px}.review-detail-grid{display:grid;grid-template-columns:minmax(0,.88fr) minmax(420px,1.12fr);gap:18px;align-items:start}.review-panel{background:#fff;border:1px solid var(--line);border-radius:7px;padding:18px}.review-panel-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:15px}.review-panel-title h4{font-size:14px;color:#344054}.review-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px}.review-meta-item{padding:10px 11px;border-radius:6px;background:#f7f8fa}.review-meta-item span{display:block;color:#98a2b3;font-size:11px;margin-bottom:3px}.review-meta-item strong{display:block;color:#344054;font-size:12px;overflow-wrap:anywhere}.review-content-preview{max-height:220px;overflow:auto;padding:12px;border:1px solid #edf0f2;border-radius:6px;background:#fafbfc;color:#475467;font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.review-model-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.review-model-item{padding:9px 10px;border:1px solid #edf0f2;border-radius:6px}.review-model-item span{display:block;color:#98a2b3;font-size:10px;margin-bottom:3px}.review-model-item b{font-size:12px;color:#344054}.review-model-reason{margin-top:10px;padding:10px 11px;border-left:3px solid var(--violet);background:#f7f5ff;color:#5d4ca7;font-size:12px;line-height:1.65}.review-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}.review-form-grid .fg{margin-bottom:0}.review-form-grid .span-2{grid-column:1/-1}.review-gate{margin-right:auto;display:flex;align-items:center;gap:8px;max-width:620px;color:#667085;font-size:12px;line-height:1.5}.review-gate .review-badge{flex-shrink:0}.review-readonly-note{padding:10px 12px;border-radius:6px;background:#e8f3ff;color:#245bdb;font-size:12px;margin-bottom:13px}.review-error{margin-top:6px;color:#c83827;font-size:11px}.btn:disabled{opacity:.55;cursor:not-allowed}.btn.bp:disabled:hover{background:var(--teal)}
-    @media(max-width:1120px){.cards{grid-template-columns:repeat(2,1fr)}.review-metric-cards{grid-template-columns:repeat(4,1fr)}.dashboard-grid{grid-template-columns:1fr}.review-detail-grid{grid-template-columns:1fr}}@media(max-width:760px){.side{width:100%;min-height:auto;padding:12px 16px;display:block}.layout{display:block}.brand{padding:0}.nav{display:flex;flex-direction:column;overflow:visible;margin-top:12px;gap:3px}.nav-item{white-space:nowrap;flex:0 0 auto}.side-foot{display:none}.hd{height:58px;padding:0 16px}.mn{padding:24px 16px 32px}.overview{display:block}.overview h2{font-size:26px}.overview-status{margin-top:10px}.cards,.review-metric-cards{grid-template-columns:1fr 1fr;gap:10px}.card{min-height:124px;padding:15px}.dashboard-grid{gap:12px}.insight-head{padding:17px 16px 0}.trend-chart{margin:14px 16px 18px}.todo-list{padding-left:16px;padding-right:16px}.todo-link{margin-left:16px;margin-right:16px}.filter-app-field{width:100%}.filter-app-field .ms{width:auto;flex:1 1 auto}.review-search{width:100%}.review-dialog .dlg-b{padding:14px}.review-panel{padding:14px}.review-form-grid,.review-meta{grid-template-columns:1fr}.review-form-grid .span-2{grid-column:auto}.review-gate{display:none}}@media(max-width:420px){.cards,.review-metric-cards{grid-template-columns:1fr}.period button{padding:0 7px}}
+    @media(max-width:1120px){.cards{grid-template-columns:repeat(2,1fr)}.review-metric-cards{grid-template-columns:repeat(4,1fr)}.dashboard-summary-grid{grid-template-columns:1fr}.dashboard-summary-grid>.dashboard-asset,.dashboard-summary-grid>.dashboard-flow{grid-column:1}.dashboard-work-grid,.dashboard-work-grid.without-candidates{grid-template-columns:1fr}.review-detail-grid{grid-template-columns:1fr}}@media(max-width:760px){.side{width:100%;min-height:auto;padding:12px 16px;display:block}.layout{display:block}.brand{padding:0}.nav{display:flex;flex-direction:row;overflow-x:auto;overflow-y:hidden;margin-top:12px;gap:6px;padding-bottom:2px;scrollbar-width:none;overscroll-behavior-inline:contain}.nav::-webkit-scrollbar{display:none}.nav-item{white-space:nowrap;flex:0 0 auto}.side-foot{display:none}.hd{height:58px;padding:0 16px}.mn{padding:24px 16px 32px}.overview{display:block}.overview h2{font-size:26px}.overview-status{margin-top:10px}.cards,.review-metric-cards{grid-template-columns:1fr 1fr;gap:10px}.card{min-height:124px;padding:15px}.dashboard-summary-grid,.dashboard-grid{gap:12px}.dashboard-asset,.dashboard-flow{padding:17px 16px}.flow-steps{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.flow-step:after{display:none}.insight-head{padding:17px 16px 0}.trend-chart{margin:14px 16px 18px}.todo-list{padding-left:16px;padding-right:16px}.todo-link{margin-left:16px;margin-right:16px}.filter-app-field{width:100%}.filter-app-field .ms{width:auto;flex:1 1 auto}.review-search{width:100%}.review-dialog .dlg-b{padding:14px}.review-panel{padding:14px}.review-form-grid,.review-meta{grid-template-columns:1fr}.review-form-grid .span-2{grid-column:auto}.review-gate{display:none}}@media(max-width:420px){.cards,.review-metric-cards{grid-template-columns:1fr}.asset-status-grid,.flow-steps{grid-template-columns:1fr}.period button{padding:0 7px}}
   </style>
 </head>
 <body>
@@ -220,16 +230,65 @@
       </div>
       <div class="overview-status">数据更新时间：<b>{{dashboard.updatedAt}}</b></div>
     </section>
-    <div class="cards dashboard-metric-cards">
-      <div class="card" @click="openKnowledge()"><div class="lb">知识总量</div><div class="vl bl">{{stats.total}}</div><div class="metric-note"><b>全部</b> 当前知识条目</div></div>
-      <div class="card" @click="openKnowledge('published')"><div class="lb">已发布内容</div><div class="vl gn">{{stats.published}}</div><div class="metric-note"><b>可查询</b> 已通过发布审核</div></div>
-      <div class="card" @click="openKnowledge('review')"><div class="lb">待发布审核</div><div class="vl og">{{stats.review}}</div><div class="metric-note"><b>待处理</b> 等待正式发布</div></div>
-      <div class="card" @click="openKnowledge('draft')"><div class="lb">待完善草稿</div><div class="vl gy">{{stats.draft}}</div><div class="metric-note"><b>草稿</b> 尚未提交发布审核</div></div>
-    </div>
-    <section class="dashboard-grid">
+    <section class="dashboard-summary-grid" :class="{'without-review-flow':!can('knowledge:submit')}">
+      <article class="dashboard-asset">
+        <div class="dashboard-section-head">
+          <div><h3>知识资产</h3><p>正式知识的存量与发布状态</p></div>
+          <span class="hint">共 {{stats.total}} 条</span>
+        </div>
+        <button type="button" class="asset-main" @click="openKnowledge('')">
+          <span><span class="asset-main-label">知识总量</span><b class="asset-main-value">{{stats.total}}</b></span>
+          <span class="asset-main-action">查看全部 →</span>
+        </button>
+        <div class="asset-status-grid">
+          <button type="button" class="asset-status draft" @click="openKnowledge('draft')"><span>待完善草稿</span><b>{{stats.draft}}</b></button>
+          <button type="button" class="asset-progress" @click="openKnowledge('published')">
+            <span class="asset-progress-head"><span>可检索率</span><b>{{knowledgePublishRate()}}%</b></span>
+            <span class="asset-progress-track"><i :style="{width:knowledgePublishRate()+'%'}"></i></span>
+            <small>可检索知识占总量</small>
+          </button>
+        </div>
+      </article>
+      <article class="dashboard-flow" v-if="can('knowledge:submit')">
+        <div class="dashboard-section-head">
+          <div><h3>知识转化漏斗</h3><p>从候选价值判断到正式发布，快速定位流程积压</p></div>
+          <div class="flow-meta">
+            <button type="button" class="dashboard-chip violet" @click="openCandidateReviewStatus('',true)">重点 {{candidateDashboard.summary.priority}}</button>
+            <button type="button" class="dashboard-chip danger" @click="openCandidateReviewStatus('failed',false)">异常 {{candidateDashboard.summary.failed}}</button>
+          </div>
+        </div>
+        <div class="flow-steps">
+          <button type="button" class="flow-step pending" @click="openCandidateReviewStatus('pending',false)">
+            <span class="flow-step-top"><span class="flow-step-index">1</span><span class="flow-step-state">价值门禁</span></span>
+            <strong>{{candidateDashboard.summary.pending}}</strong>
+            <span class="flow-step-label">待价值复核</span>
+            <span class="flow-step-note">候选共 {{candidateDashboard.summary.total}} 条</span>
+          </button>
+          <button type="button" class="flow-step ready" @click="openCandidateReviewStatus('ready',false)">
+            <span class="flow-step-top"><span class="flow-step-index">2</span><span class="flow-step-state">门禁通过</span></span>
+            <strong>{{candidateDashboard.summary.ready}}</strong>
+            <span class="flow-step-label">可送发布审核</span>
+            <span class="flow-step-note">可在候选页批量送审</span>
+          </button>
+          <button type="button" class="flow-step review" @click="openKnowledge('review')">
+            <span class="flow-step-top"><span class="flow-step-index">3</span><span class="flow-step-state">正式审核</span></span>
+            <strong>{{stats.review}}</strong>
+            <span class="flow-step-label">待发布审核</span>
+            <span class="flow-step-note">等待审核人确认发布</span>
+          </button>
+          <button type="button" class="flow-step published" @click="openKnowledge('published')">
+            <span class="flow-step-top"><span class="flow-step-index">4</span><span class="flow-step-state">已完成</span></span>
+            <strong>{{stats.published}}</strong>
+            <span class="flow-step-label">已正式发布</span>
+            <span class="flow-step-note">已进入可检索知识库</span>
+          </button>
+        </div>
+      </article>
+    </section>
+    <section class="dashboard-grid dashboard-work-grid" :class="{'without-candidates':!can('knowledge:submit')}">
       <article class="insight-panel">
         <div class="insight-head">
-          <div><h3>最近发布</h3><p>仅展示已发布知识，按最近更新时间排序</p></div>
+          <div><h3>最近发布</h3><p>已完成全部审核流程的最新知识</p></div>
           <span class="hint">{{dashboard.recentUpdates.length}} 条</span>
         </div>
         <div class="todo-list">
@@ -240,18 +299,34 @@
           </div>
           <div class="todo" v-if="!dashboard.recentUpdates.length"><div></div><div><h4>暂无已发布知识</h4><p>审核发布后的知识会显示在这里。</p></div><time></time></div>
         </div>
+        <div class="todo-link" @click="openKnowledge('published')">查看全部已发布知识</div>
+      </article>
+      <article class="insight-panel" v-if="can('knowledge:submit')">
+        <div class="insight-head">
+          <div><h3>候选价值复核</h3><p>优先处理重点标记与待确认候选</p></div>
+          <span class="hint">{{candidateDashboard.summary.pending}} 项</span>
+        </div>
+        <div class="todo-list">
+          <div class="todo clickable" v-for="item in candidateDashboard.pending" :key="item.id" @click="openCandidateReview(item)">
+            <span class="todo-dot" :class="item.priority_review?'violet':'gold'"></span>
+            <div><h4>{{item.title || '未命名候选'}}</h4><p>{{reviewKnowledgeValueLabel(item.model_review && item.model_review.knowledge_value)}} · {{item.source_system}} · {{item.source_conversation_id}}</p></div>
+            <div class="todo-aside"><span class="priority-mini" v-if="item.priority_review">重点</span><time>{{formatDate(item.updated_at)}}</time></div>
+          </div>
+          <div class="todo" v-if="!candidateDashboard.pending.length"><div></div><div><h4>暂无待价值复核候选</h4><p>Answer Hub 同步的新候选会显示在这里。</p></div><time></time></div>
+        </div>
+        <div class="todo-link" @click="openCandidateReviewStatus('pending',false)">进入候选价值复核</div>
       </article>
       <article class="insight-panel">
-        <div class="insight-head"><div><h3>待发布审核知识</h3><p>按最早提交时间优先处理</p></div><span class="hint">{{stats.review}} 项</span></div>
+        <div class="insight-head"><div><h3>待发布审核知识</h3><p>完成价值复核后，按提交时间处理</p></div><span class="hint">{{stats.review}} 项</span></div>
         <div class="todo-list">
           <div class="todo" v-for="item in dashboard.pending" :key="item.id">
             <span class="todo-dot"></span>
             <div><h4>{{item.title}}</h4><p>{{item.id}} · {{item.created_by || '系统'}}</p></div>
             <time>{{formatDate(item.updated_at)}}</time>
           </div>
-          <div class="todo" v-if="!dashboard.pending.length"><div></div><div><h4>暂无待发布审核知识</h4><p>提交发布审核后的知识会显示在这里。</p></div><time></time></div>
+          <div class="todo" v-if="!dashboard.pending.length"><div></div><div><h4>暂无待发布审核知识</h4><p>通过价值门禁并提交送审的知识会显示在这里。</p></div><time></time></div>
         </div>
-        <div class="todo-link" @click="openKnowledge('review')">查看全部待办</div>
+        <div class="todo-link" @click="openKnowledge('review')">进入发布审核</div>
       </article>
     </section>
   </div>
@@ -763,6 +838,13 @@ Vue.createApp({
       cats: [],
       stats: {total:0, published:0, review:0, draft:0},
       dashboard: {pending:[], recentUpdates:[], updatedAt:'-'},
+      candidateDashboard: {
+        summary: {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0},
+        pending: [],
+        loading: false,
+        available: false,
+        updatedAt: '-'
+      },
       analysis: {summary:{total:0, accepted:0, low_score:0, no_candidates:0, not_selected:0}, risks:[], updatedAt:'-'},
       candidateReviews: {
         items: [],
@@ -822,7 +904,19 @@ Vue.createApp({
       if (!self.token) { location.href = BASE + '/login'; return; }
       fetch(API + '/auth/me', {headers:self.authHeaders()})
         .then(function(r) { if (!r.ok) throw new Error('login required'); return r.json(); })
-        .then(function(u) { self.currentUser = u; if (u.role === 'visitor') self.f.status = 'published'; self.ready = true; self.loadRoles(); self.load(); self.loadStats(); self.loadSearchAnalysis(); self.loadCats(); self.loadManhattanSession(); self.loadManhattanOptions(); })
+        .then(function(u) {
+          self.currentUser = u;
+          if (u.role === 'visitor') self.f.status = 'published';
+          self.ready = true;
+          self.loadRoles();
+          self.load();
+          self.loadStats();
+          self.loadCandidateReviewDashboard();
+          self.loadSearchAnalysis();
+          self.loadCats();
+          self.loadManhattanSession();
+          self.loadManhattanOptions();
+        })
         .catch(function() { localStorage.removeItem('kb_token'); localStorage.removeItem('kb_user'); location.href = BASE + '/login'; });
     },
     isSuperAdmin: function() {
@@ -860,6 +954,12 @@ Vue.createApp({
       if (item.status === 'review') return this.can('knowledge:edit_review_all') || (isOwner && this.can('knowledge:edit_own_review'));
       if (item.status === 'published') return this.can('knowledge:edit_published');
       return false;
+    },
+    knowledgePublishRate: function() {
+      var total = Number(this.stats && this.stats.total) || 0;
+      var published = Number(this.stats && this.stats.published) || 0;
+      if (!total) return 0;
+      return Math.min(100, Math.max(0, Math.round(published / total * 100)));
     },
     roleLabel: function(role) {
       var found = (this.roles || []).find(function(r) { return r.value === role; });
@@ -968,6 +1068,7 @@ Vue.createApp({
     openOverview: function() {
       this.view = 'overview';
       this.loadStats();
+      this.loadCandidateReviewDashboard();
     },
     openKnowledge: function(status) {
       this.view = 'knowledge';
@@ -1000,11 +1101,53 @@ Vue.createApp({
       this.loadCats();
       this.loadCandidateReviews();
     },
+    openCandidateReviewStatus: function(status, priorityOnly) {
+      if (!this.can('knowledge:submit')) return;
+      this.candidateReviews.filter.keyword = '';
+      this.candidateReviews.filter.status = status || '';
+      this.candidateReviews.filter.priorityOnly = !!priorityOnly;
+      this.candidateReviews.selected = [];
+      this.openCandidateReviews();
+    },
     setCandidateReviewFilter: function(status, priorityOnly) {
       this.candidateReviews.filter.status = status || '';
       this.candidateReviews.filter.priorityOnly = !!priorityOnly;
       this.candidateReviews.selected = [];
       this.loadCandidateReviews();
+    },
+    loadCandidateReviewDashboard: function() {
+      var self = this;
+      if (!self.can('knowledge:submit')) {
+        self.candidateDashboard.pending = [];
+        self.candidateDashboard.available = false;
+        return;
+      }
+      self.candidateDashboard.loading = true;
+      var params = new URLSearchParams();
+      params.set('review_status', 'pending');
+      params.set('limit', '5');
+      fetch(API + '/integration/candidate-reviews?' + params.toString(), {headers:self.authHeaders()})
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(data.detail || '加载候选价值复核概览失败');
+            return data;
+          });
+        })
+        .then(function(data) {
+          self.candidateDashboard.summary = Object.assign(
+            {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0},
+            data.summary || {}
+          );
+          self.candidateDashboard.pending = Array.isArray(data.items) ? data.items : [];
+          self.candidateDashboard.available = true;
+          self.candidateDashboard.updatedAt = self.formatDate(new Date());
+        })
+        .catch(function(error) {
+          console.error(error);
+          self.candidateDashboard.pending = [];
+          self.candidateDashboard.available = false;
+        })
+        .finally(function() { self.candidateDashboard.loading = false; });
     },
     loadCandidateReviews: function() {
       var self = this;
@@ -1190,6 +1333,7 @@ Vue.createApp({
         .then(function(data) {
           self.candidateReviews.current = data;
           self.candidateReviews.form.originalContentText = self.candidateReviews.form.contentText;
+          self.loadCandidateReviewDashboard();
           if (submitAfter) {
             if (data.review_status !== 'ready') {
               alert('审核已保存，但候选尚未通过送审门禁。请确认“值得沉淀”且“可用”，或给出通过结论。');
@@ -1238,6 +1382,7 @@ Vue.createApp({
           }
           self.loadCandidateReviews();
           self.loadStats();
+          self.loadCandidateReviewDashboard();
           return data;
         })
         .catch(function(error) { alert(error.message); return null; })
