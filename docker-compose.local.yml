@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: kb-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-knowledge_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-knowledge_pass_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-knowledge_base}
+    expose:
+      - "5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-knowledge_admin} -d ${POSTGRES_DB:-knowledge_base}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    volumes:
+      - ./backend/uploads:/app/uploads
+    environment:
+      DATABASE_URL: ""
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-knowledge_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-knowledge_pass_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-knowledge_base}
+      UPLOAD_DIR: /app/uploads
+      MEDIA_STORAGE_BACKEND: "local"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  migrate:
+    environment:
+      DATABASE_URL: ""
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-knowledge_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-knowledge_pass_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-knowledge_base}
+      ALLOW_INSECURE_DEFAULT_ADMIN: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pg_data:

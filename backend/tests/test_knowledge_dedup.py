@@ -72,6 +72,30 @@ class KnowledgeDedupTextTests(unittest.TestCase):
         )
         self.assertEqual(result, "Account help\nRead the help center.")
 
+    def test_external_media_urls_do_not_pollute_embedding_text(self):
+        result = build_embedding_text(
+            "Image help",
+            [],
+            {
+                "blocks": [
+                    {"type": "text", "value": "Read the visible instructions."},
+                    {
+                        "type": "image",
+                        "external_url": "https://cdn.example.com/image.png",
+                        "alt": "",
+                        "caption": "",
+                    },
+                    {
+                        "type": "video",
+                        "external_url": "https://cdn.example.com/demo.mp4",
+                        "alt": "",
+                        "caption": "",
+                    },
+                ]
+            },
+        )
+        self.assertEqual(result, "Image help\nRead the visible instructions.")
+
     def test_dedup_similarity_requires_both_title_and_content_to_match(self):
         self.assertEqual(_combined_dedup_similarity(0.99, 0.70), 0.70)
         self.assertEqual(_combined_dedup_similarity(0.88, 0.93), 0.88)

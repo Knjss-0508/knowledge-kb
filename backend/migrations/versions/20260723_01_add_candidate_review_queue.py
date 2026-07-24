@@ -6,7 +6,6 @@ Create Date: 2026-07-23
 """
 
 from alembic import op
-import sqlalchemy as sa
 
 
 revision = "20260723_01"
@@ -16,35 +15,35 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "integration_ingestions",
-        sa.Column("candidate_payload", sa.JSON(), nullable=True),
+    # IF NOT EXISTS keeps the revision safe for databases that received the
+    # candidate columns before this migration was introduced.
+    op.execute(
+        "ALTER TABLE integration_ingestions "
+        "ADD COLUMN IF NOT EXISTS candidate_payload JSON"
     )
-    op.add_column(
-        "integration_ingestions",
-        sa.Column("review_metadata", sa.JSON(), nullable=True),
+    op.execute(
+        "ALTER TABLE integration_ingestions "
+        "ADD COLUMN IF NOT EXISTS review_metadata JSON"
     )
-    op.add_column(
-        "integration_ingestions",
-        sa.Column("review_status", sa.String(length=32), nullable=True),
+    op.execute(
+        "ALTER TABLE integration_ingestions "
+        "ADD COLUMN IF NOT EXISTS review_status VARCHAR(32)"
     )
-    op.add_column(
-        "integration_ingestions",
-        sa.Column("reviewed_by", sa.String(length=128), nullable=True),
+    op.execute(
+        "ALTER TABLE integration_ingestions "
+        "ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(128)"
     )
-    op.add_column(
-        "integration_ingestions",
-        sa.Column("reviewed_at", sa.DateTime(), nullable=True),
+    op.execute(
+        "ALTER TABLE integration_ingestions "
+        "ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP WITHOUT TIME ZONE"
     )
-    op.add_column(
-        "integration_ingestions",
-        sa.Column("submitted_at", sa.DateTime(), nullable=True),
+    op.execute(
+        "ALTER TABLE integration_ingestions "
+        "ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP WITHOUT TIME ZONE"
     )
-    op.create_index(
-        "ix_integration_ingestions_review_status",
-        "integration_ingestions",
-        ["review_status"],
-        unique=False,
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_integration_ingestions_review_status "
+        "ON integration_ingestions (review_status)"
     )
 
 

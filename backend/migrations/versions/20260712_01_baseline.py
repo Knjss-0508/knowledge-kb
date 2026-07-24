@@ -1,4 +1,4 @@
-"""Create the baseline schema and seed data.
+"""Create the frozen baseline schema and seed non-sensitive reference data.
 
 Revision ID: 20260712_01
 Revises:
@@ -7,11 +7,7 @@ Create Date: 2026-07-12
 
 from alembic import op
 
-from app.core.database import Base
-from app.models import integration  # noqa: F401
-from app.models import knowledge  # noqa: F401
-from app.models import user  # noqa: F401
-from app.routes.auth import hash_password
+from migrations.frozen_baseline_20260712 import FrozenBase
 
 
 revision = "20260712_01"
@@ -23,7 +19,20 @@ depends_on = None
 def upgrade() -> None:
     bind = op.get_bind()
     bind.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
-    Base.metadata.create_all(bind=bind)
+    vector_schema = bind.exec_driver_sql(
+        """
+        SELECT namespace.nspname
+        FROM pg_extension AS extension
+        JOIN pg_namespace AS namespace
+          ON namespace.oid = extension.extnamespace
+        WHERE extension.extname = 'vector'
+        """
+    ).scalar_one()
+    if vector_schema != "public":
+        raise RuntimeError(
+            "The vector extension must be installed in the public schema."
+        )
+    FrozenBase.metadata.create_all(bind=bind)
 
     for sql in (
         "UPDATE knowledge_items SET updated_by = created_by WHERE updated_by IS NULL",
@@ -33,16 +42,8 @@ def upgrade() -> None:
     ):
         bind.exec_driver_sql(sql)
 
-    admin = bind.exec_driver_sql(
-        "SELECT id FROM users WHERE username = 'Weichizhuo'"
-    ).first()
-    if not admin:
-        bind.exec_driver_sql(
-            "INSERT INTO users (id, username, password_hash, role, is_active, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, NOW(), NOW())",
-            ("super-admin", "Weichizhuo", hash_password("123456"), "super_admin", True),
-        )
     bind.exec_driver_sql("UPDATE users SET role = 'visitor' WHERE role = 'user'")
 
 
 def downgrade() -> None:
-    Base.metadata.drop_all(bind=op.get_bind())
+    FrozenBase.metadata.drop_all(bind=op.get_bind())

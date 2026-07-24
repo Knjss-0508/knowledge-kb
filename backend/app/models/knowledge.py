@@ -3,7 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, String, Text, Enum, Float, Integer, DateTime,
-    ForeignKey, JSON, UniqueConstraint,
+    CheckConstraint, ForeignKey, JSON, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
@@ -26,10 +26,12 @@ class Knowledge(Base):
     title = Column(String(256), nullable=False, index=True)
     subtitles = Column(JSON, default=list, nullable=True)
     content = Column(JSON, nullable=False, default=dict)
-    # content blocks 支持三种类型:
+    # content blocks 支持三种类型；媒体可引用本地 media_id，也可使用 HTTPS external_url:
     # {"type":"text", "value":"文本内容"}
     # {"type":"image", "media_id":"media-xxx", "alt":"图片描述", "caption":"图片说明文字"}
+    # {"type":"image", "external_url":"https://cdn.example.com/image.png", "alt":"图片描述", "caption":"图片说明文字"}
     # {"type":"video", "media_id":"media-xxx", "alt":"视频描述", "caption":"视频说明文字", "duration":"03:20"}
+    # {"type":"video", "external_url":"https://cdn.example.com/demo.mp4", "alt":"视频描述", "caption":"视频说明文字"}
     category_id = Column(String(64), ForeignKey("categories.id"), nullable=False, index=True)
     status = Column(Enum(KnowledgeStatus), default=KnowledgeStatus.DRAFT, index=True)
     source = Column(String(32), default="manual")
@@ -174,6 +176,58 @@ class KnowledgeMedia(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     knowledge_item = relationship("Knowledge", back_populates="media")
+
+    __table_args__ = (
+        UniqueConstraint("filename", name="uq_knowledge_media_filename"),
+    )
+
+
+class MediaUploadStaging(Base):
+    """已写入对象存储、等待知识事务消费的临时媒体。"""
+
+    __tablename__ = "media_upload_staging"
+
+    id = Column(String(64), primary_key=True)
+    username = Column(String(128), nullable=False, index=True)
+    storage_backend = Column(String(16), nullable=False)
+    storage_key = Column(String(512), nullable=False)
+    filename = Column(String(256), nullable=False)
+    status = Column(String(16), nullable=False, default="uploading")
+    media_type = Column(String(16), nullable=False)
+    original_name = Column(String(256), nullable=False)
+    file_size = Column(Integer, nullable=False, default=0)
+    mime_type = Column(String(128), nullable=False, default="image/png")
+    alt = Column(String(256), nullable=False, default="")
+    caption = Column(Text, nullable=False, default="")
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "filename",
+            name="uq_media_upload_staging_filename",
+        ),
+        CheckConstraint(
+            "status IN ('uploading', 'ready')",
+            name="ck_media_upload_staging_status",
+        ),
+    )
+
+
+class MediaDeletionTask(Base):
+    """媒体对象删除 outbox，业务事务提交后由后台幂等重试。"""
+
+    __tablename__ = "media_deletion_tasks"
+
+    id = Column(String(64), primary_key=True)
+    storage_backend = Column(String(16), nullable=False, index=True)
+    storage_key = Column(String(512), nullable=False)
+    filename = Column(String(256), nullable=False)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    last_error = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Category(Base):

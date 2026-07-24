@@ -28,6 +28,13 @@ class KnowledgeExcelTests(unittest.TestCase):
                 level=2,
                 sort_order=20,
             ),
+            SimpleNamespace(
+                id="cat-qc-standard",
+                name="质检标准",
+                parent_id=None,
+                level=1,
+                sort_order=30,
+            ),
         ]
 
     @staticmethod
@@ -118,6 +125,264 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertTrue(rows[0].is_valid)
         self.assertEqual(rows[1].error_code, "CATEGORY_NOT_FOUND")
         self.assertEqual(rows[2].error_code, "TITLE_REQUIRED")
+
+    def test_parse_accepts_governed_qc_workbook_format(self):
+        payload = self.workbook_bytes(
+            ["主标题", "副标题", "知识内容", "知识分类", "适用范围", "生效状态"],
+            [
+                [
+                    "苹果设备外观判定",
+                    "苹果设备外观怎么检查\n苹果外观如何判定",
+                    "按质检标准逐项检查。\n"
+                    "[img:https://cdn.example.com/qc/apple.png]",
+                    "场景判定",
+                    "苹果",
+                    "生效中",
+                ],
+                [
+                    "安卓设备检测方法",
+                    "安卓设备怎么检测",
+                    "按步骤执行检测。",
+                    "检测方法",
+                    "通用",
+                    "待审核",
+                ],
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(rows[0].is_valid)
+        self.assertEqual(rows[0].category_id, "cat-qc-standard")
+        self.assertEqual(
+            rows[0].subtitles,
+            ["苹果设备外观怎么检查", "苹果外观如何判定"],
+        )
+        self.assertEqual(
+            rows[0].content,
+            {
+                "blocks": [
+                    {"type": "text", "value": "按质检标准逐项检查。"},
+                    {
+                        "type": "image",
+                        "external_url": "https://cdn.example.com/qc/apple.png",
+                        "alt": "",
+                        "caption": "",
+                    },
+                ]
+            },
+        )
+        self.assertEqual(rows[0].applicable_scenes, ["适用范围：苹果"])
+        self.assertEqual(rows[0].source_status, "生效中")
+        self.assertEqual(rows[0].source_scope, "苹果")
+        self.assertEqual(rows[1].error_code, "SOURCE_STATUS_NOT_IMPORTABLE")
+        self.assertIn("不会上传", rows[1].error_message)
+
+    def test_parse_maps_qc_category_values_to_system_categories(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容"],
+            [
+                ["标准定义示例", "标准定义", "标准正文。"],
+                ["检测方法示例", "检测方法", "检测步骤。"],
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(rows[0].category_id, "cat-qc-standard")
+        self.assertEqual(rows[1].category_id, "cat-process")
+
+    def test_parse_only_promotes_prefixed_media_tokens(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容"],
+            [
+                [
+                    "链接与图片示例",
+                    "标准定义",
+                    "帮助地址：https://example.com/help\n"
+                    "[img:https://cdn.example.com/image-resource?version=2]\n"
+                    "后续说明。",
+                ]
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(
+            rows[0].content,
+            {
+                "blocks": [
+                    {
+                        "type": "text",
+                        "value": "帮助地址：https://example.com/help",
+                    },
+                    {
+                        "type": "image",
+                        "external_url": "https://cdn.example.com/image-resource?version=2",
+                        "alt": "",
+                        "caption": "",
+                    },
+                    {"type": "text", "value": "后续说明。"},
+                ]
+            },
+        )
+
+    def test_parse_prefixed_media_token_preserves_inline_position(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容"],
+            [
+                [
+                    "行内媒体示例",
+                    "标准定义",
+                    "图片前文[img:https://cdn.example.com/image-resource]图片后文",
+                ]
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(
+            rows[0].content,
+            {
+                "blocks": [
+                    {"type": "text", "value": "图片前文"},
+                    {
+                        "type": "image",
+                        "external_url": "https://cdn.example.com/image-resource",
+                        "alt": "",
+                        "caption": "",
+                    },
+                    {"type": "text", "value": "图片后文"},
+                ]
+            },
+        )
+
+    def test_parse_preserves_external_media_order_and_duplicate_references(self):
+        repeated_image = "https://cdn.example.com/psn-resource"
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容"],
+            [
+                [
+                    "序列号查看说明",
+                    "标准定义",
+                    "【苹果】补充：\n"
+                    "[img:https://cdn.example.com/apple-resource]\n"
+                    "【安卓】补充：\n"
+                    "[video:https://cdn.example.com/android-stream?version=2]\n"
+                    "【小米/红米】PSN码查看：\n"
+                    f"[img:{repeated_image}]\n"
+                    "【小米/红米】补充：\n"
+                    f"[img:{repeated_image}]",
+                ]
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(
+            rows[0].content,
+            {
+                "blocks": [
+                    {"type": "text", "value": "【苹果】补充："},
+                    {
+                        "type": "image",
+                        "external_url": "https://cdn.example.com/apple-resource",
+                        "alt": "",
+                        "caption": "",
+                    },
+                    {"type": "text", "value": "【安卓】补充："},
+                    {
+                        "type": "video",
+                        "external_url": "https://cdn.example.com/android-stream?version=2",
+                        "alt": "",
+                        "caption": "",
+                    },
+                    {"type": "text", "value": "【小米/红米】PSN码查看："},
+                    {
+                        "type": "image",
+                        "external_url": repeated_image,
+                        "alt": "",
+                        "caption": "",
+                    },
+                    {"type": "text", "value": "【小米/红米】补充："},
+                    {
+                        "type": "image",
+                        "external_url": repeated_image,
+                        "alt": "",
+                        "caption": "",
+                    },
+                ]
+            },
+        )
+
+    def test_parse_keeps_unprefixed_urls_as_plain_text(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容"],
+            [
+                [
+                    "原有链接示例",
+                    "标准定义",
+                    "官网：https://example.com\n"
+                    "https://cdn.example.com/raw-image.png\n"
+                    "https://cdn.example.com/raw-video.mp4",
+                ]
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(
+            rows[0].content,
+            "官网：https://example.com\n"
+            "https://cdn.example.com/raw-image.png\n"
+            "https://cdn.example.com/raw-video.mp4",
+        )
+
+    def test_parse_keeps_unsafe_prefixed_url_as_plain_text(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容"],
+            [
+                [
+                    "不安全媒体标记",
+                    "标准定义",
+                    "[img:https://user@example.com/private-resource]",
+                ]
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(
+            rows[0].content,
+            "[img:https://user@example.com/private-resource]",
+        )
+
+    def test_parse_accepts_195_rows(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容", "生效状态"],
+            [
+                [f"知识 {index}", "标准定义", f"正文 {index}", "生效中"]
+                for index in range(195)
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(len(rows), 195)
+        self.assertTrue(all(row.is_valid for row in rows))
+
+    def test_parse_rejects_more_than_500_rows(self):
+        payload = self.workbook_bytes(
+            ["标题", "知识分类", "正文"],
+            [
+                [f"知识 {index}", "cat-process", f"正文 {index}"]
+                for index in range(501)
+            ],
+        )
+
+        with self.assertRaisesRegex(KnowledgeExcelError, "单次最多导入 500 条"):
+            parse_knowledge_workbook(payload, self.categories)
 
     def test_missing_required_headers_rejects_workbook(self):
         payload = self.workbook_bytes(

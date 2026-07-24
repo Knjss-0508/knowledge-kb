@@ -86,6 +86,12 @@ def _content_to_text(value: Any) -> str:
     if isinstance(value, list):
         return "\n".join(part for item in value if (part := _content_to_text(item)))
     if isinstance(value, dict):
+        if value.get("type") in {"image", "video"}:
+            return "\n".join(
+                part
+                for key in ("alt", "caption", "title")
+                if key in value and (part := _content_to_text(value[key]))
+            )
         blocks = value.get("blocks")
         if isinstance(blocks, list):
             return _content_to_text(blocks)

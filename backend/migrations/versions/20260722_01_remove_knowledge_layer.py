@@ -15,8 +15,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # The baseline migration creates tables from the current ORM metadata, so
-    # IF EXISTS keeps both fresh installs and existing deployments upgradeable.
+    # IF EXISTS keeps upgrades compatible with databases that may already have
+    # applied the equivalent cleanup manually.
     op.execute(
         """
         UPDATE knowledge_items

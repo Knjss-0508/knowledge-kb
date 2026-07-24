@@ -1,12 +1,9 @@
 import uuid
-import os
 import logging
 import string
-import time
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
@@ -14,13 +11,16 @@ from sqlalchemy import cast, func, or_, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
+from starlette.concurrency import run_in_threadpool
 
 from app.core.database import get_db
 from app.routes.auth import get_current_user, has_permission, require_permission
 from app.models.user import User
 from app.models.knowledge import (
     Category, Knowledge, KnowledgeStatus,
-    KnowledgeTag, KnowledgeMedia, KnowledgeDeduplicationFeedback, KnowledgeChangeLog,
+    KnowledgeTag, KnowledgeMedia, MediaUploadStaging,
+    KnowledgeDeduplicationFeedback, KnowledgeChangeLog,
 )
 from app.core.config import settings
 from app.services.embedding import EmbeddingServiceUnavailable
@@ -38,6 +38,11 @@ from app.services.knowledge_excel import (
     build_knowledge_import_template,
     parse_knowledge_workbook,
 )
+from app.services.media_deletion import (
+    delete_media_immediately_or_enqueue,
+    enqueue_media_deletion,
+)
+from app.services.media_storage import MediaStorageError, get_media_storage
 from app.schemas.knowledge import (
     KnowledgeCreate, KnowledgeUpdate, KnowledgeResponse,
     CandidateSubmit, DeduplicationFeedbackSubmit, FeedbackSubmit,
@@ -47,9 +52,7 @@ from app.schemas.knowledge import (
 
 router = APIRouter(prefix="/knowledge", tags=["知识库管理"])
 logger = logging.getLogger(__name__)
-
-UPLOAD_DIR = Path(settings.UPLOAD_DIR) if settings.UPLOAD_DIR else Path(__file__).resolve().parents[2] / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+media_storage = get_media_storage()
 
 ALLOWED_IMAGE = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 ALLOWED_VIDEO = {"video/mp4", "video/webm", "video/quicktime"}
@@ -62,9 +65,6 @@ MIME_EXTENSIONS = {
     "video/webm": ".webm",
     "video/quicktime": ".mov",
 }
-TEMP_UPLOAD_TTL_SECONDS = 15 * 60
-TEMP_UPLOADS: dict[str, dict] = {}
-
 ALPHA = string.ascii_uppercase  # A-Z
 
 
@@ -88,13 +88,6 @@ def _normalize_content(raw):
     return {"blocks": [{"type": "text", "value": str(raw)}]}
 
 
-def _cleanup_temp_uploads() -> None:
-    cutoff = time.monotonic() - TEMP_UPLOAD_TTL_SECONDS
-    for temp_id, upload in list(TEMP_UPLOADS.items()):
-        if upload["created_at"] < cutoff:
-            TEMP_UPLOADS.pop(temp_id, None)
-
-
 async def _read_validated_upload(file: UploadFile, media_type: str) -> tuple[bytes, str]:
     allowed_types = ALLOWED_IMAGE if media_type == "image" else ALLOWED_VIDEO if media_type == "video" else None
     if not allowed_types or file.content_type not in allowed_types:
@@ -108,45 +101,92 @@ async def _read_validated_upload(file: UploadFile, media_type: str) -> tuple[byt
 
 def _persist_temp_media(
     db: Session,
-    knowledge_id: str,
+    item: Knowledge,
     content: dict,
     username: str,
 ) -> None:
-    _cleanup_temp_uploads()
+    pending: dict[str, list[dict]] = {}
     for block in content.get("blocks", []):
         temp_id = block.get("media_id")
         if not isinstance(temp_id, str) or not temp_id.startswith("temp-"):
             continue
-        upload = TEMP_UPLOADS.pop(temp_id, None)
-        if not upload or upload["username"] != username:
-            raise HTTPException(422, "Temporary upload is unavailable.")
-        filename = f"{uuid.uuid4().hex[:12]}{upload['extension']}"
-        file_path = UPLOAD_DIR / filename
-        file_path.write_bytes(upload["data"])
+        pending.setdefault(temp_id, []).append(block)
+
+    if not pending:
+        return
+
+    temp_ids = list(pending)
+    lock_order = sorted(temp_ids)
+    now = datetime.utcnow()
+    staged_uploads = (
+        db.query(MediaUploadStaging)
+        .filter(
+            MediaUploadStaging.id.in_(lock_order),
+            MediaUploadStaging.username == username,
+            MediaUploadStaging.expires_at > now,
+            MediaUploadStaging.status == "ready",
+            MediaUploadStaging.storage_backend == media_storage.backend,
+        )
+        .order_by(MediaUploadStaging.id)
+        .with_for_update()
+        .all()
+    )
+    staged_by_id = {staged.id: staged for staged in staged_uploads}
+    unavailable = [
+        temp_id
+        for temp_id in temp_ids
+        if temp_id not in staged_by_id
+    ]
+    if unavailable:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "TEMP_UPLOAD_UNAVAILABLE",
+                "message": "临时媒体已过期或不可用",
+                "temp_ids": unavailable,
+            },
+        )
+
+    type_mismatches = [
+        temp_id
+        for temp_id in temp_ids
+        if any(
+            block.get("type") != staged_by_id[temp_id].media_type
+            for block in pending[temp_id]
+        )
+    ]
+    if type_mismatches:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "TEMP_UPLOAD_TYPE_MISMATCH",
+                "message": "临时媒体类型与内容块不一致",
+                "temp_ids": type_mismatches,
+            },
+        )
+
+    for temp_id in temp_ids:
+        staged = staged_by_id[temp_id]
+        blocks = pending[temp_id]
+        primary_block = blocks[0]
         db.add(
             KnowledgeMedia(
                 id=f"media-{uuid.uuid4().hex[:8]}",
-                knowledge_id=knowledge_id,
-                media_type=upload["media_type"],
-                filename=filename,
-                original_name=upload["original_name"],
-                file_path=str(file_path),
-                file_size=len(upload["data"]),
-                mime_type=upload["mime_type"],
-                alt=block.get("alt") or upload["alt"] or filename,
-                caption=block.get("caption") or upload["caption"],
+                knowledge_id=item.id,
+                media_type=staged.media_type,
+                filename=staged.filename,
+                original_name=staged.original_name,
+                file_path=staged.storage_key,
+                file_size=staged.file_size,
+                mime_type=staged.mime_type,
+                alt=primary_block.get("alt") or staged.alt or staged.filename,
+                caption=primary_block.get("caption") or staged.caption,
             )
         )
-        block["media_id"] = filename
-
-
-def _discard_temp_media(content: dict, username: str) -> None:
-    for block in content.get("blocks", []):
-        temp_id = block.get("media_id")
-        if isinstance(temp_id, str):
-            upload = TEMP_UPLOADS.get(temp_id)
-            if upload and upload["username"] == username:
-                TEMP_UPLOADS.pop(temp_id, None)
+        for block in blocks:
+            block["media_id"] = staged.filename
+        db.delete(staged)
+    flag_modified(item, "content")
 
 
 def _sync_media_meta(db: Session, knowledge_id: str, content: dict):
@@ -163,6 +203,19 @@ def _sync_media_meta(db: Session, knowledge_id: str, content: dict):
                     media_obj.alt = b["alt"]
                 if b.get("caption"):
                     media_obj.caption = b["caption"]
+
+
+def _referenced_media_filenames(content: dict) -> set[str]:
+    filenames: set[str] = set()
+    for block in content.get("blocks", []):
+        media_id = block.get("media_id")
+        if (
+            block.get("type") in ("image", "video")
+            and isinstance(media_id, str)
+            and media_id
+        ):
+            filenames.add(media_id.replace("/uploads/", "", 1))
+    return filenames
 
 
 def _deduplication_metadata(decision: DedupDecision) -> dict:
@@ -312,18 +365,14 @@ def _create_knowledge_item(
         raise HTTPException(status_code=422, detail="所属分类不存在。")
 
     normalized_content = _normalize_content(body.content)
-    try:
-        decision = _check_manual_deduplication(
-            db,
-            title=body.title,
-            subtitles=body.subtitles or [],
-            content=normalized_content,
-            scene_tags=body.applicable_scenes or [],
-            confirm_dedup_review=body.confirm_dedup_review,
-        )
-    except Exception:
-        _discard_temp_media(normalized_content, current_user.username)
-        raise
+    decision = _check_manual_deduplication(
+        db,
+        title=body.title,
+        subtitles=body.subtitles or [],
+        content=normalized_content,
+        scene_tags=body.applicable_scenes or [],
+        confirm_dedup_review=body.confirm_dedup_review,
+    )
     item = Knowledge(
         id=_generate_knowledge_id(db),
         title=body.title,
@@ -342,7 +391,12 @@ def _create_knowledge_item(
     )
     db.add(item)
     db.flush()
-    _persist_temp_media(db, item.id, item.content, current_user.username)
+    _persist_temp_media(
+        db,
+        item,
+        item.content,
+        current_user.username,
+    )
     if decision.embedding:
         save_embedding(
             db,
@@ -362,8 +416,12 @@ def create_knowledge(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("knowledge:create")),
 ):
-    item = _create_knowledge_item(body, db, current_user)
-    db.commit()
+    try:
+        item = _create_knowledge_item(body, db, current_user)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(item)
     return _to_response(item)
 
@@ -751,39 +809,59 @@ def update_knowledge(
     before_data = _knowledge_snapshot(item) if was_published else None
     updates = body.model_dump(exclude_unset=True)
     updated_fields = set(updates)
-    for field, val in updates.items():
-        if field == "content":
-            normalized = _normalize_content(val)
-            setattr(item, field, normalized)
-            # 同步 content.blocks 里的 alt/caption 回 media 表
-            _sync_media_meta(db, item.id, normalized)
-        elif field == "status":
-            setattr(item, field, KnowledgeStatus(val))
-        else:
-            setattr(item, field, val)
-    after_data = _knowledge_snapshot(item)
-    changed_fields = [
-        field for field, before_value in (before_data or {}).items()
-        if before_value != after_data.get(field)
-    ]
-    if changed_fields:
-        item.updated_by = current_user.username
-    if was_published and changed_fields:
-        db.add(
-            KnowledgeChangeLog(
-                id=f"kcl-{uuid.uuid4().hex[:12]}",
-                knowledge_id=item.id,
-                changed_by=current_user.username,
-                changed_fields=changed_fields,
-                before_data=before_data,
-                after_data=after_data,
+    try:
+        for field, val in updates.items():
+            if field == "content":
+                normalized = _normalize_content(val)
+                setattr(item, field, normalized)
+                _persist_temp_media(
+                    db,
+                    item,
+                    normalized,
+                    current_user.username,
+                )
+                # 同步 content.blocks 里的 alt/caption 回 media 表
+                _sync_media_meta(db, item.id, normalized)
+                referenced_media = _referenced_media_filenames(normalized)
+                for media in list(item.media):
+                    if media.filename not in referenced_media:
+                        enqueue_media_deletion(
+                            db,
+                            media.file_path,
+                            media.filename,
+                            storage_backend=media_storage.backend,
+                        )
+                        db.delete(media)
+            elif field == "status":
+                setattr(item, field, KnowledgeStatus(val))
+            else:
+                setattr(item, field, val)
+        after_data = _knowledge_snapshot(item)
+        changed_fields = [
+            field for field, before_value in (before_data or {}).items()
+            if before_value != after_data.get(field)
+        ]
+        if changed_fields:
+            item.updated_by = current_user.username
+        if was_published and changed_fields:
+            db.add(
+                KnowledgeChangeLog(
+                    id=f"kcl-{uuid.uuid4().hex[:12]}",
+                    knowledge_id=item.id,
+                    changed_by=current_user.username,
+                    changed_fields=changed_fields,
+                    before_data=before_data,
+                    after_data=after_data,
+                )
             )
-        )
-    if {"title", "subtitles", "content"} & updated_fields:
-        ensure_embedding(db, item)
-        ensure_search_embeddings(db, item)
-    item.updated_at = datetime.utcnow()
-    db.commit()
+        if {"title", "subtitles", "content"} & updated_fields:
+            ensure_embedding(db, item)
+            ensure_search_embeddings(db, item)
+        item.updated_at = datetime.utcnow()
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(item)
     return _to_response(item)
 
@@ -793,8 +871,19 @@ def delete_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
-    db.delete(item)
-    db.commit()
+    try:
+        for media in item.media:
+            enqueue_media_deletion(
+                db,
+                media.file_path,
+                media.filename,
+                storage_backend=media_storage.backend,
+            )
+        db.delete(item)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.post(
@@ -999,11 +1088,17 @@ async def upload_media(
         raise HTTPException(400, f"不支持的视频格式: {file.content_type}，支持: mp4/webm/mov")
 
     ext = extension
-    filename = f"{uuid.uuid4().hex[:12]}{ext}"
-    file_path = str(UPLOAD_DIR / filename)
-
-    with open(file_path, "wb") as f:
-        f.write(content)
+    filename = f"{uuid.uuid4().hex}{ext}"
+    try:
+        storage_key = await run_in_threadpool(
+            media_storage.put,
+            filename,
+            content,
+            file.content_type
+            or ("video/mp4" if media_type == "video" else "image/png"),
+        )
+    except MediaStorageError as exc:
+        raise HTTPException(502, "媒体存储服务不可用") from exc
 
     media = KnowledgeMedia(
         id=f"media-{uuid.uuid4().hex[:8]}",
@@ -1011,15 +1106,24 @@ async def upload_media(
         media_type=media_type,
         filename=filename,
         original_name=file.filename or filename,
-        file_path=file_path,
+        file_path=storage_key,
         file_size=len(content),
         mime_type=file.content_type or ("video/mp4" if media_type == "video" else "image/png"),
         alt=alt or filename,
         caption=caption or '',
     )
-    db.add(media)
-    db.commit()
-    db.refresh(media)
+    try:
+        db.add(media)
+        db.commit()
+    except Exception:
+        db.rollback()
+        await run_in_threadpool(
+            delete_media_immediately_or_enqueue,
+            storage_key,
+            filename,
+            storage=media_storage,
+        )
+        raise
     return {
         "id": media.id,
         "media_type": media.media_type,
@@ -1039,25 +1143,98 @@ async def upload_temp(
     media_type: str = Form("image"),
     alt: str = Form(""),
     caption: str = Form(""),
+    db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("knowledge:create")),
 ):
-    _cleanup_temp_uploads()
     content, extension = await _read_validated_upload(file, media_type)
-    filename = f"temp-{uuid.uuid4().hex[:12]}"
-    TEMP_UPLOADS[filename] = {
-        "username": current_user.username,
-        "media_type": media_type,
-        "mime_type": file.content_type,
-        "extension": extension,
-        "original_name": file.filename or filename,
-        "alt": alt,
-        "caption": caption,
-        "data": content,
-        "created_at": time.monotonic(),
-    }
+    object_id = uuid.uuid4().hex
+    temp_id = f"temp-{object_id}"
+    filename = f"{object_id}{extension}"
+    mime_type = file.content_type or (
+        "video/mp4" if media_type == "video" else "image/png"
+    )
+    ready_ttl = max(1, settings.MEDIA_UPLOAD_STAGING_TTL_SECONDS)
+    active_ttl = max(
+        ready_ttl * 2,
+        settings.MEDIA_UPLOAD_ACTIVE_TTL_SECONDS,
+    )
+    staging = MediaUploadStaging(
+        id=temp_id,
+        username=current_user.username,
+        storage_backend=media_storage.backend,
+        storage_key="",
+        filename=filename,
+        status="uploading",
+        media_type=media_type,
+        original_name=file.filename or filename,
+        file_size=len(content),
+        mime_type=mime_type,
+        alt=alt,
+        caption=caption,
+        expires_at=datetime.utcnow() + timedelta(seconds=active_ttl),
+    )
+    try:
+        db.add(staging)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    # Hold the staging row lock across the object upload. Expiry workers use
+    # SKIP LOCKED, so they cannot retire this lease while put() is in flight.
+    db.refresh(staging, with_for_update=True)
+    try:
+        storage_key = await run_in_threadpool(
+            media_storage.put,
+            filename,
+            content,
+            mime_type,
+        )
+    except MediaStorageError as exc:
+        try:
+            staging.expires_at = datetime.utcnow()
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to expire media staging after upload failure: %s",
+                temp_id,
+            )
+        raise HTTPException(502, "媒体存储服务不可用") from exc
+
+    staging.storage_key = storage_key
+    staging.status = "ready"
+    staging.expires_at = datetime.utcnow() + timedelta(seconds=ready_ttl)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        try:
+            failed_staging = (
+                db.query(MediaUploadStaging)
+                .filter(MediaUploadStaging.id == temp_id)
+                .with_for_update()
+                .first()
+            )
+            if failed_staging:
+                failed_staging.expires_at = datetime.utcnow()
+                db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to expire media staging after finalize failure: %s",
+                temp_id,
+            )
+        await run_in_threadpool(
+            delete_media_immediately_or_enqueue,
+            storage_key,
+            filename,
+            storage=media_storage,
+        )
+        raise
     return {
-        "id": filename,
-        "filename": filename,
+        "id": temp_id,
+        "filename": temp_id,
         "original_name": file.filename,
         "file_path": None,
         "file_size": len(content),
@@ -1110,10 +1287,37 @@ def delete_media(knowledge_id: str, media_file: str, db: Session = Depends(get_d
     ).first()
     if not media:
         raise HTTPException(404, "媒体文件不存在")
-    if os.path.exists(media.file_path):
-        os.remove(media.file_path)
-    db.delete(media)
-    db.commit()
+    storage_key = media.file_path
+    filename = media.filename
+    normalized = _normalize_content(deepcopy(item.content))
+    original_block_count = len(normalized.get("blocks", []))
+    normalized["blocks"] = [
+        block
+        for block in normalized.get("blocks", [])
+        if not (
+            isinstance(block.get("media_id"), str)
+            and block["media_id"].replace("/uploads/", "", 1) == filename
+        )
+    ]
+    content_changed = len(normalized["blocks"]) != original_block_count
+    if content_changed:
+        item.content = normalized
+        item.updated_at = datetime.utcnow()
+    try:
+        enqueue_media_deletion(
+            db,
+            storage_key,
+            filename,
+            storage_backend=media_storage.backend,
+        )
+        db.delete(media)
+        if content_changed:
+            ensure_embedding(db, item)
+            ensure_search_embeddings(db, item)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
 
 # ---- 候选池 ----
