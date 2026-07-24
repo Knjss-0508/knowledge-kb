@@ -11,13 +11,16 @@ from app.models import user  # noqa: F401
 
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+database_url = settings.SQLALCHEMY_DATABASE_URL
+# Alembic stores options in ConfigParser, where percent signs are interpolation
+# markers. Escaping keeps URL-encoded cloud database passwords intact.
+config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=settings.DATABASE_URL,
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "pyformat"},
@@ -32,6 +35,7 @@ def run_migrations_online() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"connect_timeout": settings.DB_CONNECT_TIMEOUT_SECONDS},
     )
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)

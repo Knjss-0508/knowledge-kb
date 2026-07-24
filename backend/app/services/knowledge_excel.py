@@ -1,6 +1,8 @@
 import re
 from dataclasses import dataclass
 from io import BytesIO
+from typing import Any
+from urllib.parse import urlsplit
 from zipfile import BadZipFile, ZipFile
 
 from openpyxl import Workbook, load_workbook
@@ -8,21 +10,38 @@ from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 
 
-MAX_IMPORT_ROWS = 100
+MAX_IMPORT_ROWS = 500
 MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 IMPORT_SHEET_NAME = "知识导入"
 
 HEADER_ALIASES = {
-    "title": {"标题", "知识标题"},
+    "title": {"标题", "知识标题", "主标题"},
     "category": {"知识分类", "所属分类", "分类", "知识分类ID", "分类ID"},
     "content": {"正文", "知识正文", "知识内容", "内容"},
     "subtitles": {"副标题", "副标题列表"},
     "scenes": {"场景标签", "适用场景"},
+    "scope": {"适用范围"},
+    "source_status": {"生效状态"},
     "applicable_categories": {"适用类目"},
     "brands": {"适用品牌", "品牌"},
     "models": {"适用机型", "机型"},
 }
+
+CATEGORY_VALUE_ALIASES = {
+    "场景判定": "质检标准",
+    "标准定义": "质检标准",
+    "检测方法": "操作流程",
+}
+
+VALID_SOURCE_STATUSES = {"生效中", "待审核", "已禁用"}
+IMPORTABLE_SOURCE_STATUS = "生效中"
+UNRESTRICTED_SCOPES = {"通用"}
+EXTERNAL_MEDIA_TOKEN_PATTERN = re.compile(
+    r"\[(?P<kind>img|video):[ \t]*"
+    r"(?P<url>https://[^\s\[\]<>\"']+)\]",
+    re.IGNORECASE,
+)
 
 
 class KnowledgeExcelError(ValueError):
@@ -40,12 +59,14 @@ class ExcelKnowledgeRow:
     row_number: int
     title: str
     category_id: str = ""
-    content: str = ""
+    content: Any = ""
     subtitles: list[str] | None = None
     applicable_scenes: list[str] | None = None
     applicable_categories: list[str] | None = None
     applicable_brands: list[str] | None = None
     applicable_models: list[str] | None = None
+    source_status: str = ""
+    source_scope: str = ""
     error_code: str | None = None
     error_message: str | None = None
 
@@ -73,6 +94,62 @@ def _split_values(value) -> list[str]:
     if not text:
         return []
     return [item.strip() for item in re.split(r"[；;|\n]+", text) if item.strip()]
+
+
+def _merge_values(*groups: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for value in group:
+            if value not in seen:
+                seen.add(value)
+                merged.append(value)
+    return merged
+
+
+def _is_safe_external_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        return (
+            parsed.scheme.lower() == "https"
+            and bool(parsed.hostname)
+            and not parsed.username
+            and not parsed.password
+        )
+    except ValueError:
+        return False
+
+
+def _content_with_external_media(value) -> str | dict[str, Any]:
+    text = _cell_text(value)
+    blocks: list[dict[str, str]] = []
+    found_media = False
+    cursor = 0
+
+    def append_text(segment: str) -> None:
+        segment = segment.strip("\n")
+        if segment.strip():
+            blocks.append({"type": "text", "value": segment})
+
+    for match in EXTERNAL_MEDIA_TOKEN_PATTERN.finditer(text):
+        external_url = match.group("url").strip()
+        if not _is_safe_external_url(external_url):
+            continue
+        media_type = "image" if match.group("kind").lower() == "img" else "video"
+        append_text(text[cursor : match.start()])
+        blocks.append(
+            {
+                "type": media_type,
+                "external_url": external_url,
+                "alt": "",
+                "caption": "",
+            }
+        )
+        cursor = match.end()
+        found_media = True
+    append_text(text[cursor:])
+
+    return {"blocks": blocks} if found_media else text
 
 
 def _category_records(categories) -> tuple[dict[str, object], dict[str, list[str]], dict[str, str]]:
@@ -132,6 +209,18 @@ def _resolve_category(
             "CATEGORY_AMBIGUOUS",
             f"分类名称“{text}”存在重名，请填写分类ID或完整分类路径。",
         )
+
+    mapped_name = CATEGORY_VALUE_ALIASES.get(text)
+    if mapped_name:
+        mapped_matches = by_name.get(mapped_name, [])
+        if len(mapped_matches) == 1:
+            return mapped_matches[0]
+        if len(mapped_matches) > 1:
+            raise KnowledgeExcelRowError(
+                "CATEGORY_AMBIGUOUS",
+                f"兼容分类“{text}”映射到“{mapped_name}”后存在重名，"
+                "请填写分类ID或完整分类路径。",
+            )
     raise KnowledgeExcelRowError(
         "CATEGORY_NOT_FOUND",
         f"分类“{text}”不存在，请从模板的“分类字典”工作表中选择。",
@@ -223,8 +312,34 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
             )
 
         title = _cell_text(value_at(values, "title"))
-        result = ExcelKnowledgeRow(row_number=row_number, title=title)
+        source_status = _cell_text(value_at(values, "source_status"))
+        source_scope = _cell_text(value_at(values, "scope"))
+        result = ExcelKnowledgeRow(
+            row_number=row_number,
+            title=title,
+            source_status=source_status,
+            source_scope=source_scope,
+        )
         try:
+            if "source_status" in indexes:
+                if not source_status:
+                    raise KnowledgeExcelRowError(
+                        "SOURCE_STATUS_REQUIRED",
+                        "生效状态不能为空；仅“生效中”记录允许上传。",
+                    )
+                if source_status not in VALID_SOURCE_STATUSES:
+                    raise KnowledgeExcelRowError(
+                        "SOURCE_STATUS_INVALID",
+                        f"生效状态“{source_status}”不受支持，"
+                        "仅允许生效中、待审核或已禁用。",
+                    )
+                if source_status != IMPORTABLE_SOURCE_STATUS:
+                    raise KnowledgeExcelRowError(
+                        "SOURCE_STATUS_NOT_IMPORTABLE",
+                        f"该记录为“{source_status}”，不会上传；"
+                        "审核通过并改为“生效中”后再导入。",
+                    )
+
             if not title:
                 raise KnowledgeExcelRowError("TITLE_REQUIRED", "标题不能为空。")
             if len(title) > 256:
@@ -243,9 +358,17 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
                 value_at(values, "category"),
                 category_records,
             )
-            result.content = content
+            result.content = _content_with_external_media(content)
             result.subtitles = _split_values(value_at(values, "subtitles"))
-            result.applicable_scenes = _split_values(value_at(values, "scenes"))
+            scope_tags = [
+                f"适用范围：{scope}"
+                for scope in _split_values(source_scope)
+                if scope not in UNRESTRICTED_SCOPES
+            ]
+            result.applicable_scenes = _merge_values(
+                _split_values(value_at(values, "scenes")),
+                scope_tags,
+            )
             result.applicable_categories = _split_values(
                 value_at(values, "applicable_categories")
             )
@@ -300,7 +423,11 @@ def build_knowledge_import_template(categories) -> bytes:
         "必填。优先填写分类ID，也支持唯一分类名称或完整分类路径。",
         "知识库",
     )
-    import_sheet["C1"].comment = Comment("必填，纯文本正文。", "知识库")
+    import_sheet["C1"].comment = Comment(
+        "必填。仅处理插件自动回填的 [img:https://...] 或 "
+        "[video:https://...] 标记；其他 URL 保持原文。",
+        "知识库",
+    )
     import_sheet["D1"].comment = Comment("多项请使用中文分号“；”分隔。", "知识库")
     for cell_ref in ("E1", "F1", "G1", "H1"):
         import_sheet[cell_ref].comment = Comment(
@@ -339,6 +466,16 @@ def build_knowledge_import_template(categories) -> bytes:
         ("必填列", "标题、知识分类、正文。"),
         ("知识分类", "推荐从“分类字典”复制分类ID；也可填写唯一分类名称或完整分类路径。"),
         ("多值字段", "副标题、场景标签等多项内容使用中文分号“；”分隔。"),
+        (
+            "兼容格式",
+            "支持“知识库主表”的主标题、知识内容、适用范围和生效状态列；"
+            "存在生效状态列时仅导入“生效中”记录。",
+        ),
+        (
+            "正文媒体",
+            "仅识别插件标记 [img:https://...] 和 [video:https://...]；"
+            "导入后会在原位置显示缩略图或视频卡片，官网、文档及正文原有 URL 不转换。",
+        ),
         ("导入结果", "成功行进入待审核状态；格式错误、分类不存在或查重未通过的行单独返回失败原因。"),
         ("单次上限", f"每个文件最多 {MAX_IMPORT_ROWS} 条、文件最大 5MB，仅支持 .xlsx。"),
         ("示例", "标题：设备无法开机；知识分类：cat-qc-process；正文：先检查电量，再长按电源键。"),

@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from pydantic_settings import BaseSettings
 
 
@@ -12,13 +14,29 @@ class Settings(BaseSettings):
     POSTGRES_USER: str = "knowledge_admin"
     POSTGRES_PASSWORD: str = "knowledge_pass_2026"
     POSTGRES_DB: str = "knowledge_base"
+    DATABASE_URL: str = ""
+    DB_CONNECT_RETRIES: int = 60
+    DB_CONNECT_RETRY_SECONDS: float = 2.0
+    DB_CONNECT_TIMEOUT_SECONDS: int = 10
+    DB_POOL_RECYCLE_SECONDS: int = 1800
 
     @property
-    def DATABASE_URL(self) -> str:
+    def SQLALCHEMY_DATABASE_URL(self) -> str:
+        configured_url = self.DATABASE_URL.strip()
+        if configured_url:
+            if configured_url.startswith("postgres://"):
+                return "postgresql://" + configured_url[len("postgres://"):]
+            return configured_url
         return (
-            f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
-            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+            f"postgresql://{quote(self.POSTGRES_USER, safe='')}:{quote(self.POSTGRES_PASSWORD, safe='')}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{quote(self.POSTGRES_DB, safe='')}"
         )
+
+    # Optional first-run administrator for a new cloud database.
+    INITIAL_ADMIN_USERNAME: str = ""
+    INITIAL_ADMIN_PASSWORD: str = ""
+    INITIAL_ADMIN_FORCE_RESET: bool = False
+    ALLOW_INSECURE_DEFAULT_ADMIN: bool = False
 
     # Redis
     REDIS_HOST: str = "localhost"
@@ -62,6 +80,23 @@ class Settings(BaseSettings):
     # Empty means <backend>/uploads. Containers override this with /app/uploads.
     UPLOAD_DIR: str = ""
     UPLOAD_MAX_BYTES: int = 20 * 1024 * 1024
+    MEDIA_STORAGE_BACKEND: str = "local"
+    S3_BUCKET: str = ""
+    S3_ENDPOINT_URL: str = ""
+    S3_REGION: str = "us-east-1"
+    S3_ACCESS_KEY_ID: str = ""
+    S3_SECRET_ACCESS_KEY: str = ""
+    S3_SESSION_TOKEN: str = ""
+    S3_KEY_PREFIX: str = "knowledge-kb/media"
+    S3_ADDRESSING_STYLE: str = "auto"
+    S3_PUBLIC_BASE_URL: str = ""
+    S3_PRESIGN_EXPIRES_SECONDS: int = 900
+    MEDIA_UPLOAD_ACTIVE_TTL_SECONDS: int = 3600
+    MEDIA_UPLOAD_STAGING_TTL_SECONDS: int = 900
+    MEDIA_DELETION_POLL_SECONDS: float = 15.0
+    MEDIA_DELETION_BATCH_SIZE: int = 50
+    MEDIA_DELETION_RETRY_BASE_SECONDS: int = 5
+    MEDIA_DELETION_RETRY_MAX_SECONDS: int = 3600
     SESSION_TTL_HOURS: int = 24
 
     class Config:

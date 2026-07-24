@@ -63,7 +63,9 @@
     .dlg-h h3:before{content:"";position:absolute;left:0;top:3px;bottom:3px;width:4px;border-radius:2px;background:#009b83}
     .dlg-x{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;cursor:pointer;color:#667085;font-size:22px;border:1px solid transparent;background:none;transition:all .16s ease}
     .dlg-x:hover{background:#f2f5f6;border-color:#e1e8e8;color:#1d2939}
+    .dlg-x:disabled{opacity:.45;cursor:not-allowed;background:none;border-color:transparent}
     .dlg-b{padding:22px 24px 28px;overflow-y:auto;flex:1;background:#fafbfc}
+    .dlg-b.save-locked{pointer-events:none;opacity:.82}
     .dlg-f{min-height:66px;padding:0 24px;border-top:1px solid #e8edf0;display:flex;align-items:center;justify-content:flex-end;gap:9px;background:#fff}
     .sec{margin:0 0 24px;padding:0 0 24px;border-bottom:1px solid #e8edf0}
     .sec:last-child{margin-bottom:0;padding-bottom:0;border-bottom:0}
@@ -115,27 +117,39 @@
     .blk-body{flex:1;display:flex;flex-direction:column;gap:5px}
     .blk-rm{width:24px;height:24px;border:none;background:none;color:#c9cdd4;cursor:pointer;font-size:15px;flex-shrink:0;border-radius:4px;margin-top:2px}
     .blk-rm:hover{color:#f53f3f;background:#fff0f0}
-    .blk-acts{display:flex;gap:6px;margin-top:6px}
+    .blk-acts{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:6px}
     .blk-act{display:inline-flex;align-items:center;gap:3px;padding:3px 8px;background:#f0f5ff;color:#3370ff;border:1px solid #bedaff;border-radius:4px;font-size:10px;cursor:pointer}
     .blk-act.vi{background:#f5f0ff;color:#722ed1;border-color:#d3adf7}
+    .blk-act.legacy{background:#f7f8fa;color:#667085;border-color:#d0d5dd}
     .blk-act:hover{opacity:.8}
     .rich-editor{min-height:92px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
     textarea.rich-editor{resize:vertical}
     .rich-editor-view{height:auto;background:#f2f5f6;color:#667085}
     .rich-editor a,.linkified-text a{color:#1677ff;text-decoration:underline;text-underline-offset:2px}
-    .rich-editor-tip{font-size:10px;color:#86909c}
-    .child{margin-top:6px;padding:8px;background:#fff;border:1px solid #e5e6eb;border-radius:6px}
+    .rich-editor-tip{font-size:10px;color:#667085;line-height:1.5}
+    .child{margin-top:8px;padding:10px;background:#fbfcfd;border:1px solid #dfe7e9;border-radius:8px}
     .child-h{display:flex;gap:8px;align-items:flex-start}
     .upload-zone{display:flex;align-items:center;justify-content:center;gap:6px;padding:16px;border:1.5px dashed #a9dcd2;border-radius:6px;cursor:pointer;color:#52746e;background:#f6fcfa;transition:all .2s}
     .upload-zone:hover{border-color:#009b83;color:#007f6b;background:#eafaf5}
     .img-preview{width:72px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e5e6eb;flex-shrink:0}
     .vid-preview{width:72px;height:54px;max-width:72px;max-height:54px;border-radius:6px;border:1px solid #e5e6eb;background:#000;flex-shrink:0}
-    .img-thumb-wrap{position:relative;width:72px;height:54px;max-width:72px;max-height:54px;min-width:72px;min-height:54px;flex-shrink:0;border-radius:6px;overflow:hidden;border:1px solid #e5e6eb;cursor:pointer}.img-thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block}.img-thumb-wrap .img-mask{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600;letter-spacing:2px;opacity:0;transition:opacity .2s;pointer-events:none;border-radius:6px}.img-thumb-wrap:hover .img-mask{opacity:1}
+    .media-inline-card{display:flex;align-items:flex-start;gap:12px;min-width:0}
+    .media-inline-meta{display:flex;flex:1;min-width:0;flex-direction:column;gap:5px}
+    .media-inline-title{font-size:12px;font-weight:600;color:#1d2939;overflow-wrap:anywhere}
+    .media-inline-caption{font-size:11px;line-height:1.5;color:#667085;overflow-wrap:anywhere}
+    .img-thumb-wrap{position:relative;width:220px;height:132px;max-width:44%;min-width:160px;flex-shrink:0;border-radius:8px;overflow:hidden;border:1px solid #d8e0e7;cursor:pointer;background:#f2f4f7}.img-thumb-wrap img{width:100%;height:100%;object-fit:contain;display:block;background:#f7f8fa}.img-thumb-wrap .img-mask{position:absolute;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600;letter-spacing:2px;opacity:0;transition:opacity .2s;pointer-events:none;border-radius:8px}.img-thumb-wrap:hover .img-mask{opacity:1}.img-thumb-wrap:focus-visible{outline:2px solid #3370ff;outline-offset:2px}.media-thumb-error{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:10px;text-align:center;background:#fff7e8;color:#c65b00;font-size:11px;line-height:1.4}.external-media-note{font-size:10px;color:#3370ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .img-thumb:hover{box-shadow:0 2px 12px rgba(0,0,0,.15)}
-    .vid-thumb-wrap{position:relative;width:96px;height:54px;max-width:96px;max-height:54px;min-width:96px;min-height:54px;flex-shrink:0;border-radius:6px;overflow:hidden;border:1px solid #e5e6eb;cursor:pointer;background:#1d2129}.vid-thumb-wrap video{width:100%;height:100%;object-fit:cover;display:block}.vid-thumb-wrap .vid-mask{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;font-weight:700;opacity:0;transition:opacity .2s;pointer-events:none;border-radius:6px}.vid-thumb-wrap:hover .vid-mask{opacity:1}
+    .vid-thumb-wrap{position:relative;width:220px;height:124px;max-width:44%;min-width:160px;flex-shrink:0;border-radius:8px;overflow:hidden;border:1px solid #d8e0e7;cursor:pointer;background:#1d2129}.vid-thumb-wrap video{width:100%;height:100%;object-fit:contain;display:block;background:#101828}.vid-thumb-wrap .vid-mask{position:absolute;inset:0;background:rgba(0,0,0,.38);display:flex;align-items:center;justify-content:center;color:#fff;font-size:24px;font-weight:700;opacity:.86;transition:opacity .2s;pointer-events:none;border-radius:8px}.vid-thumb-wrap:hover .vid-mask{opacity:1}.vid-thumb-wrap:focus-visible{outline:2px solid #765be6;outline-offset:2px}
 
-    .full-preview{position:fixed;top:0;left:0;right:0;bottom:0;z-index:3000;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;cursor:pointer}
-    .full-preview img{max-width:90vw;max-height:90vh;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,.3)}
+    .full-preview{position:fixed;inset:0;z-index:3000;background:rgba(8,15,24,.9);backdrop-filter:blur(5px);display:flex;align-items:center;justify-content:center;padding:28px;overscroll-behavior:contain}
+    .full-preview-stage{position:relative;display:flex;flex-direction:column;max-width:calc(100vw - 56px);max-height:calc(100vh - 56px);min-width:280px;border:1px solid rgba(255,255,255,.16);border-radius:10px;background:#111b26;box-shadow:0 24px 80px rgba(0,0,0,.48);overflow:hidden}
+    .full-preview-bar{height:46px;padding:0 12px 0 16px;display:flex;align-items:center;justify-content:space-between;color:#fff;background:rgba(17,27,38,.96);border-bottom:1px solid rgba(255,255,255,.1);font-size:13px;font-weight:600}
+    .full-preview-close{width:32px;height:32px;border:0;border-radius:6px;background:transparent;color:#d0d5dd;font-size:22px;line-height:1;cursor:pointer}.full-preview-close:hover,.full-preview-close:focus-visible{background:rgba(255,255,255,.1);color:#fff;outline:none}
+    .full-preview-body{position:relative;min-height:180px;display:flex;align-items:center;justify-content:center;overflow:auto;background:#0b121b}
+    .full-preview img{display:block;max-width:calc(100vw - 80px);max-height:calc(100vh - 104px);object-fit:contain}
+    .full-preview video{display:block;max-width:calc(100vw - 80px);max-height:calc(100vh - 104px)}
+    .full-preview-error{padding:48px;color:#fdb9b9;font-size:13px;text-align:center}
+    @media(max-width:720px){.media-inline-card{flex-direction:column}.img-thumb-wrap,.vid-thumb-wrap{width:100%;max-width:100%;min-width:0}.img-thumb-wrap{height:auto;aspect-ratio:5/3}.vid-thumb-wrap{height:auto;aspect-ratio:16/9}}
 
     /* 运营工作台视觉层：保留既有 Vue 数据与操作逻辑 */
     :root{--app-font:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",Arial,sans-serif;--ink:#1d2939;--muted:#667085;--line:#e5e9ef;--canvas:#f7f8fa;--surface:#fff;--blue:#3370ff;--green:#00b42a;--teal:#009b83;--coral:#ef6d5b;--orange:#ff7d00;--gold:#e6a83c;--violet:#765be6;--nav:#172633}
@@ -178,10 +192,10 @@
     .dashboard-summary-grid.without-review-flow{grid-template-columns:minmax(0,1fr)}
     .dashboard-asset,.dashboard-flow{background:#fff;border:1px solid var(--line);border-radius:7px;padding:20px 21px}.dashboard-flow{grid-column:2/4}
     .dashboard-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:17px}.dashboard-section-head h3{margin:0;font-size:16px;color:var(--ink)}.dashboard-section-head p{margin:4px 0 0;color:var(--muted);font-size:12px;line-height:1.5}.dashboard-section-head .hint{margin:0;white-space:nowrap}
-    .asset-main{position:relative;isolation:isolate;width:100%;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:15px 16px;border:1px solid #dce8ff;border-radius:7px;background:radial-gradient(circle at 102% 128%,transparent 0 78px,#dce8ff 79px 112px,transparent 113px),#f7faff;color:var(--ink);cursor:pointer;text-align:left;transition:border-color .18s ease,background-color .18s ease,filter .18s ease}.asset-main:hover{border-color:#9dbfff;filter:brightness(.985)}.asset-main-label{font-size:12px;color:var(--muted)}.asset-main-value{display:block;margin-top:4px;font-size:36px;line-height:1;font-weight:750;font-variant-numeric:tabular-nums}.asset-main-action{color:var(--blue);font-size:12px;font-weight:700}
-    .asset-status-grid{display:grid;grid-template-columns:minmax(120px,.72fr) minmax(0,1.28fr);gap:8px;margin-top:10px}.asset-status,.asset-progress{position:relative;isolation:isolate;min-width:0;min-height:76px;padding:10px 12px;border:1px solid #edf0f2;border-radius:6px;background:#fff;text-align:left;cursor:pointer;transition:border-color .18s ease,filter .18s ease}.asset-status{background:radial-gradient(circle at 108% 132%,transparent 0 46px,#edf0f2 47px 68px,transparent 69px),#fff}.asset-status:hover,.asset-progress:hover{border-color:#b7d4ff;filter:brightness(.985)}.asset-main>*,.asset-status>*,.asset-progress>*,.flow-step>*{position:relative;z-index:1}.asset-status span{display:block;color:var(--muted);font-size:11px;white-space:nowrap}.asset-status b{display:block;margin-top:7px;color:var(--ink);font-size:22px;font-variant-numeric:tabular-nums}.asset-status.draft{background:radial-gradient(circle at 108% 132%,transparent 0 46px,#fff0d3 47px 68px,transparent 69px),#fff}.asset-status.draft b{color:#c65b00}.asset-progress{background:radial-gradient(circle at 110% 142%,transparent 0 56px,#d9f5ed 57px 80px,transparent 81px),#fff}.asset-progress-head{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--muted);font-size:11px}.asset-progress-head b{color:#168f45;font-size:17px;font-variant-numeric:tabular-nums}.asset-progress-track{display:block;height:6px;margin-top:9px;overflow:hidden;border-radius:999px;background:#edf0f2}.asset-progress-track i{display:block;height:100%;min-width:0;border-radius:inherit;background:linear-gradient(90deg,#00a98f,#3bc56f);transition:width .25s ease}.asset-progress small{display:block;margin-top:6px;color:#98a2b3;font-size:10px}
+    .asset-main{position:relative;isolation:isolate;width:100%;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:15px 16px;border:1px solid #dce8ff;border-radius:7px;background:radial-gradient(circle at calc(100% - 60px) calc(100% - 40px),transparent 0 78px,#dce8ff 79px 112px,transparent 113px),#f7faff;color:var(--ink);cursor:pointer;text-align:left;transition:border-color .18s ease,background-color .18s ease,filter .18s ease}.asset-main:hover{border-color:#9dbfff;filter:brightness(.985)}.asset-main-label{font-size:12px;color:var(--muted)}.asset-main-value{display:block;margin-top:4px;font-size:36px;line-height:1;font-weight:750;font-variant-numeric:tabular-nums}.asset-main-action{color:var(--blue);font-size:12px;font-weight:700}
+    .asset-status-grid{display:grid;grid-template-columns:minmax(120px,.72fr) minmax(0,1.28fr);gap:8px;margin-top:10px}.asset-status,.asset-progress{position:relative;isolation:isolate;min-width:0;min-height:76px;padding:10px 12px;border:1px solid #edf0f2;border-radius:6px;background:#fff;text-align:left;cursor:pointer;transition:border-color .18s ease,filter .18s ease}.asset-status{background:radial-gradient(circle at calc(100% - 37px) calc(100% - 24px),transparent 0 46px,#edf0f2 47px 68px,transparent 69px),#fff}.asset-status:hover,.asset-progress:hover{border-color:#b7d4ff;filter:brightness(.985)}.asset-main>*,.asset-status>*,.asset-progress>*,.flow-step>*{position:relative;z-index:1}.asset-status span{display:block;color:var(--muted);font-size:11px;white-space:nowrap}.asset-status b{display:block;margin-top:7px;color:var(--ink);font-size:22px;font-variant-numeric:tabular-nums}.asset-status.draft{background:radial-gradient(circle at calc(100% - 37px) calc(100% - 24px),transparent 0 46px,#fff0d3 47px 68px,transparent 69px),#fff}.asset-status.draft b{color:#c65b00}.asset-progress{background:radial-gradient(circle at calc(100% - 43px) calc(100% - 29px),transparent 0 56px,#d9f5ed 57px 80px,transparent 81px),#fff}.asset-progress-head{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--muted);font-size:11px}.asset-progress-head b{color:#168f45;font-size:17px;font-variant-numeric:tabular-nums}.asset-progress-track{display:block;height:6px;margin-top:9px;overflow:hidden;border-radius:999px;background:#edf0f2}.asset-progress-track i{display:block;height:100%;min-width:0;border-radius:inherit;background:linear-gradient(90deg,#00a98f,#3bc56f);transition:width .25s ease}.asset-progress small{display:block;margin-top:6px;color:#98a2b3;font-size:10px}
     .flow-meta{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex-wrap:wrap}.dashboard-chip{height:25px;padding:0 8px;border:1px solid transparent;border-radius:999px;background:#f2f4f7;color:#475467;font-size:11px;font-weight:700;cursor:pointer}.dashboard-chip.violet{background:#eeeafe;color:#644bd1}.dashboard-chip.danger{background:#fff0ed;color:#c83827}.dashboard-chip:hover{filter:brightness(.97)}
-    .flow-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:28px}.flow-step{position:relative;isolation:isolate;min-height:122px;padding:15px 14px;border:1px solid #e7eaee;border-radius:7px;background:radial-gradient(circle at 110% 132%,transparent 0 78px,#edf0f2 79px 108px,transparent 109px),#fff;text-align:left;color:var(--ink);cursor:pointer;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease,filter .18s ease}.flow-step:hover{transform:translateY(-2px);border-color:#a9dcd2;box-shadow:0 8px 20px rgba(16,24,40,.06);filter:brightness(.99)}.flow-step:after{content:"";position:absolute;top:50%;right:-20px;width:10px;height:10px;border-top:2px solid #cbd5df;border-right:2px solid #cbd5df;transform:translateY(-50%) rotate(45deg);pointer-events:none}.flow-step:last-child:after{display:none}.flow-step-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.flow-step-index{width:23px;height:23px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:#f2f4f7;color:#667085;font-size:11px;font-weight:800}.flow-step-state{font-size:10px;font-weight:700;color:#98a2b3}.flow-step strong{display:block;margin-top:12px;font-size:25px;line-height:1;font-variant-numeric:tabular-nums}.flow-step-label{display:block;margin-top:7px;font-size:12px;font-weight:700;color:#344054}.flow-step-note{display:block;margin-top:4px;color:#98a2b3;font-size:10px;line-height:1.45}.flow-step.pending{background:radial-gradient(circle at 110% 132%,transparent 0 78px,#fff0d3 79px 108px,transparent 109px),#fff}.flow-step.ready{background:radial-gradient(circle at 110% 132%,transparent 0 78px,#d9f5ed 79px 108px,transparent 109px),#fff}.flow-step.review{background:radial-gradient(circle at 110% 132%,transparent 0 78px,#e9e4ff 79px 108px,transparent 109px),#fff}.flow-step.published{background:radial-gradient(circle at 110% 132%,transparent 0 78px,#d8f5e1 79px 108px,transparent 109px),#fff}.flow-step.pending .flow-step-index{background:#fff5df;color:#a96800}.flow-step.ready .flow-step-index{background:#e4f8f2;color:#007f6b}.flow-step.review .flow-step-index{background:#eeeafe;color:#644bd1}.flow-step.published .flow-step-index{background:#e5f8e9;color:#168f45}
+    .flow-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:28px}.flow-step{position:relative;isolation:isolate;min-height:122px;padding:15px 14px;border:1px solid #e7eaee;border-radius:7px;background:radial-gradient(circle at calc(100% - 58px) calc(100% - 38px),transparent 0 78px,#edf0f2 79px 108px,transparent 109px),#fff;text-align:left;color:var(--ink);cursor:pointer;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease,filter .18s ease}.flow-step:hover{transform:translateY(-2px);border-color:#a9dcd2;box-shadow:0 8px 20px rgba(16,24,40,.06);filter:brightness(.99)}.flow-step:after{content:"";position:absolute;top:50%;right:-20px;width:10px;height:10px;border-top:2px solid #cbd5df;border-right:2px solid #cbd5df;transform:translateY(-50%) rotate(45deg);pointer-events:none}.flow-step:last-child:after{display:none}.flow-step-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.flow-step-index{width:23px;height:23px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:#f2f4f7;color:#667085;font-size:11px;font-weight:800}.flow-step-state{font-size:10px;font-weight:700;color:#98a2b3}.flow-step strong{display:block;margin-top:12px;font-size:25px;line-height:1;font-variant-numeric:tabular-nums}.flow-step-label{display:block;margin-top:7px;font-size:12px;font-weight:700;color:#344054}.flow-step-note{display:block;margin-top:4px;color:#98a2b3;font-size:10px;line-height:1.45}.flow-step.pending{background:radial-gradient(circle at calc(100% - 58px) calc(100% - 38px),transparent 0 78px,#fff0d3 79px 108px,transparent 109px),#fff}.flow-step.ready{background:radial-gradient(circle at calc(100% - 58px) calc(100% - 38px),transparent 0 78px,#d9f5ed 79px 108px,transparent 109px),#fff}.flow-step.review{background:radial-gradient(circle at calc(100% - 58px) calc(100% - 38px),transparent 0 78px,#e9e4ff 79px 108px,transparent 109px),#fff}.flow-step.published{background:radial-gradient(circle at calc(100% - 58px) calc(100% - 38px),transparent 0 78px,#d8f5e1 79px 108px,transparent 109px),#fff}.flow-step.pending .flow-step-index{background:#fff5df;color:#a96800}.flow-step.ready .flow-step-index{background:#e4f8f2;color:#007f6b}.flow-step.review .flow-step-index{background:#eeeafe;color:#644bd1}.flow-step.published .flow-step-index{background:#e5f8e9;color:#168f45}
     .asset-main:focus-visible,.asset-status:focus-visible,.asset-progress:focus-visible,.flow-step:focus-visible,.dashboard-chip:focus-visible{outline:3px solid rgba(0,155,131,.22);outline-offset:2px}
     .dashboard-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;margin-bottom:18px}
     .dashboard-work-grid{grid-template-columns:minmax(290px,.78fr) repeat(2,minmax(0,.81fr));align-items:stretch}.dashboard-work-grid.without-candidates{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -654,10 +668,10 @@
   </div>
 
   <!-- 编辑弹窗 -->
-  <div class="mask" v-if="dlg" @click.self="dlg=false">
+  <div class="mask" v-if="dlg" @click.self="closeDlg">
     <div class="dlg" :class="{'view-only':viewOnly}">
-      <div class="dlg-h"><h3>{{auditMode?'发布审核':(viewOnly?'查看知识':(eid?'编辑知识':'新建知识'))}}</h3><button class="dlg-x" @click="closeDlg">&times;</button></div>
-      <div class="dlg-b">
+      <div class="dlg-h"><h3>{{auditMode?'发布审核':(viewOnly?'查看知识':(eid?'编辑知识':'新建知识'))}}</h3><button class="dlg-x" @click="closeDlg" :disabled="saving">&times;</button></div>
+      <div class="dlg-b" :class="{'save-locked':saving}" :inert="saving ? '' : null">
         <div class="sec">
           <div class="sec-t">知识信息</div>
           <div class="row" style="grid-template-columns:repeat(2,minmax(0,1fr))">
@@ -702,12 +716,12 @@
             <div class="blk-h">
               <span class="blk-tag" style="background:#86909c">文本</span>
               <div class="blk-body">
-                <textarea v-if="!viewOnly" class="fi rich-editor" v-model="b.value" placeholder="输入文本内容，可直接粘贴 http:// 或 https:// 链接..."></textarea>
+                <textarea v-if="!viewOnly" class="fi rich-editor" v-model="b.value" placeholder="输入正文；媒体标记使用 [img:https://...] 或 [video:https://...]..." @paste="handleRichTextPaste($event,bi)" @blur="syncInlineMediaFromText(bi)"></textarea>
                 <div v-else class="fi rich-editor rich-editor-view" v-html="linkifyText(b.value)"></div>
-                <div v-if="!viewOnly" class="rich-editor-tip">链接请直接作为正文内容输入，保存后可点击跳转。</div>
+                <div v-if="!viewOnly" class="rich-editor-tip">仅处理插件自动回填的 [img:https://...] / [video:https://...]；官网、文档及正文原有 URL 保持不变。</div>
                 <div class="blk-acts" v-if="!viewOnly">
-                  <span class="blk-act" @click="addImg(b)">📷 插入图片</span>
-                  <span class="blk-act vi" @click="addVid(b)">🎬 插入视频</span>
+                  <span class="blk-act legacy" @click="addImg(b)">📷 本地图片（兼容）</span>
+                  <span class="blk-act legacy" @click="addVid(b)">🎬 本地视频（兼容）</span>
                 </div>
                 <!-- 子模块 -->
                 <div v-for="(ch,ci) in b.children" :key="ci" class="child">
@@ -715,19 +729,24 @@
                     <span class="blk-tag" :style="{background:ch.type==='image'?'#3370ff':'#722ed1'}">{{ch.type==='image'?'图片':'视频'}}</span>
                     <div class="blk-body">
                     <!-- 已关联 -->
-                      <div v-if="ch.media_id" style="display:flex;gap:8px;align-items:flex-start">
-                        <div v-if="ch.type==='image'" class="img-thumb-wrap" @click="showFull(mediaUrl(ch.media_id))">
-                          <img :src="mediaUrl(ch.media_id)" @error="$event.target.style.display='none'">
-                          <div class="img-mask">预览</div>
+                      <div v-if="ch.media_id || ch.external_url" class="media-inline-card">
+                        <div v-if="ch.type==='image'" class="img-thumb-wrap" role="button" tabindex="0" aria-label="查看原图" title="点击查看原图" @click="showFull(childMediaUrl(ch))" @keyup.enter="showFull(childMediaUrl(ch))" @keyup.space.prevent="showFull(childMediaUrl(ch))">
+                          <img v-if="childMediaUrl(ch)" :src="childMediaUrl(ch)" :alt="ch.alt || '图片缩略图'" loading="lazy" decoding="async" referrerpolicy="no-referrer" @load="ch.load_error=false" @error="ch.load_error=true">
+                          <div v-if="ch.load_error || !childMediaUrl(ch)" class="media-thumb-error">图片不可用</div>
+                          <div v-if="!ch.load_error && childMediaUrl(ch)" class="img-mask">预览</div>
                         </div>
-                        <div v-else class="vid-thumb-wrap" @click="showFull(mediaUrl(ch.media_id), true)">
-                          <video :src="mediaUrl(ch.media_id)" muted preload="metadata" controlsList="nodownload nofullscreen noremoteplayback" disablePictureInPicture style="pointer-events:none"></video>
-                          <div class="vid-mask">▶</div>
+                        <div v-else class="vid-thumb-wrap" role="button" tabindex="0" aria-label="播放视频" title="点击播放视频" @click="showFull(childMediaUrl(ch), true)" @keyup.enter="showFull(childMediaUrl(ch), true)" @keyup.space.prevent="showFull(childMediaUrl(ch), true)">
+                          <video v-if="childMediaUrl(ch)" :src="childMediaUrl(ch)" muted preload="metadata" playsinline controlsList="nodownload nofullscreen noremoteplayback" disablePictureInPicture style="pointer-events:none" @loadedmetadata="ch.load_error=false" @error="ch.load_error=true"></video>
+                          <div v-if="ch.load_error || !childMediaUrl(ch)" class="media-thumb-error">视频不可用</div>
+                          <div v-if="!ch.load_error && childMediaUrl(ch)" class="vid-mask">▶</div>
                         </div>
-                        <div style="flex:1;display:flex;flex-direction:column;gap:3px;min-width:0">
-                          <input class="fi" v-model="ch.alt" :disabled="viewOnly" :placeholder="ch.type==='image'?'图片标题':'视频标题'" style="font-size:11px;padding:4px 6px">
-                          <input class="fi" v-model="ch.caption" :disabled="viewOnly" :placeholder="ch.type==='image'?'图片说明':'视频说明'" style="font-size:11px;padding:4px 6px">
-                          <span style="font-size:10px;color:#00b42a">已关联</span>
+                        <div class="media-inline-meta">
+                          <input v-if="!viewOnly" class="fi" v-model="ch.alt" :placeholder="ch.type==='image'?'图片标题':'视频标题'" style="font-size:11px;padding:4px 6px">
+                          <input v-if="!viewOnly" class="fi" v-model="ch.caption" :placeholder="ch.type==='image'?'图片说明':'视频说明'" style="font-size:11px;padding:4px 6px">
+                          <div v-if="viewOnly && ch.alt" class="media-inline-title">{{ch.alt}}</div>
+                          <div v-if="viewOnly && ch.caption" class="media-inline-caption">{{ch.caption}}</div>
+                          <span :style="{fontSize:'10px',color:ch.external_url?'#3370ff':'#00b42a'}">{{ch.external_url?(ch.type==='image'?'外链图片':'外链视频'):'已关联'}}</span>
+                          <span v-if="ch.external_url" class="external-media-note" :title="ch.external_url">{{ch.type==='image'?'点击缩略图查看原图':'点击缩略图播放视频'}}</span>
                         </div>
                       </div>
                       <!-- 上传中/有预览 -->
@@ -752,11 +771,11 @@
                         <label class="upload-zone" v-if="!viewOnly" :data-ch-ref="bi+':'+ci">
                           <span style="font-size:18px">{{ch.type==='image'?'📷':'🎬'}}</span>
                           <span style="font-size:12px">点击选择{{ch.type==='image'?'图片':'视频'}}，或 Ctrl+V 粘贴</span>
-                          <input type="file" :accept="ch.type==='image'?'image/*':'video/*'" style="display:none" @change="pickFile($event,ch)">
+                          <input type="file" :accept="ch.type==='image'?'image/*':'video/*'" :disabled="saving" style="display:none" @change="pickFile($event,ch)">
                         </label>
                         <div style="display:flex;gap:5px">
-                          <input class="fi" v-model="ch.alt" :disabled="viewOnly" placeholder="图片标题" style="font-size:11px;padding:4px 6px;flex:1">
-                          <input class="fi" v-model="ch.caption" :disabled="viewOnly" placeholder="图片说明" style="font-size:11px;padding:4px 6px;flex:1">
+                          <input class="fi" v-model="ch.alt" :disabled="viewOnly" :placeholder="ch.type==='image'?'图片标题':'视频标题'" style="font-size:11px;padding:4px 6px;flex:1">
+                          <input class="fi" v-model="ch.caption" :disabled="viewOnly" :placeholder="ch.type==='image'?'图片说明':'视频说明'" style="font-size:11px;padding:4px 6px;flex:1">
                         </div>
                       </div>
                     </div>
@@ -771,7 +790,7 @@
         </div>
       </div>
       <div class="dlg-f">
-        <button class="btn bd" @click="closeDlg">{{auditMode?'取消发布审核':(viewOnly?'关闭':'取消')}}</button>
+        <button class="btn bd" @click="closeDlg" :disabled="saving">{{auditMode?'取消发布审核':(viewOnly?'关闭':'取消')}}</button>
         <button class="btn bp" v-if="auditMode && can('knowledge:approve')" @click="approveFromDetail" :disabled="saving">{{saving?'发布中...':'发布'}}</button>
         <button class="btn bp" v-if="!viewOnly" @click="save" :disabled="saving || !fm.cat">{{saving?'保存中...':(eid?'保存修改':'保存并提交发布审核')}}</button>
       </div>
@@ -813,9 +832,15 @@
     </div>
   </div>
     <!-- 点击全屏预览 -->
-    <div v-if="full.show" class="full-preview" @click="full.show=false">
-      <video v-if="full.isVideo" :src="full.src" controls autoplay @click.stop style="max-width:90vw;max-height:90vh;border-radius:8px"></video>
-      <img v-else :src="full.src">
+    <div v-if="full.show" class="full-preview" role="dialog" aria-modal="true" :aria-label="full.isVideo?'视频预览':'原图预览'" @click.self="closeFullPreview">
+      <div class="full-preview-stage" @click.stop>
+        <div class="full-preview-bar"><span>{{full.isVideo?'视频预览':'原图预览'}}</span><button class="full-preview-close" type="button" aria-label="关闭预览" @click="closeFullPreview">&times;</button></div>
+        <div class="full-preview-body">
+          <div v-if="full.error" class="full-preview-error">{{full.isVideo?'视频':'原图'}}加载失败，请检查外链地址是否仍然有效。</div>
+          <video v-else-if="full.isVideo" :src="full.src" controls autoplay playsinline @error="full.error=true"></video>
+          <img v-else :src="full.src" alt="原图预览" referrerpolicy="no-referrer" @error="full.error=true">
+        </div>
+      </div>
     </div>
   </div>
   <script src="lib/vue.global.prod.js"></script>
@@ -875,6 +900,7 @@ Vue.createApp({
       auditMode: false,
       eid: '',
       saving: false,
+      saveOperationId: 0,
       importing: false,
       ns: '',
       drop: '',
@@ -890,7 +916,7 @@ Vue.createApp({
       fm: {title:'', subtitles:[], cat:'', by:'', scenes:[], applicableCategories:[], brands:[], models:[], deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]},
       dedupCompare: {open:false, loading:false, allowSubmit:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', category_id:'', content:{blocks:[]}}, target:{}},
       dedupFeedback: {open:false, match:{knowledge_id:'', title:''}, reason:'', submitting:false},
-      full:{show:false, src:'', isVideo:false}
+      full:{show:false, src:'', isVideo:false, error:false}
     }
   },
   methods: {
@@ -1800,8 +1826,9 @@ Vue.createApp({
         if (element && element.focus) element.focus();
       });
     },
-    showManhattanFields: function() {
-      var id = this.fm.cat || '';
+    showManhattanFields: function(form) {
+      var activeForm = form || this.fm;
+      var id = activeForm.cat || '';
       var cat = (this.cats || []).find(function(c) { return c.id === id; });
       var name = cat ? cat.name : '';
       return id === 'cat-qc-standard' || id === 'cat-qc-process' || name === '质检标准' || name === '操作流程';
@@ -1963,8 +1990,13 @@ Vue.createApp({
     sl: function(s) {
       return {draft:'草稿', review:'待发布审核', published:'已发布', deprecated:'已废弃'}[s] || s;
     },
-    closeDlg: function() {var self = this;self.dlg = false;self.auditMode = false;},
+    closeDlg: function() {
+      if (this.saving) return;
+      this.dlg = false;
+      this.auditMode = false;
+    },
     openNew: function() {
+      if (this.saving) return;
       if (!this.can('knowledge:create')) { alert('没有新建权限'); return; }
       this.viewOnly = false;
       this.auditMode = false;
@@ -1976,14 +2008,17 @@ Vue.createApp({
       this.loadManhattanOptions();
     },
     openView: function(r) {
+      if (this.saving) return;
       this.auditMode = false;
       this.openEdit(r, true);
     },
     openReview: function(r) {
+      if (this.saving) return;
       this.auditMode = true;
       this.openEdit(r, true);
     },
     openEdit: function(r, readonly) {
+      if (this.saving) return;
       this.viewOnly = !!readonly;
       if (!this.viewOnly) this.auditMode = false;
       if (!this.viewOnly && !this.can('knowledge:create')) { alert('没有编辑权限'); return; }
@@ -2000,14 +2035,16 @@ Vue.createApp({
         contentBlocks = r.content.blocks;
       }
       if (contentBlocks.length) {
-        var mediaIdx = 0;
-        var attachChild = function(type, src, blockAlt, blockCaption) {
-          var m = mediaByFile[src] || mediaList[mediaIdx] || null;
-          mediaIdx += 1;
+        var attachChild = function(type, src, externalUrl, blockAlt, blockCaption) {
+          var safeExternalUrl = self.normalizeExternalMediaUrl(externalUrl, type);
+          var m = null;
+          if (!safeExternalUrl) {
+            m = mediaByFile[src] || null;
+          }
           var id = '';
           var alt = blockAlt || '';
           var caption = blockCaption || '';
-          var preview = '';
+          var preview = safeExternalUrl;
           if (m) {
             id = m.filename || '';
             if (!alt) alt = m.alt || '';
@@ -2017,7 +2054,7 @@ Vue.createApp({
             id = src;
             preview = BASE + '/uploads/' + src;
           }
-          return {type: type, media_id: id, alt: alt, caption: caption, file: null, preview: preview, uploading: false, _saved: !!id};
+          return {type: type, media_id: id, external_url: safeExternalUrl, alt: alt, caption: caption, file: null, preview: preview, uploading: false, load_error: false, _saved: !!(id || safeExternalUrl)};
         };
         var last = null;
         contentBlocks.forEach(function(b) {
@@ -2026,7 +2063,7 @@ Vue.createApp({
             blocks.push(nb);
             last = nb;
           } else if (b.type === 'image' || b.type === 'video') {
-            var child = attachChild(b.type, b.media_id || '', b.alt || '', b.caption || '');
+            var child = attachChild(b.type, b.media_id || '', b.external_url || b.url || '', b.alt || '', b.caption || '');
             if (last) {
               last.children.push(child);
             } else {
@@ -2266,173 +2303,379 @@ Vue.createApp({
     richTextHasContent: function(value) {
       return !!this.richTextToPlainText(value).trim();
     },
+    isSafeExternalMediaUrl: function(value) {
+      try {
+        var raw = String(value || '').trim();
+        if (!/^https:\/\//i.test(raw)) return false;
+        var parsed = new URL(raw);
+        if (parsed.protocol !== 'https:' || !parsed.hostname || parsed.username || parsed.password) return false;
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+    normalizeExternalMediaUrl: function(value, expectedType) {
+      if (!this.isSafeExternalMediaUrl(value)) return '';
+      if (expectedType && ['image', 'video'].indexOf(expectedType) === -1) return '';
+      try {
+        return new URL(String(value || '').trim()).href;
+      } catch (e) {
+        return '';
+      }
+    },
+    parseInlineExternalMedia: function(value) {
+      var text = this.richTextToPlainText(value).replace(/\r\n?/g, '\n');
+      var blocks = [];
+      var foundMedia = false;
+      var cursor = 0;
+      var self = this;
+      var appendText = function(segment) {
+        segment = segment.replace(/^\n+|\n+$/g, '');
+        if (segment.trim()) blocks.push({type:'text', value:segment});
+      };
+      var tokenPattern = /\[(img|video):[ \t]*(https:\/\/[^\s\[\]<>\"']+)\]/gi;
+      text.replace(tokenPattern, function(full, tokenType, externalUrl, offset) {
+        var mediaType = tokenType.toLowerCase() === 'img' ? 'image' : 'video';
+        var safeExternalUrl = self.normalizeExternalMediaUrl(externalUrl, mediaType);
+        if (!safeExternalUrl) return full;
+        appendText(text.slice(cursor, offset));
+        blocks.push({type:mediaType, external_url:safeExternalUrl, alt:'', caption:''});
+        cursor = offset + full.length;
+        foundMedia = true;
+        return full;
+      });
+      appendText(text.slice(cursor));
+      return {foundMedia:foundMedia, blocks:blocks};
+    },
+    externalMediaChild: function(type, url) {
+      var externalUrl = this.normalizeExternalMediaUrl(url, type);
+      return {type:type, media_id:'', external_url:externalUrl, alt:'', caption:'', file:null, preview:externalUrl, uploading:false, load_error:false, _saved:true};
+    },
+    editorBlocksFromParsedMedia: function(contentBlocks, trailingChildren) {
+      var blocks = [];
+      var last = null;
+      var self = this;
+      (contentBlocks || []).forEach(function(block) {
+        if (block.type === 'text') {
+          last = {type:'text', value:block.value || '', children:[]};
+          blocks.push(last);
+          return;
+        }
+        if (block.type !== 'image' && block.type !== 'video') return;
+        if (!last) {
+          last = {type:'text', value:'', children:[]};
+          blocks.push(last);
+        }
+        last.children.push(self.externalMediaChild(block.type, block.external_url));
+      });
+      if (!blocks.length) blocks.push({type:'text', value:'', children:[]});
+      if (trailingChildren && trailingChildren.length) {
+        blocks[blocks.length - 1].children = blocks[blocks.length - 1].children.concat(trailingChildren);
+      }
+      return blocks;
+    },
+    syncInlineMediaFromText: function(index) {
+      var block = this.fm.blocks[index];
+      if (!block) return 0;
+      var parsed = this.parseInlineExternalMedia(block.value);
+      if (!parsed.foundMedia) return 0;
+      var replacements = this.editorBlocksFromParsedMedia(parsed.blocks, block.children || []);
+      Array.prototype.splice.apply(this.fm.blocks, [index, 1].concat(replacements));
+      return replacements.length;
+    },
+    syncAllInlineMedia: function() {
+      var index = 0;
+      while (index < this.fm.blocks.length) {
+        var replacementCount = this.syncInlineMediaFromText(index);
+        index += replacementCount || 1;
+      }
+    },
+    handleRichTextPaste: function(event, index) {
+      if (this.saving) return;
+      var text = event.clipboardData && event.clipboardData.getData('text/plain');
+      if (!text || !this.parseInlineExternalMedia(text).foundMedia) return;
+      var self = this;
+      window.setTimeout(function() {
+        if (self.saving) return;
+        self.syncInlineMediaFromText(index);
+      }, 0);
+    },
     addBlock: function() {
+      if (this.saving) return;
       this.fm.blocks.push({type:'text', value:'', children:[]});
     },
     addImg: function(b) {
-      b.children.push({type:'image', media_id:'', alt:'', caption:'', file:null, preview:''});
+      if (this.saving) return;
+      b.children.push({type:'image', media_id:'', external_url:'', alt:'', caption:'', file:null, preview:'', load_error:false});
     },
     addVid: function(b) {
-      b.children.push({type:'video', media_id:'', alt:'', caption:'', file:null, preview:''});
+      if (this.saving) return;
+      b.children.push({type:'video', media_id:'', external_url:'', alt:'', caption:'', file:null, preview:'', load_error:false});
     },
     pickFile: function(e, ch) {
-      var file = e.target.files[0];
-      if (!file) return;
-      ch.preview = URL.createObjectURL(file);
-      if (!ch.alt) ch.alt = file.name;
-      if (!this.eid) {
-        ch.file = file;
-        ch.uploading = false;
+      if (this.saving) {
         e.target.value = '';
         return;
       }
-      ch.uploading = true;
-      this.uploadSingle(ch, file);
+      var file = e.target.files[0];
+      if (!file) return;
+      ch.external_url = '';
+      ch.media_id = '';
+      ch.load_error = false;
+      ch.preview = URL.createObjectURL(file);
+      if (!ch.alt) ch.alt = file.name;
+      ch.file = file;
+      ch.uploading = false;
+      ch._saved = false;
       e.target.value = '';
     },
-    uploadSingle: function(ch, file) {
-      var self = this;
-      var fd = new FormData();
-      fd.append('file', file);
-      fd.append('media_type', ch.type);
-      fd.append('alt', ch.alt || file.name || 'image');
-      fd.append('caption', ch.caption || '');
-      var kid = self.eid;
-      if (!kid) {
-        if (!self.fm.cat) { alert('请选择所属分类'); ch.uploading = false; return; }
-        var useManhattan = self.showManhattanFields();
-        var body = {title: self.fm.title || '未命名', subtitles: (self.fm.subtitles || []).filter(function(s) { return s && s.trim(); }), content: {blocks: []}, category_id: self.fm.cat, applicable_scenes: self.fm.scenes, applicable_categories: useManhattan ? self.fm.applicableCategories : [], applicable_brands: useManhattan ? self.fm.brands : [], applicable_models: useManhattan ? self.fm.models : []};
-        fetch(API + '/knowledge', {method: 'POST', headers: self.authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(body)})
-          .then(function(r) {
-            return r.json().then(function(data) {
-              if (r.ok) return data;
-              var detail = data.detail || '保存失败';
-              if (typeof detail === 'object') detail = detail.message || '检测到重复知识，未提交发布审核。';
-              throw new Error(detail);
-            });
-          })
-          .then(function(res) { self.eid = res.id; self.doUpload(res.id, fd, ch); })
-          .catch(function(e) { ch.uploading = false; alert('保存失败: ' + e.message); });
-      } else {
-        self.doUpload(kid, fd, ch);
-      }
-    },
-    doUpload: function(kid, fd, ch) {
-      var self = this;
-      fetch(API + '/knowledge/' + kid + '/media', {method: 'POST', headers: self.authHeaders(), body: fd})
-        .then(function(r) { return r.json(); })
-        .then(function(json) { ch.media_id = json.filename || json.file_path; ch.uploading = false; ch.file = null; })
-        .catch(function(e) { ch.uploading = false; ch.preview = ''; if (ch.media_id) { self.deleteMedia(self.eid, ch.media_id); ch.media_id = ''; } alert('图片上传失败: ' + e.message); });
-    },
-    deleteMedia: function(kid, mediaId) {
-      if (!kid || !mediaId) return;
-      var fileRef = String(mediaId).replace(/^\/uploads\//i, '');
-      fetch(API + '/knowledge/' + kid + '/media/' + fileRef, {method: 'DELETE', headers: this.authHeaders()}).catch(function(){});
-    },
-    buildContentBlocks: function() {
+    buildContentBlocks: function(form) {
       var blocks = [];
       var self = this;
-      this.fm.blocks.forEach(function(block) {
-        var hasMedia = block.children && block.children.some(function(child) { return child.media_id; });
+      var activeForm = form || this.fm;
+      (activeForm.blocks || []).forEach(function(block) {
         var textValue = self.richTextToPlainText(block.value);
-        if (self.richTextHasContent(textValue)) blocks.push({type:'text', value:textValue});
-        if (hasMedia && block.children) block.children.forEach(function(child) {
-          if (child.media_id) blocks.push({type:child.type, media_id:child.media_id, alt:child.alt||'', caption:child.caption||''});
+        var parsed = self.parseInlineExternalMedia(textValue);
+        if (parsed.foundMedia) {
+          parsed.blocks.forEach(function(contentBlock) { blocks.push(contentBlock); });
+        } else if (self.richTextHasContent(textValue)) {
+          blocks.push({type:'text', value:textValue});
+        }
+        if (block.children) block.children.forEach(function(child) {
+          if (child.media_id) {
+            blocks.push({type:child.type, media_id:child.media_id, alt:child.alt||'', caption:child.caption||''});
+            return;
+          }
+          var externalUrl = self.normalizeExternalMediaUrl(child.external_url, child.type);
+          if (externalUrl) blocks.push({type:child.type, external_url:externalUrl, alt:child.alt||'', caption:child.caption||''});
         });
       });
       return blocks;
     },
     save: function(confirmDedupReview) {
+      if (this.saving) return;
       if (!this.can('knowledge:create')) { alert('没有保存权限'); return; }
       if (!this.fm.title) { alert('请输入标题'); return; }
       if (!this.fm.cat) { alert('请选择所属分类'); return; }
       this.saving = true;
       var self = this;
-      var cBlocks = this.buildContentBlocks();
-      var useManhattan = this.showManhattanFields();
-      var body = {
-        title: this.fm.title,
-        subtitles: this.fm.subtitles.filter(function(s) { return s && s.trim(); }),
-        content: {blocks: cBlocks},
-        category_id: this.fm.cat,
-        applicable_scenes: this.fm.scenes,
-        applicable_categories: useManhattan ? this.fm.applicableCategories : [],
-        applicable_brands: useManhattan ? this.fm.brands : [],
-        applicable_models: useManhattan ? this.fm.models : [],
-        confirm_dedup_review: !!confirmDedupReview
+      var operation = {
+        id: ++this.saveOperationId,
+        eid: this.eid,
+        form: this.fm,
+        confirmDedupReview: !!confirmDedupReview,
+        uploads: []
       };
-      var method = this.eid ? 'PATCH' : 'POST';
-      var url = this.eid ? (API + '/knowledge/' + this.eid) : (API + '/knowledge');
-      fetch(url, {method:method, headers:self.authHeaders({'Content-Type':'application/json'}), body:JSON.stringify(body)})
-        .then(function(r) {
-          return r.json().then(function(data) {
-            if (r.ok) return data;
-            var detail = data.detail || '保存失败';
-            var error = new Error(typeof detail === 'object' ? (detail.message || '检测到重复知识，未提交发布审核。') : detail);
-            error.detail = detail;
-            throw error;
-          });
-        })
-        .then(function(res) {
-          var kid = self.eid || res.id;
-          var uploads = [];
-          self.fm.blocks.forEach(function(b) {
-            if (b.children) b.children.forEach(function(ch) {
-              if (ch.file && !ch.media_id) uploads.push(ch);
+      if (document.activeElement && document.activeElement.blur) {
+        document.activeElement.blur();
+      }
+      this.syncAllInlineMedia();
+      operation.form.blocks.forEach(function(block) {
+        if (block.children) block.children.forEach(function(child) {
+          if (child.file && !child.media_id) {
+            operation.uploads.push({
+              child: child,
+              file: child.file,
+              type: child.type,
+              alt: child.alt || child.file.name,
+              caption: child.caption || ''
             });
-          });
-          function finishSave() {
-            self.dlg = false;
-            self.load();
-            self.loadStats();
-            self.saving = false;
           }
-          function uploadNext(idx) {
-            if (idx >= uploads.length) {
-              if (!uploads.length) { finishSave(); return; }
-              fetch(API + '/knowledge/' + kid, {
-                method:'PATCH',
-                headers:self.authHeaders({'Content-Type':'application/json'}),
-                body:JSON.stringify({content:{blocks:self.buildContentBlocks()}})
-              })
-                .then(function(response) {
-                  return response.json().then(function(data) {
-                    if (!response.ok) throw new Error(data.detail || '媒体内容保存失败');
-                    return data;
-                  });
-                })
-                .then(finishSave)
-                .catch(function(error) { alert(error.message); self.saving = false; });
-              return;
-            }
-            var ch = uploads[idx];
-            var fd = new FormData();
-            fd.append('file', ch.file);
-            fd.append('media_type', ch.type);
-            fd.append('alt', ch.alt || ch.file.name);
-            fd.append('caption', ch.caption || '');
-            fetch(API + '/knowledge/' + kid + '/media', {method:'POST', headers:self.authHeaders(), body:fd})
-              .then(function(r) { return r.json(); })
-              .then(function(json) { ch.media_id = json.filename; ch.file = null; uploadNext(idx + 1); })
-              .catch(function() { uploadNext(idx + 1); });
-          }
-          uploadNext(0);
-        })
-        .catch(function(e) {
-          self.saving = false;
-          if (e.detail && (e.detail.code === 'DUPLICATE_REVIEW_REQUIRED' || e.detail.code === 'DUPLICATE_BLOCKED')) {
-            self.openDedupCompare(
-              e.detail.deduplication,
-              body,
-              e.detail.code === 'DUPLICATE_REVIEW_REQUIRED'
-            );
-            return;
-          }
-          alert('保存失败: ' + e.message);
         });
+      });
+
+      function isCurrentOperation() {
+        return self.saveOperationId === operation.id;
+      }
+
+      function parseResponse(response, fallbackMessage) {
+        return response.json().catch(function() { return {}; }).then(function(data) {
+          if (response.ok) return data;
+          var detail = data.detail || fallbackMessage;
+          var message = typeof detail === 'object'
+            ? (detail.message || fallbackMessage)
+            : detail;
+          var error = new Error(message);
+          error.detail = detail;
+          error.status = response.status;
+          throw error;
+        });
+      }
+
+      function buildBody() {
+        var form = operation.form;
+        var useManhattan = self.showManhattanFields(form);
+        return {
+          title: form.title,
+          subtitles: form.subtitles.filter(function(s) { return s && s.trim(); }),
+          content: {blocks:self.buildContentBlocks(form)},
+          category_id: form.cat,
+          applicable_scenes: form.scenes,
+          applicable_categories: useManhattan ? form.applicableCategories : [],
+          applicable_brands: useManhattan ? form.brands : [],
+          applicable_models: useManhattan ? form.models : [],
+          confirm_dedup_review: operation.confirmDedupReview
+        };
+      }
+
+      function clearUnavailableTempMedia(detail) {
+        var requested = detail && Array.isArray(detail.temp_ids)
+          ? detail.temp_ids
+          : [];
+        operation.form.blocks.forEach(function(block) {
+          (block.children || []).forEach(function(child) {
+            var mediaId = String(child.media_id || '');
+            if (
+              mediaId.indexOf('temp-') === 0
+              && (!requested.length || requested.indexOf(mediaId) !== -1)
+            ) {
+              child.media_id = '';
+              child.uploading = false;
+            }
+          });
+        });
+      }
+
+      function handleSaveError(error, body) {
+        if (!isCurrentOperation()) return;
+        operation.form.blocks.forEach(function(block) {
+          (block.children || []).forEach(function(child) {
+            child.uploading = false;
+          });
+        });
+        self.saving = false;
+        if (
+          error.detail
+          && (
+            error.detail.code === 'TEMP_UPLOAD_UNAVAILABLE'
+            || error.detail.code === 'TEMP_UPLOAD_TYPE_MISMATCH'
+          )
+        ) {
+          clearUnavailableTempMedia(error.detail);
+          alert(error.detail.message || '临时媒体不可用，请重新保存。');
+          return;
+        }
+        if (
+          error.detail
+          && (
+            error.detail.code === 'DUPLICATE_REVIEW_REQUIRED'
+            || error.detail.code === 'DUPLICATE_BLOCKED'
+          )
+        ) {
+          self.openDedupCompare(
+            error.detail.deduplication,
+            body || {
+              title: operation.form.title,
+              category_id: operation.form.cat,
+              content: {blocks:self.buildContentBlocks(operation.form)}
+            },
+            error.detail.code === 'DUPLICATE_REVIEW_REQUIRED'
+          );
+          return;
+        }
+        alert('保存失败: ' + (error.message || '未知错误'));
+      }
+
+      function finishSave(result) {
+        if (!isCurrentOperation()) return;
+        if (!operation.eid && result && result.id) self.eid = result.id;
+        operation.form.blocks.forEach(function(block) {
+          (block.children || []).forEach(function(child) {
+            child.file = null;
+            child.uploading = false;
+            child._saved = !!(child.media_id || child.external_url);
+          });
+        });
+        self.dlg = false;
+        self.load();
+        self.loadStats();
+        self.saving = false;
+      }
+
+      function persistKnowledge() {
+        if (!isCurrentOperation()) return;
+        var body = buildBody();
+        var method = operation.eid ? 'PATCH' : 'POST';
+        var url = operation.eid
+          ? (API + '/knowledge/' + operation.eid)
+          : (API + '/knowledge');
+        fetch(url, {
+          method: method,
+          headers: self.authHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify(body)
+        })
+          .then(function(response) {
+            return parseResponse(response, '保存失败');
+          })
+          .then(finishSave)
+          .catch(function(error) {
+            handleSaveError(error, body);
+          });
+      }
+
+      function uploadNext(index) {
+        if (!isCurrentOperation()) return;
+        if (index >= operation.uploads.length) {
+          persistKnowledge();
+          return;
+        }
+        var upload = operation.uploads[index];
+        var child = upload.child;
+        var form = new FormData();
+        form.append('file', upload.file);
+        form.append('media_type', upload.type);
+        form.append('alt', upload.alt);
+        form.append('caption', upload.caption);
+        child.uploading = true;
+        fetch(API + '/knowledge/upload-temp', {
+          method:'POST',
+          headers:self.authHeaders(),
+          body:form
+        })
+          .then(function(response) {
+            return parseResponse(response, '媒体暂存失败');
+          })
+          .then(function(data) {
+            if (!isCurrentOperation()) return;
+            var tempId = data.id || data.filename;
+            if (!tempId) throw new Error('媒体暂存响应缺少临时文件 ID');
+            child.media_id = tempId;
+            child.uploading = false;
+            uploadNext(index + 1);
+          })
+          .catch(function(error) {
+            if (!isCurrentOperation()) return;
+            child.uploading = false;
+            handleSaveError(error, null);
+          });
+      }
+
+      uploadNext(0);
     },
-    mediaUrl: function(id) { return BASE + '/uploads/' + id; },
-    showFull: function(src, isVideo) { this.full = {show:true, src:src, isVideo:!!isVideo}; }, act: function(r, action) {
+    normalizePreviewUrl: function(value) {
+      try {
+        var raw = String(value || '').trim();
+        if (!/^https?:\/\//i.test(raw)) return '';
+        var parsed = new URL(raw);
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+        return parsed.href;
+      } catch (e) {
+        return '';
+      }
+    },
+    mediaUrl: function(id) { return BASE + '/uploads/' + String(id || '').replace(/^\/uploads\//i, ''); },
+    childMediaUrl: function(child) {
+      if (!child) return '';
+      var externalUrl = this.normalizeExternalMediaUrl(child.external_url, child.type);
+      return externalUrl || (child.media_id ? this.mediaUrl(child.media_id) : (child.preview || ''));
+    },
+    showFull: function(src, isVideo) {
+      var safeSrc = this.normalizePreviewUrl(src);
+      if (!safeSrc) return;
+      this.full = {show:true, src:safeSrc, isVideo:!!isVideo, error:false};
+    },
+    closeFullPreview: function() { this.full = {show:false, src:'', isVideo:false, error:false}; },
+    act: function(r, action) {
       var self = this;
       fetch(API + '/knowledge/' + r.id + '/' + action, {method:'POST', headers:self.authHeaders()})
         .then(function(response) {
@@ -2461,6 +2704,10 @@ Vue.createApp({
         }
       });
       document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && self.full.show) {
+          self.closeFullPreview();
+          return;
+        }
         if (e.target && ['INPUT','TEXTAREA','SELECT'].indexOf(e.target.tagName) !== -1) return;
         self.dev.keys = (self.dev.keys + String(e.key || '').toLowerCase()).slice(-3);
         if (self.dev.keys === 'mht') self.dev.showManhattanUpdate = true;
@@ -2477,7 +2724,7 @@ Vue.createApp({
       });
       // 全局粘贴监听（支持图片和视频）
       document.addEventListener('paste', function(e) {
-        if (!self.dlg) return;
+        if (!self.dlg || self.saving) return;
         var items = e.clipboardData && e.clipboardData.items;
         if (!items) return;
         for (var i = 0; i < items.length; i++) {
@@ -2498,23 +2745,24 @@ Vue.createApp({
               var ch = self.fm.blocks[bi].children[ci];
               ch.type = fileType;
               ch.preview = preview;
-              ch.uploading = true;
+              ch.uploading = false;
               ch.media_id = '';
+              ch.external_url = '';
+              ch.load_error = false;
+              ch.file = file;
               if (!ch.alt) ch.alt = file.name;
-              self.uploadSingle(ch, file);
               self._hoverTarget = null;
               return;
             }
           }
-          // 否则在末尾新建模块并立即上传
+          // 否则在末尾新建模块，保存时统一暂存并入库
           var last = self.fm.blocks[self.fm.blocks.length - 1];
           if (!last || last.value || (last.children && last.children.length)) {
             last = {type:'text', value:'', children:[]};
             self.fm.blocks.push(last);
           }
-          var newCh = {type:fileType, media_id:'', alt:file.name, caption:'', file:null, preview:preview, uploading:true, _saved:false};
+          var newCh = {type:fileType, media_id:'', external_url:'', alt:file.name, caption:'', file:file, preview:preview, uploading:false, load_error:false, _saved:false};
           last.children.push(newCh);
-          self.uploadSingle(newCh, file);
           return;
         }
       });

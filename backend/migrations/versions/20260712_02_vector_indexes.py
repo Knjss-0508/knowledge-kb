@@ -7,23 +7,23 @@ Create Date: 2026-07-12
 
 from alembic import op
 
-from app.core.config import settings
-
-
 revision = "20260712_02"
 down_revision = "20260712_01"
 branch_labels = None
 depends_on = None
 
+FROZEN_EMBEDDING_DIMENSIONS = 1024
+
 
 def upgrade() -> None:
-    dimension = settings.EMBEDDING_DIMENSIONS
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     op.execute(
-        f"ALTER TABLE knowledge_embeddings ADD COLUMN IF NOT EXISTS embedding_vector vector({dimension})"
+        "ALTER TABLE knowledge_embeddings ADD COLUMN IF NOT EXISTS "
+        f"embedding_vector vector({FROZEN_EMBEDDING_DIMENSIONS})"
     )
     op.execute(
-        f"ALTER TABLE knowledge_search_embeddings ADD COLUMN IF NOT EXISTS embedding_vector vector({dimension})"
+        "ALTER TABLE knowledge_search_embeddings ADD COLUMN IF NOT EXISTS "
+        f"embedding_vector vector({FROZEN_EMBEDDING_DIMENSIONS})"
     )
     op.execute(
         "UPDATE knowledge_embeddings "
