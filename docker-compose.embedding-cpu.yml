@@ -8,6 +8,9 @@ services:
     build:
       context: .
       dockerfile: embedding-cpu/Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PYTORCH_INDEX_URL: ${PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
     container_name: kb-embedding-qwen
     restart: unless-stopped
     environment:
@@ -16,6 +19,7 @@ services:
       EMBEDDING_CPU_THREADS: ${EMBEDDING_CPU_THREADS:-0}
       EMBEDDING_CPU_BATCH_SIZE: ${EMBEDDING_CPU_BATCH_SIZE:-8}
       HF_HOME: /data
+      HF_ENDPOINT: ${HF_ENDPOINT:-}
     expose:
       - "80"
     volumes:

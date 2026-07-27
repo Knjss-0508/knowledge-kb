@@ -533,9 +533,17 @@ EMBEDDING_DIMENSIONS=1024
 
 ```dotenv
 HF_ENDPOINT=https://hf-mirror.com
+PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+REDIS_IMAGE=docker.m.daocloud.io/library/redis:7-alpine
+PGVECTOR_IMAGE=docker.m.daocloud.io/pgvector/pgvector:pg16
 ```
 
 密码和密钥不要写入 Git、Markdown、截图或日志。
+
+这些镜像配置已经由 Compose 的 build args 和环境变量接入，不需要再手工修改
+Dockerfile 或 Compose 文件。网络正常的服务器可以保留 `.env.example` 中的默认地址；
+受限网络服务器再替换为可访问的镜像地址。
 
 ### 8.3 启动部署
 
@@ -686,6 +694,19 @@ systemctl reload nginx
 ```
 
 不要直接修改宝塔主配置文件。新增站点或端口时，优先通过宝塔面板操作，或在 `/www/server/panel/vhost/nginx/` 增加独立配置文件。
+
+仓库中的可复制模板：
+
+```text
+deploy/baota/knowledge-kb-ip-port.conf.example
+```
+
+使用模板时，将其中的 `PORT` 替换为实际端口，并同时确认：
+
+1. 腾讯云安全组允许该 TCP 端口；
+2. 服务器 UFW 或其他防火墙允许该端口；
+3. 端口没有被其他程序占用；
+4. `nginx -t` 检查通过后再执行 `systemctl reload nginx`。
 
 ## 13. API 接口入口
 

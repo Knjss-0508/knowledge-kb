@@ -2,8 +2,10 @@ FROM docker.m.daocloud.io/library/python:3.11-slim
 
 WORKDIR /app
 
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r requirements.txt
 
 COPY backend /app
 COPY frontend /frontend

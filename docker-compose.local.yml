@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: ${PGVECTOR_IMAGE:-pgvector/pgvector:pg16}
     container_name: kb-postgres
     restart: unless-stopped
     environment:
