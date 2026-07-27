@@ -131,7 +131,7 @@ class IntegrationDedupMatch(BaseModel):
     title: str
     status: Literal["review", "published"]
     category_id: str
-    match_type: Literal["exact", "semantic", "content_containment"]
+    match_type: Literal["exact", "title_exact", "semantic", "content_containment"]
     similarity: float = Field(..., ge=0, le=1)
     title_similarity: float | None = Field(None, ge=0, le=1)
     content_similarity: float | None = Field(None, ge=0, le=1)
@@ -158,7 +158,7 @@ class IntegrationDedupCheckRequest(BaseModel):
 class IntegrationCandidateResult(BaseModel):
     event_id: str
     idempotency_key: str
-    status: Literal["review_submitted", "rejected", "reused"]
+    status: Literal["review_submitted", "review_required", "rejected", "reused"]
     ingestion_id: str | None = None
     knowledge_id: str | None = None
     error_code: str | None = None
@@ -168,6 +168,7 @@ class IntegrationCandidateResult(BaseModel):
 
 class IntegrationCandidateBatchResponse(BaseModel):
     accepted: int
+    review_required: int
     rejected: int
     reused: int
     results: list[IntegrationCandidateResult]
@@ -207,6 +208,10 @@ class CandidateReviewUpdate(BaseModel):
     error_type: str | None = Field(None, max_length=128)
     training_eligible: str | None = Field(None, max_length=32)
     notes: str | None = Field(None, max_length=4000)
+    confirm_dedup_review: bool | None = Field(
+        None,
+        description="已对比当前疑似重复命中并确认内容确实不同",
+    )
 
 
 class CandidateReviewListItem(BaseModel):
@@ -233,6 +238,9 @@ class CandidateReviewListItem(BaseModel):
     model_review: dict[str, Any] = Field(default_factory=dict)
     human_review: dict[str, Any] = Field(default_factory=dict)
     priority_review: bool = False
+    deduplication: IntegrationDedupResponse | None = None
+    deduplication_confirmed: bool = False
+    deduplication_only: bool = False
     knowledge_id: str | None = None
     error_code: str | None = None
     error_message: str | None = None

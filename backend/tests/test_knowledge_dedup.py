@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from app.services.knowledge_dedup import (
     _combined_dedup_similarity,
@@ -9,6 +10,7 @@ from app.services.knowledge_dedup import (
     build_dedup_documents,
     build_embedding_text,
     build_search_documents,
+    check_duplicate,
 )
 
 
@@ -109,6 +111,66 @@ class KnowledgeDedupTextTests(unittest.TestCase):
         self.assertTrue(_has_content_containment("1234567890123456", "345678901234"))
         self.assertTrue(_has_content_containment(" 1234 5678 9012 3456 ", "345678901234"))
         self.assertFalse(_has_content_containment("1234567890123456", "999999999999"))
+
+    @staticmethod
+    def _title_match_session(matches):
+        query = MagicMock()
+        query.filter.return_value = query
+        query.order_by.return_value = query
+        query.limit.return_value = query
+        query.all.return_value = matches
+        db = MagicMock()
+        db.query.return_value = query
+        return db
+
+    def test_same_normalized_title_and_content_blocks_without_embedding(self):
+        existing = SimpleNamespace(
+            id="A-00001",
+            title="  按键颜色不符是什么意思  ",
+            content={"blocks": [{"type": "text", "value": "请按标准核验颜色。"}]},
+            status=SimpleNamespace(value="published"),
+            category_id="cat-qc-standard",
+        )
+        db = self._title_match_session([existing])
+
+        with patch("app.services.knowledge_dedup.embed_texts") as embed:
+            decision = check_duplicate(
+                db,
+                title="按键颜色不符是什么意思",
+                subtitles=[],
+                content={"blocks": [{"type": "text", "value": "请 按标准核验颜色。"}]},
+                scene_tags=[],
+            )
+
+        self.assertEqual(decision.action, "block_duplicate")
+        self.assertEqual(decision.matches[0].match_type, "exact")
+        embed.assert_not_called()
+
+    def test_same_title_with_one_character_content_requires_human_review(self):
+        existing = SimpleNamespace(
+            id="A-00001",
+            title="按键颜色不符是什么意思",
+            content={"blocks": [{"type": "text", "value": "请按标准核验颜色。"}]},
+            status=SimpleNamespace(value="published"),
+            category_id="cat-qc-standard",
+        )
+        db = self._title_match_session([existing])
+
+        with patch(
+            "app.services.knowledge_dedup.embed_texts",
+            return_value=[[0.1], [0.2], [0.3]],
+        ):
+            decision = check_duplicate(
+                db,
+                title="按键颜色不符是什么意思",
+                subtitles=[],
+                content={"blocks": [{"type": "text", "value": "1"}]},
+                scene_tags=[],
+            )
+
+        self.assertEqual(decision.action, "review_duplicate")
+        self.assertEqual(decision.matches[0].match_type, "title_exact")
+        self.assertEqual(decision.matches[0].similarity, 1.0)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Literal
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -22,7 +23,12 @@ from app.services.embedding import embed_texts
 
 
 DedupAction = Literal["create", "review_duplicate", "block_duplicate"]
-DedupMatchType = Literal["exact", "semantic", "content_containment"]
+DedupMatchType = Literal[
+    "exact",
+    "title_exact",
+    "semantic",
+    "content_containment",
+]
 
 
 @dataclass
@@ -165,6 +171,11 @@ def _normalized_containment_text(content_text: str) -> str:
     return "".join(content_text.split()).casefold()
 
 
+def _normalized_comparison_text(value: str) -> str:
+    """Normalize visible text for deterministic title/content equality checks."""
+    return "".join(value.split()).casefold()
+
+
 def _has_content_containment(left: str, right: str) -> bool:
     """Detect meaningful literal inclusion that embedding similarity can miss."""
     normalized_left = _normalized_containment_text(left)
@@ -275,25 +286,30 @@ def check_duplicate(
     if not text:
         raise ValueError("Knowledge content is empty after normalization.")
     content_hash = content_hash_for_text(text)
-    query = db.query(Knowledge).join(
-        KnowledgeEmbedding,
-        KnowledgeEmbedding.knowledge_id == Knowledge.id,
-    ).filter(
-        Knowledge.status.in_([KnowledgeStatus.REVIEW, KnowledgeStatus.PUBLISHED]),
-        KnowledgeEmbedding.embedding_model == settings.EMBEDDING_MODEL,
+    normalized_title = _normalized_comparison_text(title_text)
+    normalized_content = _normalized_comparison_text(content_text)
+    active_statuses = [KnowledgeStatus.REVIEW, KnowledgeStatus.PUBLISHED]
+
+    title_query = db.query(Knowledge).filter(
+        Knowledge.status.in_(active_statuses),
+        func.lower(func.trim(Knowledge.title)) == title_text.lower(),
     )
     if exclude_knowledge_id:
-        query = query.filter(Knowledge.id != exclude_knowledge_id)
-    title_matches = (
-        query.filter(Knowledge.title == title.strip())
-        .order_by(Knowledge.updated_at.desc())
-        .limit(settings.DEDUP_MAX_CANDIDATES)
-        .all()
-    )
+        title_query = title_query.filter(Knowledge.id != exclude_knowledge_id)
+    title_matches = [
+        item
+        for item in (
+            title_query.order_by(Knowledge.updated_at.desc())
+            .limit(settings.DEDUP_MAX_CANDIDATES)
+            .all()
+        )
+        if _normalized_comparison_text(item.title) == normalized_title
+    ]
     exact_title_and_content_matches = [
         item
         for item in title_matches
-        if _content_to_text(item.content) == content_text
+        if _normalized_comparison_text(_content_to_text(item.content))
+        == normalized_content
     ]
     if exact_title_and_content_matches:
         return DedupDecision(
@@ -314,6 +330,40 @@ def check_duplicate(
                 for item in exact_title_and_content_matches
             ],
         )
+
+    query_vector, title_vector, content_vector = embed_texts(
+        [text, title_text, content_text]
+    )
+    if title_matches:
+        return DedupDecision(
+            action="review_duplicate",
+            content_hash=content_hash,
+            embedding=query_vector,
+            title_embedding=title_vector,
+            content_embedding=content_vector,
+            matches=[
+                DedupMatch(
+                    knowledge_id=item.id,
+                    title=item.title,
+                    status=item.status.value,
+                    category_id=item.category_id,
+                    match_type="title_exact",
+                    similarity=1.0,
+                    title_similarity=1.0,
+                )
+                for item in title_matches
+            ],
+        )
+
+    query = db.query(Knowledge).join(
+        KnowledgeEmbedding,
+        KnowledgeEmbedding.knowledge_id == Knowledge.id,
+    ).filter(
+        Knowledge.status.in_(active_statuses),
+        KnowledgeEmbedding.embedding_model == settings.EMBEDDING_MODEL,
+    )
+    if exclude_knowledge_id:
+        query = query.filter(Knowledge.id != exclude_knowledge_id)
     exact_matches = (
         query.filter(KnowledgeEmbedding.content_hash == content_hash)
         .order_by(Knowledge.updated_at.desc())
@@ -340,9 +390,6 @@ def check_duplicate(
             ],
         )
 
-    query_vector, title_vector, content_vector = embed_texts(
-        [text, title_text, content_text]
-    )
     containment_matches = [
         item
         for item in query.all()

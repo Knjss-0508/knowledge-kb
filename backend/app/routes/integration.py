@@ -105,6 +105,17 @@ def _candidate_review_item(item: IntegrationIngestion) -> CandidateReviewListIte
     human_review = normalize_human_review(
         payload.get("human_review") or review_metadata.get("human_review") or {}
     )
+    deduplication = None
+    raw_deduplication = review_metadata.get("deduplication")
+    if isinstance(raw_deduplication, dict):
+        try:
+            deduplication = IntegrationDedupResponse.model_validate(raw_deduplication)
+        except ValueError:
+            logger.warning(
+                "Ignoring malformed deduplication metadata for candidate review %s",
+                item.id,
+            )
+    confirmation = dict(review_metadata.get("deduplication_confirmation") or {})
     return CandidateReviewListItem(
         id=item.id,
         event_id=item.event_id,
@@ -127,6 +138,16 @@ def _candidate_review_item(item: IntegrationIngestion) -> CandidateReviewListIte
         model_review=model_review,
         human_review=human_review,
         priority_review=bool(model_review.get("priority_review")),
+        deduplication=deduplication,
+        deduplication_confirmed=(
+            _deduplication_confirmation_matches_response(
+                confirmation,
+                deduplication,
+            )
+            if deduplication
+            else False
+        ),
+        deduplication_only=bool(review_metadata.get("deduplication_only")),
         knowledge_id=item.knowledge_id,
         error_code=item.error_code,
         error_message=item.error_message,
@@ -173,6 +194,88 @@ def _candidate_queue_state(
         "human_review": human_review,
     }
     return payload, selection, review_metadata, review_status
+
+
+def _deduplication_match_keys(matches) -> list[str]:
+    return sorted(
+        f"{match.knowledge_id}:{match.match_type}"
+        for match in matches
+    )
+
+
+def _deduplication_confirmation_matches(
+    confirmation: dict[str, Any] | None,
+    decision: DedupDecision,
+) -> bool:
+    if decision.action != "review_duplicate":
+        return True
+    confirmation = dict(confirmation or {})
+    return (
+        confirmation.get("content_hash") == decision.content_hash
+        and confirmation.get("match_keys") == _deduplication_match_keys(decision.matches)
+    )
+
+
+def _deduplication_confirmation_matches_response(
+    confirmation: dict[str, Any] | None,
+    decision: IntegrationDedupResponse,
+) -> bool:
+    confirmation = dict(confirmation or {})
+    return (
+        decision.action == "review_duplicate"
+        and confirmation.get("content_hash") == decision.content_hash
+        and confirmation.get("match_keys") == _deduplication_match_keys(decision.matches)
+    )
+
+
+def _deduplication_confirmation(
+    decision: IntegrationDedupResponse,
+    username: str,
+) -> dict[str, Any]:
+    return {
+        "content_hash": decision.content_hash,
+        "match_keys": _deduplication_match_keys(decision.matches),
+        "confirmed_by": username,
+        "confirmed_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _deduplication_review_message(deduplication: IntegrationDedupResponse) -> str:
+    top_match = deduplication.matches[0] if deduplication.matches else None
+    if top_match and top_match.match_type == "title_exact":
+        message = "标题完全相同但正文不同，需人工核对后确认提交。"
+    else:
+        message = "检测到疑似重复知识，需人工核对后确认提交。"
+    if top_match:
+        message += f" 命中 {top_match.knowledge_id}《{top_match.title}》。"
+    return message
+
+
+def _queue_duplicate_candidate(
+    db: Session,
+    candidate: IntegrationCandidate,
+    deduplication: IntegrationDedupResponse,
+) -> IntegrationIngestion:
+    payload, selection, review_metadata, review_status = _candidate_queue_state(candidate)
+    review_metadata["deduplication"] = deduplication.model_dump(mode="json")
+    return IntegrationIngestion(
+        id=f"ing-{uuid.uuid4().hex[:12]}",
+        event_id=candidate.event_id,
+        idempotency_key=candidate.idempotency_key,
+        source_system=candidate.source.system,
+        source_conversation_id=candidate.source.conversation_id,
+        source_conversation_url=candidate.source.conversation_url,
+        source_message_ids=candidate.source.message_ids,
+        redaction_status=candidate.source.redaction_status,
+        processing_metadata=candidate.processing.model_dump(mode="json"),
+        selection_metadata=selection,
+        candidate_payload=payload,
+        review_metadata=review_metadata,
+        review_status=review_status,
+        status=f"candidate_{review_status}",
+        error_code="DUPLICATE_REVIEW_REQUIRED",
+        error_message=_deduplication_review_message(deduplication),
+    )
 
 
 def _resolve_retrieval_outcome(candidate) -> str:
@@ -364,7 +467,7 @@ def submit_knowledge_candidates(
     _: None = Depends(require_integration_key),
 ):
     results: list[IntegrationCandidateResult] = []
-    accepted = rejected = reused = 0
+    accepted = review_required = rejected = reused = 0
 
     for candidate in body.items:
         existing = (
@@ -465,6 +568,22 @@ def submit_knowledge_candidates(
                 )
             )
             continue
+        if decision.action == "review_duplicate":
+            ingestion = _queue_duplicate_candidate(db, candidate, deduplication)
+            db.add(ingestion)
+            review_required += 1
+            results.append(
+                IntegrationCandidateResult(
+                    event_id=candidate.event_id,
+                    idempotency_key=candidate.idempotency_key,
+                    status="review_required",
+                    ingestion_id=ingestion.id,
+                    error_code="DUPLICATE_REVIEW_REQUIRED",
+                    error_message=_deduplication_review_message(deduplication),
+                    deduplication=deduplication,
+                )
+            )
+            continue
 
         knowledge = Knowledge(
             id=_generate_knowledge_id(db),
@@ -511,7 +630,7 @@ def submit_knowledge_candidates(
                 "evidence_excerpt": candidate.knowledge.evidence_excerpt,
                 "deduplication": deduplication.model_dump(mode="json"),
             },
-            status="review_duplicate" if decision.action == "review_duplicate" else "review_submitted",
+            status="review_submitted",
             knowledge_id=knowledge.id,
         )
         db.add(ingestion)
@@ -530,6 +649,7 @@ def submit_knowledge_candidates(
     db.commit()
     return IntegrationCandidateBatchResponse(
         accepted=accepted,
+        review_required=review_required,
         rejected=rejected,
         reused=reused,
         results=results,
@@ -648,6 +768,7 @@ def list_candidate_reviews(
     keyword: str = Query("", max_length=200),
     review_status: str = Query(""),
     priority_only: bool = Query(False),
+    deduplication_required: bool = Query(False),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -668,6 +789,14 @@ def list_candidate_reviews(
         "submitted": sum(item.review_status == "submitted" for item in all_items),
         "failed": sum(item.review_status == "failed" for item in all_items),
         "priority": sum(item.priority_review for item in all_items),
+        "deduplication_required": sum(
+            bool(
+                item.deduplication
+                and item.deduplication.action == "review_duplicate"
+                and not item.deduplication_confirmed
+            )
+            for item in all_items
+        ),
     }
 
     normalized_keyword = keyword.strip().lower()
@@ -690,6 +819,16 @@ def list_candidate_reviews(
         filtered = [item for item in filtered if item.review_status == review_status]
     if priority_only:
         filtered = [item for item in filtered if item.priority_review]
+    if deduplication_required:
+        filtered = [
+            item
+            for item in filtered
+            if (
+                item.deduplication
+                and item.deduplication.action == "review_duplicate"
+                and not item.deduplication_confirmed
+            )
+        ]
 
     return CandidateReviewListResponse(
         total=len(filtered),
@@ -724,6 +863,8 @@ def update_candidate_review(
     payload = dict(item.candidate_payload or {})
     knowledge = dict(payload.get("knowledge") or {})
     updates = body.model_dump(exclude_unset=True)
+    confirm_dedup_review = updates.pop("confirm_dedup_review", None)
+    deduplication_sensitive_changed = False
     for field, payload_key in (
         ("title", "title"),
         ("subtitles", "subtitles"),
@@ -736,10 +877,33 @@ def update_candidate_review(
         ("recommended_reply", "recommended_reply"),
     ):
         if field in updates:
-            knowledge[payload_key] = updates.pop(field)
+            value = updates.pop(field)
+            if knowledge.get(payload_key) != value:
+                deduplication_sensitive_changed = True
+            knowledge[payload_key] = value
     payload["knowledge"] = knowledge
 
     review_metadata = dict(item.review_metadata or {})
+    if deduplication_sensitive_changed or confirm_dedup_review is False:
+        review_metadata.pop("deduplication_confirmation", None)
+    elif confirm_dedup_review is True:
+        raw_deduplication = review_metadata.get("deduplication")
+        try:
+            deduplication = IntegrationDedupResponse.model_validate(raw_deduplication)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="当前候选尚未生成疑似重复命中，不能确认查重结果。",
+            ) from exc
+        if deduplication.action != "review_duplicate":
+            raise HTTPException(
+                status_code=409,
+                detail="当前候选不存在需人工确认的疑似重复命中。",
+            )
+        review_metadata["deduplication_confirmation"] = _deduplication_confirmation(
+            deduplication,
+            current_user.username,
+        )
     human_review = dict(
         payload.get("human_review")
         or review_metadata.get("human_review")
@@ -846,12 +1010,38 @@ def submit_candidate_reviews(
             deduplication = _to_dedup_response(decision)
             if decision.action == "block_duplicate":
                 raise ValueError("DUPLICATE_BLOCKED")
+            if not _deduplication_confirmation_matches(
+                dict((item.review_metadata or {}).get("deduplication_confirmation") or {}),
+                decision,
+            ):
+                review_metadata = dict(item.review_metadata or {})
+                review_metadata["deduplication"] = deduplication.model_dump(mode="json")
+                review_metadata.pop("deduplication_confirmation", None)
+                item.review_metadata = review_metadata
+                item.review_status = "ready"
+                item.status = "candidate_ready"
+                item.error_code = "DUPLICATE_REVIEW_REQUIRED"
+                item.error_message = _deduplication_review_message(deduplication)
+                db.commit()
+                failed += 1
+                results.append(
+                    CandidateReviewSubmitResult(
+                        ingestion_id=item.id,
+                        status="failed",
+                        error_code="DUPLICATE_REVIEW_REQUIRED",
+                        error_message=item.error_message,
+                    )
+                )
+                continue
 
             deduplication_metadata = deduplication.model_dump(mode="json")
             deduplication_metadata["candidate_review"] = {
                 "ingestion_id": item.id,
                 "model_review": dict((item.review_metadata or {}).get("model_review") or {}),
                 "human_review": dict((item.review_metadata or {}).get("human_review") or {}),
+                "deduplication_confirmation": dict(
+                    (item.review_metadata or {}).get("deduplication_confirmation") or {}
+                ),
             }
             knowledge = Knowledge(
                 id=_generate_knowledge_id(db),

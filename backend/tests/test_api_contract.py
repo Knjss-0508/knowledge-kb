@@ -9,6 +9,13 @@ class ApiContractTests(unittest.TestCase):
         paths = app.openapi()["paths"]
         self.assertIn("/api/v1/knowledge/import/template", paths)
         self.assertIn("/api/v1/knowledge/import/excel", paths)
+        schemas = app.openapi()["components"]["schemas"]
+        result_statuses = schemas["ExcelImportRowResult"]["properties"]["status"]["enum"]
+        self.assertIn("review_required", result_statuses)
+        self.assertIn(
+            "review_task_id",
+            schemas["ExcelImportRowResult"]["properties"],
+        )
 
     def test_knowledge_list_exposes_applicability_filters(self):
         operation = app.openapi()["paths"]["/api/v1/knowledge"]["get"]
@@ -38,6 +45,31 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn(
             "post",
             paths["/api/v1/integration/candidate-reviews:batch-submit"],
+        )
+        schemas = app.openapi()["components"]["schemas"]
+        self.assertIn(
+            "confirm_dedup_review",
+            schemas["CandidateReviewUpdate"]["properties"],
+        )
+        self.assertIn(
+            "review_required",
+            schemas["IntegrationCandidateResult"]["properties"]["status"]["enum"],
+        )
+        parameters = {
+            parameter["name"]
+            for parameter in paths["/api/v1/integration/candidate-reviews"]["get"]["parameters"]
+        }
+        self.assertIn("deduplication_required", parameters)
+
+    def test_batch_approve_route_is_exposed(self):
+        paths = app.openapi()["paths"]
+        self.assertIn(
+            "post",
+            paths["/api/v1/knowledge/review:batch-approve"],
+        )
+        self.assertIn(
+            "get",
+            paths["/api/v1/knowledge/review:selection"],
         )
 
     def test_integration_processing_exposes_plugin_contract(self):

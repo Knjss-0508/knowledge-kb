@@ -199,6 +199,10 @@ class CandidateSubmit(BaseModel):
     content: Any = Field(..., description="内容")
     category_id: str = Field(..., description="所属分类ID")
     applicable_scenes: list[str] = Field(default=[], description="场景标签")
+    confirm_dedup_review: bool = Field(
+        False,
+        description="疑似重复对比后，人工确认内容确实不同再提交",
+    )
     source: str = Field("manual", description="来源")
     source_session_id: Optional[str] = Field(None, description="关联会话ID")
     submitted_by: str = Field("system", description="提交人")
@@ -221,17 +225,49 @@ class DeduplicationFeedbackSubmit(BaseModel):
 class ExcelImportRowResult(BaseModel):
     row: int = Field(description="Excel 行号")
     title: str = Field(description="知识标题")
-    status: Literal["imported", "failed"] = Field(description="导入结果")
+    status: Literal["imported", "review_required", "failed"] = Field(description="导入结果")
     knowledge_id: Optional[str] = Field(None, description="成功导入后的知识ID")
     error_code: Optional[str] = Field(None, description="失败错误码")
     error_message: Optional[str] = Field(None, description="失败原因")
+    deduplication: dict[str, Any] | None = Field(
+        None,
+        description="疑似重复或重复时的命中详情",
+    )
+    review_task_id: Optional[str] = Field(
+        None,
+        description="疑似重复进入审核队列后的任务ID",
+    )
 
 
 class ExcelImportResponse(BaseModel):
     total: int = Field(description="有效数据总行数")
     imported: int = Field(description="成功导入行数")
+    review_required: int = Field(description="需人工确认疑似重复的行数")
     failed: int = Field(description="失败行数")
     results: list[ExcelImportRowResult] = Field(description="逐行导入结果")
+
+
+class KnowledgeBatchApprove(BaseModel):
+    knowledge_ids: list[str] = Field(..., min_length=1, max_length=500)
+
+
+class KnowledgeBatchApproveResult(BaseModel):
+    knowledge_id: str
+    status: Literal["approved", "failed", "reused"]
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+class KnowledgeBatchApproveResponse(BaseModel):
+    approved: int
+    failed: int
+    reused: int
+    results: list[KnowledgeBatchApproveResult]
+
+
+class KnowledgeReviewSelectionResponse(BaseModel):
+    total: int
+    knowledge_ids: list[str]
 
 
 KnowledgeResponse.model_rebuild()

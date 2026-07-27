@@ -353,6 +353,9 @@
       <button class="btn b-template" v-if="can('knowledge:create')" @click="downloadImportTemplate">下载导入模板</button>
       <button class="btn b-import" v-if="can('knowledge:create')" @click="chooseImportFile" :disabled="importing">{{importing?'导入中...':'Excel 批量导入'}}</button>
       <input ref="knowledgeImportFile" type="file" accept=".xlsx" style="display:none" @change="importKnowledgeExcel">
+      <span class="review-selected-note" v-if="can('knowledge:approve')">待审核已选 <b>{{knowledgeReviewSelection.length}}</b> 条</span>
+      <button class="btn bd" v-if="can('knowledge:approve')" @click="selectAllPendingKnowledge" :disabled="batchApproving">全选所有待审核</button>
+      <button class="btn bp" v-if="can('knowledge:approve')" @click="batchApproveSelectedKnowledge" :disabled="batchApproving||!knowledgeReviewSelection.length">{{batchApproving?'审核中...':'一键审核通过'}}</button>
       <button class="btn bp" v-if="can('knowledge:create')" @click="openNew">+ 新建知识</button>
     </div>
     <div class="filter-tabs">
@@ -419,9 +422,10 @@
     </div>
     <div class="tw">
       <table class="knowledge-table">
-        <thead><tr><th style="width:130px">ID</th><th>标题</th><th style="width:150px">知识分类</th><th style="width:220px">状态</th><th style="width:90px">创建人</th><th style="width:100px">最近变更人</th><th style="width:280px;text-align:right">操作</th></tr></thead>
+        <thead><tr><th v-if="can('knowledge:approve')" style="width:42px"><input class="review-checkbox" type="checkbox" :checked="allKnowledgeReviewSelected()" @change="toggleAllKnowledgeReviewSelection($event.target.checked)"></th><th style="width:130px">ID</th><th>标题</th><th style="width:150px">知识分类</th><th style="width:220px">状态</th><th style="width:90px">创建人</th><th style="width:100px">最近变更人</th><th style="width:280px;text-align:right">操作</th></tr></thead>
         <tbody>
           <tr v-for="r in list" :key="r.id">
+            <td v-if="can('knowledge:approve')"><input class="review-checkbox" type="checkbox" :disabled="!knowledgeReviewSelectable(r)" :checked="isKnowledgeReviewSelected(r.id)" @change="toggleKnowledgeReviewSelection(r.id)"></td>
             <td style="font-family:monospace;color:#86909c">{{r.id}}</td>
             <td style="font-weight:500">{{r.title}}</td>
             <td><span class="tg tg-l">{{categoryLabel(r.category_id)}}</span></td>
@@ -438,7 +442,7 @@
               <button class="btn br bsm" v-if="can('knowledge:deprecate') && r.status!=='deprecated'" @click="act(r,'deprecate')">废弃</button>
             </td>
           </tr>
-          <tr v-if="!list.length"><td colspan="7" style="text-align:center;padding:40px;color:#c9cdd4">暂无数据</td></tr>
+          <tr v-if="!list.length"><td :colspan="can('knowledge:approve') ? 8 : 7" style="text-align:center;padding:40px;color:#c9cdd4">暂无数据</td></tr>
         </tbody>
       </table>
     </div>
@@ -459,6 +463,7 @@
       <div class="card" :class="{active:candidateReviews.filter.status==='submitted'}" @click="setCandidateReviewFilter('submitted',false)"><div class="lb">已进入发布审核</div><div class="vl bl">{{candidateReviews.summary.submitted}}</div><div class="metric-note"><b>已提交</b> 等待正式发布</div></div>
       <div class="card" :class="{active:candidateReviews.filter.status==='failed'}" @click="setCandidateReviewFilter('failed',false)"><div class="lb">送审失败</div><div class="vl" style="color:#c83827!important">{{candidateReviews.summary.failed}}</div><div class="metric-note"><b style="color:#c83827">需处理</b> 分类、查重或服务异常</div></div>
       <div class="card" :class="{active:candidateReviews.filter.priorityOnly}" @click="setCandidateReviewFilter('',true)"><div class="lb">重点复核</div><div class="vl" style="color:#765be6!important">{{candidateReviews.summary.priority}}</div><div class="metric-note"><b style="color:#765be6">高优先级</b> 模型标记风险项</div></div>
+      <div class="card" :class="{active:candidateReviews.filter.deduplicationRequired}" @click="setCandidateReviewDeduplicationFilter(true)"><div class="lb">疑似重复确认</div><div class="vl og">{{candidateReviews.summary.deduplication_required}}</div><div class="metric-note"><b>待核对</b> 确认内容是否确实不同</div></div>
     </div>
     <div class="bar review-toolbar">
       <span class="tt">审核队列</span>
@@ -470,6 +475,10 @@
         <option value="rejected">不沉淀</option>
         <option value="submitted">已进入发布审核</option>
         <option value="failed">送审失败</option>
+      </select>
+      <select class="inp" v-model="candidateReviews.filter.deduplicationRequired" @change="loadCandidateReviews">
+        <option :value="false">全部查重状态</option>
+        <option :value="true">疑似重复确认</option>
       </select>
       <label class="review-check-label"><input type="checkbox" v-model="candidateReviews.filter.priorityOnly" @change="loadCandidateReviews"> 仅重点复核</label>
       <span class="review-selected-note">已选 <b>{{candidateReviews.selected.length}}</b> 条</span>
@@ -641,6 +650,19 @@
           </div>
           <section class="review-panel">
             <div class="review-panel-title"><h4>组员验证与候选修订</h4><span class="hint">保存后实时重算送审门禁</span></div>
+            <div v-if="candidateReviews.current.deduplication && candidateReviews.current.deduplication.action==='review_duplicate'" style="margin:0 0 16px;padding:12px;border:1px solid #f7c97f;border-radius:8px;background:#fffaf0">
+              <div style="font-size:13px;font-weight:600;color:#9a5b00">查重人工确认</div>
+              <div style="margin-top:5px;font-size:12px;color:#7a5c25">以下知识与当前候选疑似重复。请逐条核对后，确认内容确实不同才可送审。</div>
+              <div v-for="match in candidateReviews.current.deduplication.matches" :key="match.knowledge_id + ':' + match.match_type" style="margin-top:8px;padding:8px 10px;border:1px solid #f3dfbc;border-radius:6px;background:#fff">
+                <b style="font-size:12px">{{match.knowledge_id}} · {{match.title}}</b>
+                <div style="margin-top:3px;font-size:11px;color:#86909c">{{dedupMatchDescription(match)}} · 综合 {{formatSimilarity(match.similarity)}}</div>
+              </div>
+              <label v-if="!reviewReadonly()" style="display:flex;gap:7px;align-items:flex-start;margin-top:10px;font-size:12px;color:#5d4319;cursor:pointer">
+                <input type="checkbox" v-model="candidateReviews.form.confirmDedupReview" style="margin-top:2px">
+                <span>我已核对以上命中知识，确认当前候选内容确实不同，仍需提交审核。</span>
+              </label>
+              <div v-else-if="candidateReviews.current.deduplication_confirmed" style="margin-top:10px;font-size:12px;color:#008a3f">已由人工确认内容不同。</div>
+            </div>
             <div class="review-form-grid">
               <div class="fg span-2"><label class="fl"><span class="req">*</span> 知识标题</label><input class="fi" v-model="candidateReviews.form.title" :disabled="reviewReadonly()" placeholder="输入知识标题"></div>
               <div class="fg"><label class="fl"><span class="req">*</span> 所属分类</label><select class="fi" v-model="candidateReviews.form.category_id" :disabled="reviewReadonly()"><option value="" disabled>请选择分类</option><option v-for="cat in cats" :key="cat.id" :value="cat.id">{{cat.name}}</option></select></div>
@@ -702,7 +724,7 @@
             <div v-for="match in visibleDedupMatches(fm.deduplicationMetadata)" :key="match.knowledge_id" style="display:flex;gap:10px;align-items:center;padding:9px 10px;border:1px solid #e5e6eb;border-radius:6px">
               <div style="min-width:0;flex:1">
                 <div style="font-size:12px;font-weight:600">{{match.knowledge_id}} · {{match.title}}</div>
-                <div style="margin-top:3px;font-size:11px;color:#86909c">{{match.match_type==='exact'?'标题和正文完全一致':(match.match_type==='content_containment'?'正文存在包含关系':'标题/正文语义相似')}} · 综合 {{formatSimilarity(match.similarity)}}<span v-if="typeof match.title_similarity==='number'"> · 标题 {{formatSimilarity(match.title_similarity)}} · 正文 {{formatSimilarity(match.content_similarity)}}</span></div>
+                <div style="margin-top:3px;font-size:11px;color:#86909c">{{dedupMatchDescription(match)}} · 综合 {{formatSimilarity(match.similarity)}}<span v-if="typeof match.title_similarity==='number'"> · 标题 {{formatSimilarity(match.title_similarity)}} · 正文 {{formatSimilarity(match.content_similarity)}}</span></div>
               </div>
               <button class="btn bd bsm" v-if="auditMode && can('knowledge:approve')" @click="openDedupCompare({matches:[match]}, dedupCandidateFromForm(), false)">对比详情</button>
               <button class="btn bd bsm" v-if="viewOnly && can('knowledge:approve')" @click="openDedupFeedback(match)" :disabled="hasDedupFeedback(match.knowledge_id)">确实不同</button>
@@ -864,7 +886,7 @@ Vue.createApp({
       stats: {total:0, published:0, review:0, draft:0},
       dashboard: {pending:[], recentUpdates:[], updatedAt:'-'},
       candidateDashboard: {
-        summary: {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0},
+        summary: {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
         pending: [],
         loading: false,
         available: false,
@@ -874,8 +896,8 @@ Vue.createApp({
       candidateReviews: {
         items: [],
         total: 0,
-        summary: {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0},
-        filter: {keyword:'', status:'', priorityOnly:false},
+        summary: {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
+        filter: {keyword:'', status:'', priorityOnly:false, deduplicationRequired:false},
         loading: false,
         selected: [],
         dlg: false,
@@ -883,13 +905,15 @@ Vue.createApp({
         form: {
           title:'', category_id:'', contentText:'', originalContentText:'', recommended_reply:'',
           knowledge_value:'pending', usability:'pending', modification_notes:'', feedback:'',
-          decision:'', error_type:'', training_eligible:'', notes:''
+          decision:'', error_type:'', training_eligible:'', notes:'', confirmDedupReview:false
         },
         saving: false,
         submitting: false,
         updatedAt: '-'
       },
       changeLogs: {item:null, entries:[]},
+      knowledgeReviewSelection: [],
+      batchApproving: false,
       f: {status:'', category_id:'', applicableCategoryIds:[], brandIds:[], modelIds:[], kw:''},
       filterDrop: '',
       listFilterCategoryKw: '',
@@ -1009,6 +1033,109 @@ Vue.createApp({
       this.f[key] = value;
       this.load();
     },
+    knowledgeReviewSelectable: function(item) {
+      return !!item && item.status === 'review' && this.can('knowledge:approve');
+    },
+    isKnowledgeReviewSelected: function(id) {
+      return this.knowledgeReviewSelection.indexOf(id) !== -1;
+    },
+    toggleKnowledgeReviewSelection: function(id) {
+      var item = this.list.find(function(row) { return row.id === id; });
+      if (!this.knowledgeReviewSelectable(item)) return;
+      var index = this.knowledgeReviewSelection.indexOf(id);
+      if (index === -1) this.knowledgeReviewSelection.push(id);
+      else this.knowledgeReviewSelection.splice(index, 1);
+    },
+    selectableKnowledgeReviewIds: function() {
+      var self = this;
+      return this.list.filter(function(item) {
+        return self.knowledgeReviewSelectable(item);
+      }).map(function(item) { return item.id; });
+    },
+    allKnowledgeReviewSelected: function() {
+      var ids = this.selectableKnowledgeReviewIds();
+      return ids.length > 0 && ids.every(function(id) {
+        return this.knowledgeReviewSelection.indexOf(id) !== -1;
+      }, this);
+    },
+    toggleAllKnowledgeReviewSelection: function(checked) {
+      var ids = this.selectableKnowledgeReviewIds();
+      if (checked) {
+        this.knowledgeReviewSelection = ids.slice();
+        return;
+      }
+      var visible = {};
+      ids.forEach(function(id) { visible[id] = true; });
+      this.knowledgeReviewSelection = this.knowledgeReviewSelection.filter(function(id) {
+        return !visible[id];
+      });
+    },
+    selectAllPendingKnowledge: function() {
+      var self = this;
+      if (self.batchApproving) return;
+      fetch(API + '/knowledge/review:selection', {headers:self.authHeaders()})
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(data.detail || '加载待审核知识失败');
+            return data;
+          });
+        })
+        .then(function(data) {
+          self.knowledgeReviewSelection = Array.isArray(data.knowledge_ids) ? data.knowledge_ids : [];
+          if (!self.knowledgeReviewSelection.length) {
+            alert('当前没有待审核知识。');
+            return;
+          }
+          alert('已全选 ' + self.knowledgeReviewSelection.length + ' 条待审核知识。');
+        })
+        .catch(function(error) { alert(error.message); });
+    },
+    batchApproveSelectedKnowledge: function() {
+      var self = this;
+      var ids = self.knowledgeReviewSelection.slice();
+      if (!ids.length || self.batchApproving) return;
+      if (!confirm('确认一键审核通过选中的 ' + ids.length + ' 条待审核知识并立即发布？')) return;
+      self.batchApproving = true;
+      var summary = {approved:0, reused:0, failed:0, results:[]};
+      function approveChunk(offset) {
+        if (offset >= ids.length) return Promise.resolve(summary);
+        var chunk = ids.slice(offset, offset + 500);
+        return fetch(API + '/knowledge/review:batch-approve', {
+          method:'POST',
+          headers:self.authHeaders({'Content-Type':'application/json'}),
+          body:JSON.stringify({knowledge_ids:chunk})
+        })
+          .then(function(response) {
+            return response.json().then(function(data) {
+              if (!response.ok) throw new Error(data.detail || '批量审核失败');
+              return data;
+            });
+          })
+          .then(function(data) {
+            summary.approved += Number(data.approved || 0);
+            summary.reused += Number(data.reused || 0);
+            summary.failed += Number(data.failed || 0);
+            summary.results = summary.results.concat(Array.isArray(data.results) ? data.results : []);
+            return approveChunk(offset + chunk.length);
+          });
+      }
+      approveChunk(0)
+        .then(function(data) {
+          var message = '批量审核完成：通过 ' + data.approved + ' 条，已处理 ' + data.reused + ' 条，失败 ' + data.failed + ' 条。';
+          var failures = data.results.filter(function(item) { return item.status === 'failed'; });
+          if (failures.length) {
+            message += '\n\n失败明细：\n' + failures.slice(0, 8).map(function(item) {
+              return item.knowledge_id + '：' + (item.error_message || item.error_code || '审核失败');
+            }).join('\n');
+          }
+          alert(message);
+          self.knowledgeReviewSelection = [];
+          self.load();
+          self.loadStats();
+        })
+        .catch(function(error) { alert(error.message); })
+        .finally(function() { self.batchApproving = false; });
+    },
     downloadImportTemplate: function() {
       var self = this;
       fetch(API + '/knowledge/import/template', {headers:self.authHeaders()})
@@ -1063,7 +1190,17 @@ Vue.createApp({
         })
         .then(function(data) {
           var failed = (data.results || []).filter(function(item) { return item.status === 'failed'; });
-          var message = '导入完成：成功 ' + data.imported + ' 条，失败 ' + data.failed + ' 条。';
+          var reviewRequired = (data.results || []).filter(function(item) { return item.status === 'review_required'; });
+          var message = '导入完成：成功 ' + data.imported + ' 条，待人工确认 ' + Number(data.review_required || reviewRequired.length) + ' 条，失败 ' + data.failed + ' 条。';
+          if (reviewRequired.length) {
+            message += '\n\n疑似重复：\n' + reviewRequired.slice(0, 10).map(function(item) {
+              var matches = item.deduplication && Array.isArray(item.deduplication.matches) ? item.deduplication.matches : [];
+              var match = matches[0];
+              var hit = match ? ('命中 ' + match.knowledge_id + '《' + match.title + '》') : '';
+              return '第 ' + item.row + ' 行《' + (item.title || '未填写标题') + '》：' + (item.error_message || hit || '请人工核对') + '。已进入“候选价值复核”的“疑似重复确认”筛选，无需修改模板或重复上传。';
+            }).join('\n');
+            if (reviewRequired.length > 10) message += '\n其余 ' + (reviewRequired.length - 10) + ' 条请分批核对。';
+          }
           if (failed.length) {
             message += '\n\n失败明细：\n' + failed.slice(0, 10).map(function(item) {
               return '第 ' + item.row + ' 行《' + (item.title || '未填写标题') + '》：' + (item.error_message || item.error_code || '导入失败');
@@ -1138,6 +1275,14 @@ Vue.createApp({
     setCandidateReviewFilter: function(status, priorityOnly) {
       this.candidateReviews.filter.status = status || '';
       this.candidateReviews.filter.priorityOnly = !!priorityOnly;
+      this.candidateReviews.filter.deduplicationRequired = false;
+      this.candidateReviews.selected = [];
+      this.loadCandidateReviews();
+    },
+    setCandidateReviewDeduplicationFilter: function(enabled) {
+      this.candidateReviews.filter.deduplicationRequired = !!enabled;
+      this.candidateReviews.filter.status = '';
+      this.candidateReviews.filter.priorityOnly = false;
       this.candidateReviews.selected = [];
       this.loadCandidateReviews();
     },
@@ -1161,7 +1306,7 @@ Vue.createApp({
         })
         .then(function(data) {
           self.candidateDashboard.summary = Object.assign(
-            {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0},
+            {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
             data.summary || {}
           );
           self.candidateDashboard.pending = Array.isArray(data.items) ? data.items : [];
@@ -1182,6 +1327,7 @@ Vue.createApp({
       if (filter.keyword && filter.keyword.trim()) params.set('keyword', filter.keyword.trim());
       if (filter.status) params.set('review_status', filter.status);
       if (filter.priorityOnly) params.set('priority_only', 'true');
+      if (filter.deduplicationRequired) params.set('deduplication_required', 'true');
       params.set('limit', '500');
       self.candidateReviews.loading = true;
       fetch(API + '/integration/candidate-reviews?' + params.toString(), {headers:self.authHeaders()})
@@ -1195,7 +1341,7 @@ Vue.createApp({
           self.candidateReviews.items = Array.isArray(data.items) ? data.items : [];
           self.candidateReviews.total = Number(data.total || 0);
           self.candidateReviews.summary = Object.assign(
-            {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0},
+            {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
             data.summary || {}
           );
           var selectable = {};
@@ -1248,7 +1394,8 @@ Vue.createApp({
       return (number * 100).toFixed(number >= 0.1 ? 0 : 1) + '%';
     },
     reviewSelectable: function(item) {
-      return !!item && item.review_status === 'ready' && !item.knowledge_id;
+      var reviewPending = item && item.deduplication && item.deduplication.action === 'review_duplicate' && !item.deduplication_confirmed;
+      return !!item && item.review_status === 'ready' && !item.knowledge_id && !reviewPending;
     },
     isReviewSelected: function(id) {
       return this.candidateReviews.selected.indexOf(id) !== -1;
@@ -1298,7 +1445,8 @@ Vue.createApp({
         decision: current.human_review.decision || '',
         error_type: current.human_review.error_type || '',
         training_eligible: current.human_review.training_eligible || '',
-        notes: current.human_review.notes || ''
+        notes: current.human_review.notes || '',
+        confirmDedupReview: !!current.deduplication_confirmed
       };
       this.candidateReviews.dlg = true;
     },
@@ -1312,6 +1460,9 @@ Vue.createApp({
     },
     candidateReviewGateReason: function(item) {
       if (!item) return '';
+      if (item.deduplication && item.deduplication.action === 'review_duplicate' && !item.deduplication_confirmed) {
+        return '检测到疑似重复，请打开候选，核对命中知识后勾选“内容确实不同”。';
+      }
       if (item.error_message) return item.error_message;
       return (item.selection && item.selection.review_reason) || {
         pending:'等待组员确认沉淀价值和可用性。',
@@ -1339,7 +1490,8 @@ Vue.createApp({
         decision: form.decision,
         error_type: form.error_type,
         training_eligible: form.training_eligible,
-        notes: form.notes
+        notes: form.notes,
+        confirm_dedup_review: !!form.confirmDedupReview
       };
       if (form.contentText !== form.originalContentText) {
         body.content = {blocks: form.contentText.trim() ? [{type:'text', value:form.contentText.trim()}] : []};
@@ -1363,6 +1515,11 @@ Vue.createApp({
           if (submitAfter) {
             if (data.review_status !== 'ready') {
               alert('审核已保存，但候选尚未通过送审门禁。请确认“值得沉淀”且“可用”，或给出通过结论。');
+              self.loadCandidateReviews();
+              return null;
+            }
+            if (data.deduplication && data.deduplication.action === 'review_duplicate' && !data.deduplication_confirmed) {
+              alert('检测到疑似重复，请先核对命中知识并勾选“内容确实不同”。');
               self.loadCandidateReviews();
               return null;
             }
@@ -1477,7 +1634,16 @@ Vue.createApp({
       if (self.f.kw) p.set('keyword', self.f.kw);
       fetch(API + '/knowledge?' + p, {headers:self.authHeaders()})
         .then(function(r) { return r.json(); })
-        .then(function(d) { self.list = Array.isArray(d) ? d : []; })
+        .then(function(d) {
+          self.list = Array.isArray(d) ? d : [];
+          var selectable = {};
+          self.list.forEach(function(item) {
+            if (self.knowledgeReviewSelectable(item)) selectable[item.id] = true;
+          });
+          self.knowledgeReviewSelection = self.knowledgeReviewSelection.filter(function(id) {
+            return selectable[id];
+          });
+        })
         .catch(function(e) { console.error('load error:', e); });
     },
     loadStats: function() {
@@ -1552,10 +1718,19 @@ Vue.createApp({
       var threshold = Number(metadata && metadata.review_threshold);
       if (isNaN(threshold)) threshold = 0.88;
       return matches.filter(function(match) {
-        return match.match_type === 'exact' || match.match_type === 'content_containment' || (
+        return match.match_type === 'exact' || match.match_type === 'title_exact' || match.match_type === 'content_containment' || (
           typeof match.similarity === 'number' && match.similarity >= threshold
         );
       });
+    },
+    dedupMatchDescription: function(match) {
+      if (!match) return '疑似重复';
+      return {
+        exact:'标题和正文完全一致',
+        title_exact:'标题完全相同，正文不同',
+        content_containment:'正文存在包含关系',
+        semantic:'标题/正文语义相似'
+      }[match.match_type] || '疑似重复';
     },
     outcomeLabel: function(outcome) {
       return {low_score:'低于阈值', no_candidates:'无候选', not_selected:'未采用'}[outcome] || outcome;
