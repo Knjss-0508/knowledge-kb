@@ -72,6 +72,7 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertNotIn("知识层级", headers)
         self.assertNotIn("适用业务", headers)
         self.assertNotIn("机型个性化", headers)
+        self.assertNotIn("确认疑似重复（选填）", headers)
         dictionary_rows = list(
             workbook["分类字典"].iter_rows(min_row=2, values_only=True)
         )

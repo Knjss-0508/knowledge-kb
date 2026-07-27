@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.database import get_db
 from app.routes.auth import get_current_user, has_permission, require_permission
 from app.models.user import User
+from app.models.integration import IntegrationIngestion
 from app.models.knowledge import (
     Category, Knowledge, KnowledgeStatus,
     KnowledgeTag, KnowledgeMedia, MediaUploadStaging,
@@ -47,6 +48,8 @@ from app.schemas.knowledge import (
     KnowledgeCreate, KnowledgeUpdate, KnowledgeResponse,
     CandidateSubmit, DeduplicationFeedbackSubmit, FeedbackSubmit,
     ExcelImportResponse, ExcelImportRowResult,
+    KnowledgeBatchApprove, KnowledgeBatchApproveResponse, KnowledgeBatchApproveResult,
+    KnowledgeReviewSelectionResponse,
     SearchRequest, SearchResponse, SearchResult,
 )
 
@@ -218,8 +221,12 @@ def _referenced_media_filenames(content: dict) -> set[str]:
     return filenames
 
 
-def _deduplication_metadata(decision: DedupDecision) -> dict:
-    return {
+def _deduplication_metadata(
+    decision: DedupDecision,
+    *,
+    confirmed_by: str | None = None,
+) -> dict:
+    metadata = {
         "action": decision.action,
         "embedding_model": settings.EMBEDDING_MODEL,
         "content_hash": decision.content_hash,
@@ -239,6 +246,109 @@ def _deduplication_metadata(decision: DedupDecision) -> dict:
             for match in decision.matches
         ],
     }
+    if decision.action == "review_duplicate" and confirmed_by:
+        metadata["review_confirmation"] = {
+            "confirmed_by": confirmed_by,
+            "confirmed_at": datetime.utcnow().isoformat(),
+        }
+    return metadata
+
+
+def _queue_excel_deduplication_review(
+    db: Session,
+    *,
+    body: KnowledgeCreate,
+    filename: str,
+    row_number: int,
+    current_user: User,
+    deduplication: dict,
+) -> IntegrationIngestion:
+    content_hash = str(deduplication.get("content_hash") or "").strip()
+    if not content_hash:
+        raise ValueError("疑似重复任务缺少内容指纹，无法进入审核队列。")
+    idempotency_key = f"excel-dedup:{content_hash}"
+    existing = (
+        db.query(IntegrationIngestion)
+        .filter(IntegrationIngestion.idempotency_key == idempotency_key)
+        .first()
+    )
+    if existing:
+        return existing
+
+    source_conversation_id = f"excel:{filename}:{row_number}"[:128]
+    human_review = {
+        "knowledge_value": "worthy",
+        "usability": "usable",
+        "decision": "approved",
+        "notes": "Excel 导入已完成字段校验，等待疑似重复人工确认。",
+        "reviewer": "excel-import",
+    }
+    selection = {
+        "eligible": True,
+        "confidence": 1.0,
+        "reasons": ["Excel 导入已完成字段校验。"],
+        "review_reason": "等待疑似重复人工确认。",
+    }
+    payload = {
+        "event_id": f"excel-{uuid.uuid4().hex[:16]}",
+        "idempotency_key": idempotency_key,
+        "source": {
+            "system": "excel",
+            "conversation_id": source_conversation_id,
+            "message_ids": [],
+            "redaction_status": "not_required",
+        },
+        "processing": {
+            "summary_version": "excel-import-v1",
+            "label_model": "manual-excel",
+            "plugin_name": "knowledge-kb-excel-import",
+            "plugin_version": "v1",
+        },
+        "selection": selection,
+        "knowledge": {
+            "title": body.title,
+            "subtitles": body.subtitles or [],
+            "content": body.content,
+            "category_id": body.category_id,
+            "scene_tags": body.applicable_scenes or [],
+            "applicable_categories": body.applicable_categories or [],
+            "applicable_brands": body.applicable_brands or [],
+            "applicable_models": body.applicable_models or [],
+        },
+        "model_review": {
+            "status": "excel_import",
+            "decision": "approved",
+            "knowledge_value": "worthy",
+            "reason": "Excel 导入已完成字段校验。",
+        },
+        "human_review": human_review,
+    }
+    task = IntegrationIngestion(
+        id=f"ing-{uuid.uuid4().hex[:12]}",
+        event_id=payload["event_id"],
+        idempotency_key=idempotency_key,
+        source_system="excel",
+        source_conversation_id=source_conversation_id,
+        source_message_ids=[],
+        redaction_status="not_required",
+        processing_metadata=payload["processing"],
+        selection_metadata=selection,
+        candidate_payload=payload,
+        review_metadata={
+            "model_review": payload["model_review"],
+            "human_review": human_review,
+            "deduplication": deduplication,
+            "deduplication_only": True,
+            "queued_by": current_user.username,
+            "queued_at": datetime.utcnow().isoformat(),
+        },
+        review_status="ready",
+        status="candidate_ready",
+        error_code="DUPLICATE_REVIEW_REQUIRED",
+        error_message="Excel 疑似重复，等待人工确认。",
+    )
+    db.add(task)
+    return task
 
 
 def _check_manual_deduplication(
@@ -281,6 +391,8 @@ def _check_manual_deduplication(
         top_match = metadata["matches"][0] if metadata["matches"] else None
         message = "检测到疑似重复知识，请对比后确认是否仍要提交审核。"
         if top_match:
+            if top_match["match_type"] == "title_exact":
+                message = "检测到标题完全相同但正文不同的知识，请对比后确认是否仍要提交审核。"
             message += f" 命中 {top_match['knowledge_id']}《{top_match['title']}》。"
         raise HTTPException(
             status_code=409,
@@ -385,7 +497,12 @@ def _create_knowledge_item(
         applicable_categories=body.applicable_categories,
         applicable_brands=body.applicable_brands,
         applicable_models=body.applicable_models,
-        deduplication_metadata=_deduplication_metadata(decision),
+        deduplication_metadata=_deduplication_metadata(
+            decision,
+            confirmed_by=(
+                current_user.username if body.confirm_dedup_review else None
+            ),
+        ),
         created_by=current_user.username,
         updated_by=current_user.username,
     )
@@ -465,6 +582,7 @@ async def import_knowledge_excel(
 
     results: list[ExcelImportRowResult] = []
     imported = 0
+    review_required = 0
     for row in rows:
         if not row.is_valid:
             results.append(
@@ -515,13 +633,67 @@ async def import_knowledge_excel(
                 error_message = str(detail.get("message") or detail)
             else:
                 error_message = str(detail)
+            is_review_required = error_code == "DUPLICATE_REVIEW_REQUIRED"
+            if is_review_required:
+                deduplication = (
+                    detail.get("deduplication")
+                    if isinstance(detail, dict)
+                    else None
+                )
+                if not isinstance(deduplication, dict):
+                    results.append(
+                        ExcelImportRowResult(
+                            row=row.row_number,
+                            title=row.title,
+                            status="failed",
+                            error_code="DEDUP_REVIEW_QUEUE_INVALID",
+                            error_message="疑似重复任务缺少命中信息，未进入审核队列。",
+                        )
+                    )
+                    continue
+                try:
+                    review_task = _queue_excel_deduplication_review(
+                        db,
+                        body=body,
+                        filename=filename,
+                        row_number=row.row_number,
+                        current_user=current_user,
+                        deduplication=deduplication,
+                    )
+                    db.commit()
+                    review_required += 1
+                except Exception:
+                    db.rollback()
+                    logger.exception(
+                        "Excel duplicate review queue failed at row %s",
+                        row.row_number,
+                    )
+                    results.append(
+                        ExcelImportRowResult(
+                            row=row.row_number,
+                            title=row.title,
+                            status="failed",
+                            error_code="DEDUP_REVIEW_QUEUE_FAILED",
+                            error_message="疑似重复审核任务创建失败，请稍后重试。",
+                            deduplication=deduplication,
+                        )
+                    )
+                    continue
             results.append(
                 ExcelImportRowResult(
                     row=row.row_number,
                     title=row.title,
-                    status="failed",
+                    status="review_required" if is_review_required else "failed",
                     error_code=error_code,
                     error_message=error_message,
+                    deduplication=(
+                        detail.get("deduplication")
+                        if isinstance(detail, dict)
+                        else None
+                    ),
+                    review_task_id=(
+                        review_task.id if is_review_required else None
+                    ),
                 )
             )
         except IntegrityError:
@@ -566,7 +738,8 @@ async def import_knowledge_excel(
     return ExcelImportResponse(
         total=len(results),
         imported=imported,
-        failed=len(results) - imported,
+        review_required=review_required,
+        failed=len(results) - imported - review_required,
         results=results,
     )
 
@@ -641,6 +814,30 @@ def list_knowledge(
         q = q.filter(Knowledge.title.ilike(f"%{keyword}%"))
     items = q.order_by(Knowledge.created_at.desc()).offset((page - 1) * size).limit(size).all()
     return [_to_response(i) for i in items]
+
+
+@router.get(
+    "/review:selection",
+    response_model=KnowledgeReviewSelectionResponse,
+    summary="获取全部待审核知识ID",
+)
+def list_review_selection(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("knowledge:approve")),
+):
+    knowledge_ids = [
+        item_id
+        for (item_id,) in (
+            db.query(Knowledge.id)
+            .filter(Knowledge.status == KnowledgeStatus.REVIEW)
+            .order_by(Knowledge.created_at.desc())
+            .all()
+        )
+    ]
+    return KnowledgeReviewSelectionResponse(
+        total=len(knowledge_ids),
+        knowledge_ids=knowledge_ids,
+    )
 
 
 @router.get("/dashboard", summary="获取知识运营总览")
@@ -987,7 +1184,10 @@ def submit_review(
         confirm_dedup_review=confirm_dedup_review,
     )
     item.status = KnowledgeStatus.REVIEW
-    item.deduplication_metadata = _deduplication_metadata(decision)
+    item.deduplication_metadata = _deduplication_metadata(
+        decision,
+        confirmed_by=current_user.username if confirm_dedup_review else None,
+    )
     if decision.embedding:
         save_embedding(
             db,
@@ -1005,7 +1205,11 @@ def submit_review(
 
 
 @router.post("/{knowledge_id}/approve", response_model=KnowledgeResponse, summary="审批通过")
-def approve_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:approve"))):
+def approve_knowledge(
+    knowledge_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:approve")),
+):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
@@ -1014,10 +1218,119 @@ def approve_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depend
     ensure_embedding(db, item)
     ensure_search_embeddings(db, item)
     item.status = KnowledgeStatus.PUBLISHED
+    item.updated_by = current_user.username
     item.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(item)
     return _to_response(item)
+
+
+@router.post(
+    "/review:batch-approve",
+    response_model=KnowledgeBatchApproveResponse,
+    summary="批量通过待审核知识",
+)
+def batch_approve_knowledge(
+    body: KnowledgeBatchApprove,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:approve")),
+):
+    approved = failed = reused = 0
+    results: list[KnowledgeBatchApproveResult] = []
+    seen_ids: set[str] = set()
+
+    for knowledge_id in body.knowledge_ids:
+        if knowledge_id in seen_ids:
+            reused += 1
+            results.append(
+                KnowledgeBatchApproveResult(
+                    knowledge_id=knowledge_id,
+                    status="reused",
+                    error_code="DUPLICATE_SELECTION",
+                    error_message="该知识已在本次批量审核中处理。",
+                )
+            )
+            continue
+        seen_ids.add(knowledge_id)
+
+        item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
+        if not item:
+            failed += 1
+            results.append(
+                KnowledgeBatchApproveResult(
+                    knowledge_id=knowledge_id,
+                    status="failed",
+                    error_code="KNOWLEDGE_NOT_FOUND",
+                    error_message="知识条目不存在。",
+                )
+            )
+            continue
+        if item.status == KnowledgeStatus.PUBLISHED:
+            reused += 1
+            results.append(
+                KnowledgeBatchApproveResult(
+                    knowledge_id=knowledge_id,
+                    status="reused",
+                    error_code="ALREADY_PUBLISHED",
+                    error_message="该知识已发布。",
+                )
+            )
+            continue
+        if item.status != KnowledgeStatus.REVIEW:
+            failed += 1
+            results.append(
+                KnowledgeBatchApproveResult(
+                    knowledge_id=knowledge_id,
+                    status="failed",
+                    error_code="STATUS_NOT_REVIEW",
+                    error_message="只有待审核状态的知识可以批量通过。",
+                )
+            )
+            continue
+        try:
+            ensure_embedding(db, item)
+            ensure_search_embeddings(db, item)
+            item.status = KnowledgeStatus.PUBLISHED
+            item.updated_by = current_user.username
+            item.updated_at = datetime.utcnow()
+            db.commit()
+            approved += 1
+            results.append(
+                KnowledgeBatchApproveResult(
+                    knowledge_id=knowledge_id,
+                    status="approved",
+                )
+            )
+        except EmbeddingServiceUnavailable as exc:
+            db.rollback()
+            failed += 1
+            results.append(
+                KnowledgeBatchApproveResult(
+                    knowledge_id=knowledge_id,
+                    status="failed",
+                    error_code="EMBEDDING_UNAVAILABLE",
+                    error_message=f"向量服务不可用，未发布：{exc}",
+                )
+            )
+        except Exception:
+            db.rollback()
+            logger.exception("Batch approval failed for knowledge %s", knowledge_id)
+            failed += 1
+            results.append(
+                KnowledgeBatchApproveResult(
+                    knowledge_id=knowledge_id,
+                    status="failed",
+                    error_code="APPROVE_FAILED",
+                    error_message="批量审核失败，请稍后重试。",
+                )
+            )
+
+    return KnowledgeBatchApproveResponse(
+        approved=approved,
+        failed=failed,
+        reused=reused,
+        results=results,
+    )
 
 
 @router.post("/{knowledge_id}/deprecate", response_model=KnowledgeResponse, summary="废弃知识条目")
@@ -1328,26 +1641,14 @@ def submit_candidate(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("knowledge:create")),
 ):
-    try:
-        decision = check_duplicate(
-            db,
-            title=body.title,
-            subtitles=[],
-            content=_normalize_content(body.content),
-            scene_tags=body.applicable_scenes,
-        )
-    except EmbeddingServiceUnavailable as exc:
-        raise HTTPException(503, "Embedding 服务不可用，无法完成查重") from exc
-    except ValueError as exc:
-        raise HTTPException(422, detail=str(exc)) from exc
-    if decision.action == "block_duplicate":
-        raise HTTPException(
-            409,
-            detail={
-                "code": "DUPLICATE_BLOCKED",
-                "deduplication": _deduplication_metadata(decision),
-            },
-        )
+    decision = _check_manual_deduplication(
+        db,
+        title=body.title,
+        subtitles=[],
+        content=_normalize_content(body.content),
+        scene_tags=body.applicable_scenes,
+        confirm_dedup_review=body.confirm_dedup_review,
+    )
 
     item = Knowledge(
         id=_generate_knowledge_id(db),
@@ -1360,7 +1661,12 @@ def submit_candidate(
         source_session_id=body.source_session_id,
         created_by=current_user.username,
         updated_by=current_user.username,
-        deduplication_metadata=_deduplication_metadata(decision),
+        deduplication_metadata=_deduplication_metadata(
+            decision,
+            confirmed_by=(
+                current_user.username if body.confirm_dedup_review else None
+            ),
+        ),
     )
     db.add(item)
     db.flush()
