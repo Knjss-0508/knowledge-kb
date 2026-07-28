@@ -3,7 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, String, Text, Enum, Float, Integer, DateTime,
-    CheckConstraint, ForeignKey, JSON, UniqueConstraint,
+    CheckConstraint, ForeignKey, JSON, LargeBinary, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
@@ -41,6 +41,13 @@ class Knowledge(Base):
     applicable_categories = Column(JSON, default=list)
     applicable_brands = Column(JSON, default=list)
     applicable_models = Column(JSON, default=list)
+    related_standard_items = Column(JSON, default=list)
+    # Excel 来源可选标识：与系统生成的 A-xxxxx 知识 ID 绑定，手工录入可为空。
+    source_topic_key = Column(String(512), nullable=True, index=True)
+    source_record_id = Column(String(256), nullable=True, index=True)
+    source_knowledge_key = Column(String(512), nullable=True, index=True)
+    # Excel 源表的原始列值，仅用于追溯和导出，不在前端知识表单展示。
+    source_fields = Column(JSON, default=dict)
     deduplication_metadata = Column(JSON, default=dict)
     created_by = Column(String(128), nullable=False)
     updated_by = Column(String(128), nullable=True)
@@ -228,6 +235,43 @@ class MediaDeletionTask(Base):
     last_error = Column(Text, nullable=False, default="")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class KnowledgeImportTask(Base):
+    """持久化 Excel 文件与处理进度，前端断开后仍可由后台继续导入。"""
+
+    __tablename__ = "knowledge_import_tasks"
+
+    id = Column(String(64), primary_key=True)
+    created_by = Column(String(128), nullable=False, index=True)
+    original_filename = Column(String(256), nullable=False)
+    file_size = Column(Integer, nullable=False, default=0)
+    file_sha256 = Column(String(64), nullable=False, index=True)
+    file_content = Column(LargeBinary, nullable=False)
+    status = Column(String(32), nullable=False, default="queued", index=True)
+    total_rows = Column(Integer, nullable=False, default=0)
+    processed_rows = Column(Integer, nullable=False, default=0)
+    imported = Column(Integer, nullable=False, default=0)
+    review_required = Column(Integer, nullable=False, default=0)
+    pending_review = Column(Integer, nullable=False, default=0)
+    deprecated = Column(Integer, nullable=False, default=0)
+    failed = Column(Integer, nullable=False, default=0)
+    results = Column(JSON, nullable=False, default=list)
+    error_message = Column(Text, nullable=False, default="")
+    attempt_count = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    lease_expires_at = Column(DateTime, nullable=True, index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'completed_with_errors', 'failed')",
+            name="ck_knowledge_import_task_status",
+        ),
+    )
 
 
 class Category(Base):

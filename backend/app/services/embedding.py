@@ -60,8 +60,89 @@ def _validate_vectors(vectors: list[list[float]]) -> list[list[float]]:
     return vectors
 
 
+def _embedding_batches(texts: list[str]) -> list[list[str]]:
+    """Keep each vector request small while retaining the caller's text order."""
+    max_texts = max(settings.EMBEDDING_MAX_BATCH_TEXTS, 1)
+    max_chars = max(settings.EMBEDDING_MAX_BATCH_CHARS, 1)
+    batches: list[list[str]] = []
+    batch: list[str] = []
+    batch_chars = 0
+
+    for text in texts:
+        text_chars = len(text)
+        would_exceed_limit = (
+            batch
+            and (
+                len(batch) >= max_texts
+                or batch_chars + text_chars > max_chars
+            )
+        )
+        if would_exceed_limit:
+            batches.append(batch)
+            batch = []
+            batch_chars = 0
+
+        batch.append(text)
+        batch_chars += text_chars
+
+        # A single document is kept intact for semantic consistency. It forms
+        # its own request even if it exceeds the batch character target.
+        if len(batch) >= max_texts or batch_chars >= max_chars:
+            batches.append(batch)
+            batch = []
+            batch_chars = 0
+
+    if batch:
+        batches.append(batch)
+    return batches
+
+
+def _embed_batch(
+    client: httpx.Client,
+    texts: list[str],
+    headers: dict[str, str],
+    provider: str,
+) -> list[list[float]]:
+    errors: list[str] = []
+    if provider in {"openai_compatible", "auto"}:
+        try:
+            response = client.post(
+                _openai_embeddings_url(),
+                headers=headers,
+                json={"model": settings.EMBEDDING_MODEL, "input": texts},
+            )
+            response.raise_for_status()
+            vectors = _parse_openai_response(response.json())
+            if len(vectors) != len(texts):
+                raise ValueError("Embedding result count does not match input count.")
+            return vectors
+        except (httpx.HTTPError, ValueError) as exc:
+            errors.append(f"OpenAI-compatible endpoint: {exc}")
+
+    if provider in {"tei", "auto"}:
+        try:
+            response = client.post(
+                _tei_embeddings_url(),
+                headers=headers,
+                json={"inputs": texts},
+            )
+            response.raise_for_status()
+            vectors = _parse_tei_response(response.json())
+            if len(vectors) != len(texts):
+                raise ValueError("Embedding result count does not match input count.")
+            return vectors
+        except (httpx.HTTPError, ValueError) as exc:
+            errors.append(f"TEI endpoint: {exc}")
+
+    raise EmbeddingServiceUnavailable("; ".join(errors))
+
+
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Generate document embeddings through the private Qwen/TEI service."""
+    """Generate document embeddings through the private Qwen/TEI service.
+
+    Large imports are transparently split into bounded requests so one long
+    knowledge item cannot exceed the embedding service's HTTP payload limit.
+    """
     if not texts:
         return []
     if any(not text.strip() for text in texts):
@@ -69,7 +150,6 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 
     headers = _authorization_headers()
     timeout = httpx.Timeout(settings.EMBEDDING_TIMEOUT_SECONDS)
-    errors: list[str] = []
     provider = settings.EMBEDDING_PROVIDER.strip().lower()
     if provider not in {"openai_compatible", "tei", "auto"}:
         raise ValueError(
@@ -77,34 +157,7 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
         )
 
     with httpx.Client(timeout=timeout) as client:
-        if provider in {"openai_compatible", "auto"}:
-            try:
-                response = client.post(
-                    _openai_embeddings_url(),
-                    headers=headers,
-                    json={"model": settings.EMBEDDING_MODEL, "input": texts},
-                )
-                response.raise_for_status()
-                vectors = _parse_openai_response(response.json())
-                if len(vectors) != len(texts):
-                    raise ValueError("Embedding result count does not match input count.")
-                return vectors
-            except (httpx.HTTPError, ValueError) as exc:
-                errors.append(f"OpenAI-compatible endpoint: {exc}")
-
-        if provider in {"tei", "auto"}:
-            try:
-                response = client.post(
-                    _tei_embeddings_url(),
-                    headers=headers,
-                    json={"inputs": texts},
-                )
-                response.raise_for_status()
-                vectors = _parse_tei_response(response.json())
-                if len(vectors) != len(texts):
-                    raise ValueError("Embedding result count does not match input count.")
-                return vectors
-            except (httpx.HTTPError, ValueError) as exc:
-                errors.append(f"TEI endpoint: {exc}")
-
-    raise EmbeddingServiceUnavailable("; ".join(errors))
+        vectors: list[list[float]] = []
+        for batch in _embedding_batches(texts):
+            vectors.extend(_embed_batch(client, batch, headers, provider))
+        return vectors

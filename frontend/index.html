@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>答疑中台 - 知识库管理</title>
+  <link rel="icon" type="image/png" href="assets/knowledge-kb-favicon.png">
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",Arial,sans-serif;background:#f0f2f5;color:#1d2129;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
@@ -56,7 +57,14 @@
     .knowledge-table{min-width:1080px}
     .status-cell{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:200px}
     .status-cell .tg{white-space:nowrap}
-    .mask{position:fixed;inset:0;background:rgba(19,36,51,.56);backdrop-filter:blur(3px);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:28px;overflow-y:auto}
+    .import-task-panel{margin:14px 0;padding:12px 14px;border:1px solid #d9ebe6;border-radius:7px;background:#f7fbfa}
+    .import-task-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;color:#344054;font-size:13px;font-weight:700}
+    .import-task-list{display:grid;gap:7px}
+    .import-task-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid #e5e6eb;border-radius:6px;background:#fff;font-size:12px}
+    .import-task-file{min-width:0;flex:1;color:#344054;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .import-task-meta{color:#86909c;white-space:nowrap}
+    .import-task-error{margin-left:auto;max-width:300px;color:#c83827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .mask{position:fixed;inset:0;background:rgba(19,36,51,.56);backdrop-filter:blur(3px);z-index:1000;display:flex;align-items:center;justify-content:center;padding:28px;overflow-y:auto}
     .dlg{width:min(980px,100%);max-height:calc(100vh - 56px);display:flex;flex-direction:column;overflow:hidden;background:#fff;border:1px solid rgba(229,233,239,.9);border-radius:8px;box-shadow:0 28px 80px rgba(16,24,40,.28)}
     .dlg-h{min-height:72px;padding:0 24px;border-bottom:1px solid #e8edf0;display:flex;align-items:center;justify-content:space-between;background:#fff}
     .dlg-h h3{position:relative;margin:0;padding-left:13px;font-size:17px;font-weight:700;color:#1d2939}
@@ -210,7 +218,7 @@
     .mht-form{display:grid;gap:12px}.mht-form .fi{min-height:92px;resize:vertical}.mht-status{padding:12px;border-radius:6px;background:#f7f8fa;color:#667085;font-size:12px;line-height:1.7}.mht-status strong{color:#009b83}.mht-actions{display:flex;gap:8px;justify-content:flex-end}
     .bar{border-radius:7px;border-color:var(--line);padding:16px 18px}.bar .tt{font-size:16px;color:var(--ink)}.filter-tabs,.tw{border-radius:7px;border-color:var(--line)}.filter-tabs{padding:12px 18px}.tab-btn{border-radius:4px}.tab-btn.on,.bp{background:var(--teal);border-color:var(--teal)}.tab-btn:hover,.bp:hover{background:#007f6b}.btn{border-radius:5px}.btn.bd:hover{border-color:var(--teal);color:var(--teal)}
     .review-metric-cards{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.review-metric-cards .card{min-height:116px;cursor:pointer}.review-metric-cards .card:after{width:82px;height:82px;border-width:15px}.review-metric-cards .card.active{border-color:var(--teal);box-shadow:0 0 0 2px rgba(0,155,131,.1)}.review-metric-cards .card:nth-child(2):after{border-color:#fff0d3}.review-metric-cards .card:nth-child(3):after{border-color:#d9f5ed}.review-metric-cards .card:nth-child(4):after{border-color:#ffe3dd}.review-metric-cards .card:nth-child(5):after{border-color:#dce8ff}.review-metric-cards .card:nth-child(6):after{border-color:#fff0ed}.review-metric-cards .card:nth-child(7):after{border-color:#e9e4ff}
-    .review-toolbar{align-items:center}.review-search{width:min(360px,100%)}.review-check-label{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;cursor:pointer}.review-check-label input,.review-checkbox{accent-color:var(--teal)}.review-selected-note{font-size:12px;color:var(--muted)}.review-selected-note b{color:var(--teal)}.review-table{min-width:1220px}.review-title{max-width:360px}.review-title strong{display:block;color:#344054;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-title small{display:block;margin-top:4px;color:#98a2b3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-source{max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-source a{color:var(--teal);text-decoration:none}.review-source a:hover{text-decoration:underline}.review-badge{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}.review-status-pending{background:#fff5df;color:#a96800}.review-status-ready{background:#e4f8f2;color:#007f6b}.review-status-rejected,.review-status-failed{background:#fff0ed;color:#c83827}.review-status-submitted{background:#e8f3ff;color:#245bdb}.review-status-unknown{background:#f2f4f7;color:#667085}.priority-flag{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:4px;background:#eeeafe;color:#644bd1;font-size:11px;font-weight:700}.review-human-summary{line-height:1.65;color:#475467}.review-human-summary b{color:#344054}.review-model-summary{line-height:1.65;color:#475467}.review-model-summary b{color:#344054}.review-empty{padding:52px 18px!important;text-align:center;color:#98a2b3!important}.review-loading{opacity:.62;pointer-events:none}
+    .review-toolbar{align-items:center}.review-search{width:min(360px,100%)}.review-check-label{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;cursor:pointer}.review-check-label input,.review-checkbox{accent-color:var(--teal)}.review-selected-note{font-size:12px;color:var(--muted)}.review-selected-note b{color:var(--teal)}.knowledge-review-batch-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:14px;padding:12px 16px;border:1px solid #d9ebe6;border-radius:7px;background:#f7fbfa}.knowledge-pagination,.knowledge-review-batch-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.knowledge-pagination{color:var(--muted);font-size:12px}.knowledge-pagination-summary b{color:var(--ink);font-weight:700}.knowledge-pagination-size{height:28px;padding:3px 7px}.knowledge-page-list{display:flex;align-items:center;gap:4px}.knowledge-page-btn,.knowledge-page-nav{min-width:28px;height:28px;padding:0 6px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--ink);font-size:13px;line-height:26px;cursor:pointer}.knowledge-page-btn:hover,.knowledge-page-nav:hover:not(:disabled){background:#edf7f5;color:var(--teal)}.knowledge-page-btn.on{border-color:var(--teal);background:#fff;color:var(--teal);font-weight:700}.knowledge-page-nav{padding:0;font-size:22px;font-weight:400;color:#667085}.knowledge-page-nav:disabled{color:#c9cdd4;cursor:not-allowed}.knowledge-page-ellipsis{min-width:20px;color:#98a2b3;text-align:center;font-weight:700}.knowledge-pagination-jump{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.knowledge-pagination-jump-input{width:58px;height:28px;padding:3px 6px;text-align:center;font-variant-numeric:tabular-nums}.knowledge-pagination-jump-btn{height:28px;padding:3px 8px}.knowledge-review-batch-actions{margin-left:auto}.knowledge-review-batch-actions .review-selected-note{margin-right:2px}.review-table{min-width:1220px}.review-title{max-width:360px}.review-title strong{display:block;color:#344054;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-title small{display:block;margin-top:4px;color:#98a2b3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-source{max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-source a{color:var(--teal);text-decoration:none}.review-source a:hover{text-decoration:underline}.review-badge{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}.review-status-pending{background:#fff5df;color:#a96800}.review-status-ready{background:#e4f8f2;color:#007f6b}.review-status-rejected,.review-status-failed{background:#fff0ed;color:#c83827}.review-status-submitted{background:#e8f3ff;color:#245bdb}.review-status-unknown{background:#f2f4f7;color:#667085}.priority-flag{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:4px;background:#eeeafe;color:#644bd1;font-size:11px;font-weight:700}.review-human-summary{line-height:1.65;color:#475467}.review-human-summary b{color:#344054}.review-model-summary{line-height:1.65;color:#475467}.review-empty{padding:52px 18px!important;text-align:center;color:#98a2b3!important}.review-loading{opacity:.62;pointer-events:none}
     .review-dialog{width:min(1160px,100%)}.review-dialog .dlg-b{padding:20px}.review-detail-grid{display:grid;grid-template-columns:minmax(0,.88fr) minmax(420px,1.12fr);gap:18px;align-items:start}.review-panel{background:#fff;border:1px solid var(--line);border-radius:7px;padding:18px}.review-panel-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:15px}.review-panel-title h4{font-size:14px;color:#344054}.review-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px}.review-meta-item{padding:10px 11px;border-radius:6px;background:#f7f8fa}.review-meta-item span{display:block;color:#98a2b3;font-size:11px;margin-bottom:3px}.review-meta-item strong{display:block;color:#344054;font-size:12px;overflow-wrap:anywhere}.review-content-preview{max-height:220px;overflow:auto;padding:12px;border:1px solid #edf0f2;border-radius:6px;background:#fafbfc;color:#475467;font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.review-model-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.review-model-item{padding:9px 10px;border:1px solid #edf0f2;border-radius:6px}.review-model-item span{display:block;color:#98a2b3;font-size:10px;margin-bottom:3px}.review-model-item b{font-size:12px;color:#344054}.review-model-reason{margin-top:10px;padding:10px 11px;border-left:3px solid var(--violet);background:#f7f5ff;color:#5d4ca7;font-size:12px;line-height:1.65}.review-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}.review-form-grid .fg{margin-bottom:0}.review-form-grid .span-2{grid-column:1/-1}.review-gate{margin-right:auto;display:flex;align-items:center;gap:8px;max-width:620px;color:#667085;font-size:12px;line-height:1.5}.review-gate .review-badge{flex-shrink:0}.review-readonly-note{padding:10px 12px;border-radius:6px;background:#e8f3ff;color:#245bdb;font-size:12px;margin-bottom:13px}.review-error{margin-top:6px;color:#c83827;font-size:11px}.btn:disabled{opacity:.55;cursor:not-allowed}.btn.bp:disabled:hover{background:var(--teal)}
     @media(max-width:1120px){.cards{grid-template-columns:repeat(2,1fr)}.review-metric-cards{grid-template-columns:repeat(4,1fr)}.dashboard-summary-grid{grid-template-columns:1fr}.dashboard-summary-grid>.dashboard-asset,.dashboard-summary-grid>.dashboard-flow{grid-column:1}.dashboard-work-grid,.dashboard-work-grid.without-candidates{grid-template-columns:1fr}.review-detail-grid{grid-template-columns:1fr}}@media(max-width:760px){.side{width:100%;min-height:auto;padding:12px 16px;display:block}.layout{display:block}.brand{padding:0}.nav{display:flex;flex-direction:row;overflow-x:auto;overflow-y:hidden;margin-top:12px;gap:6px;padding-bottom:2px;scrollbar-width:none;overscroll-behavior-inline:contain}.nav::-webkit-scrollbar{display:none}.nav-item{white-space:nowrap;flex:0 0 auto}.side-foot{display:none}.hd{height:58px;padding:0 16px}.mn{padding:24px 16px 32px}.overview{display:block}.overview h2{font-size:26px}.overview-status{margin-top:10px}.cards,.review-metric-cards{grid-template-columns:1fr 1fr;gap:10px}.card{min-height:124px;padding:15px}.dashboard-summary-grid,.dashboard-grid{gap:12px}.dashboard-asset,.dashboard-flow{padding:17px 16px}.flow-steps{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.flow-step:after{display:none}.insight-head{padding:17px 16px 0}.trend-chart{margin:14px 16px 18px}.todo-list{padding-left:16px;padding-right:16px}.todo-link{margin-left:16px;margin-right:16px}.filter-app-field{width:100%}.filter-app-field .ms{width:auto;flex:1 1 auto}.review-search{width:100%}.review-dialog .dlg-b{padding:14px}.review-panel{padding:14px}.review-form-grid,.review-meta{grid-template-columns:1fr}.review-form-grid .span-2{grid-column:auto}.review-gate{display:none}}@media(max-width:420px){.cards,.review-metric-cards{grid-template-columns:1fr}.asset-status-grid,.flow-steps{grid-template-columns:1fr}.period button{padding:0 7px}}
   </style>
@@ -348,15 +356,25 @@
     <div class="bar">
       <span class="tt">知识工作区</span>
       <button class="btn bd" v-if="dev.showManhattanUpdate && can('account:manage')" @click="openManhattanPanel">更新曼哈顿数据</button>
-      <input class="inp" style="width:160px" v-model="f.kw" placeholder="搜索标题..." @keyup.enter="load">
-      <button class="btn bd" @click="load">刷新</button>
+      <input class="inp" style="width:240px" v-model="f.kw" placeholder="搜索标题、副标题、正文..." @keyup.enter="searchKnowledge">
+      <button class="btn bp" @click="searchKnowledge">搜索</button>
       <button class="btn b-template" v-if="can('knowledge:create')" @click="downloadImportTemplate">下载导入模板</button>
-      <button class="btn b-import" v-if="can('knowledge:create')" @click="chooseImportFile" :disabled="importing">{{importing?'导入中...':'Excel 批量导入'}}</button>
+      <button class="btn b-import" v-if="can('knowledge:create')" @click="chooseImportFile" :disabled="importing">{{importing?'上传中...':'Excel 批量导入'}}</button>
       <input ref="knowledgeImportFile" type="file" accept=".xlsx" style="display:none" @change="importKnowledgeExcel">
-      <span class="review-selected-note" v-if="can('knowledge:approve')">待审核已选 <b>{{knowledgeReviewSelection.length}}</b> 条</span>
-      <button class="btn bd" v-if="can('knowledge:approve')" @click="selectAllPendingKnowledge" :disabled="batchApproving">全选所有待审核</button>
-      <button class="btn bp" v-if="can('knowledge:approve')" @click="batchApproveSelectedKnowledge" :disabled="batchApproving||!knowledgeReviewSelection.length">{{batchApproving?'审核中...':'一键审核通过'}}</button>
+      <button class="btn bd" v-if="can('knowledge:view')" @click="exportKnowledgeExcel">导出知识</button>
       <button class="btn bp" v-if="can('knowledge:create')" @click="openNew">+ 新建知识</button>
+    </div>
+    <div class="import-task-panel" v-if="importTasks.length && can('knowledge:create')">
+      <div class="import-task-head"><span>后台导入任务</span><button class="btn bd bsm" @click="loadImportTasks">刷新</button></div>
+      <div class="import-task-list">
+        <div class="import-task-row" v-for="task in importTasks" :key="task.id">
+          <span class="tg" :class="importTaskStatusClass(task.status)">{{importTaskStatusLabel(task.status)}}</span>
+          <span class="import-task-file" :title="task.original_filename">{{task.original_filename}}</span>
+          <span class="import-task-meta">{{importTaskProgress(task)}}</span>
+          <span class="import-task-meta" v-if="task.processed_rows">成功 {{task.imported}} · 待审核 {{task.pending_review}} · 失败 {{task.failed}}</span>
+          <span class="import-task-error" v-if="task.error_message" :title="task.error_message">{{task.error_message}}</span>
+        </div>
+      </div>
     </div>
     <div class="filter-tabs">
       <div class="tab-row">
@@ -445,6 +463,27 @@
           <tr v-if="!list.length"><td :colspan="can('knowledge:approve') ? 8 : 7" style="text-align:center;padding:40px;color:#c9cdd4">暂无数据</td></tr>
         </tbody>
       </table>
+    </div>
+    <div class="knowledge-review-batch-bar" v-if="knowledgePagination.total || can('knowledge:approve')">
+      <div class="knowledge-pagination" v-if="knowledgePagination.total">
+        <span class="knowledge-pagination-summary">第 {{knowledgePageStart()}}-{{knowledgePageEnd()}} 条 / 共 <b>{{knowledgePagination.total}}</b> 条</span>
+        <button class="knowledge-page-nav" type="button" aria-label="上一页" @click="changeKnowledgePage(knowledgePagination.page-1)" :disabled="knowledgePagination.page<=1">‹</button>
+        <div class="knowledge-page-list" aria-label="页码导航">
+          <template v-for="page in knowledgeVisiblePages()" :key="page">
+            <span v-if="typeof page === 'string'" class="knowledge-page-ellipsis" aria-hidden="true">…</span>
+            <button v-else class="knowledge-page-btn" :class="{on:page===knowledgePagination.page}" type="button" :aria-label="'第 ' + page + ' 页'" :aria-current="page===knowledgePagination.page ? 'page' : null" @click="changeKnowledgePage(page)">{{page}}</button>
+          </template>
+        </div>
+        <button class="knowledge-page-nav" type="button" aria-label="下一页" @click="changeKnowledgePage(knowledgePagination.page+1)" :disabled="knowledgePagination.page>=knowledgeTotalPages()">›</button>
+        <select class="inp knowledge-pagination-size" v-model.number="knowledgePagination.size" aria-label="每页条数" @change="setKnowledgePageSize"><option :value="20">20 条/页</option><option :value="50">50 条/页</option><option :value="100">100 条/页</option></select>
+        <label class="knowledge-pagination-jump">跳至 <input v-model="knowledgePagination.jumpPage" class="inp knowledge-pagination-jump-input" type="number" inputmode="numeric" min="1" :max="knowledgeTotalPages()" step="1" aria-label="跳转页码" @keyup.enter="jumpKnowledgePage"> 页</label>
+        <button class="btn bd bsm knowledge-pagination-jump-btn" type="button" @click="jumpKnowledgePage">跳转</button>
+      </div>
+      <div class="knowledge-review-batch-actions" v-if="can('knowledge:approve')">
+        <span class="review-selected-note">待审核已选 <b>{{knowledgeReviewSelection.length}}</b> 条</span>
+        <button class="btn bd" @click="selectAllPendingKnowledge" :disabled="batchApproving">全选所有待审核</button>
+        <button class="btn bp" @click="batchApproveSelectedKnowledge" :disabled="batchApproving||!knowledgeReviewSelection.length">{{batchApproving?'审核中...':'一键审核通过'}}</button>
+      </div>
     </div>
   </div>
   <div class="mn" v-if="view==='candidateReviews' && can('knowledge:submit')">
@@ -712,6 +751,11 @@
             <div class="fg"><label class="fl">创建人</label><input class="fi" v-model="fm.by" disabled><div class="hint">自动采用当前登录账号</div></div>
             <div class="fg"><label class="fl">场景标签</label><input class="fi" v-if="!viewOnly" v-model="ns" placeholder="输入标签后回车" @keyup.enter="addS"><div class="tl" v-if="fm.scenes.length"><span class="ti" v-for="(s,i) in fm.scenes" :key="i">{{s}}<span class="rx" v-if="!viewOnly" @click="fm.scenes.splice(i,1)">&times;</span></span></div></div>
           </div>
+          <div class="fg">
+            <label class="fl">关联标准项 <span style="font-weight:400;color:#86909c;font-size:11px">（选填，可添加多项）</span></label>
+            <input class="fi" v-if="!viewOnly" v-model="relatedStandardItemInput" placeholder="输入标准项后回车" @keyup.enter="addRelatedStandardItem">
+            <div class="tl" v-if="fm.relatedStandardItems.length"><span class="ti" v-for="(item,i) in fm.relatedStandardItems" :key="i">{{item}}<span class="rx" v-if="!viewOnly" @click="fm.relatedStandardItems.splice(i,1)">&times;</span></span></div>
+          </div>
           <div class="row" v-if="showManhattanFields()">
             <div class="fg"><label class="fl">适用类目</label><div class="ms"><div class="ms-box" @click="focusMultiInput('categoryInput','applicableCategories')"><span class="ms-tag" v-for="v in fm.applicableCategories" :key="v"><span class="ms-tag-text">{{selectedLabel('applicableCategories',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('applicableCategories',v)">&times;</span></span><input ref="categoryInput" class="ms-inline-input" v-model="categoryKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.applicableCategories.length?'':'请选择类目'" @focus="!viewOnly && (drop='applicableCategories')"><span class="ms-clear" @click.stop="clearMultiSelect('applicableCategories')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='applicableCategories'"><div class="ms-all" @click="selectAllVisible('applicableCategories', filteredApplicableCategories())">全选</div><div class="ms-empty" v-if="optErr.applicableCategories">{{optErr.applicableCategories}}</div><div class="ms-empty" v-else-if="!option.applicableCategories.length">暂无数据</div><div class="ms-opt" :class="{on:isSelected('applicableCategories',optValue(o))}" v-for="o in filteredApplicableCategories()" :key="optKey(o)" @click="toggleSelected('applicableCategories',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('applicableCategories',optValue(o))">✓</span></div></div></div><div class="hint" v-if="optErr.applicableCategories">{{optErr.applicableCategories}}</div></div>
             <div class="fg"><label class="fl">适用品牌</label><div class="ms"><div class="ms-box" @click="focusMultiInput('brandInput','brands')"><span class="ms-tag" v-for="v in fm.brands" :key="v"><span class="ms-tag-text">{{selectedLabel('brands',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('brands',v)">&times;</span></span><input ref="brandInput" class="ms-inline-input" v-model="brandKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.brands.length?'':'请选择品牌'" @focus="!viewOnly && (drop='brands')"><span class="ms-clear" @click.stop="clearMultiSelect('brands')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='brands'"><div class="ms-all" @click="selectAllVisible('brands', filteredBrands())">全选</div><div class="ms-empty" v-if="optErr.brands">{{optErr.brands}}</div><div class="ms-empty" v-else-if="!option.brands.length">请先选择类目</div><div class="ms-opt" :class="{on:isSelected('brands',optValue(o))}" v-for="o in filteredBrands()" :key="optKey(o)" @click="toggleSelected('brands',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('brands',optValue(o))">✓</span></div></div></div><div class="hint" v-if="optErr.brands">{{optErr.brands}}</div></div>
@@ -727,8 +771,7 @@
                 <div style="margin-top:3px;font-size:11px;color:#86909c">{{dedupMatchDescription(match)}} · 综合 {{formatSimilarity(match.similarity)}}<span v-if="typeof match.title_similarity==='number'"> · 标题 {{formatSimilarity(match.title_similarity)}} · 正文 {{formatSimilarity(match.content_similarity)}}</span></div>
               </div>
               <button class="btn bd bsm" v-if="auditMode && can('knowledge:approve')" @click="openDedupCompare({matches:[match]}, dedupCandidateFromForm(), false)">对比详情</button>
-              <button class="btn bd bsm" v-if="viewOnly && can('knowledge:approve')" @click="openDedupFeedback(match)" :disabled="hasDedupFeedback(match.knowledge_id)">确实不同</button>
-              <span v-if="hasDedupFeedback(match.knowledge_id)" style="font-size:11px;color:#00b42a">已反馈不同</span>
+              <span v-if="hasDedupFeedback(match.knowledge_id)" style="font-size:11px;color:#00b42a">已确认不同</span>
             </div>
           </div>
         </div>
@@ -812,8 +855,9 @@
         </div>
       </div>
       <div class="dlg-f">
+        <div class="review-gate" v-if="auditMode && dedupPublishBlocked()"><span class="review-badge review-status-pending">发布已锁定</span><span>{{dedupPublishBlockReason()}}</span></div>
         <button class="btn bd" @click="closeDlg" :disabled="saving">{{auditMode?'取消发布审核':(viewOnly?'关闭':'取消')}}</button>
-        <button class="btn bp" v-if="auditMode && can('knowledge:approve')" @click="approveFromDetail" :disabled="saving">{{saving?'发布中...':'发布'}}</button>
+        <button class="btn bp" v-if="auditMode && can('knowledge:approve')" @click="approveFromDetail" :disabled="saving || dedupPublishBlocked()" :title="dedupPublishBlocked() ? dedupPublishBlockReason() : ''">{{saving?'发布中...':'发布'}}</button>
         <button class="btn bp" v-if="!viewOnly" @click="save" :disabled="saving || !fm.cat">{{saving?'保存中...':(eid?'保存修改':'保存并提交发布审核')}}</button>
       </div>
     </div>
@@ -838,19 +882,16 @@
             <div class="linkified-text" style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word" v-html="linkifyText(contentPreview(dedupCompare.target.content))"></div>
           </div>
         </div>
+        <div v-if="dedupCompare.feedbackEnabled" style="margin-top:16px;padding:14px;border:1px solid #f7c97f;border-radius:7px;background:#fffaf0">
+          <div v-if="dedupCompare.feedbackRecorded" style="font-size:12px;color:#008a3f;font-weight:600">已确认当前知识与命中知识确实不同，可返回发布审核继续操作。</div>
+          <template v-else>
+            <label class="fl"><span class="req">*</span> 判定不同的原因</label>
+            <textarea class="fi" rows="3" v-model="dedupCompare.reason" placeholder="例如：适用产品、业务规则或处理条件不同"></textarea>
+            <div class="hint">确认后会记录本次人工结论；全部命中知识均确认不同后，发布按钮才会解锁。</div>
+          </template>
+        </div>
       </div>
-      <div class="dlg-f"><button class="btn bd" @click="dedupCompare.open=false">返回修改</button><button v-if="dedupCompare.allowSubmit" class="btn bp" @click="confirmDedupSubmit" :disabled="dedupCompare.loading">内容确实不同，仍要送审</button></div>
-    </div>
-  </div>
-  <div class="mask" v-if="dedupFeedback.open" @click.self="dedupFeedback.open=false">
-    <div class="dlg" style="width:520px">
-      <div class="dlg-h"><h3>反馈：确实不同</h3><button class="dlg-x" @click="dedupFeedback.open=false">&times;</button></div>
-      <div class="dlg-b">
-        <div class="hint">系统会记录该人工结论，用于后续优化查重阈值和模型效果。本次知识仍按正常审核流程处理。</div>
-        <div class="fg"><label class="fl">命中的知识</label><div class="fi" style="background:#f7f8fa">{{dedupFeedback.match.knowledge_id}} · {{dedupFeedback.match.title}}</div></div>
-        <div class="fg"><label class="fl">判定不同的原因</label><textarea class="fi" rows="4" v-model="dedupFeedback.reason" placeholder="例如：适用产品、业务规则或处理条件不同"></textarea></div>
-      </div>
-      <div class="dlg-f"><button class="btn bd" @click="dedupFeedback.open=false">取消</button><button class="btn bp" @click="submitDedupFeedback" :disabled="dedupFeedback.submitting || !dedupFeedback.reason.trim()">{{dedupFeedback.submitting?'提交中...':'提交反馈'}}</button></div>
+      <div class="dlg-f"><button class="btn bd" @click="dedupCompare.open=false">返回修改</button><button v-if="dedupCompare.feedbackEnabled && !dedupCompare.feedbackRecorded" class="btn bp" @click="confirmDedupDifferent" :disabled="dedupCompare.loading || dedupCompare.submitting || !dedupCompare.reason.trim()">{{dedupCompare.submitting?'保存中...':'确认确实不同'}}</button><button v-else-if="dedupCompare.allowSubmit" class="btn bp" @click="confirmDedupSubmit" :disabled="dedupCompare.loading">内容确实不同，仍要送审</button></div>
     </div>
   </div>
     <!-- 点击全屏预览 -->
@@ -882,6 +923,7 @@ Vue.createApp({
       roles: [],
       newUser: {username:'', password:'123456', role:'visitor'},
       list: [],
+      knowledgePagination: {page:1, size:20, total:0, jumpPage:''},
       cats: [],
       stats: {total:0, published:0, review:0, draft:0},
       dashboard: {pending:[], recentUpdates:[], updatedAt:'-'},
@@ -926,7 +968,10 @@ Vue.createApp({
       saving: false,
       saveOperationId: 0,
       importing: false,
+      importTasks: [],
+      importTaskPoller: null,
       ns: '',
+      relatedStandardItemInput: '',
       drop: '',
       categoryKw: '',
       brandKw: '',
@@ -937,9 +982,8 @@ Vue.createApp({
       mhCache: {updated_at:null, applicable_categories:[], brands_by_category:{}, models:[]},
       option: {applicableCategories:[], brands:[], models:[]},
       optErr: {applicableCategories:'', brands:'', models:''},
-      fm: {title:'', subtitles:[], cat:'', by:'', scenes:[], applicableCategories:[], brands:[], models:[], deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]},
-      dedupCompare: {open:false, loading:false, allowSubmit:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', category_id:'', content:{blocks:[]}}, target:{}},
-      dedupFeedback: {open:false, match:{knowledge_id:'', title:''}, reason:'', submitting:false},
+      fm: {title:'', subtitles:[], cat:'', by:'', scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]},
+      dedupCompare: {open:false, loading:false, allowSubmit:false, feedbackEnabled:false, feedbackRecorded:false, reason:'', submitting:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', category_id:'', content:{blocks:[]}}, target:{}},
       full:{show:false, src:'', isVideo:false, error:false}
     }
   },
@@ -964,6 +1008,7 @@ Vue.createApp({
           self.loadCandidateReviewDashboard();
           self.loadSearchAnalysis();
           self.loadCats();
+          self.loadImportTasks();
           self.loadManhattanSession();
           self.loadManhattanOptions();
         })
@@ -1031,6 +1076,70 @@ Vue.createApp({
     },
     setFilter: function(key, value) {
       this.f[key] = value;
+      this.resetKnowledgePagination();
+      this.load();
+    },
+    resetKnowledgePagination: function() {
+      this.knowledgePagination.page = 1;
+      this.knowledgeReviewSelection = [];
+    },
+    searchKnowledge: function() {
+      this.resetKnowledgePagination();
+      this.load();
+    },
+    knowledgeTotalPages: function() {
+      var total = Number(this.knowledgePagination.total) || 0;
+      var size = Number(this.knowledgePagination.size) || 20;
+      return Math.max(1, Math.ceil(total / size));
+    },
+    knowledgePageStart: function() {
+      if (!this.knowledgePagination.total) return 0;
+      return (this.knowledgePagination.page - 1) * this.knowledgePagination.size + 1;
+    },
+    knowledgePageEnd: function() {
+      return Math.min(this.knowledgePagination.page * this.knowledgePagination.size, this.knowledgePagination.total);
+    },
+    knowledgeVisiblePages: function() {
+      var total = this.knowledgeTotalPages();
+      var current = this.knowledgePagination.page;
+      var pages = [];
+      var page;
+      if (total <= 7) {
+        for (page = 1; page <= total; page++) pages.push(page);
+        return pages;
+      }
+      if (current <= 4) {
+        pages = [1, 2, 3, 4, 5, 'right-ellipsis', total];
+      } else if (current >= total - 3) {
+        pages = [1, 'left-ellipsis', total - 4, total - 3, total - 2, total - 1, total];
+      } else {
+        pages = [1, 'left-ellipsis', current - 2, current - 1, current, current + 1, current + 2, 'right-ellipsis', total];
+      }
+      return pages;
+    },
+    changeKnowledgePage: function(page) {
+      var target = Math.max(1, Math.min(Number(page) || 1, this.knowledgeTotalPages()));
+      if (target === this.knowledgePagination.page) return;
+      this.knowledgePagination.page = target;
+      this.load();
+    },
+    jumpKnowledgePage: function() {
+      var raw = String(this.knowledgePagination.jumpPage || '').trim();
+      var total = this.knowledgeTotalPages();
+      if (!/^\d+$/.test(raw)) {
+        alert('请输入 1 到 ' + total + ' 之间的整数页码');
+        return;
+      }
+      var target = Number(raw);
+      if (target < 1 || target > total) {
+        alert('请输入 1 到 ' + total + ' 之间的页码');
+        return;
+      }
+      this.knowledgePagination.jumpPage = '';
+      this.changeKnowledgePage(target);
+    },
+    setKnowledgePageSize: function() {
+      this.knowledgePagination.page = 1;
       this.load();
     },
     knowledgeReviewSelectable: function(item) {
@@ -1159,6 +1268,40 @@ Vue.createApp({
         })
         .catch(function(error) { alert(error.message); });
     },
+    exportKnowledgeExcel: function() {
+      var self = this;
+      if (!self.hasKnowledgeExportFilter()) {
+        alert('请至少设置一项筛选条件后再导出，避免误导出全部知识。');
+        return;
+      }
+      var params = self.knowledgeFilterParams().toString();
+      var url = API + '/knowledge/export/excel' + (params ? '?' + params : '');
+      fetch(url, {headers:self.authHeaders()})
+        .then(function(response) {
+          if (!response.ok) {
+            return response.json().then(function(data) {
+              throw new Error(data.detail || '知识导出失败');
+            });
+          }
+          var disposition = response.headers.get('Content-Disposition') || '';
+          var match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+          var filename = match ? decodeURIComponent(match[1]) : '知识库导出.xlsx';
+          return response.blob().then(function(blob) {
+            return {blob: blob, filename: filename};
+          });
+        })
+        .then(function(result) {
+          var objectUrl = URL.createObjectURL(result.blob);
+          var link = document.createElement('a');
+          link.href = objectUrl;
+          link.download = result.filename;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          URL.revokeObjectURL(objectUrl);
+        })
+        .catch(function(error) { alert(error.message); });
+    },
     chooseImportFile: function() {
       if (this.importing) return;
       this.$refs.knowledgeImportFile.click();
@@ -1189,32 +1332,76 @@ Vue.createApp({
           });
         })
         .then(function(data) {
-          var failed = (data.results || []).filter(function(item) { return item.status === 'failed'; });
-          var reviewRequired = (data.results || []).filter(function(item) { return item.status === 'review_required'; });
-          var message = '导入完成：成功 ' + data.imported + ' 条，待人工确认 ' + Number(data.review_required || reviewRequired.length) + ' 条，失败 ' + data.failed + ' 条。';
-          if (reviewRequired.length) {
-            message += '\n\n疑似重复：\n' + reviewRequired.slice(0, 10).map(function(item) {
-              var matches = item.deduplication && Array.isArray(item.deduplication.matches) ? item.deduplication.matches : [];
-              var match = matches[0];
-              var hit = match ? ('命中 ' + match.knowledge_id + '《' + match.title + '》') : '';
-              return '第 ' + item.row + ' 行《' + (item.title || '未填写标题') + '》：' + (item.error_message || hit || '请人工核对') + '。已进入“候选价值复核”的“疑似重复确认”筛选，无需修改模板或重复上传。';
-            }).join('\n');
-            if (reviewRequired.length > 10) message += '\n其余 ' + (reviewRequired.length - 10) + ' 条请分批核对。';
-          }
-          if (failed.length) {
-            message += '\n\n失败明细：\n' + failed.slice(0, 10).map(function(item) {
-              return '第 ' + item.row + ' 行《' + (item.title || '未填写标题') + '》：' + (item.error_message || item.error_code || '导入失败');
-            }).join('\n');
-            if (failed.length > 10) message += '\n其余 ' + (failed.length - 10) + ' 条请分批修正后重新导入。';
-          }
-          alert(message);
-          self.load();
-          self.loadStats();
+          alert('文件已上传，服务器正在后台处理。可关闭当前页面，稍后可在“后台导入任务”中查看结果。');
+          self.loadImportTasks();
         })
         .catch(function(error) { alert(error.message); })
         .finally(function() {
           self.importing = false;
           input.value = '';
+        });
+    },
+    importTaskStatusLabel: function(status) {
+      return {
+        queued:'排队中',
+        running:'处理中',
+        completed:'已完成',
+        completed_with_errors:'完成有失败',
+        failed:'任务失败'
+      }[status] || status;
+    },
+    importTaskStatusClass: function(status) {
+      return {
+        queued:'tg-l',
+        running:'tg-r',
+        completed:'tg-p',
+        completed_with_errors:'tg-r',
+        failed:'tg-x'
+      }[status] || 'tg-d';
+    },
+    importTaskProgress: function(task) {
+      if (!Number(task.total_rows || 0)) return task.status === 'queued' ? '等待解析' : '正在解析';
+      return '已处理 ' + Number(task.processed_rows || 0) + '/' + Number(task.total_rows || 0) + ' 行';
+    },
+    hasActiveImportTasks: function() {
+      return this.importTasks.some(function(task) {
+        return task.status === 'queued' || task.status === 'running';
+      });
+    },
+    startImportTaskPolling: function() {
+      var self = this;
+      if (self.importTaskPoller || !self.hasActiveImportTasks()) return;
+      self.importTaskPoller = window.setInterval(function() {
+        self.loadImportTasks();
+      }, 3000);
+    },
+    stopImportTaskPolling: function() {
+      if (!this.importTaskPoller) return;
+      window.clearInterval(this.importTaskPoller);
+      this.importTaskPoller = null;
+    },
+    loadImportTasks: function() {
+      var self = this;
+      if (!self.token || !self.can('knowledge:create')) return Promise.resolve();
+      return fetch(API + '/knowledge/import/tasks?limit=8', {headers:self.authHeaders()})
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(data.detail || '加载导入任务失败');
+            return data;
+          });
+        })
+        .then(function(data) {
+          var hadActiveTasks = self.hasActiveImportTasks();
+          self.importTasks = Array.isArray(data.tasks) ? data.tasks : [];
+          if (self.hasActiveImportTasks()) self.startImportTaskPolling();
+          else self.stopImportTaskPolling();
+          if (hadActiveTasks && !self.hasActiveImportTasks()) {
+            self.load();
+            self.loadStats();
+          }
+        })
+        .catch(function(error) {
+          console.warn('load import tasks failed:', error);
         });
     },
     logout: function() {
@@ -1235,7 +1422,10 @@ Vue.createApp({
     },
     openKnowledge: function(status) {
       this.view = 'knowledge';
-      if (typeof status === 'string') this.f.status = status;
+      if (typeof status === 'string') {
+        this.f.status = status;
+        this.resetKnowledgePagination();
+      }
       this.load();
     },
     openChangeLogs: function(item) {
@@ -1622,26 +1812,54 @@ Vue.createApp({
         .then(function() { alert('密码已修改，请重新登录'); localStorage.removeItem('kb_token'); location.href = BASE + '/login'; })
         .catch(function(e) { alert(e.message); });
     },
+    knowledgeFilterParams: function() {
+      var p = new URLSearchParams();
+      if (this.currentUser.role === 'visitor') p.set('status', 'published');
+      else if (this.f.status) p.set('status', this.f.status);
+      if (this.f.category_id) p.set('category_id', this.f.category_id);
+      (this.f.applicableCategoryIds || []).forEach(function(value) { p.append('applicable_category_ids', value); });
+      (this.f.brandIds || []).forEach(function(value) { p.append('brand_ids', value); });
+      (this.f.modelIds || []).forEach(function(value) { p.append('model_ids', value); });
+      if (this.f.kw) p.set('keyword', this.f.kw);
+      return p;
+    },
+    hasKnowledgeExportFilter: function() {
+      return !!(
+        this.f.status
+        || this.f.category_id
+        || (this.f.applicableCategoryIds || []).length
+        || (this.f.brandIds || []).length
+        || (this.f.modelIds || []).length
+        || String(this.f.kw || '').trim()
+      );
+    },
     load: function() {
       var self = this;
-      var p = new URLSearchParams();
-      if (self.currentUser.role === 'visitor') p.set('status', 'published');
-      else if (self.f.status) p.set('status', self.f.status);
-      if (self.f.category_id) p.set('category_id', self.f.category_id);
-      (self.f.applicableCategoryIds || []).forEach(function(value) { p.append('applicable_category_ids', value); });
-      (self.f.brandIds || []).forEach(function(value) { p.append('brand_ids', value); });
-      (self.f.modelIds || []).forEach(function(value) { p.append('model_ids', value); });
-      if (self.f.kw) p.set('keyword', self.f.kw);
+      var p = self.knowledgeFilterParams();
+      p.set('page', String(self.knowledgePagination.page));
+      p.set('size', String(self.knowledgePagination.size));
       fetch(API + '/knowledge?' + p, {headers:self.authHeaders()})
-        .then(function(r) { return r.json(); })
-        .then(function(d) {
-          self.list = Array.isArray(d) ? d : [];
-          var selectable = {};
+        .then(function(r) {
+          return r.json().then(function(d) {
+            if (!r.ok) throw new Error(d.detail || '加载知识列表失败');
+            var total = Number(r.headers.get('X-Total-Count'));
+            return {items:Array.isArray(d) ? d : [], total:isNaN(total) ? 0 : total};
+          });
+        })
+        .then(function(result) {
+          self.knowledgePagination.total = result.total;
+          if (!result.items.length && result.total > 0 && self.knowledgePagination.page > self.knowledgeTotalPages()) {
+            self.knowledgePagination.page = self.knowledgeTotalPages();
+            self.load();
+            return;
+          }
+          self.list = result.items;
+          var currentItems = {};
           self.list.forEach(function(item) {
-            if (self.knowledgeReviewSelectable(item)) selectable[item.id] = true;
+            currentItems[item.id] = item;
           });
           self.knowledgeReviewSelection = self.knowledgeReviewSelection.filter(function(id) {
-            return selectable[id];
+            return !currentItems[id] || self.knowledgeReviewSelectable(currentItems[id]);
           });
         })
         .catch(function(e) { console.error('load error:', e); });
@@ -1745,7 +1963,8 @@ Vue.createApp({
         applicable_scenes:'场景标签',
         applicable_categories:'适用类目',
         applicable_brands:'适用品牌',
-        applicable_models:'适用机型'
+        applicable_models:'适用机型',
+        related_standard_items:'关联标准项'
       }[field] || field;
     },
     loadCats: function() {
@@ -1979,6 +2198,7 @@ Vue.createApp({
         this.f.modelIds.splice(0, this.f.modelIds.length);
         this.listFilterModelKw = '';
       }
+      this.resetKnowledgePagination();
       this.load();
     },
     listFilterSelectedLabel: function(key, value) {
@@ -2176,8 +2396,9 @@ Vue.createApp({
       this.viewOnly = false;
       this.auditMode = false;
       this.eid = '';
-      this.fm = {title:'', subtitles:[], cat:'', by:(this.currentUser.username || ''), scenes:[], applicableCategories:[], brands:[], models:[], deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]};
+      this.fm = {title:'', subtitles:[], cat:'', by:(this.currentUser.username || ''), scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]};
       this.ns = '';
+      this.relatedStandardItemInput = '';
       this.dlg = true;
       this.loadCats();
       this.loadManhattanOptions();
@@ -2256,6 +2477,7 @@ Vue.createApp({
         cat: r.category_id || '',
         by: r.created_by,
         scenes: r.applicable_scenes ? r.applicable_scenes.slice() : [],
+        relatedStandardItems: r.related_standard_items ? r.related_standard_items.slice() : [],
         applicableCategories: r.applicable_categories ? r.applicable_categories.slice() : [],
         brands: r.applicable_brands ? r.applicable_brands.slice() : [],
         models: r.applicable_models ? r.applicable_models.slice() : [],
@@ -2263,6 +2485,7 @@ Vue.createApp({
         blocks: blocks
       };
       self.ns = '';
+      self.relatedStandardItemInput = '';
       self.dlg = true;
       self.loadManhattanOptions();
     },
@@ -2272,18 +2495,42 @@ Vue.createApp({
         this.ns = '';
       }
     },
-    hasDedupFeedback: function(matchedKnowledgeId) {
-      var metadata = this.fm.deduplicationMetadata || {};
-      var feedback = Array.isArray(metadata.feedback) ? metadata.feedback : [];
-      return feedback.some(function(item) { return item.matched_knowledge_id === matchedKnowledgeId && item.verdict === 'different'; });
+    addRelatedStandardItem: function() {
+      var value = this.relatedStandardItemInput.trim();
+      if (value && this.fm.relatedStandardItems.indexOf(value) === -1) {
+        this.fm.relatedStandardItems.push(value);
+      }
+      this.relatedStandardItemInput = '';
     },
-    openDedupFeedback: function(match) {
-      this.dedupFeedback = {
-        open: true,
-        match: match,
-        reason: '',
-        submitting: false
-      };
+    dedupFeedbackEntry: function(matchedKnowledgeId, metadata) {
+      metadata = metadata || this.fm.deduplicationMetadata || {};
+      var feedback = Array.isArray(metadata.feedback) ? metadata.feedback : [];
+      return feedback.find(function(item) {
+        return item.matched_knowledge_id === matchedKnowledgeId
+          && item.verdict === 'different'
+          && String(item.reason || '').trim();
+      }) || null;
+    },
+    hasDedupFeedback: function(matchedKnowledgeId, metadata) {
+      return !!this.dedupFeedbackEntry(matchedKnowledgeId, metadata);
+    },
+    dedupPublishBlocked: function() {
+      var metadata = this.fm.deduplicationMetadata || {};
+      if (metadata.action !== 'review_duplicate') return false;
+      var matches = this.visibleDedupMatches(metadata);
+      if (!matches.length) return true;
+      return matches.some(function(match) {
+        return !this.hasDedupFeedback(match.knowledge_id, metadata);
+      }, this);
+    },
+    dedupPublishBlockReason: function() {
+      var metadata = this.fm.deduplicationMetadata || {};
+      var matches = this.visibleDedupMatches(metadata);
+      if (!matches.length) return '查重命中信息不完整，暂不能发布。';
+      var pending = matches.filter(function(match) {
+        return !this.hasDedupFeedback(match.knowledge_id, metadata);
+      }, this);
+      return '还有 ' + pending.length + ' 条疑似重复知识未在对比详情中确认不同并填写原因。';
     },
     dedupCandidateFromForm: function() {
       return {
@@ -2303,6 +2550,10 @@ Vue.createApp({
         open: true,
         loading: true,
         allowSubmit: !!allowSubmit,
+        feedbackEnabled: !!(self.auditMode && self.eid && !allowSubmit),
+        feedbackRecorded: self.hasDedupFeedback(matches[0].knowledge_id),
+        reason: '',
+        submitting: false,
         match: matches[0],
         candidate: candidate,
         target: {}
@@ -2327,17 +2578,17 @@ Vue.createApp({
       this.dedupCompare.open = false;
       this.save(true);
     },
-    submitDedupFeedback: function() {
+    confirmDedupDifferent: function() {
       var self = this;
-      if (!self.eid || !self.dedupFeedback.match.knowledge_id || !self.dedupFeedback.reason.trim()) return;
-      self.dedupFeedback.submitting = true;
+      if (!self.eid || !self.dedupCompare.match.knowledge_id || !self.dedupCompare.reason.trim()) return;
+      self.dedupCompare.submitting = true;
       fetch(API + '/knowledge/' + self.eid + '/deduplication-feedback', {
         method: 'POST',
         headers: self.authHeaders({'Content-Type':'application/json'}),
         body: JSON.stringify({
-          matched_knowledge_id: self.dedupFeedback.match.knowledge_id,
+          matched_knowledge_id: self.dedupCompare.match.knowledge_id,
           verdict: 'different',
-          reason: self.dedupFeedback.reason.trim()
+          reason: self.dedupCompare.reason.trim()
         })
       })
         .then(function(response) {
@@ -2348,21 +2599,28 @@ Vue.createApp({
         })
         .then(function(data) {
           self.fm.deduplicationMetadata = data.deduplication_metadata || self.fm.deduplicationMetadata;
-          self.dedupFeedback.open = false;
+          self.dedupCompare.feedbackRecorded = true;
+          self.dedupCompare.reason = '';
           self.load();
-          alert('已记录“确实不同”的人工反馈。');
         })
         .catch(function(error) { alert(error.message); })
-        .finally(function() { self.dedupFeedback.submitting = false; });
+        .finally(function() { self.dedupCompare.submitting = false; });
     },
     approveFromDetail: function() {
       var self = this;
       if (!self.eid) return;
+      if (self.dedupPublishBlocked()) {
+        alert(self.dedupPublishBlockReason());
+        return;
+      }
       self.saving = true;
       fetch(API + '/knowledge/' + self.eid + '/approve', {method:'POST', headers:self.authHeaders()})
         .then(function(response) {
           return response.json().then(function(data) {
-            if (!response.ok) throw new Error(data.detail || '发布失败');
+            if (!response.ok) {
+              var detail = data.detail || '发布失败';
+              throw new Error(typeof detail === 'object' ? (detail.message || '发布失败') : detail);
+            }
             return data;
           });
         })
@@ -2689,6 +2947,7 @@ Vue.createApp({
           applicable_categories: useManhattan ? form.applicableCategories : [],
           applicable_brands: useManhattan ? form.brands : [],
           applicable_models: useManhattan ? form.models : [],
+          related_standard_items: form.relatedStandardItems,
           confirm_dedup_review: operation.confirmDedupReview
         };
       }

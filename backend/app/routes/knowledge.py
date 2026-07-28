@@ -1,27 +1,31 @@
+import json
+import re
 import uuid
 import logging
 import string
+import hashlib
 from copy import deepcopy
 from datetime import datetime, timedelta
 from io import BytesIO
+from types import SimpleNamespace
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy import cast, func, or_, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, JSONPATH
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
 from starlette.concurrency import run_in_threadpool
 
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.routes.auth import get_current_user, has_permission, require_permission
 from app.models.user import User
-from app.models.integration import IntegrationIngestion
 from app.models.knowledge import (
     Category, Knowledge, KnowledgeStatus,
     KnowledgeTag, KnowledgeMedia, MediaUploadStaging,
-    KnowledgeDeduplicationFeedback, KnowledgeChangeLog,
+    KnowledgeDeduplicationFeedback, KnowledgeChangeLog, KnowledgeImportTask,
 )
 from app.core.config import settings
 from app.services.embedding import EmbeddingServiceUnavailable
@@ -34,8 +38,11 @@ from app.services.knowledge_dedup import (
     search_embeddings,
 )
 from app.services.knowledge_excel import (
+    DEPRECATED_SOURCE_STATUS,
     MAX_IMPORT_FILE_BYTES,
     KnowledgeExcelError,
+    IMPORTABLE_SOURCE_STATUS,
+    build_knowledge_export_workbook,
     build_knowledge_import_template,
     parse_knowledge_workbook,
 )
@@ -47,7 +54,8 @@ from app.services.media_storage import MediaStorageError, get_media_storage
 from app.schemas.knowledge import (
     KnowledgeCreate, KnowledgeUpdate, KnowledgeResponse,
     CandidateSubmit, DeduplicationFeedbackSubmit, FeedbackSubmit,
-    ExcelImportResponse, ExcelImportRowResult,
+    ExcelImportRowResult, KnowledgeImportTaskListResponse,
+    KnowledgeImportTaskResponse,
     KnowledgeBatchApprove, KnowledgeBatchApproveResponse, KnowledgeBatchApproveResult,
     KnowledgeReviewSelectionResponse,
     SearchRequest, SearchResponse, SearchResult,
@@ -89,6 +97,91 @@ def _normalize_content(raw):
     if isinstance(raw, dict) and "blocks" in raw:
         return raw
     return {"blocks": [{"type": "text", "value": str(raw)}]}
+
+
+def _jsonb_text_match(column, json_path: str, keyword: str):
+    """在 JSON 中匹配已解码的文本，避免 JSON 转义破坏中文 ILIKE 搜索。"""
+    escaped_keyword = json.dumps(re.escape(keyword), ensure_ascii=False)
+    path_expression = f'{json_path} ? (@ like_regex {escaped_keyword} flag "i")'
+    return func.jsonb_path_exists(
+        cast(column, JSONB),
+        cast(path_expression, JSONPATH),
+    )
+
+
+def _auto_publish_approved_source_excel(
+    item: Knowledge,
+    *,
+    source_status: str,
+    current_user: User,
+) -> bool:
+    """将源表已生效知识直接发布，疑似重复仍必须人工确认。"""
+    if source_status != IMPORTABLE_SOURCE_STATUS:
+        return False
+    if (item.deduplication_metadata or {}).get("action") == "review_duplicate":
+        return False
+    item.status = KnowledgeStatus.PUBLISHED
+    item.updated_by = current_user.username
+    return True
+
+
+class SourceKnowledgeMatchError(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _source_identifier_values(row) -> list[tuple[str, str]]:
+    return [
+        ("知识键", (row.source_knowledge_key or "").strip()),
+        ("主题键", (row.source_topic_key or "").strip()),
+        ("记录ID", (row.source_record_id or "").strip()),
+    ]
+
+
+def _find_source_knowledge(db: Session, row) -> Knowledge:
+    identifier_columns = {
+        "知识键": Knowledge.source_knowledge_key,
+        "主题键": Knowledge.source_topic_key,
+        "记录ID": Knowledge.source_record_id,
+    }
+    ambiguous_identifiers: list[tuple[str, str]] = []
+    for label, value in _source_identifier_values(row):
+        if not value:
+            continue
+        matches = db.query(Knowledge).filter(identifier_columns[label] == value).all()
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            ambiguous_identifiers.append((label, value))
+    if ambiguous_identifiers:
+        label, value = ambiguous_identifiers[0]
+        raise SourceKnowledgeMatchError(
+            "SOURCE_IDENTIFIER_AMBIGUOUS",
+            f"来源{label}“{value}”匹配到多条知识，未执行废弃操作。",
+        )
+    raise SourceKnowledgeMatchError(
+        "SOURCE_KNOWLEDGE_NOT_FOUND",
+        "未根据知识键、主题键或记录ID找到原知识，未执行废弃操作。",
+    )
+
+
+def _bind_source_identifiers(item: Knowledge, row) -> list[str]:
+    changed_fields: list[str] = []
+    for field in (
+        "source_topic_key",
+        "source_record_id",
+        "source_knowledge_key",
+    ):
+        value = (getattr(row, field, "") or "").strip() or None
+        if value and getattr(item, field) != value:
+            setattr(item, field, value)
+            changed_fields.append(field)
+    source_fields = getattr(row, "source_fields", None) or {}
+    if source_fields and getattr(item, "source_fields", None) != source_fields:
+        item.source_fields = source_fields
+        changed_fields.append("source_fields")
+    return changed_fields
 
 
 async def _read_validated_upload(file: UploadFile, media_type: str) -> tuple[bytes, str]:
@@ -254,101 +347,39 @@ def _deduplication_metadata(
     return metadata
 
 
-def _queue_excel_deduplication_review(
-    db: Session,
-    *,
-    body: KnowledgeCreate,
-    filename: str,
-    row_number: int,
-    current_user: User,
-    deduplication: dict,
-) -> IntegrationIngestion:
-    content_hash = str(deduplication.get("content_hash") or "").strip()
-    if not content_hash:
-        raise ValueError("疑似重复任务缺少内容指纹，无法进入审核队列。")
-    idempotency_key = f"excel-dedup:{content_hash}"
-    existing = (
-        db.query(IntegrationIngestion)
-        .filter(IntegrationIngestion.idempotency_key == idempotency_key)
-        .first()
-    )
-    if existing:
-        return existing
+def _pending_deduplication_matches(item: Knowledge) -> list[dict]:
+    """返回尚未填写“确实不同”原因的疑似重复命中。"""
+    metadata = getattr(item, "deduplication_metadata", None) or {}
+    if not isinstance(metadata, dict) or metadata.get("action") != "review_duplicate":
+        return []
+    matches = metadata.get("matches")
+    if not isinstance(matches, list) or not matches:
+        # 数据异常时保持发布门禁，避免缺失查重证据被当作已确认。
+        return [{}]
+    confirmed_ids = {
+        str(entry.get("matched_knowledge_id"))
+        for entry in metadata.get("feedback", [])
+        if isinstance(entry, dict)
+        and entry.get("verdict") == "different"
+        and str(entry.get("reason") or "").strip()
+    }
+    return [
+        match
+        for match in matches
+        if not isinstance(match, dict)
+        or not match.get("knowledge_id")
+        or str(match["knowledge_id"]) not in confirmed_ids
+    ]
 
-    source_conversation_id = f"excel:{filename}:{row_number}"[:128]
-    human_review = {
-        "knowledge_value": "worthy",
-        "usability": "usable",
-        "decision": "approved",
-        "notes": "Excel 导入已完成字段校验，等待疑似重复人工确认。",
-        "reviewer": "excel-import",
-    }
-    selection = {
-        "eligible": True,
-        "confidence": 1.0,
-        "reasons": ["Excel 导入已完成字段校验。"],
-        "review_reason": "等待疑似重复人工确认。",
-    }
-    payload = {
-        "event_id": f"excel-{uuid.uuid4().hex[:16]}",
-        "idempotency_key": idempotency_key,
-        "source": {
-            "system": "excel",
-            "conversation_id": source_conversation_id,
-            "message_ids": [],
-            "redaction_status": "not_required",
-        },
-        "processing": {
-            "summary_version": "excel-import-v1",
-            "label_model": "manual-excel",
-            "plugin_name": "knowledge-kb-excel-import",
-            "plugin_version": "v1",
-        },
-        "selection": selection,
-        "knowledge": {
-            "title": body.title,
-            "subtitles": body.subtitles or [],
-            "content": body.content,
-            "category_id": body.category_id,
-            "scene_tags": body.applicable_scenes or [],
-            "applicable_categories": body.applicable_categories or [],
-            "applicable_brands": body.applicable_brands or [],
-            "applicable_models": body.applicable_models or [],
-        },
-        "model_review": {
-            "status": "excel_import",
-            "decision": "approved",
-            "knowledge_value": "worthy",
-            "reason": "Excel 导入已完成字段校验。",
-        },
-        "human_review": human_review,
-    }
-    task = IntegrationIngestion(
-        id=f"ing-{uuid.uuid4().hex[:12]}",
-        event_id=payload["event_id"],
-        idempotency_key=idempotency_key,
-        source_system="excel",
-        source_conversation_id=source_conversation_id,
-        source_message_ids=[],
-        redaction_status="not_required",
-        processing_metadata=payload["processing"],
-        selection_metadata=selection,
-        candidate_payload=payload,
-        review_metadata={
-            "model_review": payload["model_review"],
-            "human_review": human_review,
-            "deduplication": deduplication,
-            "deduplication_only": True,
-            "queued_by": current_user.username,
-            "queued_at": datetime.utcnow().isoformat(),
-        },
-        review_status="ready",
-        status="candidate_ready",
-        error_code="DUPLICATE_REVIEW_REQUIRED",
-        error_message="Excel 疑似重复，等待人工确认。",
-    )
-    db.add(task)
-    return task
+
+def _deduplication_confirmation_message(pending_matches: list[dict]) -> str:
+    knowledge_ids = [
+        str(match.get("knowledge_id"))
+        for match in pending_matches
+        if isinstance(match, dict) and match.get("knowledge_id")
+    ]
+    suffix = f"（{'、'.join(knowledge_ids[:3])}）" if knowledge_ids else ""
+    return f"请先在“对比详情”中确认疑似重复知识确实不同并填写原因，再发布{suffix}。"
 
 
 def _check_manual_deduplication(
@@ -360,6 +391,7 @@ def _check_manual_deduplication(
     scene_tags: list[str],
     exclude_knowledge_id: str | None = None,
     confirm_dedup_review: bool = False,
+    allow_duplicate_review: bool = False,
 ) -> DedupDecision:
     try:
         decision = check_duplicate(
@@ -386,7 +418,11 @@ def _check_manual_deduplication(
         # Human-submitted knowledge needs a review path when semantics are uncertain.
         decision.action = "review_duplicate"
 
-    if decision.action == "review_duplicate" and not confirm_dedup_review:
+    if (
+        decision.action == "review_duplicate"
+        and not confirm_dedup_review
+        and not allow_duplicate_review
+    ):
         metadata = _deduplication_metadata(decision)
         top_match = metadata["matches"][0] if metadata["matches"] else None
         message = "检测到疑似重复知识，请对比后确认是否仍要提交审核。"
@@ -454,6 +490,10 @@ def _to_response(item: Knowledge) -> dict:
         "applicable_categories": item.applicable_categories or [],
         "applicable_brands": item.applicable_brands or [],
         "applicable_models": item.applicable_models or [],
+        "related_standard_items": item.related_standard_items or [],
+        "source_topic_key": item.source_topic_key,
+        "source_record_id": item.source_record_id,
+        "source_knowledge_key": item.source_knowledge_key,
         "deduplication_metadata": item.deduplication_metadata or {},
         "created_by": item.created_by,
         "updated_by": item.updated_by,
@@ -472,6 +512,7 @@ def _create_knowledge_item(
     current_user: User,
     *,
     source: str = "manual",
+    allow_duplicate_review: bool = False,
 ) -> Knowledge:
     if not db.query(Category.id).filter(Category.id == body.category_id).first():
         raise HTTPException(status_code=422, detail="所属分类不存在。")
@@ -484,6 +525,7 @@ def _create_knowledge_item(
         content=normalized_content,
         scene_tags=body.applicable_scenes or [],
         confirm_dedup_review=body.confirm_dedup_review,
+        allow_duplicate_review=allow_duplicate_review,
     )
     item = Knowledge(
         id=_generate_knowledge_id(db),
@@ -497,6 +539,11 @@ def _create_knowledge_item(
         applicable_categories=body.applicable_categories,
         applicable_brands=body.applicable_brands,
         applicable_models=body.applicable_models,
+        related_standard_items=body.related_standard_items,
+        source_topic_key=(body.source_topic_key or "").strip() or None,
+        source_record_id=(body.source_record_id or "").strip() or None,
+        source_knowledge_key=(body.source_knowledge_key or "").strip() or None,
+        source_fields=body.source_fields or {},
         deduplication_metadata=_deduplication_metadata(
             decision,
             confirmed_by=(
@@ -561,8 +608,9 @@ def download_knowledge_import_template(
 
 @router.post(
     "/import/excel",
-    response_model=ExcelImportResponse,
-    summary="Excel 批量导入知识",
+    response_model=KnowledgeImportTaskResponse,
+    status_code=202,
+    summary="上传 Excel 并创建后台导入任务",
 )
 async def import_knowledge_excel(
     file: UploadFile = File(...),
@@ -574,189 +622,482 @@ async def import_knowledge_excel(
         raise HTTPException(status_code=422, detail="仅支持 .xlsx 文件。")
 
     data = await file.read(MAX_IMPORT_FILE_BYTES + 1)
-    categories = db.query(Category).order_by(Category.level, Category.sort_order).all()
-    try:
-        rows = parse_knowledge_workbook(data, categories)
-    except KnowledgeExcelError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if len(data) > MAX_IMPORT_FILE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"导入文件不能超过 {MAX_IMPORT_FILE_BYTES // (1024 * 1024)} MB。",
+        )
 
-    results: list[ExcelImportRowResult] = []
-    imported = 0
-    review_required = 0
-    for row in rows:
-        if not row.is_valid:
-            results.append(
-                ExcelImportRowResult(
-                    row=row.row_number,
-                    title=row.title,
-                    status="failed",
-                    error_code=row.error_code,
-                    error_message=row.error_message,
-                )
-            )
-            continue
+    task = KnowledgeImportTask(
+        id=f"import-{uuid.uuid4().hex}",
+        created_by=current_user.username,
+        original_filename=filename[:256],
+        file_size=len(data),
+        file_sha256=hashlib.sha256(data).hexdigest(),
+        file_content=data,
+        status="queued",
+        next_attempt_at=datetime.utcnow(),
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return _to_import_task_response(task)
 
-        try:
-            body = KnowledgeCreate(
-                title=row.title,
-                subtitles=row.subtitles or [],
-                content=row.content,
-                category_id=row.category_id,
-                applicable_scenes=row.applicable_scenes or [],
-                applicable_categories=row.applicable_categories or [],
-                applicable_brands=row.applicable_brands or [],
-                applicable_models=row.applicable_models or [],
-            )
-            item = _create_knowledge_item(
-                body,
-                db,
-                current_user,
-                source="excel",
-            )
-            db.commit()
-            db.refresh(item)
-            imported += 1
-            results.append(
-                ExcelImportRowResult(
-                    row=row.row_number,
-                    title=row.title,
-                    status="imported",
-                    knowledge_id=item.id,
-                )
-            )
-        except HTTPException as exc:
-            db.rollback()
-            detail = exc.detail
-            error_code = "IMPORT_REJECTED"
-            if isinstance(detail, dict):
-                error_code = str(detail.get("code") or error_code)
-                error_message = str(detail.get("message") or detail)
-            else:
-                error_message = str(detail)
-            is_review_required = error_code == "DUPLICATE_REVIEW_REQUIRED"
-            if is_review_required:
-                deduplication = (
-                    detail.get("deduplication")
-                    if isinstance(detail, dict)
-                    else None
-                )
-                if not isinstance(deduplication, dict):
-                    results.append(
-                        ExcelImportRowResult(
-                            row=row.row_number,
-                            title=row.title,
-                            status="failed",
-                            error_code="DEDUP_REVIEW_QUEUE_INVALID",
-                            error_message="疑似重复任务缺少命中信息，未进入审核队列。",
-                        )
-                    )
-                    continue
-                try:
-                    review_task = _queue_excel_deduplication_review(
-                        db,
-                        body=body,
-                        filename=filename,
-                        row_number=row.row_number,
-                        current_user=current_user,
-                        deduplication=deduplication,
-                    )
-                    db.commit()
-                    review_required += 1
-                except Exception:
-                    db.rollback()
-                    logger.exception(
-                        "Excel duplicate review queue failed at row %s",
-                        row.row_number,
-                    )
-                    results.append(
-                        ExcelImportRowResult(
-                            row=row.row_number,
-                            title=row.title,
-                            status="failed",
-                            error_code="DEDUP_REVIEW_QUEUE_FAILED",
-                            error_message="疑似重复审核任务创建失败，请稍后重试。",
-                            deduplication=deduplication,
-                        )
-                    )
-                    continue
-            results.append(
-                ExcelImportRowResult(
-                    row=row.row_number,
-                    title=row.title,
-                    status="review_required" if is_review_required else "failed",
-                    error_code=error_code,
-                    error_message=error_message,
-                    deduplication=(
-                        detail.get("deduplication")
-                        if isinstance(detail, dict)
-                        else None
-                    ),
-                    review_task_id=(
-                        review_task.id if is_review_required else None
-                    ),
-                )
-            )
-        except IntegrityError:
-            db.rollback()
-            logger.exception(
-                "Excel knowledge import hit a database constraint at row %s",
-                row.row_number,
-            )
-            results.append(
-                ExcelImportRowResult(
-                    row=row.row_number,
-                    title=row.title,
-                    status="failed",
-                    error_code="INVALID_ROW",
-                    error_message="数据校验失败，请检查分类和字段格式。",
-                )
-            )
-        except ValueError as exc:
-            db.rollback()
-            results.append(
-                ExcelImportRowResult(
-                    row=row.row_number,
-                    title=row.title,
-                    status="failed",
-                    error_code="INVALID_ROW",
-                    error_message=str(exc),
-                )
-            )
-        except Exception:
-            db.rollback()
-            logger.exception("Excel knowledge import failed at row %s", row.row_number)
-            results.append(
-                ExcelImportRowResult(
-                    row=row.row_number,
-                    title=row.title,
-                    status="failed",
-                    error_code="IMPORT_FAILED",
-                    error_message="导入失败，请检查服务日志。",
-                )
-            )
 
-    return ExcelImportResponse(
-        total=len(results),
-        imported=imported,
-        review_required=review_required,
-        failed=len(results) - imported - review_required,
-        results=results,
+def _to_import_task_response(
+    task: KnowledgeImportTask,
+    *,
+    include_results: bool = False,
+    result_limit: int = 100,
+) -> KnowledgeImportTaskResponse:
+    return KnowledgeImportTaskResponse(
+        id=task.id,
+        original_filename=task.original_filename,
+        file_size=task.file_size,
+        status=task.status,
+        total_rows=task.total_rows,
+        processed_rows=task.processed_rows,
+        imported=task.imported,
+        review_required=task.review_required,
+        pending_review=task.pending_review,
+        deprecated=task.deprecated,
+        failed=task.failed,
+        error_message=task.error_message or "",
+        created_at=task.created_at,
+        started_at=task.started_at,
+        completed_at=task.completed_at,
+        results=[
+            ExcelImportRowResult.model_validate(result)
+            for result in (task.results or [])[:max(1, min(result_limit, 500))]
+        ]
+        if include_results
+        else [],
     )
 
 
-@router.get("", response_model=list[KnowledgeResponse], summary="查询知识条目列表", description="支持按状态、知识分类、适用类目、品牌和机型筛选，分页查询")
-def list_knowledge(
-    status: str | None = Query(None, description="状态筛选"),
-    category_id: str | None = Query(None, description="分类ID"),
-    applicable_category_ids: list[str] | None = Query(None, description="适用类目ID，可多选"),
-    brand_ids: list[str] | None = Query(None, description="适用品牌ID，可多选"),
-    model_ids: list[str] | None = Query(None, description="适用机型ID，可多选"),
-    keyword: str | None = Query(None, description="标题关键词搜索"),
-    page: int = Query(1, ge=1, description="页码"),
-    size: int = Query(20, ge=1, le=100, description="每页条数"),
+def _can_view_import_task(task: KnowledgeImportTask, current_user: User) -> bool:
+    return (
+        current_user.role == "super_admin"
+        or task.created_by == current_user.username
+    )
+
+
+@router.get(
+    "/import/tasks",
+    response_model=KnowledgeImportTaskListResponse,
+    summary="查看 Excel 后台导入任务",
+)
+def list_knowledge_import_tasks(
+    limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
-    _=Depends(require_permission("knowledge:view")),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("knowledge:create")),
+):
+    query = db.query(KnowledgeImportTask)
+    if current_user.role != "super_admin":
+        query = query.filter(KnowledgeImportTask.created_by == current_user.username)
+    tasks = (
+        query.order_by(KnowledgeImportTask.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return KnowledgeImportTaskListResponse(
+        tasks=[_to_import_task_response(task) for task in tasks]
+    )
+
+
+@router.get(
+    "/import/tasks/{task_id}",
+    response_model=KnowledgeImportTaskResponse,
+    summary="查看 Excel 后台导入任务详情",
+)
+def get_knowledge_import_task(
+    task_id: str,
+    include_results: bool = Query(False, description="是否返回逐行处理结果"),
+    result_limit: int = Query(100, ge=1, le=500, description="最多返回的逐行结果数"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:create")),
+):
+    task = db.query(KnowledgeImportTask).filter(
+        KnowledgeImportTask.id == task_id
+    ).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="导入任务不存在。")
+    if not _can_view_import_task(task, current_user):
+        raise HTTPException(status_code=403, detail="无权查看该导入任务。")
+    return _to_import_task_response(
+        task,
+        include_results=include_results,
+        result_limit=result_limit,
+    )
+
+
+def _task_lease_expiry(now: datetime) -> datetime:
+    return now + timedelta(
+        seconds=max(30, settings.KNOWLEDGE_IMPORT_LEASE_SECONDS)
+    )
+
+
+def _append_import_task_result(
+    task: KnowledgeImportTask,
+    result: ExcelImportRowResult,
+    *,
+    now: datetime,
+) -> None:
+    results = list(task.results or [])
+    results.append(result.model_dump(mode="json"))
+    task.results = results
+    task.processed_rows = (task.processed_rows or 0) + 1
+    if result.status in {"imported", "review_pending", "review_required"}:
+        task.imported = (task.imported or 0) + 1
+    if result.status == "review_required":
+        task.review_required = (task.review_required or 0) + 1
+    if result.status == "review_pending":
+        task.pending_review = (task.pending_review or 0) + 1
+    if result.status == "deprecated":
+        task.deprecated = (task.deprecated or 0) + 1
+    if result.status == "failed":
+        task.failed = (task.failed or 0) + 1
+    task.lease_expires_at = _task_lease_expiry(now)
+    task.updated_at = now
+
+
+def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        error_code = "IMPORT_REJECTED"
+        if isinstance(detail, dict):
+            error_code = str(detail.get("code") or error_code)
+            error_message = str(detail.get("message") or detail)
+        else:
+            error_message = str(detail)
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            error_code=error_code,
+            error_message=error_message,
+            deduplication=(
+                detail.get("deduplication")
+                if isinstance(detail, dict)
+                else None
+            ),
+        )
+    if isinstance(exc, IntegrityError):
+        logger.exception(
+            "Excel knowledge import hit a database constraint at row %s",
+            row.row_number,
+        )
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            error_code="INVALID_ROW",
+            error_message="数据校验失败，请检查分类和字段格式。",
+        )
+    if isinstance(exc, SourceKnowledgeMatchError):
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            error_code=exc.code,
+            error_message=str(exc),
+        )
+    if isinstance(exc, ValueError):
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            error_code="INVALID_ROW",
+            error_message=str(exc),
+        )
+    logger.exception("Excel knowledge import failed at row %s", row.row_number)
+    return ExcelImportRowResult(
+        row=row.row_number,
+        title=row.title,
+        status="failed",
+        error_code="IMPORT_FAILED",
+        error_message="导入失败，请检查服务日志。",
+    )
+
+
+def _process_excel_import_row(
+    db: Session,
+    row,
+    current_user: User,
+) -> ExcelImportRowResult:
+    if not row.is_valid:
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            error_code=row.error_code,
+            error_message=row.error_message,
+        )
+
+    if row.source_status == DEPRECATED_SOURCE_STATUS:
+        item = _find_source_knowledge(db, row)
+        before_data = _knowledge_snapshot(item)
+        changed_fields = _bind_source_identifiers(item, row)
+        if item.status != KnowledgeStatus.DEPRECATED:
+            item.status = KnowledgeStatus.DEPRECATED
+            changed_fields.append("status")
+        item.updated_by = current_user.username
+        item.updated_at = datetime.utcnow()
+        after_data = _knowledge_snapshot(item)
+        if changed_fields:
+            db.add(
+                KnowledgeChangeLog(
+                    id=f"kcl-{uuid.uuid4().hex[:12]}",
+                    knowledge_id=item.id,
+                    changed_by=current_user.username,
+                    changed_fields=changed_fields,
+                    before_data=before_data,
+                    after_data=after_data,
+                )
+            )
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="deprecated",
+            knowledge_id=item.id,
+            error_message=(
+                "原知识已是废弃状态。"
+                if not changed_fields
+                else "已按来源标识同步为废弃状态。"
+            ),
+        )
+
+    body = KnowledgeCreate(
+        title=row.title,
+        subtitles=row.subtitles or [],
+        content=row.content,
+        category_id=row.category_id,
+        applicable_scenes=row.applicable_scenes or [],
+        applicable_categories=row.applicable_categories or [],
+        applicable_brands=row.applicable_brands or [],
+        applicable_models=row.applicable_models or [],
+        related_standard_items=row.related_standard_items or [],
+        source_topic_key=row.source_topic_key or None,
+        source_record_id=row.source_record_id or None,
+        source_knowledge_key=row.source_knowledge_key or None,
+        source_fields=row.source_fields,
+    )
+    item = _create_knowledge_item(
+        body,
+        db,
+        current_user,
+        source="excel",
+        allow_duplicate_review=True,
+    )
+    _auto_publish_approved_source_excel(
+        item,
+        source_status=row.source_status,
+        current_user=current_user,
+    )
+    deduplication = item.deduplication_metadata or {}
+    is_review_required = deduplication.get("action") == "review_duplicate"
+    is_pending_review = item.status == KnowledgeStatus.REVIEW
+    return ExcelImportRowResult(
+        row=row.row_number,
+        title=row.title,
+        status=(
+            "review_required"
+            if is_review_required
+            else "review_pending"
+            if is_pending_review
+            else "imported"
+        ),
+        knowledge_id=item.id,
+        error_code=(
+            "DUPLICATE_REVIEW_REQUIRED"
+            if is_review_required
+            else None
+        ),
+        error_message=(
+            "已进入知识待发布审核，请确认是否与命中知识重复。"
+            if is_review_required
+            else None
+        ),
+        deduplication=deduplication if is_review_required else None,
+    )
+
+
+def _mark_import_task_failed(
+    task: KnowledgeImportTask,
+    message: str,
+    *,
+    now: datetime,
+) -> None:
+    task.status = "failed"
+    task.error_message = message[:2000]
+    task.lease_expires_at = None
+    task.completed_at = now
+    task.updated_at = now
+
+
+def _mark_import_task_retry(
+    task: KnowledgeImportTask,
+    message: str,
+    *,
+    now: datetime,
+) -> None:
+    task.status = "queued"
+    task.error_message = message[:2000]
+    task.lease_expires_at = None
+    task.next_attempt_at = now + timedelta(seconds=5)
+    task.updated_at = now
+
+
+def process_knowledge_import_task(
+    task_id: str,
+    *,
+    session_factory=SessionLocal,
+) -> None:
+    """Process a persisted task from the first uncommitted Excel row onward."""
+
+    db = session_factory()
+    try:
+        task = db.query(KnowledgeImportTask).filter(
+            KnowledgeImportTask.id == task_id
+        ).first()
+        if not task or task.status != "running":
+            return
+
+        categories = db.query(Category).order_by(
+            Category.level,
+            Category.sort_order,
+        ).all()
+        try:
+            rows = parse_knowledge_workbook(task.file_content, categories)
+        except KnowledgeExcelError as exc:
+            _mark_import_task_failed(task, str(exc), now=datetime.utcnow())
+            db.commit()
+            return
+
+        if task.total_rows and task.total_rows != len(rows):
+            _mark_import_task_failed(
+                task,
+                "导入文件解析结果发生变化，任务已停止以避免重复写入。",
+                now=datetime.utcnow(),
+            )
+            db.commit()
+            return
+        if task.processed_rows > len(rows):
+            _mark_import_task_failed(
+                task,
+                "导入进度超出文件行数，任务已停止以避免重复写入。",
+                now=datetime.utcnow(),
+            )
+            db.commit()
+            return
+
+        task.total_rows = len(rows)
+        task.error_message = ""
+        task.lease_expires_at = _task_lease_expiry(datetime.utcnow())
+        db.commit()
+
+        background_user = SimpleNamespace(username=task.created_by)
+        for row in rows[task.processed_rows:]:
+            try:
+                result = _process_excel_import_row(db, row, background_user)
+            except Exception as exc:
+                db.rollback()
+                task = db.query(KnowledgeImportTask).filter(
+                    KnowledgeImportTask.id == task_id
+                ).first()
+                if not task or task.status != "running":
+                    return
+                result = _excel_row_failure_result(row, exc)
+
+            _append_import_task_result(task, result, now=datetime.utcnow())
+            db.commit()
+
+        task = db.query(KnowledgeImportTask).filter(
+            KnowledgeImportTask.id == task_id
+        ).first()
+        if not task or task.status != "running":
+            return
+        task.status = "completed_with_errors" if task.failed else "completed"
+        task.error_message = ""
+        task.lease_expires_at = None
+        task.completed_at = datetime.utcnow()
+        task.updated_at = task.completed_at
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        task = db.query(KnowledgeImportTask).filter(
+            KnowledgeImportTask.id == task_id
+        ).first()
+        if task and task.status == "running":
+            _mark_import_task_retry(
+                task,
+                f"后台处理异常，将自动重试：{str(exc) or type(exc).__name__}",
+                now=datetime.utcnow(),
+            )
+            db.commit()
+        logger.exception("Knowledge import task %s crashed.", task_id)
+    finally:
+        db.close()
+
+
+def process_next_knowledge_import_task(
+    *,
+    session_factory=SessionLocal,
+) -> bool:
+    """Claim one queued or expired task, then process it outside the claim lock."""
+
+    db = session_factory()
+    task_id = ""
+    now = datetime.utcnow()
+    try:
+        task = (
+            db.query(KnowledgeImportTask)
+            .filter(
+                or_(
+                    (
+                        (KnowledgeImportTask.status == "queued")
+                        & (KnowledgeImportTask.next_attempt_at <= now)
+                    ),
+                    (
+                        (KnowledgeImportTask.status == "running")
+                        & (KnowledgeImportTask.lease_expires_at <= now)
+                    ),
+                )
+            )
+            .order_by(KnowledgeImportTask.created_at)
+            .with_for_update(skip_locked=True)
+            .first()
+        )
+        if not task:
+            return False
+        task.status = "running"
+        task.attempt_count = (task.attempt_count or 0) + 1
+        task.started_at = task.started_at or now
+        task.lease_expires_at = _task_lease_expiry(now)
+        task.updated_at = now
+        task_id = task.id
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to claim a knowledge import task.")
+        return False
+    finally:
+        db.close()
+
+    process_knowledge_import_task(task_id, session_factory=session_factory)
+    return True
+
+
+def _filtered_knowledge_query(
+    db: Session,
+    current_user: User,
+    *,
+    status: str | None = None,
+    category_id: str | None = None,
+    applicable_category_ids: list[str] | None = None,
+    brand_ids: list[str] | None = None,
+    model_ids: list[str] | None = None,
+    keyword: str | None = None,
 ):
     q = db.query(Knowledge)
     applicable_category_ids = [
@@ -810,8 +1151,143 @@ def list_knowledge(
                 ]
             )
         )
+    keyword = (keyword or "").strip()
     if keyword:
-        q = q.filter(Knowledge.title.ilike(f"%{keyword}%"))
+        keyword_pattern = f"%{keyword}%"
+        q = q.filter(
+            or_(
+                Knowledge.title.ilike(keyword_pattern),
+                _jsonb_text_match(Knowledge.subtitles, "$[*]", keyword),
+                _jsonb_text_match(Knowledge.content, "$.blocks[*].value", keyword),
+                _jsonb_text_match(Knowledge.related_standard_items, "$[*]", keyword),
+                _jsonb_text_match(Knowledge.applicable_scenes, "$[*]", keyword),
+                Knowledge.category.has(Category.name.ilike(keyword_pattern)),
+            )
+        )
+    return q
+
+
+def _has_knowledge_export_filter(
+    *,
+    status: str | None,
+    category_id: str | None,
+    applicable_category_ids: list[str] | None,
+    brand_ids: list[str] | None,
+    model_ids: list[str] | None,
+    keyword: str | None,
+) -> bool:
+    """Avoid accidentally exporting the full knowledge base without a filter."""
+    return bool(
+        status
+        or category_id
+        or any(applicable_category_ids or [])
+        or any(brand_ids or [])
+        or any(model_ids or [])
+        or (keyword or "").strip()
+    )
+
+
+@router.get("/export/excel", summary="导出知识库 Excel")
+def export_knowledge_excel(
+    status: str | None = Query(None, description="状态筛选"),
+    category_id: str | None = Query(None, description="分类ID"),
+    applicable_category_ids: list[str] | None = Query(None, description="适用类目ID，可多选"),
+    brand_ids: list[str] | None = Query(None, description="适用品牌ID，可多选"),
+    model_ids: list[str] | None = Query(None, description="适用机型ID，可多选"),
+    keyword: str | None = Query(
+        None,
+        description="主标题、副标题、正文、关联标准项、场景标签或分类名称关键词搜索",
+    ),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("knowledge:view")),
+    current_user: User = Depends(get_current_user),
+):
+    if not _has_knowledge_export_filter(
+        status=status,
+        category_id=category_id,
+        applicable_category_ids=applicable_category_ids,
+        brand_ids=brand_ids,
+        model_ids=model_ids,
+        keyword=keyword,
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="请至少设置一项筛选条件后再导出，避免误导出全部知识。",
+        )
+    query = _filtered_knowledge_query(
+        db,
+        current_user,
+        status=status,
+        category_id=category_id,
+        applicable_category_ids=applicable_category_ids,
+        brand_ids=brand_ids,
+        model_ids=model_ids,
+        keyword=keyword,
+    )
+    items = (
+        query.options(joinedload(Knowledge.category))
+        .order_by(Knowledge.id.asc())
+        .all()
+    )
+    filename = f"知识库导出_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return StreamingResponse(
+        BytesIO(build_knowledge_export_workbook(items)),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": (
+                "attachment; filename*=UTF-8''" + quote(filename)
+            )
+        },
+    )
+
+
+@router.get(
+    "",
+    response_model=list[KnowledgeResponse],
+    responses={
+        200: {
+            "headers": {
+                "X-Total-Count": {
+                    "description": "符合当前筛选条件的知识总数",
+                    "schema": {"type": "integer"},
+                }
+            }
+        }
+    },
+    summary="查询知识条目列表",
+    description="支持按状态、知识分类、适用类目、品牌和机型筛选，分页查询",
+)
+def list_knowledge(
+    response: Response,
+    status: str | None = Query(None, description="状态筛选"),
+    category_id: str | None = Query(None, description="分类ID"),
+    applicable_category_ids: list[str] | None = Query(None, description="适用类目ID，可多选"),
+    brand_ids: list[str] | None = Query(None, description="适用品牌ID，可多选"),
+    model_ids: list[str] | None = Query(None, description="适用机型ID，可多选"),
+    keyword: str | None = Query(
+        None,
+        description="主标题、副标题、正文、关联标准项、场景标签或分类名称关键词搜索",
+    ),
+    page: int = Query(1, ge=1, description="页码"),
+    size: int = Query(20, ge=1, le=100, description="每页条数"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("knowledge:view")),
+    current_user: User = Depends(get_current_user),
+):
+    q = _filtered_knowledge_query(
+        db,
+        current_user,
+        status=status,
+        category_id=category_id,
+        applicable_category_ids=applicable_category_ids,
+        brand_ids=brand_ids,
+        model_ids=model_ids,
+        keyword=keyword,
+    )
+    response.headers["X-Total-Count"] = str(q.count())
     items = q.order_by(Knowledge.created_at.desc()).offset((page - 1) * size).limit(size).all()
     return [_to_response(i) for i in items]
 
@@ -911,6 +1387,11 @@ def _knowledge_snapshot(item: Knowledge) -> dict:
         "applicable_categories": deepcopy(item.applicable_categories or []),
         "applicable_brands": deepcopy(item.applicable_brands or []),
         "applicable_models": deepcopy(item.applicable_models or []),
+        "related_standard_items": deepcopy(item.related_standard_items or []),
+        "source_topic_key": item.source_topic_key,
+        "source_record_id": item.source_record_id,
+        "source_knowledge_key": item.source_knowledge_key,
+        "source_fields": deepcopy(getattr(item, "source_fields", None) or {}),
     }
 
 
@@ -1215,6 +1696,15 @@ def approve_knowledge(
         raise HTTPException(404, "知识条目不存在")
     if item.status != KnowledgeStatus.REVIEW:
         raise HTTPException(400, "只有审核中状态才能审批通过")
+    pending_matches = _pending_deduplication_matches(item)
+    if pending_matches:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DUPLICATE_CONFIRMATION_REQUIRED",
+                "message": _deduplication_confirmation_message(pending_matches),
+            },
+        )
     ensure_embedding(db, item)
     ensure_search_embeddings(db, item)
     item.status = KnowledgeStatus.PUBLISHED
@@ -1284,6 +1774,18 @@ def batch_approve_knowledge(
                     status="failed",
                     error_code="STATUS_NOT_REVIEW",
                     error_message="只有待审核状态的知识可以批量通过。",
+                )
+            )
+            continue
+        pending_matches = _pending_deduplication_matches(item)
+        if pending_matches:
+            failed += 1
+            results.append(
+                KnowledgeBatchApproveResult(
+                    knowledge_id=knowledge_id,
+                    status="failed",
+                    error_code="DUPLICATE_CONFIRMATION_REQUIRED",
+                    error_message=_deduplication_confirmation_message(pending_matches),
                 )
             )
             continue
@@ -1659,6 +2161,7 @@ def submit_candidate(
         applicable_scenes=body.applicable_scenes,
         source=body.source,
         source_session_id=body.source_session_id,
+        related_standard_items=body.related_standard_items,
         created_by=current_user.username,
         updated_by=current_user.username,
         deduplication_metadata=_deduplication_metadata(
