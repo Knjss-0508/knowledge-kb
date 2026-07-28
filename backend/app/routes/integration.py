@@ -132,6 +132,7 @@ def _candidate_review_item(item: IntegrationIngestion) -> CandidateReviewListIte
         applicable_categories=list(knowledge.get("applicable_categories") or []),
         applicable_brands=list(knowledge.get("applicable_brands") or []),
         applicable_models=list(knowledge.get("applicable_models") or []),
+        related_standard_items=list(knowledge.get("related_standard_items") or []),
         recommended_reply=knowledge.get("recommended_reply"),
         evidence_excerpt=knowledge.get("evidence_excerpt"),
         selection=selection,
@@ -599,6 +600,7 @@ def submit_knowledge_candidates(
             applicable_categories=candidate.knowledge.applicable_categories,
             applicable_brands=candidate.knowledge.applicable_brands,
             applicable_models=candidate.knowledge.applicable_models,
+            related_standard_items=candidate.knowledge.related_standard_items,
             deduplication_metadata=deduplication.model_dump(mode="json"),
             created_by=f"automation:{candidate.source.system}"[:128],
         )
@@ -776,7 +778,10 @@ def list_candidate_reviews(
 ):
     rows = (
         db.query(IntegrationIngestion)
-        .filter(IntegrationIngestion.review_status.isnot(None))
+        .filter(
+            IntegrationIngestion.review_status.isnot(None),
+            IntegrationIngestion.source_system != "excel",
+        )
         .order_by(IntegrationIngestion.created_at.desc())
         .all()
     )
@@ -852,6 +857,7 @@ def update_candidate_review(
         .filter(
             IntegrationIngestion.id == ingestion_id,
             IntegrationIngestion.review_status.isnot(None),
+            IntegrationIngestion.source_system != "excel",
         )
         .first()
     )
@@ -874,6 +880,7 @@ def update_candidate_review(
         ("applicable_categories", "applicable_categories"),
         ("applicable_brands", "applicable_brands"),
         ("applicable_models", "applicable_models"),
+        ("related_standard_items", "related_standard_items"),
         ("recommended_reply", "recommended_reply"),
     ):
         if field in updates:
@@ -954,7 +961,10 @@ def submit_candidate_reviews(
     for ingestion_id in body.ingestion_ids:
         item = (
             db.query(IntegrationIngestion)
-            .filter(IntegrationIngestion.id == ingestion_id)
+            .filter(
+                IntegrationIngestion.id == ingestion_id,
+                IntegrationIngestion.source_system != "excel",
+            )
             .first()
         )
         if not item:
@@ -1057,6 +1067,7 @@ def submit_candidate_reviews(
                 applicable_categories=candidate.knowledge.applicable_categories,
                 applicable_brands=candidate.knowledge.applicable_brands,
                 applicable_models=candidate.knowledge.applicable_models,
+                related_standard_items=candidate.knowledge.related_standard_items,
                 deduplication_metadata=deduplication_metadata,
                 created_by=current_user.username,
                 updated_by=current_user.username,

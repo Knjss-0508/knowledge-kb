@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     EMBEDDING_TIMEOUT_SECONDS: float = 30.0
     EMBEDDING_DIMENSIONS: int = 1024
     EMBEDDING_HEALTHCHECK_URL: str = ""
+    # Limit one embedding request by both item count and total text length.  This
+    # keeps long Excel imports below reverse-proxy and model-server payload limits.
+    EMBEDDING_MAX_BATCH_TEXTS: int = 16
+    EMBEDDING_MAX_BATCH_CHARS: int = 12000
 
     # Knowledge deduplication thresholds. Scores are cosine similarities.
     # >= block threshold: reject as a likely duplicate.
@@ -97,6 +101,10 @@ class Settings(BaseSettings):
     MEDIA_DELETION_BATCH_SIZE: int = 50
     MEDIA_DELETION_RETRY_BASE_SECONDS: int = 5
     MEDIA_DELETION_RETRY_MAX_SECONDS: int = 3600
+    # Excel imports are persisted before processing, so browser disconnects do
+    # not cancel work. A lease enables safe recovery after a backend restart.
+    KNOWLEDGE_IMPORT_POLL_SECONDS: float = 1.0
+    KNOWLEDGE_IMPORT_LEASE_SECONDS: int = 120
     SESSION_TTL_HOURS: int = 24
 
     class Config:

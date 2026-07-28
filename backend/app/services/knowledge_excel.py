@@ -1,5 +1,6 @@
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Any
 from urllib.parse import urlsplit
@@ -14,6 +15,43 @@ MAX_IMPORT_ROWS = 500
 MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 IMPORT_SHEET_NAME = "知识导入"
+EXPORT_SHEET_NAME = "知识库主表"
+
+EXPORT_HEADERS = [
+    "知识ID",
+    "主题键",
+    "记录ID",
+    "知识键",
+    "主标题",
+    "副标题",
+    "知识内容",
+    "知识分类",
+    "知识来源",
+    "关联标准项",
+    "适用范围",
+    "生效状态",
+    "来源版本",
+    "变更类型",
+    "创建类型",
+    "失效类型",
+    "失效原因",
+    "来源追溯",
+    "校验备注",
+]
+
+EXPORT_STATUS_LABELS = {
+    "draft": "草稿",
+    "review": "待审核",
+    "published": "生效中",
+    "deprecated": "已失效",
+}
+
+EXPORT_SOURCE_LABELS = {
+    "manual": "手工录入",
+    "excel": "Excel 批量导入",
+    "integration": "接口导入",
+    "candidate": "候选知识",
+}
 
 HEADER_ALIASES = {
     "title": {"标题", "知识标题", "主标题"},
@@ -26,6 +64,23 @@ HEADER_ALIASES = {
     "applicable_categories": {"适用类目"},
     "brands": {"适用品牌", "品牌"},
     "models": {"适用机型", "机型"},
+    "related_standard_items": {"关联标准项", "关联标准", "标准项"},
+    "source_topic_key": {"主题键"},
+    "source_record_id": {"记录ID"},
+    "source_knowledge_key": {"知识键"},
+}
+
+EXPORT_HEADER_IMPORT_FIELDS = {
+    "主题键": "source_topic_key",
+    "记录ID": "source_record_id",
+    "知识键": "source_knowledge_key",
+    "主标题": "title",
+    "副标题": "subtitles",
+    "知识内容": "content",
+    "知识分类": "category",
+    "关联标准项": "related_standard_items",
+    "适用范围": "scope",
+    "生效状态": "source_status",
 }
 
 CATEGORY_VALUE_ALIASES = {
@@ -36,6 +91,8 @@ CATEGORY_VALUE_ALIASES = {
 
 VALID_SOURCE_STATUSES = {"生效中", "待审核", "已禁用"}
 IMPORTABLE_SOURCE_STATUS = "生效中"
+REVIEW_SOURCE_STATUS = "待审核"
+DEPRECATED_SOURCE_STATUS = "已禁用"
 UNRESTRICTED_SCOPES = {"通用"}
 EXTERNAL_MEDIA_TOKEN_PATTERN = re.compile(
     r"\[(?P<kind>img|video):[ \t]*"
@@ -65,6 +122,11 @@ class ExcelKnowledgeRow:
     applicable_categories: list[str] | None = None
     applicable_brands: list[str] | None = None
     applicable_models: list[str] | None = None
+    related_standard_items: list[str] | None = None
+    source_topic_key: str = ""
+    source_record_id: str = ""
+    source_knowledge_key: str = ""
+    source_fields: dict[str, str] = field(default_factory=dict)
     source_status: str = ""
     source_scope: str = ""
     error_code: str | None = None
@@ -249,11 +311,34 @@ def _header_indexes(header_row) -> dict[str, int]:
         )
         if field not in indexes
     ]
-    if missing:
+    is_source_deprecation_sheet = (
+        "source_status" in indexes
+        and any(
+            field in indexes
+            for field in (
+                "source_knowledge_key",
+                "source_topic_key",
+                "source_record_id",
+            )
+        )
+    )
+    if missing and not is_source_deprecation_sheet:
         raise KnowledgeExcelError(
             f"缺少必填列：{'、'.join(missing)}。请使用系统下载的最新模板。"
         )
     return indexes
+
+
+def _source_fields(header_row, values) -> dict[str, str]:
+    """保留上传表中所有非空表头对应的原始单元格值，供后续导出还原。"""
+    fields: dict[str, str] = {}
+    for index, header in enumerate(header_row):
+        normalized_header = _normalize_header(header)
+        if not normalized_header:
+            continue
+        value = values[index] if index < len(values) else None
+        fields[normalized_header] = _cell_text(value)
+    return fields
 
 
 def _validate_xlsx_container(data: bytes) -> None:
@@ -314,18 +399,25 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
         title = _cell_text(value_at(values, "title"))
         source_status = _cell_text(value_at(values, "source_status"))
         source_scope = _cell_text(value_at(values, "scope"))
+        source_topic_key = _cell_text(value_at(values, "source_topic_key"))
+        source_record_id = _cell_text(value_at(values, "source_record_id"))
+        source_knowledge_key = _cell_text(value_at(values, "source_knowledge_key"))
         result = ExcelKnowledgeRow(
             row_number=row_number,
             title=title,
+            source_fields=_source_fields(header_row, values),
             source_status=source_status,
             source_scope=source_scope,
+            source_topic_key=source_topic_key,
+            source_record_id=source_record_id,
+            source_knowledge_key=source_knowledge_key,
         )
         try:
             if "source_status" in indexes:
                 if not source_status:
                     raise KnowledgeExcelRowError(
                         "SOURCE_STATUS_REQUIRED",
-                        "生效状态不能为空；仅“生效中”记录允许上传。",
+                        "生效状态不能为空。",
                     )
                 if source_status not in VALID_SOURCE_STATUSES:
                     raise KnowledgeExcelRowError(
@@ -333,11 +425,29 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
                         f"生效状态“{source_status}”不受支持，"
                         "仅允许生效中、待审核或已禁用。",
                     )
-                if source_status != IMPORTABLE_SOURCE_STATUS:
+                if source_status == DEPRECATED_SOURCE_STATUS:
+                    if not any(
+                        (
+                            source_knowledge_key,
+                            source_topic_key,
+                            source_record_id,
+                        )
+                    ):
+                        raise KnowledgeExcelRowError(
+                            "SOURCE_IDENTIFIER_REQUIRED",
+                            "“已禁用”记录至少需要填写知识键、主题键或记录ID，"
+                            "以定位需要废弃的原知识。",
+                        )
+                    parsed_rows.append(result)
+                    continue
+
+                if source_status not in {
+                    IMPORTABLE_SOURCE_STATUS,
+                    REVIEW_SOURCE_STATUS,
+                }:
                     raise KnowledgeExcelRowError(
                         "SOURCE_STATUS_NOT_IMPORTABLE",
-                        f"该记录为“{source_status}”，不会上传；"
-                        "审核通过并改为“生效中”后再导入。",
+                        f"该记录为“{source_status}”，无法处理。",
                     )
 
             if not title:
@@ -374,6 +484,9 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
             )
             result.applicable_brands = _split_values(value_at(values, "brands"))
             result.applicable_models = _split_values(value_at(values, "models"))
+            result.related_standard_items = _split_values(
+                value_at(values, "related_standard_items")
+            )
         except KnowledgeExcelRowError as exc:
             result.error_code = exc.code
             result.error_message = str(exc)
@@ -382,6 +495,196 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
     if not parsed_rows:
         raise KnowledgeExcelError("Excel 中没有可导入的数据行。")
     return parsed_rows
+
+
+def _export_cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, Mapping):
+        for key in ("name", "label", "value", "title", "id"):
+            item = value.get(key)
+            if item not in (None, ""):
+                return _export_cell_text(item)
+        return ""
+    return str(value).strip()
+
+
+def _export_join(values: Any, separator: str = "；") -> str:
+    if not isinstance(values, (list, tuple, set)):
+        return _export_cell_text(values)
+    result: list[str] = []
+    for value in values:
+        text = _export_cell_text(value)
+        if text and text not in result:
+            result.append(text)
+    return separator.join(result)
+
+
+def _export_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, Mapping):
+        return _export_cell_text(value)
+
+    blocks = value.get("blocks")
+    if not isinstance(blocks, list):
+        return _export_cell_text(value)
+
+    pieces: list[str] = []
+    for block in blocks:
+        if not isinstance(block, Mapping):
+            text = _export_cell_text(block)
+            if text:
+                pieces.append(text)
+            continue
+        block_type = _export_cell_text(block.get("type")).lower()
+        if block_type == "text":
+            text = _export_cell_text(block.get("value") or block.get("text"))
+        elif block_type in {"image", "video"}:
+            external_url = _export_cell_text(block.get("external_url"))
+            if external_url:
+                token = "img" if block_type == "image" else "video"
+                text = f"[{token}:{external_url}]"
+            else:
+                label = _export_cell_text(block.get("caption") or block.get("alt"))
+                media_label = "图片" if block_type == "image" else "视频"
+                text = f"[{media_label}{'：' + label if label else ''}]"
+        else:
+            text = _export_cell_text(block.get("value") or block.get("text"))
+        if text:
+            pieces.append(text)
+    return "\n".join(pieces)
+
+
+def _export_scope(item: Any) -> str:
+    groups = (
+        ("场景", getattr(item, "applicable_scenes", None)),
+        ("适用类目", getattr(item, "applicable_categories", None)),
+        ("适用品牌", getattr(item, "applicable_brands", None)),
+        ("适用机型", getattr(item, "applicable_models", None)),
+    )
+    parts = [
+        f"{label}：{values}"
+        for label, raw_values in groups
+        if (values := _export_join(raw_values))
+    ]
+    return "；".join(parts) if parts else "通用"
+
+
+def _export_status(value: Any) -> str:
+    raw = _export_cell_text(getattr(value, "value", value)).lower()
+    return EXPORT_STATUS_LABELS.get(raw, _export_cell_text(value))
+
+
+def _export_source(value: Any) -> str:
+    raw = _export_cell_text(value)
+    return EXPORT_SOURCE_LABELS.get(raw, raw)
+
+
+def _export_source_field(source_fields: Any, header: str, fallback: str) -> str:
+    """导出时优先使用上传时保留的原始字段，旧数据则使用系统字段兜底。"""
+    if not isinstance(source_fields, dict):
+        return fallback
+    candidates = [_normalize_header(header)]
+    import_field = EXPORT_HEADER_IMPORT_FIELDS.get(header)
+    if import_field:
+        candidates.extend(
+            _normalize_header(alias)
+            for alias in HEADER_ALIASES.get(import_field, set())
+        )
+    for candidate in candidates:
+        if candidate in source_fields:
+            return _export_cell_text(source_fields[candidate])
+    return fallback
+
+
+def build_knowledge_export_workbook(items) -> bytes:
+    """生成与历史知识库主表字段一致的只读导出工作簿。"""
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = EXPORT_SHEET_NAME
+    sheet.append(EXPORT_HEADERS)
+
+    for item in items:
+        category = getattr(item, "category", None)
+        category_name = _export_cell_text(getattr(category, "name", None))
+        if not category_name:
+            category_name = _export_cell_text(getattr(item, "category_id", None))
+        source_fields = getattr(item, "source_fields", None)
+        sheet.append(
+            [
+                _export_cell_text(getattr(item, "id", None)),
+                _export_source_field(source_fields, "主题键", _export_cell_text(getattr(item, "source_topic_key", None))),
+                _export_source_field(source_fields, "记录ID", _export_cell_text(getattr(item, "source_record_id", None))),
+                _export_source_field(source_fields, "知识键", _export_cell_text(getattr(item, "source_knowledge_key", None))),
+                _export_source_field(source_fields, "主标题", _export_cell_text(getattr(item, "title", None))),
+                _export_source_field(source_fields, "副标题", _export_join(getattr(item, "subtitles", None), separator="\n")),
+                _export_source_field(source_fields, "知识内容", _export_content(getattr(item, "content", None))),
+                _export_source_field(source_fields, "知识分类", category_name),
+                _export_source_field(source_fields, "知识来源", _export_source(getattr(item, "source", None))),
+                _export_source_field(source_fields, "关联标准项", _export_join(getattr(item, "related_standard_items", None)),),
+                _export_source_field(source_fields, "适用范围", _export_scope(item)),
+                _export_source_field(source_fields, "生效状态", _export_status(getattr(item, "status", None))),
+                _export_source_field(source_fields, "来源版本", ""),
+                _export_source_field(source_fields, "变更类型", ""),
+                _export_source_field(source_fields, "创建类型", ""),
+                _export_source_field(source_fields, "失效类型", ""),
+                _export_source_field(source_fields, "失效原因", ""),
+                _export_source_field(source_fields, "来源追溯", ""),
+                _export_source_field(source_fields, "校验备注", ""),
+            ]
+        )
+
+    header_fill = PatternFill("solid", fgColor="D9E8FB")
+    header_font = Font(name="宋体", size=11, bold=True)
+    body_font = Font(name="宋体", size=11)
+    header_alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+        wrap_text=True,
+    )
+    body_alignment = Alignment(vertical="top", wrap_text=True)
+
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = f"A1:S{max(sheet.max_row, 1)}"
+    sheet.row_dimensions[1].height = 30
+    for cell in sheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+        for cell in row:
+            cell.font = body_font
+            cell.alignment = body_alignment
+
+    column_widths = {
+        "A": 14,
+        "B": 18,
+        "C": 16,
+        "D": 16,
+        "E": 32,
+        "F": 36,
+        "G": 72,
+        "H": 16,
+        "I": 18,
+        "J": 28,
+        "K": 42,
+        "L": 14,
+        "M": 16,
+        "N": 16,
+        "O": 16,
+        "P": 16,
+        "Q": 22,
+        "R": 28,
+        "S": 28,
+    }
+    for column, width in column_widths.items():
+        sheet.column_dimensions[column].width = width
+
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
 
 
 def build_knowledge_import_template(categories) -> bytes:
@@ -397,18 +700,19 @@ def build_knowledge_import_template(categories) -> bytes:
         "正文（必填）",
         "副标题（选填）",
         "场景标签（选填）",
+        "关联标准项（选填）",
         "适用类目（选填）",
         "适用品牌（选填）",
         "适用机型（选填）",
     ]
     import_sheet.append(headers)
     import_sheet.freeze_panes = "A2"
-    import_sheet.auto_filter.ref = "A1:H1"
+    import_sheet.auto_filter.ref = "A1:I1"
     import_sheet.row_dimensions[1].height = 28
     import_sheet.column_dimensions["A"].width = 32
     import_sheet.column_dimensions["B"].width = 28
     import_sheet.column_dimensions["C"].width = 70
-    for column in ("D", "E", "F", "G", "H"):
+    for column in ("D", "E", "F", "G", "H", "I"):
         import_sheet.column_dimensions[column].width = 24
 
     required_fill = PatternFill("solid", fgColor="0F766E")
@@ -429,7 +733,7 @@ def build_knowledge_import_template(categories) -> bytes:
         "知识库",
     )
     import_sheet["D1"].comment = Comment("多项请使用中文分号“；”分隔。", "知识库")
-    for cell_ref in ("E1", "F1", "G1", "H1"):
+    for cell_ref in ("E1", "F1", "G1", "H1", "I1"):
         import_sheet[cell_ref].comment = Comment(
             "多项请使用中文分号“；”分隔。",
             "知识库",
@@ -465,11 +769,12 @@ def build_knowledge_import_template(categories) -> bytes:
     instructions = [
         ("必填列", "标题、知识分类、正文。"),
         ("知识分类", "推荐从“分类字典”复制分类ID；也可填写唯一分类名称或完整分类路径。"),
-        ("多值字段", "副标题、场景标签等多项内容使用中文分号“；”分隔。"),
+        ("多值字段", "副标题、场景标签、关联标准项等多项内容使用中文分号“；”分隔。"),
         (
             "兼容格式",
             "支持“知识库主表”的主标题、知识内容、适用范围和生效状态列；"
-            "存在生效状态列时仅导入“生效中”记录。",
+            "存在生效状态列时：生效中直接发布，待审核进入审核，"
+            "已禁用按知识键、主题键或记录ID同步废弃原知识。",
         ),
         (
             "正文媒体",
@@ -481,7 +786,12 @@ def build_knowledge_import_template(categories) -> bytes:
             "疑似重复行会自动进入系统“候选价值复核”的“疑似重复确认”筛选，"
             "由审核人核对命中知识后决定是否送审；无需修改 Excel 或重复上传。",
         ),
-        ("导入结果", "成功行进入待审核状态；格式错误、分类不存在或完全重复的行会逐行返回原因。"),
+        (
+            "导入结果",
+            "来源表的“生效中”行直接发布，“待审核”行进入待审核，"
+            "“已禁用”行同步废弃原知识；普通模板成功行进入待审核；"
+            "疑似重复、格式错误、分类不存在或完全重复的行会逐行返回原因。",
+        ),
         ("单次上限", f"每个文件最多 {MAX_IMPORT_ROWS} 条、文件最大 5MB，仅支持 .xlsx。"),
         ("示例", "标题：设备无法开机；知识分类：cat-qc-process；正文：先检查电量，再长按电源键。"),
     ]

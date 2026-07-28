@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.core.database import engine
 from app.routes import auth, category, integration, knowledge, manhattan, media, tag
 from app.services.media_deletion import run_media_deletion_worker
+from app.services.knowledge_import_worker import run_knowledge_import_worker
 
 
 logger = logging.getLogger(__name__)
@@ -30,12 +31,19 @@ HTML_NO_CACHE_HEADERS = {
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     stop_event = asyncio.Event()
-    worker = asyncio.create_task(run_media_deletion_worker(stop_event))
+    media_worker = asyncio.create_task(run_media_deletion_worker(stop_event))
+    import_worker = asyncio.create_task(
+        run_knowledge_import_worker(
+            stop_event,
+            knowledge.process_next_knowledge_import_task,
+        )
+    )
     try:
         yield
     finally:
         stop_event.set()
-        await worker
+        await media_worker
+        await import_worker
 
 
 app = FastAPI(
@@ -71,6 +79,7 @@ app.include_router(integration.router, prefix=settings.API_V1_PREFIX)
 app.include_router(media.router)
 
 app.mount("/lib", StaticFiles(directory=str(FRONTEND_DIR / "lib")), name="lib")
+app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")
 
 
 @app.get("/app")

@@ -49,6 +49,11 @@ class KnowledgeCreate(BaseModel):
     applicable_categories: list[Any] = Field(default=[], description="适用类目")
     applicable_brands: list[Any] = Field(default=[], description="适用品牌")
     applicable_models: list[Any] = Field(default=[], description="适用机型")
+    related_standard_items: list[str] = Field(default=[], description="关联标准项")
+    source_topic_key: Optional[str] = Field(None, max_length=512, description="来源主题键，可选")
+    source_record_id: Optional[str] = Field(None, max_length=256, description="来源记录ID，可选")
+    source_knowledge_key: Optional[str] = Field(None, max_length=512, description="来源知识键，可选")
+    source_fields: dict[str, str] = Field(default_factory=dict, description="Excel 源表原始字段，仅用于追溯和导出")
     confirm_dedup_review: bool = Field(
         False,
         description="语义重复对比后，创建人确认仍需提交审核",
@@ -74,6 +79,10 @@ class KnowledgeUpdate(BaseModel):
     applicable_categories: Optional[list[Any]] = Field(None, description="适用类目")
     applicable_brands: Optional[list[Any]] = Field(None, description="适用品牌")
     applicable_models: Optional[list[Any]] = Field(None, description="适用机型")
+    related_standard_items: Optional[list[str]] = Field(None, description="关联标准项")
+    source_topic_key: Optional[str] = Field(None, max_length=512, description="来源主题键，可选")
+    source_record_id: Optional[str] = Field(None, max_length=256, description="来源记录ID，可选")
+    source_knowledge_key: Optional[str] = Field(None, max_length=512, description="来源知识键，可选")
 
     @field_validator("category_id")
     @classmethod
@@ -99,6 +108,10 @@ class KnowledgeResponse(BaseModel):
     applicable_categories: list[Any] = Field(default=[], description="适用类目")
     applicable_brands: list[Any] = Field(default=[], description="适用品牌")
     applicable_models: list[Any] = Field(default=[], description="适用机型")
+    related_standard_items: list[str] = Field(default=[], description="关联标准项")
+    source_topic_key: Optional[str] = Field(None, description="来源主题键")
+    source_record_id: Optional[str] = Field(None, description="来源记录ID")
+    source_knowledge_key: Optional[str] = Field(None, description="来源知识键")
     deduplication_metadata: dict[str, Any] = Field(default={}, description="提交审核时的查重结果")
     created_by: str = Field(description="创建人")
     updated_by: Optional[str] = Field(None, description="最近变更人")
@@ -199,6 +212,7 @@ class CandidateSubmit(BaseModel):
     content: Any = Field(..., description="内容")
     category_id: str = Field(..., description="所属分类ID")
     applicable_scenes: list[str] = Field(default=[], description="场景标签")
+    related_standard_items: list[str] = Field(default=[], description="关联标准项")
     confirm_dedup_review: bool = Field(
         False,
         description="疑似重复对比后，人工确认内容确实不同再提交",
@@ -225,7 +239,7 @@ class DeduplicationFeedbackSubmit(BaseModel):
 class ExcelImportRowResult(BaseModel):
     row: int = Field(description="Excel 行号")
     title: str = Field(description="知识标题")
-    status: Literal["imported", "review_required", "failed"] = Field(description="导入结果")
+    status: Literal["imported", "review_pending", "review_required", "deprecated", "failed"] = Field(description="导入结果")
     knowledge_id: Optional[str] = Field(None, description="成功导入后的知识ID")
     error_code: Optional[str] = Field(None, description="失败错误码")
     error_message: Optional[str] = Field(None, description="失败原因")
@@ -243,8 +257,39 @@ class ExcelImportResponse(BaseModel):
     total: int = Field(description="有效数据总行数")
     imported: int = Field(description="成功导入行数")
     review_required: int = Field(description="需人工确认疑似重复的行数")
+    pending_review: int = Field(0, description="已进入待审核状态的行数")
+    deprecated: int = Field(0, description="已同步为废弃状态的行数")
     failed: int = Field(description="失败行数")
     results: list[ExcelImportRowResult] = Field(description="逐行导入结果")
+
+
+class KnowledgeImportTaskResponse(BaseModel):
+    id: str = Field(description="导入任务ID")
+    original_filename: str = Field(description="原始 Excel 文件名")
+    file_size: int = Field(description="上传文件大小（字节）")
+    status: Literal[
+        "queued",
+        "running",
+        "completed",
+        "completed_with_errors",
+        "failed",
+    ] = Field(description="任务状态")
+    total_rows: int = Field(description="解析后的总行数")
+    processed_rows: int = Field(description="已完成处理的行数")
+    imported: int = Field(description="成功创建的知识数")
+    review_required: int = Field(description="需人工确认疑似重复的知识数")
+    pending_review: int = Field(description="进入待发布审核的知识数")
+    deprecated: int = Field(description="已同步为废弃的知识数")
+    failed: int = Field(description="失败行数")
+    error_message: str = Field("", description="任务级错误信息")
+    created_at: datetime = Field(description="任务创建时间")
+    started_at: datetime | None = Field(None, description="开始处理时间")
+    completed_at: datetime | None = Field(None, description="完成时间")
+    results: list[ExcelImportRowResult] = Field(default_factory=list, description="已处理行结果")
+
+
+class KnowledgeImportTaskListResponse(BaseModel):
+    tasks: list[KnowledgeImportTaskResponse]
 
 
 class KnowledgeBatchApprove(BaseModel):

@@ -6,6 +6,7 @@ from openpyxl import Workbook, load_workbook
 
 from app.services.knowledge_excel import (
     KnowledgeExcelError,
+    build_knowledge_export_workbook,
     build_knowledge_import_template,
     parse_knowledge_workbook,
 )
@@ -69,6 +70,7 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertIn("适用类目（选填）", headers)
         self.assertIn("适用品牌（选填）", headers)
         self.assertIn("适用机型（选填）", headers)
+        self.assertIn("关联标准项（选填）", headers)
         self.assertNotIn("知识层级", headers)
         self.assertNotIn("适用业务", headers)
         self.assertNotIn("机型个性化", headers)
@@ -77,6 +79,97 @@ class KnowledgeExcelTests(unittest.TestCase):
             workbook["分类字典"].iter_rows(min_row=2, values_only=True)
         )
         self.assertIn(("cat-process", "操作流程", "质检/操作流程"), dictionary_rows)
+
+    def test_export_matches_knowledge_main_sheet_format_and_maps_supported_fields(self):
+        item = SimpleNamespace(
+            id="K-00001",
+            title="平板外观检查",
+            subtitles=["平板外观如何检查", "屏幕划痕如何判定"],
+            content={
+                "blocks": [
+                    {"type": "text", "value": "按标准检查外观。"},
+                    {
+                        "type": "image",
+                        "external_url": "https://cdn.example.com/front.png",
+                    },
+                    {
+                        "type": "video",
+                        "external_url": "https://cdn.example.com/check.mp4",
+                    },
+                    {"type": "image", "caption": "本地拍摄图片"},
+                ]
+            },
+            category_id="cat-qc-standard",
+            category=SimpleNamespace(name="质检标准"),
+            source="excel",
+            related_standard_items=["屏幕检测", "外观检测"],
+            applicable_scenes=["验机"],
+            applicable_categories=["平板"],
+            applicable_brands=["Apple"],
+            applicable_models=["iPad Pro"],
+            status="published",
+            source_topic_key="基本情况-外观::平板",
+            source_record_id="rec-001",
+            source_knowledge_key="基本情况-外观::通用",
+            source_fields={
+                "来源版本": "2026.07",
+                "变更类型": "新增",
+                "创建类型": "标准同步",
+                "失效类型": "不适用",
+                "失效原因": "-",
+                "来源追溯": "平板质检标准主表",
+                "校验备注": "已完成字段校验",
+            },
+        )
+
+        payload = build_knowledge_export_workbook([item])
+        workbook = load_workbook(BytesIO(payload), data_only=True)
+        sheet = workbook["知识库主表"]
+
+        self.assertEqual(sheet.max_column, 19)
+        self.assertEqual(sheet.title, "知识库主表")
+        self.assertEqual(
+            [cell.value for cell in sheet[1]],
+            [
+                "知识ID", "主题键", "记录ID", "知识键", "主标题", "副标题", "知识内容",
+                "知识分类", "知识来源", "关联标准项", "适用范围", "生效状态",
+                "来源版本", "变更类型", "创建类型", "失效类型", "失效原因",
+                "来源追溯", "校验备注",
+            ],
+        )
+        self.assertEqual(sheet["A2"].value, "K-00001")
+        self.assertEqual(sheet["B2"].value, "基本情况-外观::平板")
+        self.assertEqual(sheet["C2"].value, "rec-001")
+        self.assertEqual(sheet["D2"].value, "基本情况-外观::通用")
+        self.assertEqual(sheet["E2"].value, "平板外观检查")
+        self.assertEqual(sheet["F2"].value, "平板外观如何检查\n屏幕划痕如何判定")
+        self.assertEqual(
+            sheet["G2"].value,
+            "按标准检查外观。\n[img:https://cdn.example.com/front.png]\n"
+            "[video:https://cdn.example.com/check.mp4]\n[图片：本地拍摄图片]",
+        )
+        self.assertEqual(sheet["H2"].value, "质检标准")
+        self.assertEqual(sheet["I2"].value, "Excel 批量导入")
+        self.assertEqual(sheet["J2"].value, "屏幕检测；外观检测")
+        self.assertEqual(
+            sheet["K2"].value,
+            "场景：验机；适用类目：平板；适用品牌：Apple；适用机型：iPad Pro",
+        )
+        self.assertEqual(sheet["L2"].value, "生效中")
+        self.assertEqual(sheet["M2"].value, "2026.07")
+        self.assertEqual(sheet["N2"].value, "新增")
+        self.assertEqual(sheet["O2"].value, "标准同步")
+        self.assertEqual(sheet["P2"].value, "不适用")
+        self.assertEqual(sheet["Q2"].value, "-")
+        self.assertEqual(sheet["R2"].value, "平板质检标准主表")
+        self.assertEqual(sheet["S2"].value, "已完成字段校验")
+        self.assertEqual(sheet["A1"].font.name, "宋体")
+        self.assertTrue(sheet["A1"].font.bold)
+        self.assertTrue(sheet["A1"].alignment.wrap_text)
+        self.assertTrue(sheet["A2"].alignment.wrap_text)
+        self.assertTrue(sheet["A1"].fill.fgColor.rgb.endswith("D9E8FB"))
+        self.assertEqual(sheet.freeze_panes, "A2")
+        self.assertEqual(sheet.auto_filter.ref, "A1:S2")
 
     def test_parse_accepts_category_id_and_splits_multi_value_fields(self):
         payload = self.workbook_bytes(
@@ -99,6 +192,27 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertEqual(rows[0].category_id, "cat-process")
         self.assertEqual(rows[0].subtitles, ["黑屏怎么办", "无法启动"])
         self.assertEqual(rows[0].applicable_scenes, ["无法开机", "售后咨询"])
+
+    def test_parse_splits_related_standard_items(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容", "关联标准项"],
+            [
+                [
+                    "设备外观检查",
+                    "标准定义",
+                    "按标准完成外观检查。",
+                    "屏幕检测；边框检测\n摄像头检测",
+                ]
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertTrue(rows[0].is_valid)
+        self.assertEqual(
+            rows[0].related_standard_items,
+            ["屏幕检测", "边框检测", "摄像头检测"],
+        )
 
     def test_parse_accepts_full_category_path(self):
         payload = self.workbook_bytes(
@@ -177,8 +291,60 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertEqual(rows[0].applicable_scenes, ["适用范围：苹果"])
         self.assertEqual(rows[0].source_status, "生效中")
         self.assertEqual(rows[0].source_scope, "苹果")
-        self.assertEqual(rows[1].error_code, "SOURCE_STATUS_NOT_IMPORTABLE")
-        self.assertIn("不会上传", rows[1].error_message)
+        self.assertTrue(rows[1].is_valid)
+        self.assertEqual(rows[1].source_status, "待审核")
+
+    def test_parse_binds_optional_source_identifiers(self):
+        payload = self.workbook_bytes(
+            ["主题键", "记录ID", "知识键", "主标题", "知识分类", "知识内容", "生效状态", "来源版本", "校验备注"],
+            [[
+                "基本情况-外观::通用",
+                "rec-source-001",
+                "基本情况-外观::平板",
+                "平板外观检查",
+                "质检标准",
+                "按标准检查。",
+                "生效中",
+                "2026.07",
+                "来源主表已核验",
+            ]],
+        )
+
+        row = parse_knowledge_workbook(payload, self.categories)[0]
+
+        self.assertTrue(row.is_valid)
+        self.assertEqual(row.source_topic_key, "基本情况-外观::通用")
+        self.assertEqual(row.source_record_id, "rec-source-001")
+        self.assertEqual(row.source_knowledge_key, "基本情况-外观::平板")
+        self.assertEqual(
+            row.source_fields,
+            {
+                "主题键": "基本情况-外观::通用",
+                "记录ID": "rec-source-001",
+                "知识键": "基本情况-外观::平板",
+                "主标题": "平板外观检查",
+                "知识分类": "质检标准",
+                "知识内容": "按标准检查。",
+                "生效状态": "生效中",
+                "来源版本": "2026.07",
+                "校验备注": "来源主表已核验",
+            },
+        )
+
+    def test_parse_disabled_source_row_requires_identifier_but_not_content_fields(self):
+        payload = self.workbook_bytes(
+            ["知识键", "生效状态"],
+            [
+                ["基本情况-外观::通用", "已禁用"],
+                ["", "已禁用"],
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertTrue(rows[0].is_valid)
+        self.assertEqual(rows[0].source_knowledge_key, "基本情况-外观::通用")
+        self.assertEqual(rows[1].error_code, "SOURCE_IDENTIFIER_REQUIRED")
 
     def test_parse_maps_qc_category_values_to_system_categories(self):
         payload = self.workbook_bytes(

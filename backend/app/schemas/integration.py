@@ -91,6 +91,7 @@ class IntegrationKnowledgePayload(BaseModel):
     applicable_categories: list[Any] = Field(default=[], description="适用类目")
     applicable_brands: list[Any] = Field(default=[], description="适用品牌")
     applicable_models: list[Any] = Field(default=[], description="适用机型")
+    related_standard_items: list[str] = Field(default=[], description="关联标准项")
     recommended_reply: str | None = Field(None, max_length=4000, description="推荐回复")
     evidence_excerpt: str | None = Field(
         None, max_length=4000, description="已脱敏的关键证据摘要"
@@ -199,6 +200,7 @@ class CandidateReviewUpdate(BaseModel):
     applicable_categories: list[Any] | None = None
     applicable_brands: list[Any] | None = None
     applicable_models: list[Any] | None = None
+    related_standard_items: list[str] | None = None
     recommended_reply: str | None = Field(None, max_length=4000)
     knowledge_value: str | None = Field(None, max_length=32)
     usability: str | None = Field(None, max_length=32)
@@ -232,6 +234,7 @@ class CandidateReviewListItem(BaseModel):
     applicable_categories: list[Any] = Field(default_factory=list)
     applicable_brands: list[Any] = Field(default_factory=list)
     applicable_models: list[Any] = Field(default_factory=list)
+    related_standard_items: list[str] = Field(default_factory=list)
     recommended_reply: str | None = None
     evidence_excerpt: str | None = None
     selection: dict[str, Any] = Field(default_factory=dict)

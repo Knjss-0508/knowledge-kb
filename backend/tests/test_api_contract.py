@@ -1,7 +1,12 @@
 import json
 import unittest
+from types import SimpleNamespace
+
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.orm import Session
 
 from app.main import app
+from app.routes.knowledge import _filtered_knowledge_query, _has_knowledge_export_filter
 
 
 class ApiContractTests(unittest.TestCase):
@@ -9,9 +14,21 @@ class ApiContractTests(unittest.TestCase):
         paths = app.openapi()["paths"]
         self.assertIn("/api/v1/knowledge/import/template", paths)
         self.assertIn("/api/v1/knowledge/import/excel", paths)
+        self.assertIn("/api/v1/knowledge/import/tasks", paths)
+        self.assertIn("/api/v1/knowledge/import/tasks/{task_id}", paths)
+        self.assertIn("/api/v1/knowledge/export/excel", paths)
+        self.assertIn(
+            "202",
+            paths["/api/v1/knowledge/import/excel"]["post"]["responses"],
+        )
         schemas = app.openapi()["components"]["schemas"]
         result_statuses = schemas["ExcelImportRowResult"]["properties"]["status"]["enum"]
         self.assertIn("review_required", result_statuses)
+        self.assertIn("review_pending", result_statuses)
+        self.assertIn("deprecated", result_statuses)
+        task_properties = schemas["KnowledgeImportTaskResponse"]["properties"]
+        self.assertIn("pending_review", task_properties)
+        self.assertIn("deprecated", task_properties)
         self.assertIn(
             "review_task_id",
             schemas["ExcelImportRowResult"]["properties"],
@@ -28,6 +45,58 @@ class ApiContractTests(unittest.TestCase):
                 "brand_ids",
                 "model_ids",
             }.issubset(parameter_names)
+        )
+        self.assertIn("X-Total-Count", operation["responses"]["200"]["headers"])
+        keyword_parameter = next(
+            parameter
+            for parameter in operation["parameters"]
+            if parameter["name"] == "keyword"
+        )
+        self.assertIn("副标题", keyword_parameter["description"])
+
+    def test_knowledge_keyword_search_covers_non_title_fields(self):
+        session = Session()
+        try:
+            query = _filtered_knowledge_query(
+                session,
+                SimpleNamespace(role="editor"),
+                keyword="屏幕",
+            )
+            statement = str(
+                query.statement.compile(dialect=postgresql.dialect())
+            )
+        finally:
+            session.close()
+
+        self.assertIn("knowledge_items.title", statement)
+        self.assertIn("knowledge_items.subtitles", statement)
+        self.assertIn("knowledge_items.content", statement)
+        self.assertIn("knowledge_items.related_standard_items", statement)
+        self.assertIn("knowledge_items.applicable_scenes", statement)
+        self.assertIn("categories.name", statement)
+        self.assertIn("jsonb_path_exists", statement)
+        self.assertNotIn("CAST(knowledge_items.content AS TEXT)", statement)
+
+    def test_export_requires_at_least_one_active_filter(self):
+        self.assertFalse(
+            _has_knowledge_export_filter(
+                status=None,
+                category_id=None,
+                applicable_category_ids=[],
+                brand_ids=[],
+                model_ids=[],
+                keyword="  ",
+            )
+        )
+        self.assertTrue(
+            _has_knowledge_export_filter(
+                status="published",
+                category_id="cat-qc-standard",
+                applicable_category_ids=["tablet"],
+                brand_ids=[],
+                model_ids=[],
+                keyword=None,
+            )
         )
 
     def test_candidate_review_routes_are_exposed(self):
