@@ -7,9 +7,11 @@
   <style>
     :root{--app-font:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",Arial,sans-serif;--ink:#1d2939;--muted:#667085;--line:#dfe5ea;--teal:#009b83;--teal-dark:#007f6b;--coral:#ef6d5b}
     *{box-sizing:border-box}
-    body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;background:#f6f8f9;color:var(--ink);font-family:var(--app-font);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+    html{height:100%;background:#f6f8f9}
+    body{height:100%;margin:0;overflow:hidden;background:#f6f8f9;color:var(--ink);font-family:var(--app-font);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+    .login-viewport{position:fixed;inset:0;display:flex;overflow:auto;padding:24px}
     button,input,textarea,select{font-family:var(--app-font)!important}
-    .shell{width:min(900px,100%);display:grid;grid-template-columns:1.05fr .95fr;overflow:hidden;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 24px 60px rgba(29,41,57,.11)}
+    .shell{flex:0 0 auto;width:min(900px,100%);margin:auto;display:grid;grid-template-columns:1.05fr .95fr;overflow:hidden;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 24px 60px rgba(29,41,57,.11)}
     .intro{min-height:510px;position:relative;padding:48px;background:#172633;color:#fff;overflow:hidden}
     .intro:before,.intro:after{content:"";position:absolute;z-index:0;border:34px solid rgba(0,155,131,.68);border-radius:50%;pointer-events:none}.intro:before{width:230px;height:230px;right:-104px;bottom:-92px}.intro:after{width:120px;height:120px;left:-68px;top:82px;border-color:rgba(239,109,91,.58)}
     .mark{position:relative;z-index:1;width:31px;height:31px;margin-bottom:84px;border-radius:8px;background:var(--teal);box-shadow:9px 9px 0 var(--coral)}
@@ -24,31 +26,33 @@
     button{width:100%;height:44px;margin-top:24px;border:0;border-radius:6px;background:var(--teal);color:#fff;font:600 14px inherit;cursor:pointer;transition:background .16s ease,transform .16s ease}
     button:hover{background:var(--teal-dark);transform:translateY(-1px)}button:disabled{background:#8fcec1;cursor:wait;transform:none}
     .msg{min-height:21px;margin-top:12px;color:#d92d20;font-size:12px;line-height:1.5}.tip{margin:19px 0 0;color:#98a2b3;font-size:12px;line-height:1.6}
-    @media(max-width:650px){body{padding:16px}.shell{grid-template-columns:1fr}.intro{min-height:210px;padding:28px}.mark{margin-bottom:28px}.intro h1{font-size:26px}.intro p,.intro small{display:none}.form{padding:32px 26px}.intro:before{width:170px;height:170px;right:-85px;bottom:-100px}}
+    @media(max-width:650px){.login-viewport{padding:16px}.shell{grid-template-columns:1fr}.intro{min-height:210px;padding:28px}.mark{margin-bottom:28px}.intro h1{font-size:26px}.intro p,.intro small{display:none}.form{padding:32px 26px}.intro:before{width:170px;height:170px;right:-85px;bottom:-100px}}
   </style>
 </head>
 <body>
-  <main class="shell">
-    <section class="intro" aria-label="答疑中台">
-      <div class="mark" aria-hidden="true"></div>
-      <h1>让每一次答疑，都成为可复用的知识。</h1>
-      <p>统一管理内容、审核流程和用户反馈，让运营决策有据可依。</p>
-      <small>答疑知识库中台</small>
-    </section>
-    <section class="form" aria-labelledby="login-title">
-      <h2 id="login-title">欢迎登录</h2>
-      <p class="sub">使用后台账号进入知识运营工作台</p>
-      <form id="login-form">
-        <label for="username">账号</label>
-        <input id="username" autocomplete="username" required>
-        <label for="password">密码</label>
-        <input id="password" type="password" autocomplete="current-password" required>
-        <button id="btn" type="submit">登录</button>
-        <div id="msg" class="msg" role="alert" aria-live="polite"></div>
-      </form>
-      <p class="tip">登录后可管理知识内容、审核流程与账号权限。</p>
-    </section>
-  </main>
+  <div class="login-viewport">
+    <main class="shell">
+      <section class="intro" aria-label="答疑中台">
+        <div class="mark" aria-hidden="true"></div>
+        <h1>让每一次答疑，都成为可复用的知识。</h1>
+        <p>统一管理内容、审核流程和用户反馈，让运营决策有据可依。</p>
+        <small>答疑知识库中台</small>
+      </section>
+      <section class="form" aria-labelledby="login-title">
+        <h2 id="login-title">欢迎登录</h2>
+        <p class="sub">使用后台账号进入知识运营工作台</p>
+        <form id="login-form">
+          <label for="username">账号</label>
+          <input id="username" autocomplete="username" required>
+          <label for="password">密码</label>
+          <input id="password" type="password" autocomplete="current-password" required>
+          <button id="btn" type="submit">登录</button>
+          <div id="msg" class="msg" role="alert" aria-live="polite"></div>
+        </form>
+        <p class="tip">登录后可管理知识内容、审核流程与账号权限。</p>
+      </section>
+    </main>
+  </div>
   <script src="lib/kb-runtime.js"></script>
   <script>
     var API = window.KB_RUNTIME.apiBase;
