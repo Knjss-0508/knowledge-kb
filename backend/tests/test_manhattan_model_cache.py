@@ -110,3 +110,67 @@ def test_model_refresh_retries_transient_upstream_failure(monkeypatch) -> None:
 
     assert attempts == 3
     assert result == [{"modelId": 1}]
+
+
+def test_refresh_limits_concurrent_model_requests(monkeypatch) -> None:
+    active_requests = 0
+    max_active_requests = 0
+    written: dict = {}
+
+    async def fake_fetch_json(
+        client, method, kind, *, params=None, body=None, cookie=None
+    ):
+        nonlocal active_requests, max_active_requests
+        if kind == "applicable-categories":
+            return [{"categoryId": 101, "categoryName": "智能手表"}]
+        if kind == "brands":
+            return [
+                {"brandId": brand_id, "brandName": f"brand-{brand_id}"}
+                for brand_id in range(1, 7)
+            ]
+        if kind == "models":
+            active_requests += 1
+            max_active_requests = max(max_active_requests, active_requests)
+            await asyncio.sleep(0.01)
+            active_requests -= 1
+            brand_id = body["brandIdList"][0]
+            return [{"modelId": brand_id, "modelName": f"model-{brand_id}"}]
+        raise AssertionError(f"Unexpected source: {kind}")
+
+    monkeypatch.setattr(manhattan, "_fetch_json", fake_fetch_json)
+    monkeypatch.setattr(manhattan, "_write_cache", lambda data: written.update(data))
+    monkeypatch.setattr(manhattan, "REQUEST_DELAY_SECONDS", 0)
+    monkeypatch.setattr(manhattan.settings, "NMHT_MODEL_FETCH_CONCURRENCY", 3)
+
+    asyncio.run(manhattan._refresh_manhattan_cache_job("test-cookie"))
+
+    assert max_active_requests == 3
+    assert len(written["models"]) == 6
+    assert manhattan._refresh_status["stage"] == "done"
+
+
+def test_refresh_clears_runtime_cookie_after_login_expires(monkeypatch) -> None:
+    writes: list[dict] = []
+
+    async def fake_fetch_json(
+        client, method, kind, *, params=None, body=None, cookie=None
+    ):
+        if kind == "applicable-categories":
+            return [{"categoryId": 101, "categoryName": "智能手表"}]
+        if kind == "brands":
+            return [{"brandId": 1, "brandName": "华为"}]
+        if kind == "models":
+            raise manhattan.HTTPException(401, "login expired")
+        raise AssertionError(f"Unexpected source: {kind}")
+
+    monkeypatch.setattr(manhattan, "_fetch_json", fake_fetch_json)
+    monkeypatch.setattr(manhattan, "_write_cache", writes.append)
+    monkeypatch.setattr(manhattan, "REQUEST_DELAY_SECONDS", 0)
+    monkeypatch.setattr(manhattan, "_runtime_cookie", "test-cookie")
+
+    asyncio.run(manhattan._refresh_manhattan_cache_job("test-cookie"))
+
+    assert manhattan._runtime_cookie == ""
+    assert manhattan._refresh_status["stage"] == "error"
+    assert manhattan._refresh_status["error"] == "login expired"
+    assert writes == []
