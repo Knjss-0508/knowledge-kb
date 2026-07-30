@@ -2114,7 +2114,7 @@ Vue.createApp({
           if (!model || typeof model !== 'object') return true;
           var modelCategoryId = String(model.categoryId || model.category_id || '');
           var modelBrandId = String(model.brandId || model.brand_id || '');
-          var categoryMatch = !hasCategories || !modelCategoryId || categoryIds[modelCategoryId];
+          var categoryMatch = !hasCategories || (modelCategoryId && categoryIds[modelCategoryId]);
           var brandMatch = !hasBrands || !modelBrandId || brandIds[modelBrandId];
           return categoryMatch && brandMatch;
         });
@@ -2267,7 +2267,7 @@ Vue.createApp({
         var brandId = model.brandId || model.brand_id;
         var categoryId = model.categoryId || model.category_id;
         var brandMatch = !brandIds.length || !brandId || selectedBrands[String(brandId)];
-        var categoryMatch = !categoryIds.length || !categoryId || selectedCategories[String(categoryId)];
+        var categoryMatch = !categoryIds.length || (categoryId && selectedCategories[String(categoryId)]);
         return brandMatch && categoryMatch;
       });
       self.option.models = self.flattenOptions(rawModels);
