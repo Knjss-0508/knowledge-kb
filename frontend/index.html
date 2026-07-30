@@ -2042,6 +2042,7 @@ Vue.createApp({
             window.setTimeout(function() { self.loadManhattanRefreshStatus(); }, 1000);
           }
           if (d && !d.running && d.stage === 'done') self.loadManhattanOptions();
+          if (d && !d.running && d.stage === 'error') self.loadManhattanSession();
         })
         .catch(function(){});
     },

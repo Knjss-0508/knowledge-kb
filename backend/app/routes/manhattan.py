@@ -78,7 +78,7 @@ def _url(path: str) -> str:
 def _json_or_auth_error(resp: httpx.Response):
     content_type = resp.headers.get("content-type", "")
     text = resp.text[:500]
-    if resp.status_code in (301, 302, 303, 307, 308):
+    if resp.status_code in (301, 302, 303, 307, 308, 401, 403):
         raise HTTPException(401, "Manhattan login expired. Please paste Cookie again at /login.")
     if "text/html" in content_type or "<!DOCTYPE html" in text or "统一登录平台" in text:
         raise HTTPException(401, "Manhattan returned login page. Please paste Cookie again at /login.")
@@ -285,6 +285,7 @@ def get_manhattan_cache():
 
 
 async def _refresh_manhattan_cache_job(cookie: str) -> None:
+    global _runtime_cookie
     async with _refresh_lock:
         try:
             _set_refresh_status(
@@ -350,15 +351,15 @@ async def _refresh_manhattan_cache_job(cookie: str) -> None:
                 models = []
                 seen_model_ids: set[str] = set()
                 if category_ids and brand_ids:
-                    total_model_queries = sum(
-                        len(
-                            _collect_values(
-                                brands_by_category.get(category_id, []),
-                                ("brandId", "id", "code", "value"),
-                            )
-                        )
+                    model_queries = [
+                        (category_id, brand_id)
                         for category_id in category_ids
-                    )
+                        for brand_id in _collect_values(
+                            brands_by_category.get(category_id, []),
+                            ("brandId", "id", "code", "value"),
+                        )
+                    ]
+                    total_model_queries = len(model_queries)
                     completed_model_queries = 0
                     _set_refresh_status(
                         stage="models",
@@ -367,12 +368,15 @@ async def _refresh_manhattan_cache_job(cookie: str) -> None:
                         total=total_model_queries,
                         percent=80,
                     )
-                    for category_id in category_ids:
-                        category_brand_ids = _collect_values(
-                            brands_by_category.get(category_id, []),
-                            ("brandId", "id", "code", "value"),
-                        )
-                        for brand_id in category_brand_ids:
+
+                    concurrency = max(
+                        1, min(settings.NMHT_MODEL_FETCH_CONCURRENCY, 10)
+                    )
+                    semaphore = asyncio.Semaphore(concurrency)
+
+                    async def fetch_models(category_id: str, brand_id: str):
+                        nonlocal completed_model_queries
+                        async with semaphore:
                             await asyncio.sleep(REQUEST_DELAY_SECONDS)
                             models_raw = await _fetch_json_with_retry(
                                 client,
@@ -381,15 +385,6 @@ async def _refresh_manhattan_cache_job(cookie: str) -> None:
                                 body={"categoryId": category_id, "brandIdList": [brand_id]},
                                 cookie=cookie,
                             )
-                            for model in _extract_items(models_raw):
-                                if not isinstance(model, dict):
-                                    continue
-                                model = _model_with_context(model, category_id, brand_id)
-                                model_key = _model_cache_key(model, category_id, brand_id)
-                                if model_key in seen_model_ids:
-                                    continue
-                                seen_model_ids.add(model_key)
-                                models.append(model)
                             completed_model_queries += 1
                             percent = 80 + int(
                                 (completed_model_queries / max(total_model_queries, 1)) * 15
@@ -409,6 +404,30 @@ async def _refresh_manhattan_cache_job(cookie: str) -> None:
                                     "models": len(models),
                                 },
                             )
+                            return category_id, brand_id, models_raw
+
+                    tasks = [
+                        asyncio.create_task(fetch_models(category_id, brand_id))
+                        for category_id, brand_id in model_queries
+                    ]
+                    try:
+                        model_results = await asyncio.gather(*tasks)
+                    except Exception:
+                        for task in tasks:
+                            task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                        raise
+
+                    for category_id, brand_id, models_raw in model_results:
+                        for model in _extract_items(models_raw):
+                            if not isinstance(model, dict):
+                                continue
+                            model = _model_with_context(model, category_id, brand_id)
+                            model_key = _model_cache_key(model, category_id, brand_id)
+                            if model_key in seen_model_ids:
+                                continue
+                            seen_model_ids.add(model_key)
+                            models.append(model)
 
             counts = {
                 "categories": len(category_ids),
@@ -436,6 +455,12 @@ async def _refresh_manhattan_cache_job(cookie: str) -> None:
                 updated_at=cache["updated_at"],
             )
         except Exception as exc:
+            if (
+                isinstance(exc, HTTPException)
+                and exc.status_code in (401, 403)
+                and _runtime_cookie == cookie
+            ):
+                _runtime_cookie = ""
             _set_refresh_status(
                 running=False,
                 stage="error",

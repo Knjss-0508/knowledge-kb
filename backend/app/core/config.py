@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # Manhattan backend API. Put the logged-in browser Cookie in .env as NMHT_COOKIE.
     NMHT_BASE_URL: str = "https://nmht.zhuanspirit.com"
     NMHT_COOKIE: str = ""
+    # Fetch models concurrently to finish before the short-lived login expires.
+    # The route clamps this value to 1-10 to avoid overloading Manhattan.
+    NMHT_MODEL_FETCH_CONCURRENCY: int = 5
 
     # Service-to-service authentication for automation ingestion endpoints.
     INTEGRATION_API_KEY: str = ""
