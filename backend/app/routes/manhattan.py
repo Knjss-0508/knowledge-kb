@@ -152,6 +152,20 @@ def _collect_values(raw, keys: tuple[str, ...]) -> list[str]:
     return values
 
 
+def _model_with_category(model: dict, category_id: str) -> dict:
+    enriched = dict(model)
+    if not (enriched.get("categoryId") or enriched.get("category_id")):
+        enriched["categoryId"] = category_id
+    return enriched
+
+
+def _model_cache_key(model: dict, category_id: str) -> str:
+    model_id = model.get("modelId") or model.get("id") or model.get("code")
+    if model_id is None:
+        model_id = model.get("modelName") or model
+    return f"{category_id}:{model_id}"
+
+
 def _category_name(category: dict) -> str:
     for key in ("categoryName", "name", "label", "title", "text"):
         val = category.get(key)
@@ -326,7 +340,10 @@ async def _refresh_manhattan_cache_job(cookie: str) -> None:
                             cookie=cookie,
                         )
                         for model in _extract_items(models_raw):
-                            model_key = str(model.get("modelId") or model.get("id") or model.get("code") or model.get("modelName") or model)
+                            if not isinstance(model, dict):
+                                continue
+                            model = _model_with_category(model, category_id)
+                            model_key = _model_cache_key(model, category_id)
                             if model_key in seen_model_ids:
                                 continue
                             seen_model_ids.add(model_key)
