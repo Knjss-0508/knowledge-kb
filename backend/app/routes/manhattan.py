@@ -152,18 +152,20 @@ def _collect_values(raw, keys: tuple[str, ...]) -> list[str]:
     return values
 
 
-def _model_with_category(model: dict, category_id: str) -> dict:
+def _model_with_context(model: dict, category_id: str, brand_id: str) -> dict:
     enriched = dict(model)
     if not (enriched.get("categoryId") or enriched.get("category_id")):
         enriched["categoryId"] = category_id
+    if not (enriched.get("brandId") or enriched.get("brand_id")):
+        enriched["brandId"] = brand_id
     return enriched
 
 
-def _model_cache_key(model: dict, category_id: str) -> str:
+def _model_cache_key(model: dict, category_id: str, brand_id: str) -> str:
     model_id = model.get("modelId") or model.get("id") or model.get("code")
     if model_id is None:
         model_id = model.get("modelName") or model
-    return f"{category_id}:{model_id}"
+    return f"{category_id}:{brand_id}:{model_id}"
 
 
 def _category_name(category: dict) -> str:
@@ -205,6 +207,37 @@ async def _fetch_json(client: httpx.AsyncClient, method: str, kind: str, *, para
     if resp.status_code >= 400 and resp.status_code not in (401, 403):
         raise HTTPException(resp.status_code, f"Manhattan API failed: {resp.text[:300]}")
     return _json_or_auth_error(resp)
+
+
+async def _fetch_json_with_retry(
+    client: httpx.AsyncClient,
+    method: str,
+    kind: str,
+    *,
+    params=None,
+    body=None,
+    cookie=None,
+    attempts: int = 3,
+):
+    for attempt in range(attempts):
+        try:
+            return await _fetch_json(
+                client,
+                method,
+                kind,
+                params=params,
+                body=body,
+                cookie=cookie,
+            )
+        except HTTPException as exc:
+            retryable = exc.status_code in (408, 429) or exc.status_code >= 500
+            if not retryable or attempt + 1 >= attempts:
+                raise
+        except httpx.HTTPError:
+            if attempt + 1 >= attempts:
+                raise
+        await asyncio.sleep(2**attempt)
+    raise RuntimeError("Unreachable retry state")
 
 
 @router.get("/options/{kind}")
@@ -317,50 +350,65 @@ async def _refresh_manhattan_cache_job(cookie: str) -> None:
                 models = []
                 seen_model_ids: set[str] = set()
                 if category_ids and brand_ids:
+                    total_model_queries = sum(
+                        len(
+                            _collect_values(
+                                brands_by_category.get(category_id, []),
+                                ("brandId", "id", "code", "value"),
+                            )
+                        )
+                        for category_id in category_ids
+                    )
+                    completed_model_queries = 0
                     _set_refresh_status(
                         stage="models",
-                        message=f"正在获取适用机型：0/{total_categories}",
+                        message=f"正在获取适用机型：0/{total_model_queries}",
                         current=0,
-                        total=total_categories,
-                        percent=85,
+                        total=total_model_queries,
+                        percent=80,
                     )
-                    for index, category_id in enumerate(category_ids, start=1):
+                    for category_id in category_ids:
                         category_brand_ids = _collect_values(
                             brands_by_category.get(category_id, []),
                             ("brandId", "id", "code", "value"),
                         )
-                        if not category_brand_ids:
-                            continue
-                        await asyncio.sleep(REQUEST_DELAY_SECONDS)
-                        models_raw = await _fetch_json(
-                            client,
-                            "POST",
-                            "models",
-                            body={"categoryId": category_id, "brandIdList": category_brand_ids},
-                            cookie=cookie,
-                        )
-                        for model in _extract_items(models_raw):
-                            if not isinstance(model, dict):
-                                continue
-                            model = _model_with_category(model, category_id)
-                            model_key = _model_cache_key(model, category_id)
-                            if model_key in seen_model_ids:
-                                continue
-                            seen_model_ids.add(model_key)
-                            models.append(model)
-                        percent = 80 + int((index / max(total_categories, 1)) * 15)
-                        _set_refresh_status(
-                            message=f"正在获取适用机型：{index}/{total_categories}",
-                            current=index,
-                            total=total_categories,
-                            percent=percent,
-                            counts={
-                                "categories": total_categories,
-                                "brand_groups": len(brands_by_category),
-                                "brands": len(brand_ids),
-                                "models": len(models),
-                            },
-                        )
+                        for brand_id in category_brand_ids:
+                            await asyncio.sleep(REQUEST_DELAY_SECONDS)
+                            models_raw = await _fetch_json_with_retry(
+                                client,
+                                "POST",
+                                "models",
+                                body={"categoryId": category_id, "brandIdList": [brand_id]},
+                                cookie=cookie,
+                            )
+                            for model in _extract_items(models_raw):
+                                if not isinstance(model, dict):
+                                    continue
+                                model = _model_with_context(model, category_id, brand_id)
+                                model_key = _model_cache_key(model, category_id, brand_id)
+                                if model_key in seen_model_ids:
+                                    continue
+                                seen_model_ids.add(model_key)
+                                models.append(model)
+                            completed_model_queries += 1
+                            percent = 80 + int(
+                                (completed_model_queries / max(total_model_queries, 1)) * 15
+                            )
+                            _set_refresh_status(
+                                message=(
+                                    "正在获取适用机型："
+                                    f"{completed_model_queries}/{total_model_queries}"
+                                ),
+                                current=completed_model_queries,
+                                total=total_model_queries,
+                                percent=percent,
+                                counts={
+                                    "categories": total_categories,
+                                    "brand_groups": len(brands_by_category),
+                                    "brands": len(brand_ids),
+                                    "models": len(models),
+                                },
+                            )
 
             counts = {
                 "categories": len(category_ids),
