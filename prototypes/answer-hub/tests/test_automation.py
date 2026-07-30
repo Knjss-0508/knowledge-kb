@@ -191,6 +191,101 @@ def test_automation_pipeline_runs_without_standard_file(
     assert not (Path(manifest["run_dir"]) / "inputs" / "standards.xlsx").exists()
 
 
+def test_automation_pipeline_waits_for_confirmation_when_mimo_preflight_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.xlsx"
+    source.write_bytes(b"source")
+
+    def fail_preflight() -> dict[str, object]:
+        raise automation.MimoPreflightError("MiMo HTTP 401: unauthorized")
+
+    def unexpected_initial_label_from_workbook(**_kwargs):
+        raise AssertionError("generation must wait for human confirmation")
+
+    monkeypatch.setattr(automation, "run_mimo_preflight", fail_preflight)
+    monkeypatch.setattr(
+        automation,
+        "initial_label_from_workbook",
+        unexpected_initial_label_from_workbook,
+    )
+
+    manifest = automation.run_automation_pipeline(
+        source,
+        None,
+        tmp_path / "runs",
+        use_mimo=True,
+        clustering_mode="direct_mimo",
+    )
+
+    assert manifest["status"] == "needs_confirmation"
+    assert "MiMo API 预检失败" in manifest["error"]
+    assert manifest["summary"]["mimo_preflight"]["passed"] is False
+    assert "MiMo HTTP 401" in manifest["summary"]["mimo_preflight"]["error"]
+    assert manifest["alerts"]
+
+
+def test_automation_pipeline_continues_with_rule_fallback_after_confirmation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.xlsx"
+    source.write_bytes(b"source")
+    captured: dict[str, object] = {}
+
+    def fail_preflight() -> dict[str, object]:
+        raise automation.MimoPreflightError("all configured MiMo keys failed")
+
+    def fake_initial_label_from_workbook(**kwargs):
+        captured.update(kwargs)
+        artifact_dir = Path(kwargs["output_dir"])
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        for filename in (
+            "review_queue.xlsx",
+            "topic_review_queue.xlsx",
+            "candidate_knowledge.xlsx",
+        ):
+            (artifact_dir / filename).write_bytes(b"artifact")
+        return {
+            "output_file": str(artifact_dir / "review_queue.xlsx"),
+            "topic_review_file": str(artifact_dir / "topic_review_queue.xlsx"),
+            "candidate_output_file": str(artifact_dir / "candidate_knowledge.xlsx"),
+            "audit_db": str(tmp_path / "audit.db"),
+            "source_total_rows": 1,
+            "eligible_rows": 1,
+            "topic_rows": 1,
+            "topic_signal_fallback_rows": 1,
+            "standard_references_enabled": False,
+        }
+
+    monkeypatch.setattr(automation, "run_mimo_preflight", fail_preflight)
+    monkeypatch.setattr(
+        automation,
+        "initial_label_from_workbook",
+        fake_initial_label_from_workbook,
+    )
+
+    manifest = automation.run_automation_pipeline(
+        source,
+        None,
+        tmp_path / "runs",
+        use_mimo=True,
+        clustering_mode="direct_mimo",
+        continue_on_mimo_unavailable=True,
+    )
+
+    assert manifest["status"] == "review_pending"
+    assert captured["use_mimo"] is False
+    assert captured["clustering_mode"] == "rule"
+    assert manifest["summary"]["mimo_preflight"] == {
+        "passed": False,
+        "error": "all configured MiMo keys failed",
+        "continued_with_rule_fallback": True,
+    }
+    assert any("人工确认" in alert for alert in manifest["alerts"])
+
+
 def test_failed_automation_run_can_resume_from_checkpoint(
     tmp_path: Path,
     monkeypatch,

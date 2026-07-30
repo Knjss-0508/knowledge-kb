@@ -11,6 +11,7 @@ import time
 import uuid
 
 from .embedding import EmbeddingClient
+from .mimo import MimoClient, MimoError
 from .operations import duration_seconds, evaluate_run_sla
 from .version import AUTOMATION_MANIFEST_VERSION, release_metadata
 from .workflow import (
@@ -33,6 +34,7 @@ AUTOMATION_STAGES = [
 AUTOMATION_RUN_STATUSES = {
     "running": "运行中",
     "review_pending": "待人工审核",
+    "needs_confirmation": "等待人工确认",
     "failed": "运行失败",
 }
 
@@ -40,6 +42,10 @@ AutomationProgressCallback = Callable[[dict[str, Any]], None]
 _JSON_WRITE_LOCK = threading.Lock()
 _JSON_REPLACE_ATTEMPTS = 7
 _JSON_REPLACE_BACKOFF_SECONDS = 0.05
+
+
+class MimoPreflightError(RuntimeError):
+    """MiMo is configured but unavailable before generation starts."""
 
 
 def _now() -> str:
@@ -131,7 +137,11 @@ class AutomationRunStore:
 
     def save(self, manifest: dict[str, Any]) -> dict[str, Any]:
         manifest["updated_at"] = _now()
-        if manifest.get("status") in {"review_pending", "failed"}:
+        if manifest.get("status") in {
+            "review_pending",
+            "needs_confirmation",
+            "failed",
+        }:
             elapsed = duration_seconds(
                 manifest.get("created_at"),
                 manifest.get("updated_at"),
@@ -222,6 +232,35 @@ def list_automation_runs(
     return AutomationRunStore(output_root).list(limit=limit)
 
 
+def run_mimo_preflight() -> dict[str, Any]:
+    client = MimoClient.from_env()
+    if client is None:
+        raise MimoPreflightError("MiMo 未配置：请检查 MIMO_API_KEY、MIMO_BASE_URL 和 MIMO_MODEL。")
+    try:
+        return client.check_availability()
+    except MimoError as exc:
+        raise MimoPreflightError(str(exc)) from exc
+
+
+def _mimo_preflight_required(use_mimo: bool, clustering_mode: str) -> bool:
+    return bool(use_mimo) and clustering_mode.strip().lower() != "rule"
+
+
+def _mimo_confirmation_alert(error: str) -> str:
+    return (
+        f"MiMo API 预检失败：{error}。"
+        "已停止自动生成，请人工确认是否修复配置后重跑，"
+        "或明确允许规则兜底生成。"
+    )
+
+
+def automation_run_succeeded(manifest: dict[str, Any]) -> bool:
+    return str(manifest.get("status") or "") not in {
+        "failed",
+        "needs_confirmation",
+    }
+
+
 def run_automation_pipeline(
     source_path: str | Path,
     standards_path: str | Path | None,
@@ -236,6 +275,7 @@ def run_automation_pipeline(
     cluster_review_limit: int = DEFAULT_CLUSTER_REVIEW_LIMIT,
     embedding_client: EmbeddingClient | None = None,
     progress_callback: AutomationProgressCallback | None = None,
+    continue_on_mimo_unavailable: bool = False,
 ) -> dict[str, Any]:
     source = Path(source_path)
     standards = Path(standards_path) if standards_path else None
@@ -254,6 +294,7 @@ def run_automation_pipeline(
         "cluster_auto_merge_threshold": cluster_auto_merge_threshold,
         "cluster_review_limit": cluster_review_limit,
         "use_standard_references": use_standard_references,
+        "continue_on_mimo_unavailable": bool(continue_on_mimo_unavailable),
     }
     store = AutomationRunStore(output_root)
     manifest = store.create(
@@ -297,6 +338,44 @@ def run_automation_pipeline(
         notify()
 
     try:
+        effective_use_mimo = use_mimo
+        effective_clustering_mode = clustering_mode
+        preflight_summary: dict[str, Any] | None = None
+        if _mimo_preflight_required(use_mimo, clustering_mode):
+            try:
+                preflight_summary = run_mimo_preflight()
+            except MimoPreflightError as exc:
+                preflight_summary = {
+                    "passed": False,
+                    "error": str(exc),
+                    "continued_with_rule_fallback": bool(
+                        continue_on_mimo_unavailable
+                    ),
+                }
+                if not continue_on_mimo_unavailable:
+                    alert = _mimo_confirmation_alert(str(exc))
+                    manifest["status"] = "needs_confirmation"
+                    manifest["error"] = alert
+                    manifest["summary"] = {"mimo_preflight": preflight_summary}
+                    manifest["alerts"] = [
+                        alert,
+                        (
+                            "确认继续后，请使用 --continue-on-mimo-unavailable "
+                            "或队列任务选项 continue_on_mimo_unavailable=true。"
+                        ),
+                    ]
+                    store.save(manifest)
+                    notify()
+                    return manifest
+                effective_use_mimo = False
+                effective_clustering_mode = "rule"
+                manifest["alerts"].append(
+                    _mimo_confirmation_alert(str(exc)).replace(
+                        "已停止自动生成",
+                        "已按人工确认继续",
+                    )
+                )
+
         store.update_stage(manifest, "intake", "running", "正在保存本次输入快照。")
         notify()
         shutil.copy2(source, copied_source)
@@ -324,8 +403,8 @@ def run_automation_pipeline(
             standards_path=copied_standards,
             output_dir=artifact_dir,
             product_type=product_type,
-            use_mimo=use_mimo,
-            clustering_mode=clustering_mode,
+            use_mimo=effective_use_mimo,
+            clustering_mode=effective_clustering_mode,
             semantic_threshold=semantic_threshold,
             cluster_review_floor=cluster_review_floor,
             cluster_auto_merge_threshold=cluster_auto_merge_threshold,
@@ -334,6 +413,8 @@ def run_automation_pipeline(
             progress_callback=workflow_progress,
             use_standard_references=use_standard_references,
         )
+        if preflight_summary is not None:
+            summary["mimo_preflight"] = preflight_summary
         artifacts = {
             "record_review": str(Path(summary["output_file"])),
             "topic_review": str(Path(summary["topic_review_file"])),
@@ -345,8 +426,11 @@ def run_automation_pipeline(
         manifest["artifacts"] = artifacts
         manifest["status"] = "review_pending"
         store.save(manifest)
+        existing_alerts = list(manifest.get("alerts") or [])
         manifest["sla"] = evaluate_run_sla(manifest)
-        manifest["alerts"] = list(manifest["sla"].get("breaches") or [])
+        manifest["alerts"] = list(
+            dict.fromkeys(existing_alerts + list(manifest["sla"].get("breaches") or []))
+        )
         store.save(manifest)
         notify()
         return manifest

@@ -122,6 +122,45 @@ def test_queue_isolates_failed_workbook(
     assert summary["results"][0]["error"] == "invalid workbook"
 
 
+def test_queue_treats_mimo_confirmation_runs_as_failed_for_human_retry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    queue_root = tmp_path / "queue"
+    pending = queue_root / "pending"
+    pending.mkdir(parents=True)
+    source = pending / "source.xlsx"
+    source.write_bytes(b"source")
+
+    def fake_run_automation_pipeline(**kwargs):
+        return _fake_manifest(
+            kwargs["source_path"],
+            kwargs["output_root"],
+            status="needs_confirmation",
+            error="MiMo API 预检失败，需要人工确认是否继续规则兜底生成。",
+        )
+
+    monkeypatch.setattr(
+        automation_queue,
+        "run_automation_pipeline",
+        fake_run_automation_pipeline,
+    )
+
+    summary = automation_queue.process_automation_queue(
+        queue_root,
+        None,
+        tmp_path / "runs",
+        use_mimo=True,
+        clustering_mode="direct_mimo",
+    )
+
+    assert summary["status"] == "completed_with_errors"
+    assert summary["failed"] == 1
+    assert (queue_root / "failed" / "source.xlsx").is_file()
+    assert summary["results"][0]["status"] == "failed"
+    assert "MiMo API 预检失败" in summary["results"][0]["error"]
+
+
 def test_queue_can_retry_failed_workbook(
     tmp_path: Path,
     monkeypatch,

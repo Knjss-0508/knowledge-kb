@@ -734,12 +734,115 @@ def _source_state(
         sample_id = row["样本ID"]
         units = grouped_units[sample_id]
         conversation_type = units[0].get("conversation_type", "single_topic")
+        local_multi_topic_rescue = (
+            new_scheme
+            and conversation_type == "single_topic"
+            and _local_multi_topic_rescue(row)
+        )
+        cluster_ids = [unit["cluster_id"] for unit in units]
+        if local_multi_topic_rescue:
+            conversation_type = "multi_topic"
+            cluster_ids.append(f"LOCAL-MULTI-{sample_id}")
         states[sample_id] = {
             "conversation_type": conversation_type if new_scheme else "single_topic",
-            "cluster_ids": [unit["cluster_id"] for unit in units],
+            "product_category": str(row.get("产品类型") or "").strip(),
+            "cluster_ids": cluster_ids,
             "unit_ids": [unit["unit_id"] for unit in units],
+            "local_multi_topic_rescue": local_multi_topic_rescue,
         }
     return states
+
+
+def _local_multi_topic_rescue(row: dict[str, Any]) -> bool:
+    text = f"{row.get('核心问题', '')}\n{row.get('聊天内容', '')}"
+    repair_component_terms = (
+        "主板",
+        "屏幕",
+        "电池",
+        "后壳",
+        "摄像头",
+        "排线",
+        "底部",
+        "白色贴纸",
+    )
+    repair_signal_terms = (
+        "非原厂",
+        "第三方",
+        "贴纸",
+        "标签",
+        "维修痕迹",
+        "维修特征",
+        "拆机图",
+        "样式不符",
+    )
+    repair_component_hits = sum(
+        1 for term in repair_component_terms if term in text
+    )
+    repair_signal_hits = sum(1 for term in repair_signal_terms if term in text)
+    answer_splits_by_component = any(
+        term in text
+        for term in (
+            "屏幕-",
+            "电池-",
+            "后壳-",
+            "主板-",
+            "其它零部件",
+            "其他零部件",
+        )
+    )
+    if (
+        repair_component_hits >= 2
+        and repair_signal_hits >= 1
+        and ("怎么判" in text or "怎么判定" in text or answer_splits_by_component)
+    ):
+        return True
+
+    info_query_groups = (
+        ("bios锁", "BIOS锁", "无锁", "没锁"),
+        ("型号", "年款", "机型"),
+        ("硬盘", "内存", "品牌认证"),
+        ("指纹", "支持指纹"),
+    )
+    info_query_hits = sum(
+        1 for group in info_query_groups if any(term in text for term in group)
+    )
+    if info_query_hits >= 3 and any(
+        term in text for term in ("是的", "不支持", "品牌认证", "没锁")
+    ):
+        return True
+
+    model_or_label_terms = (
+        "怎么看第几款",
+        "怎么核对",
+        "哪一款",
+        "小型号",
+        "序列号",
+        "标签",
+        "型号",
+    )
+    independent_component_terms = (
+        "显卡硬盘",
+        "内存硬盘",
+        "显卡",
+        "硬盘",
+        "内存",
+        "这些有问题",
+        "有什么问题",
+        "有啥问题",
+    )
+    has_model_or_label_topic = any(term in text for term in model_or_label_terms)
+    has_independent_component_topic = any(
+        term in text for term in independent_component_terms
+    )
+    has_separate_followup = any(
+        term in text
+        for term in ("有没有什么问题", "这些有问题吗", "有问题吗", "有啥问题")
+    )
+    return (
+        has_model_or_label_topic
+        and has_independent_component_topic
+        and has_separate_followup
+    )
 
 
 def _pair_similarity(
@@ -763,16 +866,21 @@ def _prediction(
     right: dict[str, Any],
     allow_multi_topic: bool,
 ) -> str:
+    shared_clusters = set(left["cluster_ids"]) & set(right["cluster_ids"])
+    left_product = str(left.get("product_category") or "").strip()
+    right_product = str(right.get("product_category") or "").strip()
+    if left_product and right_product and left_product != right_product:
+        return "不同主题"
     if allow_multi_topic:
-        if "multi_topic" in {left["conversation_type"], right["conversation_type"]}:
-            return "多主题需拆分"
         if "uncertain" in {left["conversation_type"], right["conversation_type"]}:
             return "不确定"
-    return (
-        "同一主题"
-        if set(left["cluster_ids"]) & set(right["cluster_ids"])
-        else "不同主题"
-    )
+        if left.get("local_multi_topic_rescue") or right.get("local_multi_topic_rescue"):
+            return "多主题需拆分"
+        if shared_clusters:
+            return "同一主题"
+        if "multi_topic" in {left["conversation_type"], right["conversation_type"]}:
+            return "多主题需拆分"
+    return "同一主题" if shared_clusters else "不同主题"
 
 
 def _stable_rank(value: str) -> str:
@@ -792,6 +900,10 @@ def _select_pairs(
         for right_row in rows[left_index + 1 :]:
             left_id = left_row["样本ID"]
             right_id = right_row["样本ID"]
+            left_product = str(left_row.get("产品类型") or "").strip()
+            right_product = str(right_row.get("产品类型") or "").strip()
+            if left_product and right_product and left_product != right_product:
+                continue
             old_similarity = _pair_similarity(
                 old_scheme,
                 old_states[left_id]["unit_ids"],

@@ -316,6 +316,10 @@ def create_automation_api_app(
                 request.form.get("cluster_review_limit"),
                 100,
             ),
+            "continue_on_mimo_unavailable": _bool_value(
+                request.form.get("continue_on_mimo_unavailable"),
+                False,
+            ),
             "sync_to_cz_review": sync_to_cz_review,
             "submit_to_cz": sync_to_cz_review,
         }

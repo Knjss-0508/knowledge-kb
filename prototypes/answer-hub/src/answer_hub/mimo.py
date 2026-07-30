@@ -22,6 +22,7 @@ import time
 
 from .catalog import StandardCatalogItem
 from .images import ImageEvidence, split_image_urls
+from .knowledge_categories import SUPPORTED_KNOWLEDGE_CATEGORIES, UNCERTAIN_CATEGORY
 from .product_taxonomy import (
     UNKNOWN_PRODUCT_NAME,
     canonical_product_name,
@@ -30,15 +31,34 @@ from .product_taxonomy import (
 )
 
 
-PROMPT_VERSION = "multi-category-topic-transcription-v2"
+PROMPT_VERSION = "multi-category-topic-transcription-v3"
 TOPIC_REVIEW_PROMPT_VERSION = "multi-category-topic-content-quality-review-v4"
-TOPIC_STAGE_PROMPT_VERSION = "multi-category-topic-stage-value-v4"
+TOPIC_STAGE_PROMPT_VERSION = "multi-category-topic-stage-value-v5"
 TOPIC_DISPLAY_QUESTION_PROMPT_VERSION = "topic-display-question-v1"
-CLUSTER_PAIR_REVIEW_PROMPT_VERSION = "knowledge-cluster-membership-review-v5-chat-only"
-TOPIC_SIGNAL_PROMPT_VERSION = "multi-category-conversation-topic-signal-v4"
-CLUSTER_UNIT_PROMPT_VERSION = "multi-category-conversation-cluster-units-v10-chat-scope-multitopic"
-CLUSTER_FUSION_PROMPT_VERSION = "multi-category-conversation-cluster-fusion-v4-media-second-topic"
+CLUSTER_PAIR_REVIEW_PROMPT_VERSION = "knowledge-cluster-membership-review-v8-shared-principle"
+TOPIC_SIGNAL_PROMPT_VERSION = "multi-category-conversation-topic-signal-v5"
+CLUSTER_UNIT_PROMPT_VERSION = "multi-category-conversation-cluster-units-v19-multitopic-recall"
+CLUSTER_FUSION_PROMPT_VERSION = "multi-category-conversation-cluster-fusion-v5-media-second-topic"
 ATOMIC_TOPIC_CLUSTER_PROMPT_VERSION = "atomic-knowledge-topic-clustering-v3-chat-evidence"
+
+_API_KEY_SEPARATOR_RE = re.compile(r"[,;\r\n]+")
+_API_KEY_ROTATION_MARKERS = (
+    "insufficient balance",
+    "balance is insufficient",
+    "insufficient funds",
+    "payment required",
+    "credit balance",
+    "account balance",
+    "quota exhausted",
+    "quota exceeded",
+    "billing hard limit",
+    "余额不足",
+    "余额已耗尽",
+    "额度不足",
+    "额度耗尽",
+    "欠费",
+    "请充值",
+)
 
 
 class MimoError(RuntimeError):
@@ -66,6 +86,7 @@ class MimoConfig:
     api_key: str
     base_url: str
     model: str
+    api_keys: tuple[str, ...] = ()
     media_model: str = ""
     timeout_seconds: int = 60
     max_retries: int = 2
@@ -78,6 +99,16 @@ class MimoConfig:
     def from_env(cls) -> "MimoConfig | None":
         load_dotenv()
         api_key = os.getenv("MIMO_API_KEY", "").strip()
+        api_keys = tuple(
+            key
+            for key in (
+                item.strip()
+                for item in _API_KEY_SEPARATOR_RE.split(
+                    os.getenv("MIMO_API_KEYS", "")
+                )
+            )
+            if key
+        )
         base_url = os.getenv("MIMO_BASE_URL", "").strip()
         model = os.getenv("MIMO_MODEL", "").strip()
         media_model = os.getenv("MIMO_MEDIA_MODEL", "").strip()
@@ -123,6 +154,7 @@ class MimoConfig:
             output_cost = 0.0
         return cls(
             api_key=api_key,
+            api_keys=api_keys,
             base_url=base_url,
             model=model,
             media_model=media_model,
@@ -137,6 +169,15 @@ class MimoConfig:
     def chat_completions_url(self) -> str:
         base = self.base_url.rstrip("/")
         return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+
+    def all_api_keys(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                key
+                for key in (self.api_key, *self.api_keys)
+                if key
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -331,7 +372,7 @@ def _build_topic_signal_prompt(
     standard_rule = (
         "standard_refs 只能从本次检索结果的 standard_ref 中选择；无可靠匹配则输出 []，并将 needs_human_review 设为 true。"
         if use_standard_references
-        else "standard_refs 必须输出 []。不得补写、猜测或引用任何质检标准；是否需要人工复核只由案例证据、图片质量和标注置信度决定。"
+        else "standard_refs 必须输出 []。不得补写、猜测或引用任何质检标准。"
     )
     standard_section = (
         "【本次检索到的当前品类生效标准与已有知识】\n"
@@ -345,17 +386,24 @@ def _build_topic_signal_prompt(
         else "“结合案例证据判断”“补拍图片核验”“信息查询与实物核对”“补充信息后再处理”"
     )
     retry_instruction = f"\n【上次输出不合格原因】\n{retry_reason}" if retry_reason else ""
-    return f"""你是答疑中台的会话语义标注员。请从一条已脱敏的多品类质检会话中提取用于主题聚类的规范化标签。当前生效品类为：{product_category_prompt()}。
+    return f"""你是答疑中台的会话语义标注员。从一条已脱敏的多品类质检会话中提取用于主题聚类的规范化标签。当前生效品类为：{product_category_prompt()}。
 
 本任务不是知识改写，也不是复述百晓生的质检问题。{evidence_instruction} legacy_reference_only 中的质检问题描述、历史判定和历史一二级分类来自旧系统，只能在与聊天证据一致时作弱参考；出现冲突时必须以完整会话为准。
 
-必须遵守：
+红线规则：
 1. intent 只能为："标准判定"、"检测核验"、"信息查询"、"流程操作"、"其他待确认" 之一。
-2. subject 表示用户实际询问的对象或部位；phenomenon 表示异常现象或查询目标。无法确认时填“待确认”，不得从旧分类猜测。
+2. subject 表示用户实际询问的对象或部位，只使用聊天中明确说出的描述，不过度细化。无法确认时填“待确认”。
+   phenomenon 表示异常现象或查询目标。无法确认时填“待确认”，不得从旧分类猜测。
 3. resolution_mode 表示最终应沉淀的处理方式，例如{resolution_examples}。
 4. topic_tags 必须是 3 到 6 个可复用的短标签，使用“维度:值”格式，且至少覆盖 intent、subject、phenomenon 或 query_target、resolution_mode。不要复制旧分类名称凑标签。
 5. {standard_rule}
-6. category_l1 和 category_l2 是模型推断的工作分类，不得直接照抄 legacy 分类；无充分证据时填“待确认”。
+6. category_l1 和 category_l2 是模型推断的工作分类，必须遵守：
+   a. 不得直接照抄 legacy 分类。
+   b. 以答疑人员的最终判定结论为准，不以回收师初始提问的字面词为准。
+      例：问“是不是漏液”→答“选折痕”→分类跟“折痕”（外观问题）走，不跟“漏液”（显示问题）走。
+   c. 理解检测项目的真实目的，不望文生义。
+      例：“白光检测”的目的=检查屏幕是否被更换/拆修→分类为拆修问题，不是显示问题。
+   d. 无充分证据时填“待确认”。
 7. 需要通过外观、部位、颜色、裂纹、坏点、拆修痕迹等视觉差异才能判断时，requires_images=true；图片不可用或不足时在 image_evidence_summary 说明，并标记人工复核。
 8. 当前接口没有上传视频内容。若存在视频链接，只能把它视为“尚待人工查看的视频证据”，不得猜测视频画面、动作或声音；结论依赖视频时应标记人工复核。
 9. reasoning_summary 仅写给审核人的结论依据，不要输出思维过程，不超过 240 字。
@@ -373,6 +421,27 @@ def _build_topic_signal_prompt(
   "image_evidence_summary": "string",
   "reasoning_summary": "string",
   "confidence": 0.0,
+  "needs_human_review": true
+}}
+
+--- 示例 ---
+
+示例输入：
+回收师询问“帮我看一下这个是漏液吗”，答疑经过多轮确认（多颜色显示、息屏状态、触感）后说“选折痕”。
+正确输出：
+{{
+  "intent": "标准判定",
+  "subject": "折叠屏内屏",
+  "phenomenon": "全颜色可见+息屏可见+有触感的异常区域",
+  "resolution_mode": "多颜色+息屏+触感综合判断，排除漏液，归为折痕",
+  "category_l1": "外观问题",
+  "category_l2": "折痕/压伤",
+  "topic_tags": ["intent:标准判定", "subject:折叠屏", "phenomenon:全色可见异常", "resolution_mode:多维度排除法", "category:外观问题"],
+  "standard_refs": [],
+  "requires_images": true,
+  "image_evidence_summary": "需多颜色背景和息屏对比图确认",
+  "reasoning_summary": "答疑通过多颜色+息屏+触感三维排除漏液，最终判定为折痕，属于外观问题",
+  "confidence": 0.82,
   "needs_human_review": true
 }}
 
@@ -495,8 +564,9 @@ def _build_topic_prompt(
 5. {standard_rule}
 6. reasoning_summary 只写简短审核依据，不输出思维过程；不要编造聊天细节、图片细节或标准条款。
 7. 文字已经能完整表达规则时，requires_images=false，不能把图片当装饰；只有必须通过外观、部位、颜色、裂纹、坏点或拆修痕迹等视觉差异才能解释时，requires_images=true，并给出 image_usage_instruction。
-8. content 只保留 3～5 个必要要点，总长度不超过 500 字。applicable_scope 必须使用“品类-适用范围”格式，没有明确差异时使用“品类-通用”。recommended_reply 为 80～180 字、可直接发送的人工答疑回复。
-9. 只输出一个 JSON 对象，不要 Markdown。字段必须完整：
+8. content 只保留 3～5 个必要要点，总长度不超过 500 字。applicable_scope 必须使用“品类-适用范围”格式，没有明确差异时使用“品类-通用”。recommended_reply 为 80～180 字、可直接发送的人工答疑回复，且必须保留正文中的具体对象、结论或处理边界。
+9. 无标准引用模式下，正文必须提炼来源聊天、历史实际回复或判定结论中的具体信息，至少覆盖“具体对象/代际/来源问题”“检查项或触发条件”“实际结论或处理方式”“不能适用时的边界”中的 2 项。禁止只输出“适用主题、明确对象、补充截图/视频/查询结果、结合案例、完善资料后再处理”之类的通用四步模板。
+10. 只输出一个 JSON 对象，不要 Markdown。字段必须完整：
 {{
   "title": "string",
   "subtitles": ["string"],
@@ -613,7 +683,7 @@ def _build_topic_stage_prompt(
     return f"""你是答疑中台的主题分类与知识沉淀价值标注员。输入是已经完成原子问题拆分和聚类的一个主题，可能包含 1～N 个来源案例。
 
 请完成两个互相独立的判断：
-1. 判断该主题主要属于哪个环节：质检标准、质检流程、案例解析、课外常识。
+1. 判断该主题主要属于哪个环节：质检标准、质检流程、案例解析、课外常识、不确定。
 2. 判断该主题是否值得沉淀为可复用知识：值得沉淀、不值得沉淀。
 
 证据优先级：
@@ -626,6 +696,7 @@ def _build_topic_stage_prompt(
 - 质检流程：核心在“怎么查、怎么测、怎么操作、先后步骤、使用什么入口或工具”；可复用答案应是检查或操作步骤，而不是某台设备的最终结论。
 - 案例解析：核心结论依赖当前案例的图片、视频、实物状态或上下文，只能分析这一个案例；离开该案例证据无法直接得出同样结论。
 - 课外常识：核心是型号、版本、功能、配件、行业常识等信息，不是在询问质检判定标准、质检操作流程，也不是要求分析当前具体案例。
+- 不确定：证据不足、主要诉求互相冲突，或需要人工结合业务背景才能在上述四类中选择；使用该值时 needs_human_review 必须为 true。
 
 冲突处理顺序：
 1. 不要因为文本出现“标准、流程、案例”等字样直接分类，要判断回答该主题真正需要输出什么。
@@ -648,7 +719,7 @@ def _build_topic_stage_prompt(
 
 只输出一个 JSON 对象，不要 Markdown。字段必须完整：
 {{
-  "topic_stage": "质检标准 / 质检流程 / 案例解析 / 课外常识",
+  "topic_stage": "质检标准 / 质检流程 / 案例解析 / 课外常识 / 不确定",
   "knowledge_value": "值得沉淀 / 不值得沉淀",
   "stage_reason": "string",
   "value_reason": "string",
@@ -709,34 +780,51 @@ def _build_cluster_pair_review_prompt(
 
 主题簇 B 可以包含 1 到 N 个知识点。不得只挑选其中最相似的一条进行判断；只有候选 A 能够与簇内所有成员共用同一条标准答疑知识时，才允许加入。
 
-唯一标准：
-合并后是否可以直接共用同一条知识标题、适用范围、判定标准和处理结论。
+唯一标准：合并后是否可以直接共用同一条知识标题、适用范围、判定标准和处理结论。
 
-只有同时满足以下条件才能判断为“同一主题”：
+只有同时满足以下条件才能判断为"同一主题"：
 1. 适用品类、平台、品牌和机型范围一致，或者明确属于同一通用标准。
 2. 核心对象或部位一致。
 3. 判定目标一致。
 4. 标准处理路径一致。
 5. 阈值、例外条件不会产生不同答疑结论。
 
-以下情况应判断为“不同主题”：
+以下情况可以判断为"同一主题"（即使机型/品牌不同）：
+- 询问的是同一判定原则，如"全新机判定标准"、"外观损伤定性（磕碰/碎裂/划痕的边界）"、"包装塑封是否完整"。不同机型/品牌只要共享同一个判定口径，就可以合并。
+- 核心对象相同 + 判定目标相同 + 处理路径相同，只是案例来源不同。
+
+以下情况应判断为"不同主题"：
 - 一级品类不同，且不是明确的通用标准。
 - 苹果、安卓、鸿蒙或其他平台适用标准不同。
-- 功能问题与外观问题不同。
+- 一级分类不同（如功能问题 vs 外观问题，显示问题 vs 拆修问题）。
+- 一级分类相同但判定对象不同（如都是"外观问题"，但一个是屏幕胶条、一个是散热结构、一个是滤镜卡住：对象不同=标准不同=不同主题）。
 - 判定阈值、例外条件或标准路径不同。
 - 合并后需要写多个互不相关的处理结论。
-- 只是出现“屏幕、摄像头、拆修、异常”等相同宽泛词语。
+- 只是出现"屏幕、摄像头、拆修、异常"等相同宽泛词语。
+
+特别注意："同属外观问题"不等于"同一主题"。外观问题覆盖胶条、外壳、散热、滤镜、折痕、划痕等多种对象，每种对象的判定标准和操作流程完全不同。只有当品类相同 + 判定对象相同 + 判定标准相同时，才能判定为同一主题。
 
 证据优先级：
 1. primary_conversation_evidence 中的实际问答、追问、澄清和客服答复是第一主证据。
 2. 已经提取出的图片/视频事实是第二主证据。
-3. 转人工问题描述、上游核心问题摘要和旧分类已从审核输入中移除，因为它们可能只是工程师为快速转人工而乱填、乱选或在百晓生中询问的最后一句话。
-4. 聊天中的“问题类型、问题描述、转人工原因”属于系统转人工元数据，不是实际会话发言。
-5. 结构化问题字段必须能够被聊天或可靠媒体证据支持；发生明显冲突时判断为“不确定”或“不同主题”。
+3. 转人工问题描述、上游核心问题摘要和旧分类已从审核输入中移除。
+4. 结构化问题字段必须能够被聊天或可靠媒体证据支持；发生明显冲突时判断为"不确定"或"不同主题"。
 
 不得猜测未解析的图片或视频内容，不得补充输入中没有的业务标准。
 
 不要根据相似度直接下结论。相似度只用于候选召回，不是合并证据。
+
+--- 示例 ---
+
+输入：记录A normalized_issue="手机｜屏幕｜坏点｜判定是否合格"，记录B normalized_issue="手机｜屏幕｜亮线｜判定是否合格"，相似度=0.85
+输出：
+{{
+  "decision": "不同主题",
+  "topic_label": "屏幕坏点判定 vs 屏幕亮线判定",
+  "reason": "虽然都是屏幕显示问题，但坏点和亮线的判定标准、阈值和处理路径完全不同，合并后需要写两个互不相关的处理结论。",
+  "key_difference": "判定对象不同：坏点 vs 亮线，对应不同的质检标准和阈值",
+  "confidence": 0.9
+}}
 
 只输出一个 JSON 对象，不要 Markdown：
 {{
@@ -780,56 +868,84 @@ def _build_cluster_unit_prompt(
         "attached_image_count": attached_image_count,
         "attached_video_count": attached_video_count,
     }
-    return f"""你是人工答疑知识库新版聚类流程的原子知识提取器。请判断一条会话包含一个还是多个可以独立沉淀的知识主题，并输出用于聚类的原子知识点。
+    return f"""你是人工答疑知识库的原子知识提取器。判断一条会话包含一个还是多个可以独立沉淀的知识主题，并输出用于聚类的原子知识点。
 
-证据使用规则：
-1. primary_conversation_evidence 是去除转人工系统头部后的完整实际聊天，是第一主证据。必须综合阅读整段问答、追问、澄清、图片上下文和客服答复，不能只抓取最后一句或某个关键词。
-2. 本轮消息中附带的图片和视频也是主证据。必须直接识别与用户问题有关的外观、部位、文字、操作过程、动态异常、字幕和可听语音；只记录确实可见或可听到的事实。
-3. 聊天原文开头的“问题类型、问题描述、转人工原因”是系统转人工元数据，不是工程师与客服的实际发言，已经从 primary_conversation_evidence 中排除。
-4. 转人工问题描述、上游核心问题摘要、历史判定、上游媒体摘要和旧分类不会传入本任务，因为它们可能由错误问题描述衍生，不能作为主题证据。
-5. 实际聊天和本轮直接读取的媒体不足以确认问题时，必须输出 uncertain 或“待确认”，不得使用缺失的旧字段补全主题。
-6. product_type 和 device_model 用于判断适用品类、平台、品牌和机型范围。
-7. 不得根据旧分类习惯猜测一级分类或二级分类。
-8. 媒体无法读取、画面模糊、关键动作未拍到、声音不清或不足以支持结论时，不得猜测；在 media_analysis 中说明并设置 requires_review=true。
-9. 媒体中出现清晰的第二个独立质检问题时，必须按多主题拆分；媒体只是同一问题的补充角度、操作过程或证明材料时不得重复拆题。
-10. 每个输出主题必须能在实际聊天或可靠媒体中找到独立证据；evidence_summary 应概括真实对话证据，不得把转人工问题描述当作唯一依据。
-11. 术语必须结合聊天和媒体消歧：“一根线”“靓机助手”“验机精灵”“爬虫”“工具读出”“用户判断”通常指验机工具、检测程序或工具结果，不代表屏幕上出现物理线条。只有实际聊天或图片明确提到屏幕、显示线条、贯穿线、亮线等现象时，才能提取为屏幕线条问题。
+=== 证据规则（8条红线）===
 
-主题拆分规则：
-1. 同一对象、同一异常的追问、澄清、补充图片或处理过程属于一个主题。
-2. 同一对象、同一现象在两个质检选项中进行选择，通常属于一个主题。
-3. 需要不同知识正文、不同判断对象或不同处理标准的问题必须拆开。
-4. 即使最终客服只回答了其中一个问题，也不能丢弃会话中清晰存在的另一个独立问题。
-5. 能明确识别多个独立问题时标记 multi_topic；不是 uncertain。
-6. 只有聊天或媒体证据不足、无法判断真实问题时才标记 uncertain。
-7. 最多提取 3 个主题。寒暄、催促、致谢和系统提示不作为主题。
-8. 同一会话并列询问两个可以独立检测、独立判定的硬件功能时必须拆分，例如“振动功能”和“熄屏/距离感应功能”、“摄像头”和“扬声器”。两个可以独立核对的配置信息也必须拆分，例如“硬盘信息和显卡信息”。不得使用“整机功能异常”“设备功能是否正常”或“硬件配置是否正常”等宽泛主题将它们合并。
-9. 孤立的单个词或客服简短回复不能自动成为独立主题。例如只出现一次“闪屏、正常、没事”，但没有对应独立提问、追问、检查过程或媒体证据时，不得单独拆题。
+1. primary_conversation_evidence 是第一主证据。必须综合阅读整段问答、追问、澄清和客服答复，不能只抓取最后一句或某个关键词。
+   聊天开头的“问题类型、问题描述、转人工原因”是系统转人工元数据，已从 primary_conversation_evidence 中排除。
 
-适用范围规则：
-1. 默认不同一级品类不能共用一条知识。
-2. 苹果手机、安卓手机、鸿蒙设备或其他平台标准不一致时，必须保留平台范围。
-3. 案例设备是iPhone、华为或具体机型，不代表主题必须品牌专用或机型专用。询问通用全新机判定且没有品牌特殊规则时，应标为“品类专用”；只有平台处理方式确实不同时才标为“平台专用”。
-4. 只有输入明确说明某品牌或某机型存在特殊阈值、例外或操作路径时，才能标记为“品牌专用”或“机型专用”。
-5. 只有输入证据明确说明各品类处理标准完全一致时，才能标记为通用。
-6. 无法确认品类、平台或标准路径时填写“待确认”，并将 requires_review 设为 true。
-7. 已知品牌应填写正确平台：Apple/iPhone/iPad 对应 iOS；小米、红米、OPPO、vivo、三星、一加、realme、努比亚等手机对应 Android；华为设备有明确鸿蒙证据时填 HarmonyOS，否则填待确认。
+2. 本轮图片和视频也是主证据。必须直接识别其中明确可见的事实：
+   - 系统截图/弹窗中的文字（型号、序列号、电池健康、系统版本等）→ 直接提取，作为信息查询的证据。
+   - 实物照片中的外观、部位、颜色、裂纹、坏点、拆修痕迹 → 只记录确实可见的，不推测不可见的。
+   - 视频中的操作过程、动态异常、字幕和可听语音 → 只记录确实发生的。
+   - 画面模糊、文字不清、关键部位被遮挡 → 不得猜测，在 media_analysis 中说明并标记 requires_review=true。
 
-知识分类规则：
+3. 媒体无法读取或不足以支持结论时，不得猜测。媒体中出现清晰的第二个独立质检问题时必须按多主题拆分；媒体只是同一问题的补充角度时不得重复拆题。
+
+4. 转场词识别：聊天中如果出现"另外/还有/这个也/再看一下/另一个问题/顺便"等转场词，且后续内容是新的独立质检问题，必须考虑多主题拆分。不要因为前后问题在同一个会话里就默认合并。
+
+5. 术语消歧：“一根线/靓机助手/验机精灵/爬虫/工具读出/用户判断”通常指验机工具或检测结果，不代表屏幕上出现物理线条。只有实际聊天或图片明确提到屏幕显示线条时才提取为屏幕线条问题。
+
+6. 转人工问题描述、上游核心问题摘要、历史判定和旧分类不会传入本任务，不得据此补全主题。
+
+7. 不得根据旧分类习惯猜测 category_l1 或 category_l2。
+
+8. 每个输出主题必须能在实际聊天或可靠媒体中找到独立证据；evidence_summary 应概括真实对话证据。
+
+=== 主题拆分规则（5条红线）===
+
+1. 同一对象+同一异常的追问、澄清、补充图片或处理过程属于一个主题。
+    2. 拆分判断：默认不拆。只有命中以下任一必须拆分信号时才拆，且命中任一信号就优先拆分，不要被“同属外观问题”“同一个会话”“同一类质检问题”等宽泛词带偏。
+    以下信号可支持拆分：
+
+   信号A — 对象隔离：两个问题的判定对象在物理上独立，且判定标准不同。
+   例："振动功能"和"距离感应功能"→拆（独立硬件+独立标准）。
+   例："屏幕划痕"和"充电口松动"→拆（不同组件+不同标准）。
+
+   信号B — 分类隔离：两个问题的一级分类不同，且各自需要独立的知识正文。
+   例："屏幕有划痕（外观问题）"+"电池健康读取不出（基本信息）"→拆。
+   例："摄像头有黑斑（外观问题）"+"拍照闪退（功能问题）"→拆。
+
+   信号C — 答疑分别处理：答疑在聊天中对两个问题分别给出了独立的判定结论或处理路径。
+   例：答疑先说"面容判异常"，再说"摄像头另外要判异常"→虽然共享判定原则，但答疑明确分开处理了→视情况可拆。
+   信号D — 拆修/非原厂多对象：同一会话里同时询问或答复屏幕、主板、电池、后壳、摄像头、排线等多个拆修对象，且分别对应不同质检项或处理结论时，必须拆分。
+   例："主板有标签，屏幕有贴纸怎么判"→拆（主板标签和屏幕贴纸是不同拆修对象/非原厂特征）。
+   例：答疑分别给出"屏幕-其它非原厂屏特征、电池-第三方标识、后壳-第三方标识、其它零部件维修特征"→拆（答疑已按部件分别处理）。
+   但如果多个部位只是共同佐证同一个"整机是否拆修"结论，且答疑只给一个统一结论，可不拆。
+   信号E — 信息查询多目标：同一会话里连续确认 BIOS/锁状态、型号/年款、硬盘/内存品牌、指纹/功能支持等多个独立查询目标，且答疑分别回答，必须拆分。
+   例："有没有 BIOS 锁→型号是这个吗→硬盘内存品牌吗→支持指纹吗"→拆（锁状态、型号、硬件品牌、功能支持是不同查询目标）。
+3. 即使最终客服只回答了其中一个问题，也不能丢弃会话中清晰存在的另一个独立问题。
+   4. 最多提取 3 个主题。寒暄、催促、致谢和系统提示不作为主题。孤立的单个词或客服简短回复（如只出现一次“闪屏”+“正常”）不能自动成为独立主题。
+   5. 能明确识别多个独立问题时标记 multi_topic；只有聊天或媒体证据不足时才标记 uncertain。
+
+   不拆的情况：
+   - 同一对象的多个描述角度（如"破损"+"凹陷"都是描述胶条）→不拆。
+   - 同一问题的追问和澄清（如"屏幕亮线→具体在哪个位置→拍个照看看"）→不拆。
+   - 两个问题共享同一个上位判定原则，且答疑没有分别给出独立结论→不拆。
+
+=== 分类规则（5条红线）===
+
 1. category_l1 只能为：基本情况、成色与回收标准、外观问题、显示问题、功能问题、拆修问题、信息查询、流程操作、其他待确认。
-2. 屏幕颜色异常、色斑、闪屏、亮线、坏点、漏液等属于“显示问题”，除非会话明确询问非原装、更换或维修。
-3. 划痕、磕碰、掉漆、凹陷、胶条、脱胶等物理外观属于“外观问题”。
-4. 摄像头、扬声器、充电、按键等功能是否正常属于“功能问题”。
-5. 非原装部件、更换、维修痕迹、拆机痕迹等属于“拆修问题”。
-6. 不得因为上游分类或标准名称中出现“拆修”就覆盖实际聊天中的显示、功能或外观问题。
-7. 包装盒防拆标签是否影响全新机状态、塑封是否完整、是否属于全新未拆封，应归入“成色与回收标准”＋“标准判定”，不能仅因出现“防拆”归入拆修问题或信息查询。
+2. 分类必须以答疑人员的最终判定结论为准，不以回收师初始提问的字面词为准。
+   例：问“是不是漏液”→答“选折痕”→分类=外观问题-折痕，不是显示问题-漏液。
+   漏液=显示问题，折痕=外观问题，二者是不同的质检项。
+3b. 外观问题（category_l1="外观问题"）覆盖范围很广（胶条、外壳、散热结构、滤镜、折痕、划痕等），但不同对象的外观判定标准完全不同。标注时 subject 必须精确到具体部位，后续聚类时不同 subject 的外观问题不可合并。
+3. 理解检测项目的真实目的，不望文生义。
+   例：“白光检测”目的=检查屏幕是否被更换/拆修→分类=拆修问题，不是显示问题。
+   不确定检测目的时填“待确认”并设 requires_review=true。
+4. 包装盒防拆标签→“成色与回收标准”，不能因出现“防拆”归入拆修问题。
+5. 不得因为上游分类或标准名称中出现某个词就覆盖实际聊天中的真实问题类型。
 
-标准和阈值规则：
-1. standard_path 只能概括输入已经明确提供的统一处理路径；证据不足时填“待确认”。
-2. threshold_or_exception 只能提取输入中明确出现的数字阈值、条件或例外。
-3. 不得根据常识补写“0次”“大于N个”等输入未明确提供的阈值。
-4. 输入没有明确阈值时填“无明确阈值”，无法判断时填“待确认”。
-5. standard_path、threshold_or_exception、品类或范围任一字段为“待确认”时，requires_review 必须为 true。
+=== subject 和范围规则（5条红线）===
+
+1. subject 只使用聊天中明确说出的具体部位描述，不过度细化。
+   例：聊天只说“散热断了”→填“散热部位”，不填“散热器”或“散热孔”。
+   无法确认具体部位时填“待确认”。
+2. normalized_issue 格式：“适用范围｜对象/部位｜异常现象或查询目标｜判定目标/处理动作”。
+3. 默认不同品类不能共用一条知识。scope_type 默认“品类专用”；只有输入明确说明各品类标准一致时才标“通用”。
+4. 只有输入明确说明某品牌/机型有特殊规则时，才标“品牌专用”或“机型专用”。
+5. standard_path/threshold_or_exception 只能提取输入中明确出现的内容。没有→“无明确阈值”；无法确认→“待确认”。任一字段为“待确认”时 requires_review=true。
 
 每个原子知识点的 normalized_issue 应尽量遵循：
 “适用范围｜对象/部位｜异常现象或查询目标｜判定目标/处理动作”。
@@ -908,19 +1024,15 @@ def _build_cluster_fusion_prompt(
 2. 全模态MiMo提取的图片/视频事实和候选主题；
 3. 原始聊天与业务字段。
 
-融合硬规则：
-1. primary_conversation_evidence 中明确存在的独立问题不得因为图片或视频没有展示而被删除。媒体“未看到”不等于文字问题不存在。
-2. 图片或视频清晰展示文字中没有的第二个独立质检问题时，可以新增主题。
-3. 最终主题集合原则上是“明确文字主题”和“可靠媒体新增主题”的去重并集。
-4. text_pro_candidate 已经是 multi_topic 时，不得降为 single_topic，除非两个文字主题实际是同一对象、同一异常、同一处理路径的重复表达。
-5. media_candidate 是 multi_topic 且 media_analysis.used_for_topic_split=true 时，必须保留媒体新增的独立主题。
-6. 产品类型、机型或部位与媒体冲突时，不允许直接用媒体覆盖文字结论；保留文字主题并设置 requires_review=true。
-7. 视频或图片无法读取时，保留文字提取结果，并设置 requires_review=true。
-8. 最多保留3个独立主题。只做主题提取，不发明标准、阈值或业务结论。
-9. 转人工问题描述、上游核心问题摘要和旧分类不会传入融合任务；原始聊天头部的“问题类型、问题描述、转人工原因”也已排除。
-10. text_pro_candidate 或 media_candidate 若无法从实际聊天或本轮媒体中找到支持，必须删除该候选主题或标记人工复核。
-11. “一根线、靓机助手、验机精灵、爬虫、工具读出、用户判断”应优先理解为验机工具或检测结果；没有明确屏幕线条证据时，不得融合成屏生线、亮线等显示主题。
-12. 文字询问相机倍数，但图片清晰显示屏幕亮线时，保留相机问题并新增屏幕显示问题；不得用媒体主题覆盖或删除文字主题。
+融合原则（5条）：
+1. 文本中明确存在的独立问题，即使图片/视频没展示，也必须保留。媒体"未看到"≠文字问题不存在。
+2. 图片/视频清晰展示文本中没有的第二个独立质检问题时，可以新增主题。
+3. 最终主题集合 = "明确文字主题" ∪ "可靠媒体新增主题"（去重并集）。
+4. 文本已是 multi_topic 时不得降为 single_topic，除非两个主题实际是同一对象+同一异常的重复表达。
+5. 最多保留 3 个主题。不发明标准、阈值或业务结论。
+
+术语消歧："一根线/靓机助手/验机精灵/爬虫/工具读出"优先理解为验机工具，不是屏幕物理线条。
+产品类型/机型/部位与媒体冲突时，保留文字主题并设 requires_review=true。视频或图片无法读取时保留文字提取结果并设 requires_review=true。
 
 只返回一个JSON对象，不要Markdown：
 {{
@@ -1312,7 +1424,7 @@ def _validate_topic_stage(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise MimoError("MiMo 主题环节输出不是 JSON 对象")
     topic_stage = _text(value.get("topic_stage"), 32)
-    if topic_stage not in {"质检标准", "质检流程", "案例解析", "课外常识"}:
+    if topic_stage not in SUPPORTED_KNOWLEDGE_CATEGORIES:
         raise MimoError("MiMo 主题环节 topic_stage 不合法")
     knowledge_value = _text(value.get("knowledge_value"), 32)
     if knowledge_value not in {"值得沉淀", "不值得沉淀"}:
@@ -1335,7 +1447,11 @@ def _validate_topic_stage(value: Any) -> dict[str, Any]:
         "value_reason": value_reason,
         "reusable_knowledge": reusable_knowledge,
         "confidence": round(confidence, 3),
-        "needs_human_review": _as_bool(value.get("needs_human_review")),
+        "needs_human_review": (
+            True
+            if topic_stage == UNCERTAIN_CATEGORY
+            else _as_bool(value.get("needs_human_review"))
+        ),
     }
 
 
@@ -1876,6 +1992,9 @@ def _validate_topic_signal(value: Any, allowed_refs: set[str]) -> dict[str, Any]
 class MimoClient:
     def __init__(self, config: MimoConfig) -> None:
         self.config = config
+        self._api_key_lock = threading.Lock()
+        self._active_api_key_index = 0
+        self._disabled_api_key_indexes: set[int] = set()
         self._metrics_lock = threading.Lock()
         self._rate_limit_lock = threading.Lock()
         self._last_request_at = 0.0
@@ -1883,6 +2002,7 @@ class MimoClient:
             "model_calls": 0,
             "model_failed_calls": 0,
             "model_retries": 0,
+            "model_key_switches": 0,
             "model_input_tokens": 0,
             "model_output_tokens": 0,
             "model_total_tokens": 0,
@@ -1894,6 +2014,37 @@ class MimoClient:
     def from_env(cls) -> "MimoClient | None":
         config = MimoConfig.from_env()
         return cls(config) if config else None
+
+    def check_availability(self) -> dict[str, Any]:
+        """Make one small request to verify the configured MiMo key and endpoint."""
+        payload = {
+            "model": self.config.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "你是用于连通性预检的助手，只返回 JSON。",
+                },
+                {
+                    "role": "user",
+                    "content": "请只返回 {\"ok\": true}，不要添加解释。",
+                },
+            ],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+        }
+        response = self._post(payload)
+        content = _content_from_response(response)
+        try:
+            parsed = json.loads(_strip_json_fence(content))
+        except json.JSONDecodeError as exc:
+            raise MimoError("MiMo 预检响应不是合法 JSON") from exc
+        if not isinstance(parsed, dict) or parsed.get("ok") is not True:
+            raise MimoError("MiMo 预检响应缺少 ok=true")
+        return {
+            "passed": True,
+            "model": self.config.model,
+            "key_pool_size": len(self.config.all_api_keys()),
+        }
 
     def metrics_snapshot(self) -> dict[str, Any]:
         with self._metrics_lock:
@@ -1927,6 +2078,7 @@ class MimoClient:
         latency_ms: float,
         failed: bool = False,
         retried: bool = False,
+        key_switches: int = 0,
     ) -> None:
         usage = response.get("usage") if isinstance(response, dict) else {}
         usage = usage if isinstance(usage, dict) else {}
@@ -1956,6 +2108,9 @@ class MimoClient:
             self._metrics["model_retries"] = int(
                 self._metrics["model_retries"]
             ) + int(retried)
+            self._metrics["model_key_switches"] = int(
+                self._metrics["model_key_switches"]
+            ) + max(0, int(key_switches))
             self._metrics["model_input_tokens"] = int(
                 self._metrics["model_input_tokens"]
             ) + input_tokens
@@ -1971,6 +2126,31 @@ class MimoClient:
             self._metrics["model_estimated_cost"] = float(
                 self._metrics["model_estimated_cost"]
             ) + cost
+
+    def _current_api_key(self) -> tuple[int, str]:
+        api_keys = self.config.all_api_keys()
+        with self._api_key_lock:
+            for offset in range(len(api_keys)):
+                index = (
+                    self._active_api_key_index + offset
+                ) % len(api_keys)
+                if index in self._disabled_api_key_indexes:
+                    continue
+                self._active_api_key_index = index
+                return index, api_keys[index]
+        raise MimoError("所有配置的 MiMo API Key 均不可用")
+
+    def _disable_api_key(self, index: int) -> bool:
+        api_keys = self.config.all_api_keys()
+        with self._api_key_lock:
+            self._disabled_api_key_indexes.add(index)
+            for offset in range(1, len(api_keys) + 1):
+                candidate = (index + offset) % len(api_keys)
+                if candidate in self._disabled_api_key_indexes:
+                    continue
+                self._active_api_key_index = candidate
+                return True
+        return False
 
     def label(
         self,
@@ -2363,10 +2543,11 @@ class MimoClient:
         topic: dict[str, Any],
         matches: list[tuple[StandardCatalogItem, float]],
         use_standard_references: bool = True,
+        retry_reason: str = "",
     ) -> MimoLabelResult:
         """Generate a reusable draft after clustering, never from a single case."""
         allowed_refs = {_standard_ref(item) for item, _score in matches if _standard_ref(item)}
-        validation_error = ""
+        validation_error = retry_reason
         last_response: dict[str, Any] = {}
         request_audit: dict[str, Any] = {}
         for attempt in range(2):
@@ -2666,13 +2847,29 @@ class MimoClient:
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         last_error: Exception | None = None
-        for attempt in range(self.config.max_retries + 1):
+        request_attempt = 0
+        transient_retry = 0
+        key_switches = 0
+        api_keys = self.config.all_api_keys()
+        while True:
+            try:
+                api_key_index, api_key = self._current_api_key()
+            except MimoError as exc:
+                self._record_call_metrics(
+                    None,
+                    latency_ms=0.0,
+                    failed=True,
+                    retried=request_attempt > 0,
+                    key_switches=key_switches,
+                )
+                raise exc
             self._throttle()
+            request_attempt += 1
             request = Request(
                 self.config.chat_completions_url(),
                 data=body,
                 headers={
-                    "Authorization": f"Bearer {self.config.api_key}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                     "Accept": "application/json",
                 },
@@ -2689,37 +2886,71 @@ class MimoClient:
                 self._record_call_metrics(
                     parsed,
                     latency_ms=latency_ms,
-                    retried=attempt > 0,
+                    retried=request_attempt > 1,
+                    key_switches=key_switches,
                 )
                 parsed.setdefault(
                     "_answer_hub_metrics",
                     {
                         "latency_ms": round(latency_ms, 3),
-                        "attempt": attempt + 1,
+                        "attempt": request_attempt,
+                        "key_switches": key_switches,
+                        "key_pool_size": len(api_keys),
                     },
                 )
                 return parsed
             except HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")[:600]
+                for configured_key in api_keys:
+                    detail = detail.replace(configured_key, "[REDACTED]")
                 last_error = MimoError(f"MiMo HTTP {exc.code}: {detail}")
-                retryable = exc.code == 429 or 500 <= exc.code < 600
+                normalized_detail = detail.lower()
+                rotate_key = exc.code in {401, 402, 403} or any(
+                    marker in normalized_detail
+                    for marker in _API_KEY_ROTATION_MARKERS
+                )
+                retryable = (
+                    not rotate_key
+                    and (exc.code == 429 or 500 <= exc.code < 600)
+                )
             except URLError as exc:
                 last_error = MimoError(f"MiMo 网络错误：{exc.reason}")
+                rotate_key = False
                 retryable = True
             except json.JSONDecodeError as exc:
                 last_error = MimoError(f"MiMo 返回非 JSON 响应：{raw[:300]}")
+                rotate_key = False
                 retryable = False
             except MimoError as exc:
                 last_error = exc
+                rotate_key = False
                 retryable = False
             latency_ms = (time.monotonic() - started) * 1000
-            if not retryable or attempt >= self.config.max_retries:
+            if rotate_key:
+                if self._disable_api_key(api_key_index):
+                    key_switches += 1
+                    continue
                 self._record_call_metrics(
                     None,
                     latency_ms=latency_ms,
                     failed=True,
-                    retried=attempt > 0,
+                    retried=request_attempt > 1,
+                    key_switches=key_switches,
+                )
+                raise MimoError(
+                    f"{last_error}；所有配置的 MiMo API Key 均不可用"
+                )
+            if not retryable or transient_retry >= self.config.max_retries:
+                self._record_call_metrics(
+                    None,
+                    latency_ms=latency_ms,
+                    failed=True,
+                    retried=request_attempt > 1,
+                    key_switches=key_switches,
                 )
                 raise last_error
-            time.sleep(self.config.retry_backoff_seconds * (2**attempt))
-        raise last_error or MimoError("MiMo 调用失败")
+            time.sleep(
+                self.config.retry_backoff_seconds
+                * (2**transient_retry)
+            )
+            transient_retry += 1

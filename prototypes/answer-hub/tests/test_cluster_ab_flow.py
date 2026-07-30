@@ -12,14 +12,19 @@ from answer_hub.mimo import (
 )
 from scripts.run_cluster_ab_test import (
     TEXT_ONLY_PROMPT_VERSION,
+    SchemeResult,
     _analyze_row,
     _cache_entry_is_current,
     _cache_entry_needs_refresh,
     _cluster_units,
     _fallback_units,
     _invalid_source_reason,
+    _local_multi_topic_rescue,
     _new_semantic_text,
+    _prediction,
     _run_new_scheme_direct_mimo,
+    _select_pairs,
+    _source_state,
 )
 from answer_hub.workflow import (
     _direct_reconcile_bucket_compatible,
@@ -74,6 +79,203 @@ def test_new_semantic_text_uses_standardized_fields_not_evidence_narrative() -> 
     assert "这段证据文字不应进入向量文本" not in text
     assert "屏幕显示异常判定" in text
     assert "判断是否属于色斑" in text
+
+
+def test_multi_topic_prediction_uses_matching_atomic_cluster_before_override() -> None:
+    left = {
+        "conversation_type": "multi_topic",
+        "cluster_ids": ["C001", "C009"],
+    }
+    right = {
+        "conversation_type": "single_topic",
+        "cluster_ids": ["C009"],
+    }
+
+    assert _prediction(left, right, allow_multi_topic=True) == "同一主题"
+
+
+def test_multi_topic_prediction_splits_when_no_atomic_topic_matches() -> None:
+    left = {
+        "conversation_type": "multi_topic",
+        "cluster_ids": ["C001", "C009"],
+    }
+    right = {
+        "conversation_type": "single_topic",
+        "cluster_ids": ["C010"],
+    }
+
+    assert _prediction(left, right, allow_multi_topic=True) == "多主题需拆分"
+
+
+def test_prediction_never_merges_different_product_categories() -> None:
+    left = {
+        "conversation_type": "multi_topic",
+        "product_category": "电脑",
+        "cluster_ids": ["C001", "LOCAL-MULTI-S001"],
+        "local_multi_topic_rescue": True,
+    }
+    right = {
+        "conversation_type": "single_topic",
+        "product_category": "耳机",
+        "cluster_ids": ["C001"],
+    }
+
+    assert _prediction(left, right, allow_multi_topic=True) == "不同主题"
+
+
+def test_prediction_prioritizes_local_multi_topic_rescue() -> None:
+    left = {
+        "conversation_type": "multi_topic",
+        "product_category": "电脑",
+        "cluster_ids": ["C001", "LOCAL-MULTI-S001"],
+        "local_multi_topic_rescue": True,
+    }
+    right = {
+        "conversation_type": "single_topic",
+        "product_category": "电脑",
+        "cluster_ids": ["C001"],
+    }
+
+    assert _prediction(left, right, allow_multi_topic=True) == "多主题需拆分"
+
+
+def test_source_state_rescues_model_label_followup_as_multi_topic() -> None:
+    row = {
+        "样本ID": "S038",
+        "核心问题": "底部标签被撕，需要核对具体型号",
+        "聊天内容": (
+            "底部的标签被他撕了\n"
+            "怎么看第几款\n"
+            "怎么核对\n"
+            "有没有什么问题\n"
+            "查官网是这一款\n"
+            "后壳标签人为去除的话要勾选后壳无序列号\n"
+            "显卡硬盘这些有问题吗\n"
+            "内存硬盘都是品牌的"
+        ),
+    }
+    scheme = SchemeResult(
+        units=[
+            {
+                "unit_id": "S038-01",
+                "sample_id": "S038",
+                "conversation_type": "single_topic",
+                "cluster_id": "C041",
+            }
+        ],
+        assignments={},
+        similarities={},
+    )
+
+    assert _local_multi_topic_rescue(row)
+    state = _source_state(scheme, [row], new_scheme=True)["S038"]
+
+    assert state["conversation_type"] == "multi_topic"
+    assert state["local_multi_topic_rescue"] is True
+    assert state["cluster_ids"] == ["C041", "LOCAL-MULTI-S038"]
+
+
+def test_local_rescue_detects_repair_components_with_separate_standards() -> None:
+    assert _local_multi_topic_rescue(
+        {
+            "核心问题": "主板有标签、屏幕有贴纸，不清楚怎么判定",
+            "聊天内容": (
+                "老师，看一下拆机图，主板有标签，屏幕有贴纸。这个怎么判定？\n"
+                "这个是屏幕的其他非原厂特征\n"
+                "贴纸的话我这边再确认下"
+            ),
+        }
+    )
+
+
+def test_local_rescue_detects_multiple_information_query_targets() -> None:
+    assert _local_multi_topic_rescue(
+        {
+            "核心问题": "需要确认BIOS锁状态、型号、硬盘内存品牌和指纹支持",
+            "聊天内容": (
+                "有没有bios锁\n"
+                "无锁吧\n"
+                "没锁的\n"
+                "型号是这个吗\n"
+                "RedmiBook 14 2025\n"
+                "硬盘内存品牌吗\n"
+                "内存和硬盘都是品牌认证的\n"
+                "这个机支持指纹吗\n"
+                "不支持"
+            ),
+        }
+    )
+
+
+def test_select_pairs_skips_cross_product_pairs() -> None:
+    rows = [
+        {"样本ID": "S001", "产品类型": "手机"},
+        {"样本ID": "S002", "产品类型": "电脑"},
+        {"样本ID": "S003", "产品类型": "手机"},
+    ]
+    old_scheme = SchemeResult(
+        units=[
+            {
+                "unit_id": "S001-01",
+                "sample_id": "S001",
+                "cluster_id": "O001",
+                "conversation_type": "single_topic",
+            },
+            {
+                "unit_id": "S002-01",
+                "sample_id": "S002",
+                "cluster_id": "O002",
+                "conversation_type": "single_topic",
+            },
+            {
+                "unit_id": "S003-01",
+                "sample_id": "S003",
+                "cluster_id": "O003",
+                "conversation_type": "single_topic",
+            },
+        ],
+        assignments={},
+        similarities={},
+    )
+    new_scheme = SchemeResult(
+        units=[
+            {
+                "unit_id": "S001-01",
+                "sample_id": "S001",
+                "cluster_id": "N001",
+                "conversation_type": "single_topic",
+            },
+            {
+                "unit_id": "S002-01",
+                "sample_id": "S002",
+                "cluster_id": "N001",
+                "conversation_type": "single_topic",
+            },
+            {
+                "unit_id": "S003-01",
+                "sample_id": "S003",
+                "cluster_id": "N003",
+                "conversation_type": "single_topic",
+            },
+        ],
+        assignments={},
+        similarities={},
+    )
+
+    pairs = _select_pairs(rows, old_scheme, new_scheme, limit=10)
+
+    assert pairs == [
+        {
+            "left_id": "S001",
+            "right_id": "S003",
+            "old_prediction": "不同主题",
+            "new_prediction": "不同主题",
+            "old_similarity": 0.0,
+            "new_similarity": 0.0,
+            "stratum": "共同拆分",
+            "pair_id": "P001",
+        }
+    ]
 
 
 def test_failed_model_fallback_does_not_trust_problem_description() -> None:

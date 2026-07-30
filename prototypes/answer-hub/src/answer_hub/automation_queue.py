@@ -16,7 +16,11 @@ from .auto_review import (
     partition_auto_review_candidates,
     select_candidates_for_submission,
 )
-from .automation import AutomationRunStore, run_automation_pipeline
+from .automation import (
+    AutomationRunStore,
+    automation_run_succeeded,
+    run_automation_pipeline,
+)
 from .cz_integration import CzIntegrationAdapter
 from .embedding import EmbeddingClient
 from .excel_io import read_workbook_rows, write_rows_to_workbook
@@ -441,6 +445,7 @@ def process_automation_queue(
     embedding_client: EmbeddingClient | None = None,
     auto_review_policy: AutoReviewPolicy | None = None,
     cz_adapter: CzIntegrationAdapter | None = None,
+    continue_on_mimo_unavailable: bool = False,
 ) -> dict[str, Any]:
     standards = Path(standards_path) if standards_path else None
     if standards is not None and not standards.is_file():
@@ -500,6 +505,10 @@ def process_automation_queue(
                 effective_clustering_mode = str(
                     job_options.get("clustering_mode", clustering_mode)
                     or clustering_mode
+                )
+                effective_continue_on_mimo_unavailable = _option_bool(
+                    job_options.get("continue_on_mimo_unavailable"),
+                    continue_on_mimo_unavailable,
                 )
                 effective_semantic_threshold = _option_float(
                     job_options.get("semantic_threshold"),
@@ -562,9 +571,12 @@ def process_automation_queue(
                         ),
                         cluster_review_limit=effective_cluster_review_limit,
                         embedding_client=embedding_client,
+                        continue_on_mimo_unavailable=(
+                            effective_continue_on_mimo_unavailable
+                        ),
                     )
                     if (
-                        manifest.get("status") != "failed"
+                        automation_run_succeeded(manifest)
                         and effective_submit_to_cz
                     ):
                         manifest = _run_model_review_and_cz_candidate_sync(
@@ -573,7 +585,7 @@ def process_automation_queue(
                             policy=auto_review_policy,
                             cz_adapter=cz_adapter,
                         )
-                    succeeded = manifest.get("status") != "failed"
+                    succeeded = automation_run_succeeded(manifest)
                     final_path = queue.finish(claimed_path, succeeded=succeeded)
                     if job_metadata:
                         job_metadata.update(
