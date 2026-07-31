@@ -123,13 +123,30 @@ bash scripts/deploy.sh --database-mode local --runtime auto
 
 ## 日常更新
 
+服务器已经完成首次部署后，日常发布属于增量更新，不再重复执行整套部署脚本。普通前端、后端代码更新只更新 `backend`：
+
 ```bash
-cd /opt/knowledge-kb
-git pull
-bash scripts/deploy.sh --database-mode cloud --runtime auto
+cd /www/wwwroot/knowledge-kb
+git status --short --branch
+git fetch origin
+git pull --ff-only origin master
+
+docker compose -p knowledge-kb \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.embedding-cpu.yml \
+  build backend
+
+docker compose -p knowledge-kb \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.embedding-cpu.yml \
+  up -d --no-deps backend
 ```
 
-部署脚本使用 `--remove-orphans`。从本地模式切换为云模式时会停止旧 `kb-postgres` 容器，但不会删除原 `pg_data` 卷。
+普通更新禁止执行全项目 `up -d --build`、`--remove-orphans` 或重新构建 Embedding。只有本次改动确实包含 Alembic 迁移时，才额外构建并运行 `migrate`；只有经过评审的数据库、Redis、Embedding 或 Compose 拓扑变更，才允许使用完整部署脚本。
+
+共享生产服务器的准确目录、Compose 文件组合、更新前检查和更新后验收，以 `docs/server-deployment-boundary.md` 为准。
 
 ## 常用运维
 

@@ -35,9 +35,11 @@ Docker 面板于 2026-07-27 显示以下知识库专属容器：
 
 公网访问必须经项目专属 Nginx/宝塔站点反向代理进入。不得把 `8000`、PostgreSQL 或 Redis 直接暴露到公网。
 
-## 3. 项目专属部署配置
+## 3. 项目专属更新配置
 
-后续部署仅使用项目目录中的以下 Compose 文件组合：
+服务器已完成首次部署，后续发布均按“更新现有服务”处理，不得默认重新部署整套环境。
+
+当前服务器只使用项目目录中的以下 Compose 文件组合：
 
 ```text
 docker-compose.yml
@@ -45,27 +47,68 @@ docker-compose.local.yml
 docker-compose.embedding-cpu.yml
 ```
 
-当前服务器按本地 PostgreSQL、当地媒体目录和 CPU Embedding 的方案运行。标准更新命令为：
+当前服务器按本地 PostgreSQL、本地媒体目录和 CPU Embedding 的方案运行。普通后端或前端代码更新时，前端会随 `kb-backend` 镜像一起更新，只允许构建和替换后端：
 
 ```bash
 cd /www/wwwroot/knowledge-kb
 git fetch origin
 git pull --ff-only origin master
-bash scripts/deploy.sh --database-mode local --runtime cpu
+
+docker compose -p knowledge-kb \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.embedding-cpu.yml \
+  build backend
+
+docker compose -p knowledge-kb \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.embedding-cpu.yml \
+  up -d --no-deps backend
 ```
 
-执行前必须先检查：
+`--no-deps` 是服务器日常更新的必要保护，确保不会重建或重启 PostgreSQL、Redis、Qwen Embedding 和迁移容器。
+
+如果本次代码包含新的 Alembic 迁移，应只额外构建并运行迁移服务，再更新后端：
+
+```bash
+docker compose -p knowledge-kb \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.embedding-cpu.yml \
+  build migrate backend
+
+docker compose -p knowledge-kb \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.embedding-cpu.yml \
+  run --rm migrate
+
+docker compose -p knowledge-kb \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.embedding-cpu.yml \
+  up -d --no-deps backend
+```
+
+只有首次安装，或经过评审的数据库、Redis、Embedding、Compose 拓扑变更，才允许使用 `scripts/deploy.sh`。日常代码更新禁止执行全项目 `up -d --build`、`--remove-orphans` 或重新构建 Embedding。
+
+更新前必须先检查：
 
 ```bash
 cd /www/wwwroot/knowledge-kb
 git status --short --branch
+docker inspect kb-backend kb-postgres kb-redis kb-embedding-qwen \
+  --format '{{.Name}} {{.State.Status}} {{.State.StartedAt}} {{.Image}}'
 ```
 
 如果服务器工作区存在未提交修改、未知文件或当前分支不是预期分支，必须停止更新并先确认原因；不得用强制拉取、重置分支或覆盖文件的方式继续。
 
+更新完成后再次执行同一条 `docker inspect`。普通后端更新只允许 `kb-backend` 的启动时间或镜像发生变化；PostgreSQL、Redis 和 Embedding 必须保持不变。
+
 ## 4. 每次更新后的最低验收
 
-部署脚本完成后，至少执行：
+增量更新完成后，至少执行：
 
 ```bash
 curl http://127.0.0.1:8000/health
@@ -75,7 +118,7 @@ curl http://127.0.0.1:8000/ready
 并确认：
 
 1. `kb-backend`、`kb-postgres`、`kb-redis`、`kb-embedding-qwen` 处于运行状态；
-2. `kb-migrate` 的迁移结果正常，而不是因报错退出；
+2. 没有数据库迁移时，`kb-migrate` 保持原有 `Exited (0)` 状态；有迁移时，本次迁移任务退出码必须为 0；
 3. 登录页、管理后台和知识库关键接口可用；
 4. 媒体上传与读取路径未改变；
 5. 更新后的 Git 提交号与目标发布提交一致。

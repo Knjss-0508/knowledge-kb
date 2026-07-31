@@ -2,6 +2,8 @@
 
 部署脚本会同时选择数据库模式和 Qwen3 运行模式。
 
+> `scripts/deploy.sh` 和 `scripts/deploy.ps1` 用于首次安装或经过评审的基础设施、运行时、Compose 拓扑变更。已经部署完成的服务器进行日常代码发布时，不得再次全量运行部署脚本；应按 `docs/server-deployment-boundary.md` 只更新实际发生变化的服务。普通前端、后端代码更新只构建并替换 `backend`，必须使用 `up -d --no-deps backend`，不得重建 PostgreSQL、Redis 或 Embedding。
+
 ## 数据库模式
 
 ```bash
