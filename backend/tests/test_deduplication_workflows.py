@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
 
 from app.routes.integration import submit_candidate_reviews, submit_knowledge_candidates
-from app.models.knowledge import KnowledgeStatus
+from app.models.knowledge import KnowledgeChangeLog, KnowledgeStatus
 from app.routes.knowledge import (
     _bind_source_identifiers,
     _auto_publish_approved_source_excel,
@@ -301,6 +301,46 @@ class DeduplicationWorkflowTests(unittest.TestCase):
         self.assertEqual(response.results[0].status, "approved")
         self.assertEqual(item.status, KnowledgeStatus.PUBLISHED)
         self.assertEqual(item.updated_by, "approver")
+        approval_log = db.add.call_args.args[0]
+        self.assertIsInstance(approval_log, KnowledgeChangeLog)
+        self.assertEqual(approval_log.knowledge_id, item.id)
+        self.assertEqual(approval_log.changed_by, "approver")
+        self.assertEqual(approval_log.changed_fields, ["status"])
+        self.assertEqual(approval_log.before_data, {"status": "review"})
+        self.assertEqual(approval_log.after_data, {"status": "published"})
+        self.assertEqual(approval_log.created_at, item.updated_at)
+
+    def test_approve_records_reviewer_and_review_time(self):
+        item = SimpleNamespace(
+            id="A-00021",
+            status=KnowledgeStatus.REVIEW,
+            deduplication_metadata={},
+            updated_by=None,
+            updated_at=None,
+        )
+        query = MagicMock()
+        query.filter.return_value.first.return_value = item
+        db = MagicMock()
+        db.query.return_value = query
+
+        with patch("app.routes.knowledge.ensure_embedding"), patch(
+            "app.routes.knowledge.ensure_search_embeddings"
+        ), patch("app.routes.knowledge._to_response", return_value={}):
+            approve_knowledge(
+                item.id,
+                db,
+                SimpleNamespace(username="approver"),
+            )
+
+        approval_log = db.add.call_args.args[0]
+        self.assertIsInstance(approval_log, KnowledgeChangeLog)
+        self.assertEqual(approval_log.knowledge_id, item.id)
+        self.assertEqual(approval_log.changed_by, "approver")
+        self.assertEqual(approval_log.changed_fields, ["status"])
+        self.assertEqual(approval_log.before_data, {"status": "review"})
+        self.assertEqual(approval_log.after_data, {"status": "published"})
+        self.assertEqual(approval_log.created_at, item.updated_at)
+        db.commit.assert_called_once_with()
 
     def test_approve_requires_reasoned_deduplication_confirmation(self):
         item = SimpleNamespace(

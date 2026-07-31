@@ -2,11 +2,18 @@ import json
 import unittest
 from types import SimpleNamespace
 
+from fastapi import HTTPException
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from app.main import app
-from app.routes.knowledge import _filtered_knowledge_query, _has_knowledge_export_filter
+from app.models.knowledge import KnowledgeStatus
+from app.routes.knowledge import (
+    _filtered_knowledge_query,
+    _has_knowledge_export_filter,
+    _import_review_metadata,
+    _require_manual_applicable_category,
+)
 
 
 class ApiContractTests(unittest.TestCase):
@@ -53,6 +60,32 @@ class ApiContractTests(unittest.TestCase):
             if parameter["name"] == "keyword"
         )
         self.assertIn("副标题", keyword_parameter["description"])
+        response_properties = app.openapi()["components"]["schemas"][
+            "KnowledgeResponse"
+        ]["properties"]
+        self.assertIn("import_review_metadata", response_properties)
+
+    def test_import_review_metadata_only_exposes_review_evidence(self):
+        item = SimpleNamespace(
+            source="excel",
+            status=KnowledgeStatus.REVIEW,
+            source_fields={
+                "校验备注": "审核原因：关联标准项需要人工确认",
+                "来源追溯": "文件=a.xlsx；Sheet=知识库主表；行=12",
+                "知识内容": "不应通过审核接口暴露",
+            },
+        )
+
+        self.assertEqual(
+            _import_review_metadata(item),
+            {
+                "validation_remark": "审核原因：关联标准项需要人工确认",
+                "source_trace": "文件=a.xlsx；Sheet=知识库主表；行=12",
+            },
+        )
+
+        item.status = KnowledgeStatus.PUBLISHED
+        self.assertEqual(_import_review_metadata(item), {})
 
     def test_knowledge_keyword_search_covers_non_title_fields(self):
         session = Session()
@@ -97,6 +130,36 @@ class ApiContractTests(unittest.TestCase):
                 model_ids=[],
                 keyword=None,
             )
+        )
+
+    def test_manual_quality_knowledge_requires_at_least_one_applicable_category(self):
+        with self.assertRaises(HTTPException) as raised:
+            _require_manual_applicable_category(
+                source="manual",
+                category_id="cat-qc-standard",
+                applicable_categories=[],
+            )
+
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertEqual(
+            raised.exception.detail,
+            "适用类目至少选择一项，可多选。",
+        )
+
+        _require_manual_applicable_category(
+            source="manual",
+            category_id="cat-qc-process",
+            applicable_categories=["tablet", "phone"],
+        )
+        _require_manual_applicable_category(
+            source="excel",
+            category_id="cat-qc-standard",
+            applicable_categories=[],
+        )
+        _require_manual_applicable_category(
+            source="manual",
+            category_id="cat-case-analysis",
+            applicable_categories=[],
         )
 
     def test_candidate_review_routes_are_exposed(self):

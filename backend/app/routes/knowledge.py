@@ -125,6 +125,33 @@ def _auto_publish_approved_source_excel(
     return True
 
 
+MANHATTAN_APPLICABILITY_CATEGORY_IDS = {
+    "cat-qc-standard",
+    "cat-qc-process",
+}
+
+
+def _require_manual_applicable_category(
+    *,
+    source: str,
+    category_id: str | None,
+    applicable_categories,
+) -> None:
+    """质检知识的人工维护至少绑定一个适用类目，允许选择多个。"""
+    if source != "manual" or category_id not in MANHATTAN_APPLICABILITY_CATEGORY_IDS:
+        return
+    selected = [
+        str(value).strip()
+        for value in (applicable_categories or [])
+        if str(value).strip()
+    ]
+    if not selected:
+        raise HTTPException(
+            status_code=422,
+            detail="适用类目至少选择一项，可多选。",
+        )
+
+
 class SourceKnowledgeMatchError(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -456,6 +483,28 @@ def _check_manual_deduplication(
     return decision
 
 
+def _import_review_metadata(item: Knowledge) -> dict[str, str]:
+    """只向审核界面暴露 Excel 原始行中与人工复核直接相关的字段。"""
+    if item.source != "excel" or item.status != KnowledgeStatus.REVIEW:
+        return {}
+    source_fields = item.source_fields or {}
+    if not isinstance(source_fields, dict):
+        return {}
+
+    normalized = {
+        re.sub(r"[（(].*?[）)]", "", str(key))
+        .replace("*", "")
+        .replace(" ", "")
+        .strip(): str(value or "").strip()
+        for key, value in source_fields.items()
+    }
+    metadata = {
+        "validation_remark": normalized.get("校验备注", ""),
+        "source_trace": normalized.get("来源追溯", ""),
+    }
+    return {key: value for key, value in metadata.items() if value}
+
+
 def _to_response(item: Knowledge) -> dict:
     tags = []
     for kt in item.tags:
@@ -494,6 +543,7 @@ def _to_response(item: Knowledge) -> dict:
         "source_topic_key": item.source_topic_key,
         "source_record_id": item.source_record_id,
         "source_knowledge_key": item.source_knowledge_key,
+        "import_review_metadata": _import_review_metadata(item),
         "deduplication_metadata": item.deduplication_metadata or {},
         "created_by": item.created_by,
         "updated_by": item.updated_by,
@@ -514,6 +564,11 @@ def _create_knowledge_item(
     source: str = "manual",
     allow_duplicate_review: bool = False,
 ) -> Knowledge:
+    _require_manual_applicable_category(
+        source=source,
+        category_id=body.category_id,
+        applicable_categories=body.applicable_categories,
+    )
     if not db.query(Category.id).filter(Category.id == body.category_id).first():
         raise HTTPException(status_code=422, detail="所属分类不存在。")
 
@@ -1395,6 +1450,24 @@ def _knowledge_snapshot(item: Knowledge) -> dict:
     }
 
 
+def _approval_change_log(
+    item: Knowledge,
+    *,
+    reviewed_by: str,
+    reviewed_at: datetime,
+) -> KnowledgeChangeLog:
+    """记录待审核知识成功发布的审核人、审核时间和状态变化。"""
+    return KnowledgeChangeLog(
+        id=f"kcl-{uuid.uuid4().hex[:12]}",
+        knowledge_id=item.id,
+        changed_by=reviewed_by,
+        changed_fields=["status"],
+        before_data={"status": KnowledgeStatus.REVIEW.value},
+        after_data={"status": KnowledgeStatus.PUBLISHED.value},
+        created_at=reviewed_at,
+    )
+
+
 def _can_edit_knowledge(item: Knowledge, user: User) -> bool:
     if user.role == "super_admin":
         return True
@@ -1487,6 +1560,14 @@ def update_knowledge(
     before_data = _knowledge_snapshot(item) if was_published else None
     updates = body.model_dump(exclude_unset=True)
     updated_fields = set(updates)
+    _require_manual_applicable_category(
+        source=item.source,
+        category_id=updates.get("category_id", item.category_id),
+        applicable_categories=updates.get(
+            "applicable_categories",
+            item.applicable_categories,
+        ),
+    )
     try:
         for field, val in updates.items():
             if field == "content":
@@ -1707,9 +1788,17 @@ def approve_knowledge(
         )
     ensure_embedding(db, item)
     ensure_search_embeddings(db, item)
+    reviewed_at = datetime.utcnow()
     item.status = KnowledgeStatus.PUBLISHED
     item.updated_by = current_user.username
-    item.updated_at = datetime.utcnow()
+    item.updated_at = reviewed_at
+    db.add(
+        _approval_change_log(
+            item,
+            reviewed_by=current_user.username,
+            reviewed_at=reviewed_at,
+        )
+    )
     db.commit()
     db.refresh(item)
     return _to_response(item)
@@ -1792,9 +1881,17 @@ def batch_approve_knowledge(
         try:
             ensure_embedding(db, item)
             ensure_search_embeddings(db, item)
+            reviewed_at = datetime.utcnow()
             item.status = KnowledgeStatus.PUBLISHED
             item.updated_by = current_user.username
-            item.updated_at = datetime.utcnow()
+            item.updated_at = reviewed_at
+            db.add(
+                _approval_change_log(
+                    item,
+                    reviewed_by=current_user.username,
+                    reviewed_at=reviewed_at,
+                )
+            )
             db.commit()
             approved += 1
             results.append(
