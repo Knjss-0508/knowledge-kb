@@ -112,6 +112,10 @@ class KnowledgeResponse(BaseModel):
     source_topic_key: Optional[str] = Field(None, description="来源主题键")
     source_record_id: Optional[str] = Field(None, description="来源记录ID")
     source_knowledge_key: Optional[str] = Field(None, description="来源知识键")
+    import_review_metadata: dict[str, str] = Field(
+        default_factory=dict,
+        description="Excel 待审核知识的校验备注与来源追溯，仅用于人工审核",
+    )
     deduplication_metadata: dict[str, Any] = Field(default={}, description="提交审核时的查重结果")
     created_by: str = Field(description="创建人")
     updated_by: Optional[str] = Field(None, description="最近变更人")
