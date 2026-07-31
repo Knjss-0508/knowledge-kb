@@ -2088,7 +2088,7 @@ Vue.createApp({
         }
         if (typeof v === 'object') {
           var label = v.label || v.name || v.title || v.text || v.value || v.businessName || v.brandName || v.modelName || v.categoryName;
-          var value = v.value || v.id || v.code || v.businessType || v.brandId || v.modelId || v.categoryId || label;
+          var value = v.value || v.modelId || v.brandId || v.categoryId || v.id || v.code || v.businessType || label;
           if (label || value) out.push({label: String(label || value), value: String(value), raw: v});
           ['children','childList','list','records','data','options'].forEach(function(k) { if (v[k]) walk(v[k]); });
         }
