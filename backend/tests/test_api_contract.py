@@ -211,6 +211,34 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn("plugin_name", processing)
         self.assertIn("plugin_version", processing)
 
+    def test_standard_provider_search_contract_is_exposed(self):
+        specification = app.openapi()
+        operation = specification["paths"][
+            "/api/v1/integration/standard-search"
+        ]["post"]
+        parameter_names = {
+            parameter["name"] for parameter in operation["parameters"]
+        }
+        self.assertIn("X-Integration-Key", parameter_names)
+
+        schemas = specification["components"]["schemas"]
+        request_properties = schemas[
+            "IntegrationStandardSearchRequest"
+        ]["properties"]
+        candidate_properties = schemas[
+            "IntegrationStandardSearchCandidate"
+        ]["properties"]
+        response_properties = schemas[
+            "IntegrationStandardSearchResponse"
+        ]["properties"]
+
+        self.assertIn("normalizedQuestion", request_properties)
+        self.assertIn("productType", request_properties)
+        self.assertIn("finalScore", candidate_properties)
+        self.assertIn("sourceRef", candidate_properties)
+        self.assertIn("retrievalMode", response_properties)
+        self.assertIn("knowledgeVersion", response_properties)
+
     def test_openapi_no_longer_exposes_knowledge_layer(self):
         specification = json.dumps(app.openapi(), ensure_ascii=False)
         self.assertNotIn('"layer"', specification)

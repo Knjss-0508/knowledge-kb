@@ -299,6 +299,90 @@ class IntegrationTaxonomyResponse(BaseModel):
     tag_dimensions: list[TagDimensionResponse]
 
 
+class IntegrationStandardSearchOrderInfo(BaseModel):
+    category: str = Field("", max_length=500)
+    model: str = Field("", max_length=500)
+
+
+class IntegrationStandardSearchRequest(BaseModel):
+    """答疑智能推荐助手 external-standard-provider 的请求契约。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    normalized_question: str = Field(
+        ...,
+        alias="normalizedQuestion",
+        min_length=1,
+        max_length=8000,
+    )
+    product_type: str = Field("", alias="productType", max_length=500)
+    model: str = Field("", max_length=500)
+    order_info: IntegrationStandardSearchOrderInfo = Field(
+        default_factory=IntegrationStandardSearchOrderInfo,
+        alias="orderInfo",
+    )
+    part_terms: list[str] = Field(default_factory=list, alias="partTerms", max_length=100)
+    phenomenon_terms: list[str] = Field(
+        default_factory=list,
+        alias="phenomenonTerms",
+        max_length=100,
+    )
+    category_intent: list[str] = Field(
+        default_factory=list,
+        alias="categoryIntent",
+        max_length=100,
+    )
+    limit: int = Field(5, ge=1, le=20)
+
+    @field_validator("normalized_question")
+    @classmethod
+    def normalized_question_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("normalizedQuestion must not be blank")
+        return value
+
+    @field_validator("part_terms", "phenomenon_terms", "category_intent")
+    @classmethod
+    def normalize_context_terms(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            item = value.strip()
+            if not item:
+                continue
+            if len(item) > 500:
+                raise ValueError("context term must not exceed 500 characters")
+            normalized.append(item)
+        return normalized
+
+
+class IntegrationStandardSearchCandidate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    title: str
+    text: str
+    score: float = Field(ge=0, le=1)
+    final_score: float = Field(alias="finalScore", ge=0, le=1)
+    status: Literal["published"] = "published"
+    category_id: str | None = Field(None, alias="categoryId")
+    level1_label: str = Field("", alias="level1Label")
+    product_type: str = Field("", alias="productType")
+    models: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    source_ref: str = Field(alias="sourceRef")
+
+
+class IntegrationStandardSearchResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    provider: str
+    status: Literal["success", "no_match"]
+    retrieval_mode: str = Field(alias="retrievalMode")
+    knowledge_version: str = Field(alias="knowledgeVersion")
+    candidates: list[IntegrationStandardSearchCandidate]
+
+
 class RetrievalQualityEventPayload(BaseModel):
     idempotency_key: str = Field(..., min_length=1, max_length=128)
     source_system: str = Field(..., min_length=1, max_length=64)

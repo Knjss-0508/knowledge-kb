@@ -18,9 +18,11 @@ from app.routes.knowledge import _generate_knowledge_id, _normalize_content
 from app.services.embedding import EmbeddingServiceUnavailable
 from app.services.knowledge_dedup import (
     DedupDecision,
+    _content_to_text,
     check_duplicate,
     ensure_search_embeddings,
     save_embedding,
+    search_embeddings,
 )
 from app.schemas.integration import (
     CandidateReviewBatchSubmit,
@@ -39,6 +41,9 @@ from app.schemas.integration import (
     IntegrationDedupMatch,
     IntegrationDedupResponse,
     IntegrationIngestionResponse,
+    IntegrationStandardSearchCandidate,
+    IntegrationStandardSearchRequest,
+    IntegrationStandardSearchResponse,
     IntegrationTaxonomyResponse,
     RetrievalQualityEventBatch,
     RetrievalQualityEventBatchResponse,
@@ -55,6 +60,7 @@ router = APIRouter(prefix="/integration", tags=["自动化接入"])
 logger = logging.getLogger(__name__)
 
 TAXONOMY_VERSION = "automation-v3"
+STANDARD_SEARCH_MAX_RESULTS = 5
 
 
 def _to_dedup_response(decision: DedupDecision) -> IntegrationDedupResponse:
@@ -287,6 +293,85 @@ def _resolve_retrieval_outcome(candidate) -> str:
     if not candidate.selected:
         return "not_selected"
     return "accepted"
+
+
+def _standard_search_strings(values, *, limit: int = 100) -> list[str]:
+    result: list[str] = []
+    for value in values or []:
+        normalized = str(value).strip()
+        if normalized and normalized not in result:
+            result.append(normalized)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _to_standard_search_candidate(
+    item: Knowledge,
+    score: float,
+) -> IntegrationStandardSearchCandidate:
+    applicable_categories = _standard_search_strings(item.applicable_categories)
+    keywords = _standard_search_strings(
+        [*(item.subtitles or []), *(item.applicable_scenes or [])]
+    )
+    category = getattr(item, "category", None)
+    normalized_score = max(0.0, min(1.0, float(score)))
+    return IntegrationStandardSearchCandidate(
+        id=item.id,
+        title=item.title,
+        text=_content_to_text(item.content),
+        score=normalized_score,
+        final_score=normalized_score,
+        status="published",
+        category_id=item.category_id,
+        level1_label=str(getattr(category, "name", "") or ""),
+        product_type=applicable_categories[0] if applicable_categories else "",
+        models=_standard_search_strings(item.applicable_models),
+        keywords=keywords,
+        source_ref=f"knowledge-kb://knowledge/{item.id}",
+    )
+
+
+@router.post(
+    "/standard-search",
+    response_model=IntegrationStandardSearchResponse,
+    summary="为答疑智能推荐助手检索已发布知识",
+)
+def search_standard_provider_knowledge(
+    body: IntegrationStandardSearchRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_integration_key),
+):
+    top_k = min(body.limit, STANDARD_SEARCH_MAX_RESULTS)
+    try:
+        ranked = search_embeddings(
+            db,
+            query=body.normalized_question,
+            top_k=top_k,
+        )
+    except EmbeddingServiceUnavailable as exc:
+        logger.warning("Embedding unavailable during standard provider search: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding 服务不可用，无法完成语义检索",
+        ) from exc
+
+    published_ranked = [
+        (item, score)
+        for item, score in ranked
+        if item.status == KnowledgeStatus.PUBLISHED
+    ][:top_k]
+    candidates = [
+        _to_standard_search_candidate(item, score)
+        for item, score in published_ranked
+    ]
+    return IntegrationStandardSearchResponse(
+        provider="knowledge-kb",
+        status="success" if candidates else "no_match",
+        retrieval_mode="semantic_pgvector",
+        knowledge_version=settings.VERSION,
+        candidates=candidates,
+    )
 
 
 @router.post(
