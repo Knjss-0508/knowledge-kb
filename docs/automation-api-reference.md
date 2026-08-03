@@ -50,7 +50,9 @@ Content-Type: application/json
 
 ### 2.3 下游召回鉴权
 
-当前已实现的召回接口为 `/knowledge/search`。后端当前未强制校验 `X-Integration-Key`，生产环境必须仅通过内网或 API 网关向受信任下游开放，禁止直接暴露到公网。
+答疑智能推荐助手调用 `/integration/standard-search` 时，必须携带
+`X-Integration-Key`。内部运营页面使用的 `/knowledge/search` 仍使用平台账号
+Bearer 会话，不应将网页登录令牌配置到插件中。
 
 ### 2.4 通用规则
 
@@ -430,7 +432,98 @@ GET /integration/ingestions/{ingestion_id}
 
 ## 5. 下游知识召回接口
 
-### 5.1 语义搜索已发布知识
+### 5.1 答疑智能推荐助手标准知识 Provider
+
+```http
+POST /integration/standard-search
+X-Integration-Key: <INTEGRATION_API_KEY>
+Content-Type: application/json
+```
+
+该接口与“答疑智能推荐助手 0.2.2”的 `external-standard-provider` 契约兼容。
+服务端只检索 `published` 已发布知识，并按向量相关性返回最多 5 条；待审核、
+草稿和已废弃知识不会出现在响应中。
+
+请求示例：
+
+```json
+{
+  "normalizedQuestion": "屏幕四周胶条破损怎么判定",
+  "productType": "手机",
+  "model": "iPhone 13",
+  "orderInfo": {
+    "category": "手机",
+    "model": "iPhone 13"
+  },
+  "partTerms": ["屏幕", "胶条"],
+  "phenomenonTerms": ["破损"],
+  "categoryIntent": ["外观问题"],
+  "limit": 8
+}
+```
+
+字段说明：
+
+| 字段 | 必填 | 说明 |
+|---|---:|---|
+| `normalizedQuestion` | 是 | 插件整理后的检索问题，不能为空 |
+| `productType` / `model` | 否 | 插件提供的商品类目和机型上下文 |
+| `orderInfo` | 否 | 插件订单上下文，当前保留 `category` 和 `model` |
+| `partTerms` / `phenomenonTerms` / `categoryIntent` | 否 | 插件已解析的检索上下文 |
+| `limit` | 否 | 兼容插件的 1～20 输入；知识库实际最多返回 5 条 |
+
+当前版本只使用 `normalizedQuestion` 生成查询向量。插件传入的类目和机型是中文
+名称，而知识库适用范围保存的是曼哈顿 ID，尚未建立名称到 ID 的稳定映射，因此
+这些上下文字段暂不作为硬过滤条件，避免误删正确候选。
+
+响应示例：
+
+```json
+{
+  "provider": "knowledge-kb",
+  "status": "success",
+  "retrievalMode": "semantic_pgvector",
+  "knowledgeVersion": "0.1.0",
+  "candidates": [
+    {
+      "id": "A-00001",
+      "title": "手机无法开机的排查步骤",
+      "text": "先确认充电器、线材和电源状态；再执行强制重启。",
+      "score": 0.912345,
+      "finalScore": 0.912345,
+      "status": "published",
+      "categoryId": "cat-qc-standard",
+      "level1Label": "质检标准",
+      "productType": "phone",
+      "models": ["iphone-13"],
+      "keywords": ["手机黑屏怎么处理"],
+      "sourceRef": "knowledge-kb://knowledge/A-00001"
+    }
+  ]
+}
+```
+
+知识正文会转换为纯文本返回；图片和视频地址不会下发，但其 `alt`、`caption`
+等可读说明会保留。无命中时返回 HTTP 200、`status: "no_match"` 和空
+`candidates`。Embedding 服务不可用时返回 HTTP 503。
+
+插件的 Provider 配置示例：
+
+```json
+[
+  {
+    "id": "knowledge-kb",
+    "enabled": true,
+    "searchUrl": "https://<知识库地址>/api/v1/integration/standard-search",
+    "apiKeyEnv": "KNOWLEDGE_KB_INTEGRATION_KEY",
+    "authHeader": "X-Integration-Key",
+    "authScheme": "",
+    "timeoutMs": 15000
+  }
+]
+```
+
+### 5.2 平台账号语义搜索
 
 ```http
 POST /knowledge/search
@@ -483,7 +576,7 @@ POST /knowledge/search
 
 `score` 是当前查询与该知识最佳副标题向量或正文分块向量的余弦相似度，范围为 0 到 1。它用于排序，不应单独作为业务正确性的绝对判定。
 
-### 5.2 调用建议
+### 5.3 调用建议
 
 1. 下游先根据业务上下文传入 `category_id` 等可确定的过滤条件。
 2. 以 `score` 排序取回 `top_k` 条候选知识。
@@ -575,7 +668,8 @@ GET  /integration/ingestions/{ingestion_id}    （按需查询）
 ### 7.2 下游召回与反馈
 
 ```text
-POST /knowledge/search
+POST /integration/standard-search              （答疑智能推荐助手）
+POST /knowledge/search                         （平台账号）
 POST /integration/retrieval-events:batch
 ```
 
@@ -585,7 +679,8 @@ POST /integration/retrieval-events:batch
 - `conversation_url` 必须是受控访问链接，不能使用公网匿名地址。
 - 对接方只保存必要的 `knowledge_id`、`ingestion_id` 和事件 ID。
 - Embedding、PostgreSQL、Redis 均应保持在服务器内部网络，不对外暴露端口。
-- 生产环境必须将下游 `/knowledge/search` 置于内网或 API 网关之后。
+- 生产环境只向插件开放带 `X-Integration-Key` 的
+  `/integration/standard-search`；`/knowledge/search` 继续由平台账号会话保护。
 
 ## 9. cURL 示例
 
@@ -596,14 +691,15 @@ curl -X GET "$KB_BASE_URL/api/v1/integration/taxonomy" \
   -H "X-Integration-Key: $KB_INTEGRATION_KEY"
 ```
 
-语义召回：
+答疑智能推荐助手语义召回：
 
 ```bash
-curl -X POST "$KB_BASE_URL/api/v1/knowledge/search" \
+curl -X POST "$KB_BASE_URL/api/v1/integration/standard-search" \
+  -H "X-Integration-Key: $KB_INTEGRATION_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "手机黑屏无法开机应该怎么排查",
-    "category_id": "cat-qc-standard",
-    "top_k": 5
+    "normalizedQuestion": "手机黑屏无法开机应该怎么排查",
+    "productType": "手机",
+    "limit": 5
   }'
 ```
