@@ -20,9 +20,11 @@ def _knowledge(
     index: int,
     *,
     status: KnowledgeStatus = KnowledgeStatus.PUBLISHED,
+    business_type: str = "self_operated",
 ):
     return SimpleNamespace(
         id=f"A-{index:05d}",
+        business_type=business_type,
         title=f"知识 {index}",
         subtitles=[f"问法 {index}", f"问法 {index}"],
         content={
@@ -49,6 +51,7 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         request = IntegrationStandardSearchRequest.model_validate(
             {
                 "normalizedQuestion": "  屏幕漏光怎么判断  ",
+                "businessType": "aggregated",
                 "productType": "手机",
                 "model": "iPhone 17e",
                 "orderInfo": {"category": "手机", "model": "iPhone 17e"},
@@ -60,6 +63,7 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         )
 
         self.assertEqual(request.normalized_question, "屏幕漏光怎么判断")
+        self.assertEqual(request.business_type, "aggregated")
         self.assertEqual(request.part_terms, ["屏幕"])
         self.assertEqual(request.limit, 8)
 
@@ -90,6 +94,7 @@ class IntegrationStandardSearchTests(unittest.TestCase):
 
         search.assert_called_once()
         self.assertEqual(search.call_args.kwargs["query"], "屏幕漏光")
+        self.assertEqual(search.call_args.kwargs["business_type"], "self_operated")
         self.assertEqual(search.call_args.kwargs["top_k"], 5)
         self.assertEqual(len(payload["candidates"]), 5)
         self.assertEqual(
@@ -98,6 +103,7 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         )
         first = payload["candidates"][0]
         self.assertEqual(first["finalScore"], first["score"])
+        self.assertEqual(first["businessType"], "self_operated")
         self.assertEqual(first["level1Label"], "质检标准")
         self.assertEqual(first["productType"], "phone")
         self.assertEqual(first["sourceRef"], "knowledge-kb://knowledge/A-00001")
@@ -106,6 +112,51 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         self.assertNotIn("private.png", first["text"])
         self.assertEqual(payload["status"], "success")
         self.assertEqual(payload["retrievalMode"], "semantic_pgvector")
+
+    @patch("app.routes.integration.search_embeddings", return_value=[])
+    def test_explicit_business_type_overrides_legacy_hints(self, search):
+        body = IntegrationStandardSearchRequest.model_validate(
+            {
+                "normalizedQuestion": "聚合回收屏幕标准",
+                "businessType": "self_operated",
+                "productType": "聚合回收",
+            }
+        )
+
+        search_standard_provider_knowledge(body, MagicMock(), None)
+
+        self.assertEqual(
+            search.call_args.kwargs["business_type"],
+            "self_operated",
+        )
+
+    @patch("app.routes.integration.search_embeddings", return_value=[])
+    def test_legacy_aggregated_hint_selects_aggregated_business(self, search):
+        requests = [
+            {
+                "normalizedQuestion": "屏幕标准",
+                "productType": "聚合回收",
+            },
+            {
+                "normalizedQuestion": "屏幕标准",
+                "orderInfo": {"category": "聚合回收"},
+            },
+            {
+                "normalizedQuestion": "屏幕标准",
+                "productType": "手机",
+                "orderInfo": {"category": "聚合回收"},
+            },
+        ]
+
+        for payload in requests:
+            with self.subTest(payload=payload):
+                search.reset_mock()
+                body = IntegrationStandardSearchRequest.model_validate(payload)
+                search_standard_provider_knowledge(body, MagicMock(), None)
+                self.assertEqual(
+                    search.call_args.kwargs["business_type"],
+                    "aggregated",
+                )
 
     @patch("app.routes.integration.search_embeddings")
     def test_defensively_excludes_non_published_items(self, search):
@@ -236,6 +287,7 @@ class IntegrationStandardSearchTests(unittest.TestCase):
                 headers={"X-Integration-Key": "test-retrieval-key"},
                 json={
                     "normalizedQuestion": "屏幕漏光",
+                    "businessType": "aggregated",
                     "productType": "手机",
                     "model": "iPhone 17e",
                     "limit": 8,
@@ -252,8 +304,10 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         self.assertIn("retrievalMode", payload)
         self.assertIn("knowledgeVersion", payload)
         self.assertIn("finalScore", payload["candidates"][0])
+        self.assertEqual(payload["candidates"][0]["businessType"], "self_operated")
         self.assertNotIn("retrieval_mode", payload)
         self.assertNotIn("final_score", payload["candidates"][0])
+        self.assertEqual(search.call_args.kwargs["business_type"], "aggregated")
 
     def test_http_retrieval_key_scope_includes_feedback_but_not_taxonomy(self):
         original_integration = settings.INTEGRATION_API_KEY
@@ -320,6 +374,15 @@ class IntegrationStandardSearchTests(unittest.TestCase):
                 headers={"X-Integration-Key": "test-integration-key"},
             )
             self.assertEqual(upstream_key_taxonomy.status_code, 200)
+            taxonomy = upstream_key_taxonomy.json()
+            self.assertEqual(taxonomy["version"], "automation-v4")
+            self.assertEqual(
+                taxonomy["business_types"],
+                [
+                    {"value": "self_operated", "label": "自营回收"},
+                    {"value": "aggregated", "label": "聚合回收"},
+                ],
+            )
         finally:
             client.close()
             app.dependency_overrides.pop(get_db, None)

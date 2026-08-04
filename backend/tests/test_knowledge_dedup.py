@@ -2,6 +2,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from app.models.knowledge import Category, Knowledge, KnowledgeEmbedding, KnowledgeStatus
 from app.services.knowledge_dedup import (
     _combined_dedup_similarity,
     _has_content_containment,
@@ -171,6 +175,64 @@ class KnowledgeDedupTextTests(unittest.TestCase):
         self.assertEqual(decision.action, "review_duplicate")
         self.assertEqual(decision.matches[0].match_type, "title_exact")
         self.assertEqual(decision.matches[0].similarity, 1.0)
+
+    def test_exact_duplicate_is_blocked_only_inside_the_same_business_type(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Category.__table__.create(engine)
+        Knowledge.__table__.create(engine)
+        KnowledgeEmbedding.__table__.create(engine)
+        with Session(engine) as db:
+            db.add(Category(id="cat-qc-standard", name="质检标准"))
+            db.add(
+                Knowledge(
+                    id="A-00001",
+                    business_type="self_operated",
+                    title="按键颜色不符是什么意思",
+                    content={
+                        "blocks": [
+                            {"type": "text", "value": "测试内容"}
+                        ]
+                    },
+                    category_id="cat-qc-standard",
+                    status=KnowledgeStatus.PUBLISHED,
+                    created_by="tester",
+                )
+            )
+            db.commit()
+
+            same_business = check_duplicate(
+                db,
+                title="按键颜色不符是什么意思",
+                subtitles=[],
+                content={
+                    "blocks": [
+                        {"type": "text", "value": "测试内容"}
+                    ]
+                },
+                scene_tags=[],
+                business_type="self_operated",
+            )
+            with patch(
+                "app.services.knowledge_dedup.embed_texts",
+                return_value=[[0.1], [0.2], [0.3]],
+            ):
+                other_business = check_duplicate(
+                    db,
+                    title="按键颜色不符是什么意思",
+                    subtitles=[],
+                    content={
+                        "blocks": [
+                            {"type": "text", "value": "测试内容"}
+                        ]
+                    },
+                    scene_tags=[],
+                    business_type="aggregated",
+                )
+
+        self.assertEqual(same_business.action, "block_duplicate")
+        self.assertEqual(same_business.matches[0].business_type, "self_operated")
+        self.assertEqual(other_business.action, "create")
+        self.assertEqual(other_business.matches, [])
 
 
 if __name__ == "__main__":

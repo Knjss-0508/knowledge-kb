@@ -41,6 +41,12 @@ ALLOWED_CATEGORY_NAMES = {
     "学习机",
     "智能手表",
 }
+SELF_OPERATED_BUSINESS_TYPE = "self_operated"
+AGGREGATED_BUSINESS_TYPE = "aggregated"
+BUSINESS_TYPES = (
+    SELF_OPERATED_BUSINESS_TYPE,
+    AGGREGATED_BUSINESS_TYPE,
+)
 
 
 OPTION_PATHS = {
@@ -98,9 +104,41 @@ def _read_cache() -> dict:
             "applicable_categories": [],
             "brands_by_category": {},
             "models": [],
+            "options_by_business_type": _empty_options_by_business_type(),
         }
     with open(CACHE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        cache = json.load(f)
+    return _ensure_options_by_business_type(cache)
+
+
+def cached_applicable_category_ids(business_type: str) -> set[str]:
+    """返回指定业务当前缓存中的适用类目 ID，供知识写入校验复用。"""
+    if business_type not in BUSINESS_TYPES:
+        return set()
+    cache = _read_cache()
+    group = cache["options_by_business_type"].get(business_type) or {}
+    return {
+        _category_id(category)
+        for category in group.get("applicable_categories", [])
+        if isinstance(category, dict) and _category_id(category)
+    }
+
+
+def cached_applicable_category_keys(business_type: str) -> set[str]:
+    """返回类目 ID 和名称的规范化集合，兼容前端 ID 与 Excel 中文名称。"""
+    if business_type not in BUSINESS_TYPES:
+        return set()
+    cache = _read_cache()
+    group = cache["options_by_business_type"].get(business_type) or {}
+    keys: set[str] = set()
+    for category in group.get("applicable_categories", []):
+        if not isinstance(category, dict):
+            continue
+        for value in (_category_id(category), _category_name(category)):
+            normalized = str(value or "").strip().casefold()
+            if normalized:
+                keys.add(normalized)
+    return keys
 
 
 def _write_cache(data: dict) -> None:
@@ -184,12 +222,167 @@ def _category_id(category: dict) -> str:
     return ""
 
 
+def _category_business_type(category: dict) -> str | None:
+    raw_biz_type = None
+    for key in ("bizType", "biz_type"):
+        if key in category:
+            raw_biz_type = category.get(key)
+            break
+
+    if raw_biz_type is None or isinstance(raw_biz_type, bool):
+        return None
+    if isinstance(raw_biz_type, float):
+        if not raw_biz_type.is_integer():
+            return None
+        biz_type = int(raw_biz_type)
+    else:
+        try:
+            biz_type = int(str(raw_biz_type).strip())
+        except (TypeError, ValueError):
+            return None
+
+    if biz_type == 0:
+        if _category_name(category) in ALLOWED_CATEGORY_NAMES:
+            return SELF_OPERATED_BUSINESS_TYPE
+        return None
+    return AGGREGATED_BUSINESS_TYPE
+
+
 def _filter_allowed_categories(categories: list) -> list:
     return [
         category
         for category in categories
-        if isinstance(category, dict) and _category_name(category) in ALLOWED_CATEGORY_NAMES
+        if isinstance(category, dict) and _category_business_type(category) is not None
     ]
+
+
+def _empty_business_options() -> dict:
+    return {
+        "applicable_categories": [],
+        "brands_by_category": {},
+        "models": [],
+        "counts": {
+            "categories": 0,
+            "brand_groups": 0,
+            "brands": 0,
+            "models": 0,
+        },
+    }
+
+
+def _empty_options_by_business_type() -> dict:
+    return {
+        business_type: _empty_business_options()
+        for business_type in BUSINESS_TYPES
+    }
+
+
+def _model_category_id(model: dict) -> str:
+    value = model.get("categoryId")
+    if value is None:
+        value = model.get("category_id")
+    return "" if value is None else str(value)
+
+
+def _business_options(
+    categories: list,
+    brands_by_category: dict,
+    models: list,
+) -> dict:
+    category_ids = {
+        category_id
+        for category in categories
+        if (category_id := _category_id(category))
+    }
+    grouped_brands = {
+        str(category_id): brands
+        for category_id, brands in brands_by_category.items()
+        if str(category_id) in category_ids
+    }
+    grouped_models = [
+        model
+        for model in models
+        if isinstance(model, dict) and _model_category_id(model) in category_ids
+    ]
+    brand_ids = {
+        brand_id
+        for brands in grouped_brands.values()
+        for brand_id in _collect_values(
+            brands,
+            ("brandId", "id", "code", "value"),
+        )
+    }
+    return {
+        "applicable_categories": categories,
+        "brands_by_category": grouped_brands,
+        "models": grouped_models,
+        "counts": {
+            "categories": len(categories),
+            "brand_groups": len(grouped_brands),
+            "brands": len(brand_ids),
+            "models": len(grouped_models),
+        },
+    }
+
+
+def _build_options_by_business_type(
+    categories: list,
+    brands_by_category: dict,
+    models: list,
+) -> dict:
+    categories_by_business_type = {
+        business_type: [] for business_type in BUSINESS_TYPES
+    }
+    for category in categories:
+        if not isinstance(category, dict):
+            continue
+        business_type = _category_business_type(category)
+        if business_type is not None:
+            categories_by_business_type[business_type].append(category)
+
+    return {
+        business_type: _business_options(
+            categories_by_business_type[business_type],
+            brands_by_category,
+            models,
+        )
+        for business_type in BUSINESS_TYPES
+    }
+
+
+def _ensure_options_by_business_type(cache: dict) -> dict:
+    normalized = dict(cache)
+    normalized.setdefault("updated_at", None)
+    normalized.setdefault("applicable_categories", [])
+    normalized.setdefault("brands_by_category", {})
+    normalized.setdefault("models", [])
+
+    derived = _build_options_by_business_type(
+        normalized["applicable_categories"],
+        normalized["brands_by_category"],
+        normalized["models"],
+    )
+    stored = normalized.get("options_by_business_type")
+    if isinstance(stored, dict):
+        for business_type in BUSINESS_TYPES:
+            group = stored.get(business_type)
+            if isinstance(group, dict):
+                merged = derived[business_type]
+                merged.update(
+                    {
+                        key: group[key]
+                        for key in (
+                            "applicable_categories",
+                            "brands_by_category",
+                            "models",
+                            "counts",
+                        )
+                        if key in group
+                    }
+                )
+                derived[business_type] = merged
+    normalized["options_by_business_type"] = derived
+    return normalized
 
 
 def _set_refresh_status(**kwargs) -> None:
@@ -280,8 +473,28 @@ def get_manhattan_session():
 
 
 @router.get("/cache")
-def get_manhattan_cache():
-    return _read_cache()
+def get_manhattan_cache(
+    business_type: str | None = Query(
+        None,
+        description="按业务类型读取适用类目缓存：self_operated 或 aggregated",
+    ),
+):
+    cache = _read_cache()
+    if business_type is None:
+        return cache
+
+    normalized_business_type = business_type.strip().lower()
+    if normalized_business_type not in BUSINESS_TYPES:
+        raise HTTPException(
+            400,
+            "business_type must be self_operated or aggregated.",
+        )
+
+    return {
+        "updated_at": cache.get("updated_at"),
+        "business_type": normalized_business_type,
+        **cache["options_by_business_type"][normalized_business_type],
+    }
 
 
 async def _refresh_manhattan_cache_job(cookie: str) -> None:
@@ -441,6 +654,11 @@ async def _refresh_manhattan_cache_job(cookie: str) -> None:
                 "brands_by_category": brands_by_category,
                 "models": models,
                 "counts": counts,
+                "options_by_business_type": _build_options_by_business_type(
+                    categories,
+                    brands_by_category,
+                    models,
+                ),
             }
             _set_refresh_status(stage="saving", message="正在写入本地缓存...", percent=95, counts=counts)
             _write_cache(cache)

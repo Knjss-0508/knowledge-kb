@@ -21,6 +21,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.database import SessionLocal, get_db
 from app.routes.auth import get_current_user, has_permission, require_permission
+from app.routes.manhattan import cached_applicable_category_keys
 from app.models.user import User
 from app.models.knowledge import (
     Category, Knowledge, KnowledgeStatus,
@@ -52,6 +53,7 @@ from app.services.media_deletion import (
 )
 from app.services.media_storage import MediaStorageError, get_media_storage
 from app.schemas.knowledge import (
+    BusinessType,
     KnowledgeCreate, KnowledgeUpdate, KnowledgeResponse,
     CandidateSubmit, DeduplicationFeedbackSubmit, FeedbackSubmit,
     ExcelImportRowResult, KnowledgeImportTaskListResponse,
@@ -129,6 +131,10 @@ MANHATTAN_APPLICABILITY_CATEGORY_IDS = {
     "cat-qc-standard",
     "cat-qc-process",
 }
+BUSINESS_TYPE_LABELS = {
+    "self_operated": "自营回收",
+    "aggregated": "聚合回收",
+}
 
 
 def _require_manual_applicable_category(
@@ -149,6 +155,53 @@ def _require_manual_applicable_category(
         raise HTTPException(
             status_code=422,
             detail="适用类目至少选择一项，可多选。",
+        )
+
+
+def _applicable_option_id(value) -> str:
+    if isinstance(value, dict):
+        for key in ("categoryId", "category_id", "id", "code", "value"):
+            raw = value.get(key)
+            if raw is not None and str(raw).strip():
+                return str(raw).strip()
+        return ""
+    return str(value or "").strip()
+
+
+def _validate_business_applicable_categories(
+    *,
+    business_type: str,
+    applicable_categories,
+) -> None:
+    selected_values = {
+        option_id.strip()
+        for option_id in (
+            _applicable_option_id(value)
+            for value in (applicable_categories or [])
+        )
+        if option_id.strip()
+    }
+    if not selected_values:
+        return
+    allowed_keys = cached_applicable_category_keys(business_type)
+    business_label = BUSINESS_TYPE_LABELS.get(business_type, business_type)
+    if not allowed_keys:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{business_label}适用类目缓存尚未准备，请先登录 Manhattan 并刷新类目缓存。",
+        )
+    invalid_values = sorted(
+        value
+        for value in selected_values
+        if value.casefold() not in allowed_keys
+    )
+    if invalid_values:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"所选适用类目不属于{business_label}："
+                + "、".join(invalid_values[:5])
+            ),
         )
 
 
@@ -176,7 +229,11 @@ def _find_source_knowledge(db: Session, row) -> Knowledge:
     for label, value in _source_identifier_values(row):
         if not value:
             continue
-        matches = db.query(Knowledge).filter(identifier_columns[label] == value).all()
+        query = db.query(Knowledge).filter(identifier_columns[label] == value)
+        business_type = str(getattr(row, "business_type", "") or "").strip()
+        if business_type:
+            query = query.filter(Knowledge.business_type == business_type)
+        matches = query.all()
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
@@ -357,6 +414,7 @@ def _deduplication_metadata(
                 "knowledge_id": match.knowledge_id,
                 "title": match.title,
                 "status": match.status,
+                "business_type": match.business_type,
                 "category_id": match.category_id,
                 "match_type": match.match_type,
                 "similarity": match.similarity,
@@ -416,6 +474,7 @@ def _check_manual_deduplication(
     subtitles: list[str],
     content: dict,
     scene_tags: list[str],
+    business_type: str,
     exclude_knowledge_id: str | None = None,
     confirm_dedup_review: bool = False,
     allow_duplicate_review: bool = False,
@@ -427,6 +486,7 @@ def _check_manual_deduplication(
             subtitles=subtitles,
             content=content,
             scene_tags=scene_tags,
+            business_type=business_type,
             exclude_knowledge_id=exclude_knowledge_id,
         )
     except EmbeddingServiceUnavailable as exc:
@@ -531,6 +591,7 @@ def _to_response(item: Knowledge) -> dict:
         "title": item.title,
         "subtitles": item.subtitles or [],
         "content": item.content,
+        "business_type": item.business_type,
         "category_id": item.category_id,
         "status": item.status.value,
         "source": item.source,
@@ -569,6 +630,10 @@ def _create_knowledge_item(
         category_id=body.category_id,
         applicable_categories=body.applicable_categories,
     )
+    _validate_business_applicable_categories(
+        business_type=body.business_type,
+        applicable_categories=body.applicable_categories,
+    )
     if not db.query(Category.id).filter(Category.id == body.category_id).first():
         raise HTTPException(status_code=422, detail="所属分类不存在。")
 
@@ -579,6 +644,7 @@ def _create_knowledge_item(
         subtitles=body.subtitles or [],
         content=normalized_content,
         scene_tags=body.applicable_scenes or [],
+        business_type=body.business_type,
         confirm_dedup_review=body.confirm_dedup_review,
         allow_duplicate_review=allow_duplicate_review,
     )
@@ -587,6 +653,7 @@ def _create_knowledge_item(
         title=body.title,
         subtitles=body.subtitles or [],
         content=normalized_content,
+        business_type=body.business_type,
         category_id=body.category_id,
         status=KnowledgeStatus.REVIEW,
         source=source,
@@ -926,6 +993,7 @@ def _process_excel_import_row(
         title=row.title,
         subtitles=row.subtitles or [],
         content=row.content,
+        business_type=row.business_type,
         category_id=row.category_id,
         applicable_scenes=row.applicable_scenes or [],
         applicable_categories=row.applicable_categories or [],
@@ -1148,6 +1216,7 @@ def _filtered_knowledge_query(
     current_user: User,
     *,
     status: str | None = None,
+    business_type: str | None = None,
     category_id: str | None = None,
     applicable_category_ids: list[str] | None = None,
     brand_ids: list[str] | None = None,
@@ -1174,6 +1243,8 @@ def _filtered_knowledge_query(
         q = q.filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
     if status:
         q = q.filter(Knowledge.status == KnowledgeStatus(status))
+    if business_type:
+        q = q.filter(Knowledge.business_type == business_type)
     if category_id:
         q = q.filter(Knowledge.category_id == category_id)
     if applicable_category_ids:
@@ -1225,6 +1296,7 @@ def _filtered_knowledge_query(
 def _has_knowledge_export_filter(
     *,
     status: str | None,
+    business_type: str | None = None,
     category_id: str | None,
     applicable_category_ids: list[str] | None,
     brand_ids: list[str] | None,
@@ -1234,6 +1306,7 @@ def _has_knowledge_export_filter(
     """Avoid accidentally exporting the full knowledge base without a filter."""
     return bool(
         status
+        or business_type
         or category_id
         or any(applicable_category_ids or [])
         or any(brand_ids or [])
@@ -1245,6 +1318,7 @@ def _has_knowledge_export_filter(
 @router.get("/export/excel", summary="导出知识库 Excel")
 def export_knowledge_excel(
     status: str | None = Query(None, description="状态筛选"),
+    business_type: BusinessType | None = Query(None, description="业务类型"),
     category_id: str | None = Query(None, description="分类ID"),
     applicable_category_ids: list[str] | None = Query(None, description="适用类目ID，可多选"),
     brand_ids: list[str] | None = Query(None, description="适用品牌ID，可多选"),
@@ -1259,6 +1333,7 @@ def export_knowledge_excel(
 ):
     if not _has_knowledge_export_filter(
         status=status,
+        business_type=business_type,
         category_id=category_id,
         applicable_category_ids=applicable_category_ids,
         brand_ids=brand_ids,
@@ -1273,6 +1348,7 @@ def export_knowledge_excel(
         db,
         current_user,
         status=status,
+        business_type=business_type,
         category_id=category_id,
         applicable_category_ids=applicable_category_ids,
         brand_ids=brand_ids,
@@ -1313,11 +1389,12 @@ def export_knowledge_excel(
         }
     },
     summary="查询知识条目列表",
-    description="支持按状态、知识分类、适用类目、品牌和机型筛选，分页查询",
+    description="支持按状态、业务类型、知识分类、适用类目、品牌和机型筛选，分页查询",
 )
 def list_knowledge(
     response: Response,
     status: str | None = Query(None, description="状态筛选"),
+    business_type: BusinessType | None = Query(None, description="业务类型"),
     category_id: str | None = Query(None, description="分类ID"),
     applicable_category_ids: list[str] | None = Query(None, description="适用类目ID，可多选"),
     brand_ids: list[str] | None = Query(None, description="适用品牌ID，可多选"),
@@ -1336,6 +1413,7 @@ def list_knowledge(
         db,
         current_user,
         status=status,
+        business_type=business_type,
         category_id=category_id,
         applicable_category_ids=applicable_category_ids,
         brand_ids=brand_ids,
@@ -1436,6 +1514,7 @@ def _knowledge_snapshot(item: Knowledge) -> dict:
         "title": item.title,
         "subtitles": deepcopy(item.subtitles or []),
         "content": deepcopy(item.content or {}),
+        "business_type": item.business_type,
         "category_id": item.category_id,
         "status": item.status.value,
         "applicable_scenes": deepcopy(item.applicable_scenes or []),
@@ -1560,9 +1639,36 @@ def update_knowledge(
     before_data = _knowledge_snapshot(item) if was_published else None
     updates = body.model_dump(exclude_unset=True)
     updated_fields = set(updates)
+    if (
+        "business_type" in updates
+        and updates["business_type"] != item.business_type
+        and any(
+            (
+                item.applicable_categories,
+                item.applicable_brands,
+                item.applicable_models,
+            )
+        )
+        and not {
+            "applicable_categories",
+            "applicable_brands",
+            "applicable_models",
+        }.issubset(updated_fields)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="更改业务类型时必须重新提交适用类目、品牌和机型，避免沿用另一业务的数据。",
+        )
     _require_manual_applicable_category(
         source=item.source,
         category_id=updates.get("category_id", item.category_id),
+        applicable_categories=updates.get(
+            "applicable_categories",
+            item.applicable_categories,
+        ),
+    )
+    _validate_business_applicable_categories(
+        business_type=updates.get("business_type", item.business_type),
         applicable_categories=updates.get(
             "applicable_categories",
             item.applicable_categories,
@@ -1742,6 +1848,7 @@ def submit_review(
         subtitles=item.subtitles or [],
         content=item.content,
         scene_tags=item.applicable_scenes or [],
+        business_type=item.business_type,
         exclude_knowledge_id=item.id,
         confirm_dedup_review=confirm_dedup_review,
     )
@@ -2246,6 +2353,7 @@ def submit_candidate(
         subtitles=[],
         content=_normalize_content(body.content),
         scene_tags=body.applicable_scenes,
+        business_type=body.business_type,
         confirm_dedup_review=body.confirm_dedup_review,
     )
 
@@ -2253,6 +2361,7 @@ def submit_candidate(
         id=_generate_knowledge_id(db),
         title=body.title,
         content=_normalize_content(body.content),
+        business_type=body.business_type,
         category_id=body.category_id,
         status=KnowledgeStatus.REVIEW,
         applicable_scenes=body.applicable_scenes,
@@ -2297,6 +2406,7 @@ def search_knowledge(
         ranked = search_embeddings(
             db,
             query=body.query,
+            business_type=body.business_type,
             category_id=body.category_id,
             tags=body.tags,
             top_k=body.top_k,
@@ -2308,6 +2418,8 @@ def search_knowledge(
     # are being rebuilt in the background.
     if not ranked:
         q = db.query(Knowledge).filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
+        if body.business_type:
+            q = q.filter(Knowledge.business_type == body.business_type)
         if body.category_id:
             q = q.filter(Knowledge.category_id == body.category_id)
         if body.tags:
@@ -2323,7 +2435,9 @@ def search_knowledge(
         SearchResult(
             id=i.id, title=i.title, content=i.content,
             score=round(score, 6),
-            status=i.status.value, category_id=i.category_id,
+            status=i.status.value,
+            business_type=i.business_type,
+            category_id=i.category_id,
         )
         for i, score in ranked
     ]

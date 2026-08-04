@@ -3,7 +3,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.schemas.knowledge import CategoryResponse, TagDimensionResponse
+from app.schemas.knowledge import (
+    BusinessType,
+    BusinessTypeOption,
+    CategoryResponse,
+    TagDimensionResponse,
+)
 
 
 class IntegrationSource(BaseModel):
@@ -86,6 +91,7 @@ class IntegrationKnowledgePayload(BaseModel):
     title: str = Field(..., min_length=1, max_length=256, description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表")
     content: Any = Field(..., description="改写后的知识内容，支持富文本 blocks 结构")
+    business_type: BusinessType = Field(..., description="知识所属业务类型")
     category_id: str = Field(..., min_length=1, max_length=64, description="知识库分类ID")
     scene_tags: list[str] = Field(default=[], description="场景标签")
     applicable_categories: list[Any] = Field(default=[], description="适用类目")
@@ -131,6 +137,7 @@ class IntegrationDedupMatch(BaseModel):
     knowledge_id: str
     title: str
     status: Literal["review", "published"]
+    business_type: BusinessType
     category_id: str
     match_type: Literal["exact", "title_exact", "semantic", "content_containment"]
     similarity: float = Field(..., ge=0, le=1)
@@ -195,6 +202,7 @@ class CandidateReviewUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=256)
     subtitles: list[str] | None = None
     content: Any | None = None
+    business_type: BusinessType | None = None
     category_id: str | None = Field(None, min_length=1, max_length=64)
     applicable_scenes: list[str] | None = None
     applicable_categories: list[Any] | None = None
@@ -229,6 +237,7 @@ class CandidateReviewListItem(BaseModel):
     title: str
     subtitles: list[str] = Field(default_factory=list)
     content: Any
+    business_type: BusinessType
     category_id: str
     applicable_scenes: list[str] = Field(default_factory=list)
     applicable_categories: list[Any] = Field(default_factory=list)
@@ -295,6 +304,7 @@ class IntegrationIngestionResponse(BaseModel):
 
 class IntegrationTaxonomyResponse(BaseModel):
     version: str
+    business_types: list[BusinessTypeOption]
     categories: list[CategoryResponse]
     tag_dimensions: list[TagDimensionResponse]
 
@@ -315,6 +325,7 @@ class IntegrationStandardSearchRequest(BaseModel):
         min_length=1,
         max_length=8000,
     )
+    business_type: BusinessType | None = Field(None, alias="businessType")
     product_type: str = Field("", alias="productType", max_length=500)
     model: str = Field("", max_length=500)
     order_info: IntegrationStandardSearchOrderInfo = Field(
@@ -365,6 +376,7 @@ class IntegrationStandardSearchCandidate(BaseModel):
     score: float = Field(ge=0, le=1)
     final_score: float = Field(alias="finalScore", ge=0, le=1)
     status: Literal["published"] = "published"
+    business_type: BusinessType = Field(alias="businessType")
     category_id: str | None = Field(None, alias="categoryId")
     level1_label: str = Field("", alias="level1Label")
     product_type: str = Field("", alias="productType")

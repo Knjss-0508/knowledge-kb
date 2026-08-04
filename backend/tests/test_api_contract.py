@@ -48,6 +48,7 @@ class ApiContractTests(unittest.TestCase):
         }
         self.assertTrue(
             {
+                "business_type",
                 "applicable_category_ids",
                 "brand_ids",
                 "model_ids",
@@ -131,6 +132,17 @@ class ApiContractTests(unittest.TestCase):
                 keyword=None,
             )
         )
+        self.assertTrue(
+            _has_knowledge_export_filter(
+                status=None,
+                business_type="self_operated",
+                category_id=None,
+                applicable_category_ids=[],
+                brand_ids=[],
+                model_ids=[],
+                keyword=None,
+            )
+        )
 
     def test_manual_quality_knowledge_requires_at_least_one_applicable_category(self):
         with self.assertRaises(HTTPException) as raised:
@@ -184,6 +196,26 @@ class ApiContractTests(unittest.TestCase):
             schemas["CandidateReviewUpdate"]["properties"],
         )
         self.assertIn(
+            "business_type",
+            schemas["IntegrationKnowledgePayload"]["properties"],
+        )
+        self.assertIn(
+            "business_type",
+            schemas["CandidateReviewUpdate"]["properties"],
+        )
+        self.assertIn(
+            "business_type",
+            schemas["CandidateReviewListItem"]["properties"],
+        )
+        self.assertIn(
+            "business_type",
+            schemas["IntegrationDedupMatch"]["properties"],
+        )
+        self.assertIn(
+            "business_types",
+            schemas["IntegrationTaxonomyResponse"]["properties"],
+        )
+        self.assertIn(
             "review_required",
             schemas["IntegrationCandidateResult"]["properties"]["status"]["enum"],
         )
@@ -233,7 +265,9 @@ class ApiContractTests(unittest.TestCase):
         ]["properties"]
 
         self.assertIn("normalizedQuestion", request_properties)
+        self.assertIn("businessType", request_properties)
         self.assertIn("productType", request_properties)
+        self.assertIn("businessType", candidate_properties)
         self.assertIn("finalScore", candidate_properties)
         self.assertIn("sourceRef", candidate_properties)
         self.assertIn("retrievalMode", response_properties)

@@ -25,6 +25,7 @@ EXPORT_HEADERS = [
     "主标题",
     "副标题",
     "知识内容",
+    "业务类型",
     "知识分类",
     "知识来源",
     "关联标准项",
@@ -55,6 +56,7 @@ EXPORT_SOURCE_LABELS = {
 
 HEADER_ALIASES = {
     "title": {"标题", "知识标题", "主标题"},
+    "business_type": {"业务类型", "所属业务类型"},
     "category": {"知识分类", "所属分类", "分类", "知识分类ID", "分类ID"},
     "content": {"正文", "知识正文", "知识内容", "内容"},
     "subtitles": {"副标题", "副标题列表"},
@@ -77,6 +79,7 @@ EXPORT_HEADER_IMPORT_FIELDS = {
     "主标题": "title",
     "副标题": "subtitles",
     "知识内容": "content",
+    "业务类型": "business_type",
     "知识分类": "category",
     "关联标准项": "related_standard_items",
     "适用范围": "scope",
@@ -87,6 +90,17 @@ CATEGORY_VALUE_ALIASES = {
     "场景判定": "质检标准",
     "标准定义": "质检标准",
     "检测方法": "操作流程",
+}
+
+BUSINESS_TYPE_LABELS = {
+    "self_operated": "自营回收",
+    "aggregated": "聚合回收",
+}
+BUSINESS_TYPE_VALUE_ALIASES = {
+    "自营回收": "self_operated",
+    "聚合回收": "aggregated",
+    "self_operated": "self_operated",
+    "aggregated": "aggregated",
 }
 
 VALID_SOURCE_STATUSES = {"生效中", "待审核", "已禁用"}
@@ -115,6 +129,7 @@ class KnowledgeExcelRowError(ValueError):
 class ExcelKnowledgeRow:
     row_number: int
     title: str
+    business_type: str = ""
     category_id: str = ""
     content: Any = ""
     subtitles: list[str] | None = None
@@ -289,6 +304,24 @@ def _resolve_category(
     )
 
 
+def _resolve_business_type(value) -> str:
+    text = _cell_text(value)
+    if not text:
+        raise KnowledgeExcelRowError(
+            "BUSINESS_TYPE_REQUIRED",
+            "业务类型不能为空。",
+        )
+    normalized = text.lower()
+    business_type = BUSINESS_TYPE_VALUE_ALIASES.get(normalized)
+    if business_type:
+        return business_type
+    raise KnowledgeExcelRowError(
+        "BUSINESS_TYPE_INVALID",
+        f"业务类型“{text}”不受支持，仅允许自营回收、聚合回收、"
+        "self_operated 或 aggregated。",
+    )
+
+
 def _header_indexes(header_row) -> dict[str, int]:
     normalized = {
         _normalize_header(value): index
@@ -302,15 +335,6 @@ def _header_indexes(header_row) -> dict[str, int]:
                 indexes[field] = normalized[alias]
                 break
 
-    missing = [
-        label
-        for field, label in (
-            ("title", "标题"),
-            ("category", "知识分类"),
-            ("content", "正文"),
-        )
-        if field not in indexes
-    ]
     is_source_deprecation_sheet = (
         "source_status" in indexes
         and any(
@@ -322,7 +346,20 @@ def _header_indexes(header_row) -> dict[str, int]:
             )
         )
     )
-    if missing and not is_source_deprecation_sheet:
+    missing = []
+    if "business_type" not in indexes:
+        missing.append("业务类型")
+    if not is_source_deprecation_sheet:
+        missing.extend(
+            label
+            for field, label in (
+                ("title", "标题"),
+                ("category", "知识分类"),
+                ("content", "正文"),
+            )
+            if field not in indexes
+        )
+    if missing:
         raise KnowledgeExcelError(
             f"缺少必填列：{'、'.join(missing)}。请使用系统下载的最新模板。"
         )
@@ -397,6 +434,7 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
             )
 
         title = _cell_text(value_at(values, "title"))
+        business_type = _cell_text(value_at(values, "business_type"))
         source_status = _cell_text(value_at(values, "source_status"))
         source_scope = _cell_text(value_at(values, "scope"))
         source_topic_key = _cell_text(value_at(values, "source_topic_key"))
@@ -413,6 +451,7 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
             source_knowledge_key=source_knowledge_key,
         )
         try:
+            result.business_type = _resolve_business_type(business_type)
             if "source_status" in indexes:
                 if not source_status:
                     raise KnowledgeExcelRowError(
@@ -581,6 +620,13 @@ def _export_source(value: Any) -> str:
     return EXPORT_SOURCE_LABELS.get(raw, raw)
 
 
+def _export_business_type(value: Any) -> str:
+    raw = _export_cell_text(getattr(value, "value", value))
+    normalized = raw.lower()
+    canonical = BUSINESS_TYPE_VALUE_ALIASES.get(normalized, normalized)
+    return BUSINESS_TYPE_LABELS.get(canonical, raw)
+
+
 def _export_source_field(source_fields: Any, header: str, fallback: str) -> str:
     """导出时优先使用上传时保留的原始字段，旧数据则使用系统字段兜底。"""
     if not isinstance(source_fields, dict):
@@ -612,6 +658,13 @@ def build_knowledge_export_workbook(items) -> bytes:
         if not category_name:
             category_name = _export_cell_text(getattr(item, "category_id", None))
         source_fields = getattr(item, "source_fields", None)
+        business_type = getattr(item, "business_type", None)
+        if not _export_cell_text(business_type):
+            business_type = _export_source_field(
+                source_fields,
+                "业务类型",
+                "",
+            )
         sheet.append(
             [
                 _export_cell_text(getattr(item, "id", None)),
@@ -621,6 +674,7 @@ def build_knowledge_export_workbook(items) -> bytes:
                 _export_source_field(source_fields, "主标题", _export_cell_text(getattr(item, "title", None))),
                 _export_source_field(source_fields, "副标题", _export_join(getattr(item, "subtitles", None), separator="\n")),
                 _export_source_field(source_fields, "知识内容", _export_content(getattr(item, "content", None))),
+                _export_business_type(business_type),
                 _export_source_field(source_fields, "知识分类", category_name),
                 _export_source_field(source_fields, "知识来源", _export_source(getattr(item, "source", None))),
                 _export_source_field(source_fields, "关联标准项", _export_join(getattr(item, "related_standard_items", None)),),
@@ -647,7 +701,7 @@ def build_knowledge_export_workbook(items) -> bytes:
     body_alignment = Alignment(vertical="top", wrap_text=True)
 
     sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:S{max(sheet.max_row, 1)}"
+    sheet.auto_filter.ref = f"A1:T{max(sheet.max_row, 1)}"
     sheet.row_dimensions[1].height = 30
     for cell in sheet[1]:
         cell.fill = header_fill
@@ -667,17 +721,18 @@ def build_knowledge_export_workbook(items) -> bytes:
         "F": 36,
         "G": 72,
         "H": 16,
-        "I": 18,
-        "J": 28,
-        "K": 42,
-        "L": 14,
-        "M": 16,
+        "I": 16,
+        "J": 18,
+        "K": 28,
+        "L": 42,
+        "M": 14,
         "N": 16,
         "O": 16,
         "P": 16,
-        "Q": 22,
-        "R": 28,
+        "Q": 16,
+        "R": 22,
         "S": 28,
+        "T": 28,
     }
     for column, width in column_widths.items():
         sheet.column_dimensions[column].width = width
@@ -691,11 +746,13 @@ def build_knowledge_import_template(categories) -> bytes:
     workbook = Workbook()
     import_sheet = workbook.active
     import_sheet.title = IMPORT_SHEET_NAME
+    business_type_sheet = workbook.create_sheet("业务类型字典")
     dictionary_sheet = workbook.create_sheet("分类字典")
     instructions_sheet = workbook.create_sheet("填写说明")
 
     headers = [
         "标题（必填）",
+        "业务类型（必填）",
         "知识分类（必填）",
         "正文（必填）",
         "副标题（选填）",
@@ -707,37 +764,57 @@ def build_knowledge_import_template(categories) -> bytes:
     ]
     import_sheet.append(headers)
     import_sheet.freeze_panes = "A2"
-    import_sheet.auto_filter.ref = "A1:I1"
+    import_sheet.auto_filter.ref = "A1:J1"
     import_sheet.row_dimensions[1].height = 28
     import_sheet.column_dimensions["A"].width = 32
-    import_sheet.column_dimensions["B"].width = 28
-    import_sheet.column_dimensions["C"].width = 70
-    for column in ("D", "E", "F", "G", "H", "I"):
+    import_sheet.column_dimensions["B"].width = 22
+    import_sheet.column_dimensions["C"].width = 28
+    import_sheet.column_dimensions["D"].width = 70
+    for column in ("E", "F", "G", "H", "I", "J"):
         import_sheet.column_dimensions[column].width = 24
 
     required_fill = PatternFill("solid", fgColor="0F766E")
     optional_fill = PatternFill("solid", fgColor="475569")
     for index, cell in enumerate(import_sheet[1], start=1):
-        cell.fill = required_fill if index <= 3 else optional_fill
+        cell.fill = required_fill if index <= 4 else optional_fill
         cell.font = Font(color="FFFFFF", bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
     import_sheet["A1"].comment = Comment("必填，最多 256 个字符。", "知识库")
     import_sheet["B1"].comment = Comment(
-        "必填。优先填写分类ID，也支持唯一分类名称或完整分类路径。",
+        "必填。可填写自营回收、聚合回收，或对应代码 "
+        "self_operated、aggregated。",
         "知识库",
     )
     import_sheet["C1"].comment = Comment(
+        "必填。优先填写分类ID，也支持唯一分类名称或完整分类路径。",
+        "知识库",
+    )
+    import_sheet["D1"].comment = Comment(
         "必填。仅处理插件自动回填的 [img:https://...] 或 "
         "[video:https://...] 标记；其他 URL 保持原文。",
         "知识库",
     )
-    import_sheet["D1"].comment = Comment("多项请使用中文分号“；”分隔。", "知识库")
-    for cell_ref in ("E1", "F1", "G1", "H1", "I1"):
+    import_sheet["E1"].comment = Comment("多项请使用中文分号“；”分隔。", "知识库")
+    for cell_ref in ("F1", "G1", "H1", "I1", "J1"):
         import_sheet[cell_ref].comment = Comment(
             "多项请使用中文分号“；”分隔。",
             "知识库",
         )
+
+    business_type_sheet.append(["业务类型代码", "业务类型名称"])
+    for code, label in BUSINESS_TYPE_LABELS.items():
+        business_type_sheet.append([code, label])
+    business_type_sheet.freeze_panes = "A2"
+    business_type_sheet.auto_filter.ref = (
+        f"A1:B{max(business_type_sheet.max_row, 1)}"
+    )
+    business_type_sheet.column_dimensions["A"].width = 24
+    business_type_sheet.column_dimensions["B"].width = 24
+    for cell in business_type_sheet[1]:
+        cell.fill = required_fill
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(horizontal="center")
 
     dictionary_sheet.append(["分类ID", "分类名称", "完整分类路径"])
     by_id, _, path_by_id = _category_records(categories)
@@ -767,7 +844,12 @@ def build_knowledge_import_template(categories) -> bytes:
         cell.alignment = Alignment(horizontal="center")
 
     instructions = [
-        ("必填列", "标题、知识分类、正文。"),
+        ("必填列", "标题、业务类型、知识分类、正文。"),
+        (
+            "业务类型",
+            "从“业务类型字典”复制中文名称或代码；"
+            "仅允许自营回收、聚合回收、self_operated、aggregated。",
+        ),
         ("知识分类", "推荐从“分类字典”复制分类ID；也可填写唯一分类名称或完整分类路径。"),
         ("多值字段", "副标题、场景标签、关联标准项等多项内容使用中文分号“；”分隔。"),
         (
@@ -793,7 +875,11 @@ def build_knowledge_import_template(categories) -> bytes:
             "疑似重复、格式错误、分类不存在或完全重复的行会逐行返回原因。",
         ),
         ("单次上限", f"每个文件最多 {MAX_IMPORT_ROWS} 条、文件最大 5MB，仅支持 .xlsx。"),
-        ("示例", "标题：设备无法开机；知识分类：cat-qc-process；正文：先检查电量，再长按电源键。"),
+        (
+            "示例",
+            "标题：设备无法开机；业务类型：自营回收；"
+            "知识分类：cat-qc-process；正文：先检查电量，再长按电源键。",
+        ),
     ]
     instructions_sheet.append(["项目", "说明"])
     for item in instructions:
