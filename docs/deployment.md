@@ -34,6 +34,7 @@ DEPLOY_DATABASE_MODE=cloud
 - 媒体存储为 `s3` 且 bucket 已配置；
 - 固定 S3 Access Key 与 Secret Key 成对配置；
 - `INTEGRATION_API_KEY` 已替换为至少 24 位的非占位密钥；
+- `RETRIEVAL_API_KEY` 已替换为另一个至少 24 位的非占位密钥；
 - 首次部署的初始管理员使用至少 12 位密码；
 - 已禁止固定默认弱管理员；
 - 向量维度保持 1024；

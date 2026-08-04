@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.core.integration_auth import require_integration_key
+from app.core.integration_auth import require_integration_key, require_retrieval_key
 from app.models.integration import IntegrationIngestion, RetrievalQualityEvent
 from app.models.knowledge import Category, Knowledge, KnowledgeStatus, TagDimension
 from app.models.user import User
@@ -340,7 +340,7 @@ def _to_standard_search_candidate(
 def search_standard_provider_knowledge(
     body: IntegrationStandardSearchRequest,
     db: Session = Depends(get_db),
-    _: None = Depends(require_integration_key),
+    _: None = Depends(require_retrieval_key),
 ):
     top_k = min(body.limit, STANDARD_SEARCH_MAX_RESULTS)
     try:
@@ -382,7 +382,7 @@ def search_standard_provider_knowledge(
 def submit_retrieval_quality_events(
     body: RetrievalQualityEventBatch,
     db: Session = Depends(get_db),
-    _: None = Depends(require_integration_key),
+    _: None = Depends(require_retrieval_key),
 ):
     results: list[RetrievalQualityEventResult] = []
     recorded = reused = 0

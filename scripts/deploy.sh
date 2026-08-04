@@ -176,6 +176,15 @@ if [[ "$database_mode" == "cloud" ]]; then
     echo "Set INTEGRATION_API_KEY to a non-placeholder secret of at least 24 characters." >&2
     exit 1
   fi
+  retrieval_api_key="$(configured_value RETRIEVAL_API_KEY)"
+  if (( ${#retrieval_api_key} < 24 )) || [[ "$retrieval_api_key" == *"replace-with"* ]]; then
+    echo "Set RETRIEVAL_API_KEY to a non-placeholder secret of at least 24 characters." >&2
+    exit 1
+  fi
+  if [[ "$retrieval_api_key" == "$integration_api_key" ]]; then
+    echo "RETRIEVAL_API_KEY must be different from INTEGRATION_API_KEY." >&2
+    exit 1
+  fi
   if [[ "$(configured_value ALLOW_INSECURE_DEFAULT_ADMIN)" != "false" ]]; then
     echo "Set ALLOW_INSECURE_DEFAULT_ADMIN=false in cloud database mode." >&2
     exit 1

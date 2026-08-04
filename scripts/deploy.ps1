@@ -152,6 +152,13 @@ if ($DatabaseMode -eq "cloud") {
     if (-not $IntegrationApiKey -or $IntegrationApiKey.Length -lt 24 -or $IntegrationApiKey -match "replace-with") {
         throw "Set INTEGRATION_API_KEY to a non-placeholder secret of at least 24 characters."
     }
+    $RetrievalApiKey = Get-ConfiguredValue "RETRIEVAL_API_KEY"
+    if (-not $RetrievalApiKey -or $RetrievalApiKey.Length -lt 24 -or $RetrievalApiKey -match "replace-with") {
+        throw "Set RETRIEVAL_API_KEY to a non-placeholder secret of at least 24 characters."
+    }
+    if ($RetrievalApiKey -ceq $IntegrationApiKey) {
+        throw "RETRIEVAL_API_KEY must be different from INTEGRATION_API_KEY."
+    }
     if ((Get-ConfiguredValue "ALLOW_INSECURE_DEFAULT_ADMIN") -ne "false") {
         throw "Set ALLOW_INSECURE_DEFAULT_ADMIN=false in cloud database mode."
     }
