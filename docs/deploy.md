@@ -59,6 +59,7 @@ INITIAL_ADMIN_USERNAME=knowledge-admin
 INITIAL_ADMIN_PASSWORD=至少12位的强密码
 ALLOW_INSECURE_DEFAULT_ADMIN=false
 INTEGRATION_API_KEY=至少24位的随机服务密钥
+RETRIEVAL_API_KEY=另一个至少24位的随机服务密钥
 
 MEDIA_STORAGE_BACKEND=s3
 S3_BUCKET=实际bucket名称
@@ -67,6 +68,10 @@ S3_REGION=实际地域
 S3_ACCESS_KEY_ID=
 S3_SECRET_ACCESS_KEY=
 ```
+
+两个服务密钥必须不同：`INTEGRATION_API_KEY` 供自动入库、字典和查重等上游
+接口使用；`RETRIEVAL_API_KEY` 只供答疑插件检索已发布知识并回传召回质量。
+插件包中不得包含权限更大的上游密钥。
 
 连接 URL 中的用户名或密码若包含 `@`、`/`、`:`、`#`、`%` 等保留字符，
 必须先做 URL 百分号编码，例如 `@` 编码为 `%40`、`#` 编码为 `%23`。

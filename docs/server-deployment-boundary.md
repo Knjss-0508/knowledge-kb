@@ -69,6 +69,13 @@ docker compose -p knowledge-kb \
 
 `--no-deps` 是服务器日常更新的必要保护，确保不会重建或重启 PostgreSQL、Redis、Qwen Embedding 和迁移容器。
 
+首次启用答疑插件的服务器检索时，只在项目 `.env` 中新增一个与
+`INTEGRATION_API_KEY` 不同、至少 24 位的 `RETRIEVAL_API_KEY`，然后仍按上面的
+`build backend` 和 `up -d --no-deps backend` 增量替换后端。不要为增加密钥
+重新执行全量部署脚本，也不要重建 PostgreSQL、Redis 或 Embedding。更新后应
+分别验证：检索专用密钥能访问 `standard-search` 和
+`retrieval-events:batch`，但不能访问 `taxonomy`；上游密钥的访问范围正好相反。
+
 如果本次代码包含新的 Alembic 迁移，应只额外构建并运行迁移服务，再更新后端：
 
 ```bash

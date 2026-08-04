@@ -7,7 +7,8 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.core.config import settings
-from app.core.integration_auth import require_integration_key
+from app.core.database import get_db
+from app.core.integration_auth import require_integration_key, require_retrieval_key
 from app.main import app
 from app.models.knowledge import KnowledgeStatus
 from app.routes.integration import search_standard_provider_knowledge
@@ -147,30 +148,74 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 503)
         self.assertNotIn("model unavailable", str(raised.exception.detail))
 
-    def test_integration_key_is_required(self):
-        original = settings.INTEGRATION_API_KEY
+    def test_retrieval_key_is_required_and_not_interchangeable(self):
+        original_integration = settings.INTEGRATION_API_KEY
+        original_retrieval = settings.RETRIEVAL_API_KEY
         settings.INTEGRATION_API_KEY = "test-integration-key"
+        settings.RETRIEVAL_API_KEY = "test-retrieval-key"
         try:
             with self.assertRaises(HTTPException) as missing:
-                require_integration_key(None)
+                require_retrieval_key(None)
             self.assertEqual(missing.exception.status_code, 401)
 
             with self.assertRaises(HTTPException) as invalid:
-                require_integration_key("wrong-key")
+                require_retrieval_key("wrong-key")
             self.assertEqual(invalid.exception.status_code, 401)
 
+            with self.assertRaises(HTTPException) as old_key:
+                require_retrieval_key("test-integration-key")
+            self.assertEqual(old_key.exception.status_code, 401)
+
+            with self.assertRaises(HTTPException) as retrieval_on_upstream:
+                require_integration_key("test-retrieval-key")
+            self.assertEqual(retrieval_on_upstream.exception.status_code, 401)
+
+            self.assertIsNone(require_retrieval_key("test-retrieval-key"))
             self.assertIsNone(require_integration_key("test-integration-key"))
+
+            settings.RETRIEVAL_API_KEY = ""
+            with self.assertRaises(HTTPException) as unconfigured:
+                require_retrieval_key("test-retrieval-key")
+            self.assertEqual(unconfigured.exception.status_code, 503)
         finally:
-            settings.INTEGRATION_API_KEY = original
+            settings.INTEGRATION_API_KEY = original_integration
+            settings.RETRIEVAL_API_KEY = original_retrieval
+
+    def test_only_standard_search_and_feedback_use_retrieval_key(self):
+        def dependency_calls(path: str, method: str):
+            route = next(
+                item
+                for item in app.routes
+                if getattr(item, "path", "") == path
+                and method in getattr(item, "methods", set())
+            )
+            return {dependency.call for dependency in route.dependant.dependencies}
+
+        for path in (
+            "/api/v1/integration/standard-search",
+            "/api/v1/integration/retrieval-events:batch",
+        ):
+            dependencies = dependency_calls(path, "POST")
+            self.assertIn(require_retrieval_key, dependencies)
+            self.assertNotIn(require_integration_key, dependencies)
+
+        upstream_dependencies = dependency_calls(
+            "/api/v1/integration/taxonomy",
+            "GET",
+        )
+        self.assertIn(require_integration_key, upstream_dependencies)
+        self.assertNotIn(require_retrieval_key, upstream_dependencies)
 
     @patch("app.routes.integration.search_embeddings")
-    def test_http_contract_uses_integration_key_and_camel_case(self, search):
+    def test_http_contract_uses_retrieval_key_and_camel_case(self, search):
         search.return_value = [
             (_knowledge(index), 0.99 - index * 0.01)
             for index in range(1, 8)
         ]
-        original = settings.INTEGRATION_API_KEY
+        original_integration = settings.INTEGRATION_API_KEY
+        original_retrieval = settings.RETRIEVAL_API_KEY
         settings.INTEGRATION_API_KEY = "test-integration-key"
+        settings.RETRIEVAL_API_KEY = "test-retrieval-key"
         client = TestClient(app)
         try:
             unauthorized = client.post(
@@ -179,9 +224,16 @@ class IntegrationStandardSearchTests(unittest.TestCase):
             )
             self.assertEqual(unauthorized.status_code, 401)
 
-            response = client.post(
+            old_key_response = client.post(
                 "/api/v1/integration/standard-search",
                 headers={"X-Integration-Key": "test-integration-key"},
+                json={"normalizedQuestion": "屏幕漏光", "limit": 8},
+            )
+            self.assertEqual(old_key_response.status_code, 401)
+
+            response = client.post(
+                "/api/v1/integration/standard-search",
+                headers={"X-Integration-Key": "test-retrieval-key"},
                 json={
                     "normalizedQuestion": "屏幕漏光",
                     "productType": "手机",
@@ -191,7 +243,8 @@ class IntegrationStandardSearchTests(unittest.TestCase):
             )
         finally:
             client.close()
-            settings.INTEGRATION_API_KEY = original
+            settings.INTEGRATION_API_KEY = original_integration
+            settings.RETRIEVAL_API_KEY = original_retrieval
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -201,6 +254,77 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         self.assertIn("finalScore", payload["candidates"][0])
         self.assertNotIn("retrieval_mode", payload)
         self.assertNotIn("final_score", payload["candidates"][0])
+
+    def test_http_retrieval_key_scope_includes_feedback_but_not_taxonomy(self):
+        original_integration = settings.INTEGRATION_API_KEY
+        original_retrieval = settings.RETRIEVAL_API_KEY
+        settings.INTEGRATION_API_KEY = "test-integration-key"
+        settings.RETRIEVAL_API_KEY = "test-retrieval-key"
+
+        db = MagicMock()
+
+        def query_model(_model):
+            query = MagicMock()
+            query.filter.return_value.first.return_value = None
+            query.order_by.return_value.all.return_value = []
+            query.all.return_value = []
+            return query
+
+        db.query.side_effect = query_model
+
+        def override_get_db():
+            yield db
+
+        app.dependency_overrides[get_db] = override_get_db
+        client = TestClient(app)
+        feedback_body = {
+            "items": [
+                {
+                    "idempotency_key": "qa-plugin:trace-1",
+                    "source_system": "qa-recommendation-plugin",
+                    "query": "屏幕漏光怎么判定",
+                    "candidate_count": 0,
+                    "score_threshold": 0.42,
+                    "selected": False,
+                    "metadata": {"trace_id": "trace-1"},
+                }
+            ]
+        }
+        try:
+            old_key_feedback = client.post(
+                "/api/v1/integration/retrieval-events:batch",
+                headers={"X-Integration-Key": "test-integration-key"},
+                json=feedback_body,
+            )
+            self.assertEqual(old_key_feedback.status_code, 401)
+
+            feedback = client.post(
+                "/api/v1/integration/retrieval-events:batch",
+                headers={"X-Integration-Key": "test-retrieval-key"},
+                json=feedback_body,
+            )
+            self.assertEqual(feedback.status_code, 202)
+            self.assertEqual(feedback.json()["recorded"], 1)
+            self.assertEqual(feedback.json()["results"][0]["outcome"], "no_candidates")
+            db.add.assert_called_once()
+            db.commit.assert_called_once()
+
+            retrieval_key_taxonomy = client.get(
+                "/api/v1/integration/taxonomy",
+                headers={"X-Integration-Key": "test-retrieval-key"},
+            )
+            self.assertEqual(retrieval_key_taxonomy.status_code, 401)
+
+            upstream_key_taxonomy = client.get(
+                "/api/v1/integration/taxonomy",
+                headers={"X-Integration-Key": "test-integration-key"},
+            )
+            self.assertEqual(upstream_key_taxonomy.status_code, 200)
+        finally:
+            client.close()
+            app.dependency_overrides.pop(get_db, None)
+            settings.INTEGRATION_API_KEY = original_integration
+            settings.RETRIEVAL_API_KEY = original_retrieval
 
 
 if __name__ == "__main__":

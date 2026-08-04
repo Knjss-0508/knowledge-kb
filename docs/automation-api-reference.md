@@ -37,9 +37,9 @@ http://127.0.0.1:8000/api/v1
 https://knowledge.example.internal/api/v1
 ```
 
-### 2.2 上游鉴权
+### 2.2 上游自动入库鉴权
 
-所有 `/integration/*` 接口必须携带：
+除下游召回接口外，自动入库、字典和查重等 `/integration/*` 接口必须携带：
 
 ```http
 X-Integration-Key: <INTEGRATION_API_KEY>
@@ -50,9 +50,12 @@ Content-Type: application/json
 
 ### 2.3 下游召回鉴权
 
-答疑智能推荐助手调用 `/integration/standard-search` 时，必须携带
-`X-Integration-Key`。内部运营页面使用的 `/knowledge/search` 仍使用平台账号
-Bearer 会话，不应将网页登录令牌配置到插件中。
+答疑智能推荐助手调用 `/integration/standard-search` 和
+`/integration/retrieval-events:batch` 时，必须在同一个
+`X-Integration-Key` 请求头中传入独立的 `RETRIEVAL_API_KEY`。该密钥只允许
+标准检索和召回质量反馈，不能调用自动入库、字典或查重接口；
+`INTEGRATION_API_KEY` 也不能替代它。内部运营页面使用的 `/knowledge/search`
+仍使用平台账号 Bearer 会话，不应将网页登录令牌配置到插件中。
 
 ### 2.4 通用规则
 
@@ -436,7 +439,7 @@ GET /integration/ingestions/{ingestion_id}
 
 ```http
 POST /integration/standard-search
-X-Integration-Key: <INTEGRATION_API_KEY>
+X-Integration-Key: <RETRIEVAL_API_KEY>
 Content-Type: application/json
 ```
 
@@ -515,7 +518,7 @@ Content-Type: application/json
     "id": "knowledge-kb",
     "enabled": true,
     "searchUrl": "https://<知识库地址>/api/v1/integration/standard-search",
-    "apiKeyEnv": "KNOWLEDGE_KB_INTEGRATION_KEY",
+    "apiKeyEnv": "KNOWLEDGE_KB_RETRIEVAL_KEY",
     "authHeader": "X-Integration-Key",
     "authScheme": "",
     "timeoutMs": 15000
@@ -589,9 +592,11 @@ POST /knowledge/search
 
 ```http
 POST /integration/retrieval-events:batch
+X-Integration-Key: <RETRIEVAL_API_KEY>
+Content-Type: application/json
 ```
 
-该接口使用 `X-Integration-Key` 鉴权。
+该接口与标准检索共用检索专用密钥，不能使用上游自动入库密钥。
 
 请求示例：
 
@@ -679,8 +684,10 @@ POST /integration/retrieval-events:batch
 - `conversation_url` 必须是受控访问链接，不能使用公网匿名地址。
 - 对接方只保存必要的 `knowledge_id`、`ingestion_id` 和事件 ID。
 - Embedding、PostgreSQL、Redis 均应保持在服务器内部网络，不对外暴露端口。
-- 生产环境只向插件开放带 `X-Integration-Key` 的
-  `/integration/standard-search`；`/knowledge/search` 继续由平台账号会话保护。
+- 生产环境只向插件下发 `RETRIEVAL_API_KEY`，并只开放
+  `/integration/standard-search` 和 `/integration/retrieval-events:batch`；
+  不得把上游 `INTEGRATION_API_KEY` 下发到插件，`/knowledge/search` 继续由
+  平台账号会话保护。
 
 ## 9. cURL 示例
 
@@ -695,7 +702,7 @@ curl -X GET "$KB_BASE_URL/api/v1/integration/taxonomy" \
 
 ```bash
 curl -X POST "$KB_BASE_URL/api/v1/integration/standard-search" \
-  -H "X-Integration-Key: $KB_INTEGRATION_KEY" \
+  -H "X-Integration-Key: $KB_RETRIEVAL_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "normalizedQuestion": "手机黑屏无法开机应该怎么排查",

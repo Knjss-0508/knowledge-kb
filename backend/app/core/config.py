@@ -56,6 +56,8 @@ class Settings(BaseSettings):
 
     # Service-to-service authentication for automation ingestion endpoints.
     INTEGRATION_API_KEY: str = ""
+    # Narrow key for the QA plugin's published-knowledge retrieval and feedback.
+    RETRIEVAL_API_KEY: str = ""
 
     # OpenAI-compatible embedding service, normally the internal Qwen3 service.
     EMBEDDING_PROVIDER: str = "openai_compatible"
