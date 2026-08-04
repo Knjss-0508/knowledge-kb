@@ -37,6 +37,7 @@ def _review_decision() -> DedupDecision:
                 knowledge_id="A-00001",
                 title="按键颜色不符是什么意思",
                 status="published",
+                business_type="self_operated",
                 category_id="cat-qc-standard",
                 match_type="title_exact",
                 similarity=1.0,
@@ -70,6 +71,7 @@ def _candidate_batch() -> IntegrationCandidateBatch:
                     "knowledge": {
                         "title": "按键颜色不符是什么意思",
                         "content": {"blocks": [{"type": "text", "value": "1"}]},
+                        "business_type": "self_operated",
                         "category_id": "cat-qc-standard",
                     },
                 }
@@ -92,6 +94,7 @@ class DeduplicationWorkflowTests(unittest.TestCase):
                     subtitles=[],
                     content={"blocks": [{"type": "text", "value": "1"}]},
                     scene_tags=[],
+                    business_type="self_operated",
                 )
             self.assertEqual(raised.exception.status_code, 409)
             self.assertEqual(
@@ -105,6 +108,7 @@ class DeduplicationWorkflowTests(unittest.TestCase):
                 subtitles=[],
                 content={"blocks": [{"type": "text", "value": "1"}]},
                 scene_tags=[],
+                business_type="self_operated",
                 confirm_dedup_review=True,
             )
         self.assertIs(confirmed, decision)
@@ -199,6 +203,7 @@ class DeduplicationWorkflowTests(unittest.TestCase):
                 subtitles=[],
                 content={"blocks": [{"type": "text", "value": "不同处理步骤"}]},
                 scene_tags=[],
+                business_type="self_operated",
                 allow_duplicate_review=True,
             )
 

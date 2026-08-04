@@ -23,6 +23,7 @@ class Knowledge(Base):
     __tablename__ = "knowledge_items"
 
     id = Column(String(64), primary_key=True)
+    business_type = Column(String(32), nullable=False, index=True)
     title = Column(String(256), nullable=False, index=True)
     subtitles = Column(JSON, default=list, nullable=True)
     content = Column(JSON, nullable=False, default=dict)
@@ -66,6 +67,13 @@ class Knowledge(Base):
         back_populates="knowledge_item",
         foreign_keys="KnowledgeDeduplicationFeedback.knowledge_id",
         cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "business_type IN ('self_operated', 'aggregated')",
+            name="ck_knowledge_items_business_type",
+        ),
     )
 
 

@@ -95,13 +95,25 @@ Content-Type: application/json
 GET /integration/taxonomy
 ```
 
-用途：上游在自动标注和改写前获取可用的 `category_id` 和标签维度。
+用途：上游在自动标注和改写前获取可用的业务类型、`category_id` 和标签维度。
+业务类型是所属分类的上属层级；当前自营回收、聚合回收均复用下方四个知识分类，
+但每条知识必须分别保存自己的 `business_type`。
 
 响应示例：
 
 ```json
 {
-  "version": "automation-v3",
+  "version": "automation-v4",
+  "business_types": [
+    {
+      "value": "self_operated",
+      "label": "自营回收"
+    },
+    {
+      "value": "aggregated",
+      "label": "聚合回收"
+    }
+  ],
   "categories": [
     {
       "id": "cat-qc-standard",
@@ -136,6 +148,12 @@ GET /integration/taxonomy
 }
 ```
 
+上游应保存 `business_types[].value`，提交知识时传递编码而不是中文名称。
+`automation-v4` 相比 v3 新增 `business_types`；分类和标签字段保持兼容。
+预查重、直接候选提交和价值复核候选同步不会替上游猜测业务类型，初次提交缺少
+`knowledge.business_type` 会返回 HTTP 422。已入队候选未修改业务类型时，
+审核 `PATCH` 可以省略该字段。只有下游标准检索为旧插件保留缺省推断，规则见 5.1。
+
 ### 4.2 预查重
 
 ```http
@@ -162,6 +180,7 @@ POST /integration/knowledge-dedup:check
         }
       ]
     },
+    "business_type": "self_operated",
     "category_id": "cat-qc-standard",
     "scene_tags": ["无法开机", "售后咨询"],
     "applicable_categories": [],
@@ -179,7 +198,9 @@ POST /integration/knowledge-dedup:check
   "exclude_knowledge_id": "A-00001",
   "knowledge": {
     "title": "手机无法开机的排查步骤",
-    "content": "..."
+    "content": "...",
+    "business_type": "self_operated",
+    "category_id": "cat-qc-standard"
   }
 }
 ```
@@ -198,6 +219,7 @@ POST /integration/knowledge-dedup:check
       "knowledge_id": "A-00001",
       "title": "手机开机异常处理规则",
       "status": "published",
+      "business_type": "self_operated",
       "category_id": "cat-qc-standard",
       "match_type": "semantic",
       "similarity": 0.913421
@@ -205,6 +227,9 @@ POST /integration/knowledge-dedup:check
   ]
 }
 ```
+
+查重只比较同一 `business_type` 下处于待审核或已发布状态的知识。不同业务类型中的
+相同标题或正文不会互相拦截；`matches[].business_type` 用于审核时核对命中范围。
 
 `action` 处理规则：
 
@@ -263,6 +288,7 @@ POST /integration/knowledge-candidates:batch
             }
           ]
         },
+        "business_type": "self_operated",
         "category_id": "cat-qc-standard",
         "scene_tags": ["无法开机", "售后咨询"],
         "applicable_categories": [],
@@ -290,6 +316,7 @@ POST /integration/knowledge-candidates:batch
 | `knowledge.title` | 是 | 主标题 |
 | `knowledge.subtitles` | 否 | 可检索的用户问法或别名；不要堆砌关键词 |
 | `knowledge.content` | 是 | 改写后的知识正文；支持字符串或 `blocks` 富文本结构 |
+| `knowledge.business_type` | 是 | 业务类型编码，只允许 `self_operated` 或 `aggregated`；必须来自 `/integration/taxonomy` |
 | `knowledge.category_id` | 是 | 必须来自 `/integration/taxonomy` |
 | `knowledge.evidence_excerpt` | 否 | 不超过 4000 字的脱敏证据摘要 |
 
@@ -299,21 +326,36 @@ POST /integration/knowledge-candidates:batch
 
 ```json
 {
-  "accepted": 1,
+  "accepted": 0,
+  "review_required": 1,
   "rejected": 0,
   "reused": 0,
   "results": [
     {
       "event_id": "qa-20260711-000123",
       "idempotency_key": "sha256:conversation-123:knowledge-1",
-      "status": "review_submitted",
+      "status": "review_required",
       "ingestion_id": "ing-xxxxxxxxxxxx",
-      "knowledge_id": "A-00001",
-      "error_code": null,
-      "error_message": null,
+      "knowledge_id": null,
+      "error_code": "DUPLICATE_REVIEW_REQUIRED",
+      "error_message": "检测到疑似重复知识，需人工核对后确认提交。 命中 A-00001《手机开机异常处理规则》。",
       "deduplication": {
         "action": "review_duplicate",
-        "matches": []
+        "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
+        "content_hash": "4b30...",
+        "block_threshold": 0.96,
+        "review_threshold": 0.88,
+        "matches": [
+          {
+            "knowledge_id": "A-00001",
+            "title": "手机开机异常处理规则",
+            "status": "published",
+            "business_type": "self_operated",
+            "category_id": "cat-qc-standard",
+            "match_type": "semantic",
+            "similarity": 0.913421
+          }
+        ]
       }
     }
   ]
@@ -325,6 +367,7 @@ POST /integration/knowledge-candidates:batch
 | `results[].status` | 含义 | 上游动作 |
 |---|---|---|
 | `review_submitted` | 已创建知识并提交待审核 | 保存 `ingestion_id`、`knowledge_id` |
+| `review_required` | 疑似重复，尚未创建知识 | 保存 `ingestion_id`，由审核人员比较全部命中项并确认 |
 | `reused` | 幂等重试，返回已有处理结果 | 不重复提交 |
 | `rejected` | 当前记录未入库 | 根据错误码修复后用新的幂等键重试 |
 
@@ -338,7 +381,9 @@ POST /integration/knowledge-candidates:batch
 | `DEDUP_UNAVAILABLE` | Embedding 服务不可用 | 指数退避后使用相同幂等键重试 |
 | `DEDUP_INVALID_CONTENT` | 正文为空或格式无法规范化 | 修复 `knowledge.content` 后重试 |
 
-> 注意：当查重动作为 `review_duplicate` 时，返回记录仍是 `review_submitted`，具体疑似重复信息在 `deduplication` 中。
+> 注意：当查重动作为 `review_duplicate` 时，候选进入价值复核队列并返回
+> `review_required`，此时不会提前创建知识。审核人员确认内容确实不同后，再通过
+> `candidate-reviews:batch-submit` 完成最终同业务查重和知识创建。
 
 ### 4.4 同步候选到价值复核队列
 
@@ -349,7 +394,8 @@ POST /integration/knowledge-review-candidates:batch
 X-Integration-Key: <integration-key>
 ```
 
-请求体沿用 `IntegrationCandidateBatch`，并可增加：
+请求体沿用 `IntegrationCandidateBatch`，因此
+`knowledge.business_type` 仍为必填；此外可增加：
 
 ```json
 {
@@ -398,7 +444,12 @@ PATCH /integration/candidate-reviews/{ingestion_id}
 POST /integration/candidate-reviews:batch-submit
 ```
 
-`batch-submit` 只接受 `review_status=ready` 的候选，并统一执行分类校验、Qwen3 查重、向量保存和知识创建。创建后的知识状态仍为 `review`，不会直接发布。
+候选审核列表会返回 `business_type`。`PATCH` 可修正业务类型；一旦修改标题、正文、
+业务类型或其他查重相关字段，之前的疑似重复确认会失效。
+
+`batch-submit` 只接受 `review_status=ready` 的候选，并统一执行分类校验、同业务
+Qwen3 查重、向量保存和知识创建。创建后的知识沿用候选的 `business_type`，
+状态仍为 `review`，不会直接发布。
 
 ### 4.5 查询入库处理状态
 
@@ -452,6 +503,7 @@ Content-Type: application/json
 ```json
 {
   "normalizedQuestion": "屏幕四周胶条破损怎么判定",
+  "businessType": "self_operated",
   "productType": "手机",
   "model": "iPhone 13",
   "orderInfo": {
@@ -470,14 +522,20 @@ Content-Type: application/json
 | 字段 | 必填 | 说明 |
 |---|---:|---|
 | `normalizedQuestion` | 是 | 插件整理后的检索问题，不能为空 |
+| `businessType` | 否 | 业务类型硬过滤，只允许 `self_operated` 或 `aggregated`；新插件应明确传递 |
 | `productType` / `model` | 否 | 插件提供的商品类目和机型上下文 |
 | `orderInfo` | 否 | 插件订单上下文，当前保留 `category` 和 `model` |
 | `partTerms` / `phenomenonTerms` / `categoryIntent` | 否 | 插件已解析的检索上下文 |
 | `limit` | 否 | 兼容插件的 1～20 输入；知识库实际最多返回 5 条 |
 
-当前版本只使用 `normalizedQuestion` 生成查询向量。插件传入的类目和机型是中文
-名称，而知识库适用范围保存的是曼哈顿 ID，尚未建立名称到 ID 的稳定映射，因此
-这些上下文字段暂不作为硬过滤条件，避免误删正确候选。
+当前版本只使用 `normalizedQuestion` 生成查询向量，并使用 `businessType` 对已发布
+知识执行硬过滤。插件传入的类目和机型是中文名称，而知识库适用范围保存的是
+曼哈顿 ID，尚未建立名称到 ID 的稳定映射，因此其他上下文字段暂不作为硬过滤
+条件，避免误删正确候选。
+
+为兼容尚未发送 `businessType` 的旧插件，服务端会检查 `productType` 和
+`orderInfo.category`：任一字段明确等于“聚合回收”时按 `aggregated` 检索，
+其他情况默认按 `self_operated` 检索。该规则只用于向后兼容，新版本不应依赖推断。
 
 响应示例：
 
@@ -495,6 +553,7 @@ Content-Type: application/json
       "score": 0.912345,
       "finalScore": 0.912345,
       "status": "published",
+      "businessType": "self_operated",
       "categoryId": "cat-qc-standard",
       "level1Label": "质检标准",
       "productType": "phone",
@@ -506,9 +565,11 @@ Content-Type: application/json
 }
 ```
 
-知识正文会转换为纯文本返回；图片和视频地址不会下发，但其 `alt`、`caption`
+每条候选都会返回实际所属的 `businessType`。知识正文会转换为纯文本返回；
+图片和视频地址不会下发，但其 `alt`、`caption`
 等可读说明会保留。无命中时返回 HTTP 200、`status: "no_match"` 和空
-`candidates`。Embedding 服务不可用时返回 HTTP 503。
+`candidates`；无命中只表示当前显式或推断业务类型内没有结果，不会自动跨业务
+扩大检索。Embedding 服务不可用时返回 HTTP 503。
 
 插件的 Provider 配置示例：
 
@@ -706,6 +767,7 @@ curl -X POST "$KB_BASE_URL/api/v1/integration/standard-search" \
   -H "Content-Type: application/json" \
   -d '{
     "normalizedQuestion": "手机黑屏无法开机应该怎么排查",
+    "businessType": "self_operated",
     "productType": "手机",
     "limit": 5
   }'

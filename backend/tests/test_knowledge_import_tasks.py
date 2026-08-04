@@ -26,7 +26,7 @@ class KnowledgeImportTaskTests(unittest.TestCase):
     def _workbook_bytes(rows):
         workbook = Workbook()
         sheet = workbook.active
-        sheet.append(["标题", "知识分类", "正文"])
+        sheet.append(["标题", "业务类型", "知识分类", "正文"])
         for row in rows:
             sheet.append(row)
         output = BytesIO()
@@ -69,8 +69,8 @@ class KnowledgeImportTaskTests(unittest.TestCase):
     def test_expired_task_resumes_at_the_first_uncommitted_row(self):
         workbook = self._workbook_bytes(
             [
-                ["第一条", "cat-qc", "正文一"],
-                ["第二条", "cat-qc", "正文二"],
+                ["第一条", "自营回收", "cat-qc", "正文一"],
+                ["第二条", "自营回收", "cat-qc", "正文二"],
             ]
         )
         with self.session_factory() as db:

@@ -49,7 +49,12 @@ from app.schemas.integration import (
     RetrievalQualityEventBatchResponse,
     RetrievalQualityEventResult,
 )
-from app.schemas.knowledge import CategoryResponse, TagDimensionResponse, TagValueResponse
+from app.schemas.knowledge import (
+    BusinessTypeOption,
+    CategoryResponse,
+    TagDimensionResponse,
+    TagValueResponse,
+)
 from app.services.candidate_review import (
     evaluate_review_status,
     normalize_human_review,
@@ -59,7 +64,7 @@ from app.services.candidate_review import (
 router = APIRouter(prefix="/integration", tags=["自动化接入"])
 logger = logging.getLogger(__name__)
 
-TAXONOMY_VERSION = "automation-v3"
+TAXONOMY_VERSION = "automation-v4"
 STANDARD_SEARCH_MAX_RESULTS = 5
 
 
@@ -75,6 +80,7 @@ def _to_dedup_response(decision: DedupDecision) -> IntegrationDedupResponse:
                 knowledge_id=match.knowledge_id,
                 title=match.title,
                 status=match.status,
+                business_type=match.business_type,
                 category_id=match.category_id,
                 match_type=match.match_type,
                 similarity=match.similarity,
@@ -133,6 +139,7 @@ def _candidate_review_item(item: IntegrationIngestion) -> CandidateReviewListIte
         title=str(knowledge.get("title") or ""),
         subtitles=list(knowledge.get("subtitles") or []),
         content=knowledge.get("content") or {"blocks": []},
+        business_type=str(knowledge.get("business_type") or "self_operated"),
         category_id=str(knowledge.get("category_id") or ""),
         applicable_scenes=list(knowledge.get("scene_tags") or []),
         applicable_categories=list(knowledge.get("applicable_categories") or []),
@@ -323,6 +330,7 @@ def _to_standard_search_candidate(
         score=normalized_score,
         final_score=normalized_score,
         status="published",
+        business_type=item.business_type,
         category_id=item.category_id,
         level1_label=str(getattr(category, "name", "") or ""),
         product_type=applicable_categories[0] if applicable_categories else "",
@@ -343,10 +351,24 @@ def search_standard_provider_knowledge(
     _: None = Depends(require_retrieval_key),
 ):
     top_k = min(body.limit, STANDARD_SEARCH_MAX_RESULTS)
+    inferred_business_type = body.business_type
+    if not inferred_business_type:
+        inferred_business_type = (
+            "aggregated"
+            if any(
+                hint.strip() == "聚合回收"
+                for hint in (
+                    body.product_type,
+                    body.order_info.category,
+                )
+            )
+            else "self_operated"
+        )
     try:
         ranked = search_embeddings(
             db,
             query=body.normalized_question,
+            business_type=inferred_business_type,
             top_k=top_k,
         )
     except EmbeddingServiceUnavailable as exc:
@@ -491,6 +513,10 @@ def get_taxonomy(
     dimensions = db.query(TagDimension).all()
     return IntegrationTaxonomyResponse(
         version=TAXONOMY_VERSION,
+        business_types=[
+            BusinessTypeOption(value="self_operated", label="自营回收"),
+            BusinessTypeOption(value="aggregated", label="聚合回收"),
+        ],
         categories=[CategoryResponse.model_validate(item) for item in categories],
         tag_dimensions=[
             TagDimensionResponse(
@@ -527,6 +553,7 @@ def check_knowledge_deduplication(
             subtitles=body.knowledge.subtitles,
             content=_normalize_content(body.knowledge.content),
             scene_tags=body.knowledge.scene_tags,
+            business_type=body.knowledge.business_type,
             exclude_knowledge_id=body.exclude_knowledge_id,
         )
         db.commit()
@@ -614,6 +641,7 @@ def submit_knowledge_candidates(
                 subtitles=candidate.knowledge.subtitles,
                 content=_normalize_content(candidate.knowledge.content),
                 scene_tags=candidate.knowledge.scene_tags,
+                business_type=candidate.knowledge.business_type,
             )
         except EmbeddingServiceUnavailable as exc:
             rejected += 1
@@ -676,6 +704,7 @@ def submit_knowledge_candidates(
             title=candidate.knowledge.title,
             subtitles=candidate.knowledge.subtitles,
             content=_normalize_content(candidate.knowledge.content),
+            business_type=candidate.knowledge.business_type,
             category_id=candidate.knowledge.category_id,
             status=KnowledgeStatus.REVIEW,
             source="automation",
@@ -960,6 +989,7 @@ def update_candidate_review(
         ("title", "title"),
         ("subtitles", "subtitles"),
         ("content", "content"),
+        ("business_type", "business_type"),
         ("category_id", "category_id"),
         ("applicable_scenes", "scene_tags"),
         ("applicable_categories", "applicable_categories"),
@@ -1101,6 +1131,7 @@ def submit_candidate_reviews(
                 subtitles=candidate.knowledge.subtitles,
                 content=content,
                 scene_tags=candidate.knowledge.scene_tags,
+                business_type=candidate.knowledge.business_type,
             )
             deduplication = _to_dedup_response(decision)
             if decision.action == "block_duplicate":
@@ -1143,6 +1174,7 @@ def submit_candidate_reviews(
                 title=candidate.knowledge.title,
                 subtitles=candidate.knowledge.subtitles,
                 content=content,
+                business_type=candidate.knowledge.business_type,
                 category_id=candidate.knowledge.category_id,
                 status=KnowledgeStatus.REVIEW,
                 source="automation",

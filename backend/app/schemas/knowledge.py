@@ -4,6 +4,9 @@ from typing import Literal, Optional, Any
 from pydantic import BaseModel, Field, field_validator
 
 
+BusinessType = Literal["self_operated", "aggregated"]
+
+
 # ---- 富文本内容块 ----
 
 class ContentBlock(BaseModel):
@@ -40,7 +43,13 @@ class MediaResponse(BaseModel):
 
 # ---- 知识条目 ----
 
+class BusinessTypeOption(BaseModel):
+    value: BusinessType = Field(description="业务类型编码")
+    label: str = Field(description="业务类型名称")
+
+
 class KnowledgeCreate(BaseModel):
+    business_type: BusinessType = Field(..., description="业务类型")
     title: str = Field(..., max_length=256, description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表，可多条")
     content: Any = Field(..., description="知识内容，支持富文本: 纯字符串 或 {blocks:[...]} 结构")
@@ -70,6 +79,7 @@ class KnowledgeCreate(BaseModel):
 
 
 class KnowledgeUpdate(BaseModel):
+    business_type: Optional[BusinessType] = Field(None, description="业务类型")
     title: Optional[str] = Field(None, description="知识标题")
     subtitles: Optional[list[str]] = Field(None, description="副标题列表")
     content: Optional[Any] = Field(None, description="知识内容")
@@ -84,6 +94,16 @@ class KnowledgeUpdate(BaseModel):
     source_record_id: Optional[str] = Field(None, max_length=256, description="来源记录ID，可选")
     source_knowledge_key: Optional[str] = Field(None, max_length=512, description="来源知识键，可选")
 
+    @field_validator("business_type")
+    @classmethod
+    def business_type_must_not_be_null(
+        cls,
+        value: Optional[BusinessType],
+    ) -> Optional[BusinessType]:
+        if value is None:
+            raise ValueError("业务类型不能为空")
+        return value
+
     @field_validator("category_id")
     @classmethod
     def category_id_must_not_be_blank(cls, value: Optional[str]) -> Optional[str]:
@@ -97,6 +117,7 @@ class KnowledgeUpdate(BaseModel):
 
 class KnowledgeResponse(BaseModel):
     id: str = Field(description="知识条目ID")
+    business_type: BusinessType = Field(description="业务类型")
     title: str = Field(description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表")
     content: Any = Field(description="知识内容")
@@ -189,6 +210,7 @@ class TagDimensionResponse(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, description="搜索关键词")
+    business_type: Optional[BusinessType] = Field(None, description="限定业务类型")
     category_id: Optional[str] = Field(None, description="限定分类ID")
     tags: Optional[list[str]] = Field(None, description="限定标签")
     top_k: int = Field(default=10, ge=1, le=50, description="返回条数上限")
@@ -196,6 +218,7 @@ class SearchRequest(BaseModel):
 
 class SearchResult(BaseModel):
     id: str = Field(description="知识条目ID")
+    business_type: BusinessType = Field(description="业务类型")
     title: str = Field(description="知识标题")
     content: Any = Field(description="知识内容")
     score: float = Field(description="匹配得分")
@@ -212,6 +235,7 @@ class SearchResponse(BaseModel):
 # ---- 候选池 ----
 
 class CandidateSubmit(BaseModel):
+    business_type: BusinessType = Field(..., description="业务类型")
     title: str = Field(..., description="标题")
     content: Any = Field(..., description="内容")
     category_id: str = Field(..., description="所属分类ID")
