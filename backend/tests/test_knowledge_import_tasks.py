@@ -17,6 +17,7 @@ from app.routes.knowledge import (
     _import_retry_delay_seconds,
     _lock_import_task_attempt,
     _precompute_import_embeddings,
+    _task_lease_expiry,
     cancel_knowledge_import_task,
     process_knowledge_import_task,
     process_next_knowledge_import_task,
@@ -36,6 +37,36 @@ class KnowledgeImportTaskTests(unittest.TestCase):
 
     def tearDown(self):
         self.engine.dispose()
+
+    def test_import_task_lease_covers_embedding_timeout_with_margin(self):
+        now = datetime.utcnow()
+        with (
+            patch.object(settings, "KNOWLEDGE_IMPORT_LEASE_SECONDS", 120),
+            patch.object(
+                settings,
+                "KNOWLEDGE_IMPORT_EMBEDDING_TIMEOUT_SECONDS",
+                180,
+            ),
+            patch.object(settings, "EMBEDDING_PROVIDER", "openai_compatible"),
+        ):
+            expires_at = _task_lease_expiry(now)
+
+        self.assertEqual(expires_at, now + timedelta(seconds=240))
+
+    def test_auto_provider_lease_covers_both_embedding_protocol_attempts(self):
+        now = datetime.utcnow()
+        with (
+            patch.object(settings, "KNOWLEDGE_IMPORT_LEASE_SECONDS", 120),
+            patch.object(
+                settings,
+                "KNOWLEDGE_IMPORT_EMBEDDING_TIMEOUT_SECONDS",
+                180,
+            ),
+            patch.object(settings, "EMBEDDING_PROVIDER", "auto"),
+        ):
+            expires_at = _task_lease_expiry(now)
+
+        self.assertEqual(expires_at, now + timedelta(seconds=420))
 
     @staticmethod
     def _row(row_number, *, source_status="生效中", valid=True):
@@ -58,7 +89,10 @@ class KnowledgeImportTaskTests(unittest.TestCase):
 
     @patch("app.routes.knowledge.embed_texts")
     def test_import_embedding_precompute_batches_rows_and_keeps_review_light(self, embed):
-        embed.side_effect = lambda texts: [[float(index)] for index, _ in enumerate(texts)]
+        embed.side_effect = lambda texts, **_kwargs: [
+            [float(index)]
+            for index, _ in enumerate(texts)
+        ]
         rows = [
             self._row(2, source_status="生效中"),
             self._row(3, source_status="待审核"),
@@ -70,6 +104,10 @@ class KnowledgeImportTaskTests(unittest.TestCase):
         # Published-source row has dedup (3) + search (1) documents; review
         # row only needs the three deduplication documents.
         self.assertEqual(len(embed.call_args.args[0]), 7)
+        self.assertEqual(
+            embed.call_args.kwargs["timeout_seconds"],
+            settings.KNOWLEDGE_IMPORT_EMBEDDING_TIMEOUT_SECONDS,
+        )
         self.assertEqual(len(bundles[2].dedup_vectors), 3)
         self.assertEqual(bundles[3].search_vectors, {})
 

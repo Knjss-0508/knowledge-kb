@@ -179,6 +179,7 @@ def embed_texts(
     texts: list[str],
     *,
     on_batch_complete: Callable[[int, int], None] | None = None,
+    timeout_seconds: float | None = None,
 ) -> list[list[float]]:
     """Generate document embeddings through the private Qwen/TEI service.
 
@@ -193,7 +194,11 @@ def embed_texts(
         raise ValueError("Embedding input must not be blank.")
 
     headers = _authorization_headers()
-    timeout = httpx.Timeout(settings.EMBEDDING_TIMEOUT_SECONDS)
+    timeout = httpx.Timeout(
+        settings.EMBEDDING_TIMEOUT_SECONDS
+        if timeout_seconds is None
+        else timeout_seconds
+    )
     provider = settings.EMBEDDING_PROVIDER.strip().lower()
     if provider not in {"openai_compatible", "tei", "auto"}:
         raise ValueError(
