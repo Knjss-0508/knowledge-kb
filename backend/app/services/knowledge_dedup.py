@@ -4,10 +4,12 @@ import hashlib
 import json
 import math
 import uuid
-from dataclasses import dataclass
-from functools import lru_cache
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
-from threading import Lock
+from queue import Empty, Queue
+from threading import Event, Lock, Thread
+from time import monotonic
 from typing import Any, Literal
 
 from sqlalchemy import func
@@ -24,11 +26,136 @@ from app.models.knowledge import (
 from app.services.embedding import embed_texts
 
 
-_QUERY_EMBEDDING_LOCKS_GUARD = Lock()
-_QUERY_EMBEDDING_LOCKS: dict[tuple[str, str, str, int, str, str], Lock] = {}
+_QueryEmbeddingKey = tuple[str, str, str, int, str, str]
+_QUERY_EMBEDDING_CACHE_MAXSIZE = 512
+_QUERY_EMBEDDING_CACHE_GUARD = Lock()
+_QUERY_EMBEDDING_CACHE: OrderedDict[
+    _QueryEmbeddingKey, tuple[float, ...]
+] = OrderedDict()
 
 
-@lru_cache(maxsize=512)
+def _cache_query_embedding(
+    key: _QueryEmbeddingKey,
+    vector: list[float] | tuple[float, ...],
+) -> tuple[float, ...]:
+    normalized = tuple(float(value) for value in vector)
+    with _QUERY_EMBEDDING_CACHE_GUARD:
+        _QUERY_EMBEDDING_CACHE[key] = normalized
+        _QUERY_EMBEDDING_CACHE.move_to_end(key)
+        while len(_QUERY_EMBEDDING_CACHE) > _QUERY_EMBEDDING_CACHE_MAXSIZE:
+            _QUERY_EMBEDDING_CACHE.popitem(last=False)
+    return normalized
+
+
+def _get_cached_query_embedding(
+    key: _QueryEmbeddingKey,
+) -> tuple[float, ...] | None:
+    with _QUERY_EMBEDDING_CACHE_GUARD:
+        vector = _QUERY_EMBEDDING_CACHE.get(key)
+        if vector is not None:
+            _QUERY_EMBEDDING_CACHE.move_to_end(key)
+        return vector
+
+
+@dataclass
+class _QueryEmbeddingRequest:
+    key: _QueryEmbeddingKey
+    query: str
+    done: Event = field(default_factory=Event)
+    vector: tuple[float, ...] | None = None
+    error: Exception | None = None
+
+
+class _QueryEmbeddingBatcher:
+    """Coalesce near-simultaneous cache misses into one model request."""
+
+    def __init__(self) -> None:
+        self._queue: Queue[_QueryEmbeddingRequest] = Queue()
+        self._worker_guard = Lock()
+        self._worker: Thread | None = None
+
+    def _ensure_worker(self) -> None:
+        with self._worker_guard:
+            if self._worker and self._worker.is_alive():
+                return
+            self._worker = Thread(
+                target=self._run,
+                name="knowledge-query-embedding-batcher",
+                daemon=True,
+            )
+            self._worker.start()
+
+    def submit(
+        self,
+        key: _QueryEmbeddingKey,
+        query: str,
+    ) -> tuple[float, ...]:
+        cached = _get_cached_query_embedding(key)
+        if cached is not None:
+            return cached
+
+        request = _QueryEmbeddingRequest(key=key, query=query)
+        self._queue.put(request)
+        self._ensure_worker()
+        request.done.wait()
+        if request.error is not None:
+            raise request.error
+        if request.vector is None:
+            raise RuntimeError("Query embedding batcher returned no vector.")
+        return request.vector
+
+    def _run(self) -> None:
+        while True:
+            first = self._queue.get()
+            batch = [first]
+            max_batch_size = max(int(settings.QUERY_EMBEDDING_BATCH_SIZE), 1)
+            wait_seconds = max(
+                int(settings.QUERY_EMBEDDING_BATCH_WAIT_MS), 0
+            ) / 1000
+            deadline = monotonic() + wait_seconds
+            while len(batch) < max_batch_size:
+                timeout = deadline - monotonic()
+                if timeout <= 0:
+                    break
+                try:
+                    batch.append(self._queue.get(timeout=timeout))
+                except Empty:
+                    break
+            self._process(batch)
+
+    def _process(self, batch: list[_QueryEmbeddingRequest]) -> None:
+        try:
+            pending: dict[_QueryEmbeddingKey, list[_QueryEmbeddingRequest]] = {}
+            for request in batch:
+                cached = _get_cached_query_embedding(request.key)
+                if cached is not None:
+                    request.vector = cached
+                    continue
+                pending.setdefault(request.key, []).append(request)
+
+            if pending:
+                keys = list(pending)
+                vectors = embed_texts([pending[key][0].query for key in keys])
+                if len(vectors) != len(keys):
+                    raise ValueError(
+                        "Query embedding result count does not match input count."
+                    )
+                for key, vector in zip(keys, vectors):
+                    cached = _cache_query_embedding(key, vector)
+                    for request in pending[key]:
+                        request.vector = cached
+        except Exception as exc:
+            for request in batch:
+                if request.vector is None:
+                    request.error = exc
+        finally:
+            for request in batch:
+                request.done.set()
+
+
+_QUERY_EMBEDDING_BATCHER = _QueryEmbeddingBatcher()
+
+
 def _cached_query_embedding(
     provider: str,
     base_url: str,
@@ -37,15 +164,18 @@ def _cached_query_embedding(
     version: str,
     query: str,
 ) -> tuple[float, ...]:
-    """Cache deterministic query vectors and coalesce same-key misses."""
-    return tuple(embed_texts([query])[0])
+    """Return a cached vector for compatibility with existing callers."""
+    key = (provider, base_url, model, dimensions, version, query)
+    cached = _get_cached_query_embedding(key)
+    if cached is not None:
+        return cached
+    return _cache_query_embedding(key, embed_texts([query])[0])
 
 
 def clear_query_embedding_cache() -> None:
     """Clear process-local query vectors after test/config changes."""
-    with _QUERY_EMBEDDING_LOCKS_GUARD:
-        _cached_query_embedding.cache_clear()
-        _QUERY_EMBEDDING_LOCKS.clear()
+    with _QUERY_EMBEDDING_CACHE_GUARD:
+        _QUERY_EMBEDDING_CACHE.clear()
 
 
 def _query_embedding(query: str) -> list[float]:
@@ -60,14 +190,7 @@ def _query_embedding(query: str) -> list[float]:
         settings.VERSION,
         normalized,
     )
-    with _QUERY_EMBEDDING_LOCKS_GUARD:
-        if len(_QUERY_EMBEDDING_LOCKS) >= 1024:
-            _QUERY_EMBEDDING_LOCKS.clear()
-        key_lock = _QUERY_EMBEDDING_LOCKS.setdefault(key, Lock())
-    with key_lock:
-        vector = _cached_query_embedding(
-            *key,
-        )
+    vector = _QUERY_EMBEDDING_BATCHER.submit(key, normalized)
     return [float(value) for value in vector]
 
 
