@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -137,11 +138,17 @@ def _embed_batch(
     raise EmbeddingServiceUnavailable("; ".join(errors))
 
 
-def embed_texts(texts: list[str]) -> list[list[float]]:
+def embed_texts(
+    texts: list[str],
+    *,
+    on_batch_complete: Callable[[int, int], None] | None = None,
+) -> list[list[float]]:
     """Generate document embeddings through the private Qwen/TEI service.
 
     Large imports are transparently split into bounded requests so one long
     knowledge item cannot exceed the embedding service's HTTP payload limit.
+    ``on_batch_complete`` is an optional progress hook invoked after each
+    bounded model request, without changing the returned vector order.
     """
     if not texts:
         return []
@@ -158,6 +165,10 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 
     with httpx.Client(timeout=timeout) as client:
         vectors: list[list[float]] = []
+        processed = 0
         for batch in _embedding_batches(texts):
             vectors.extend(_embed_batch(client, batch, headers, provider))
+            processed += len(batch)
+            if on_batch_complete is not None:
+                on_batch_complete(processed, len(texts))
         return vectors

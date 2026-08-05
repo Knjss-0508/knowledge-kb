@@ -8,8 +8,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models.knowledge import Category, KnowledgeImportTask
-from app.routes.knowledge import process_next_knowledge_import_task
+from app.routes.knowledge import (
+    _import_embedding_batches,
+    _precompute_import_embeddings,
+    process_knowledge_import_task,
+    process_next_knowledge_import_task,
+)
 from app.schemas.knowledge import ExcelImportRowResult
+from app.services.knowledge_excel import ExcelKnowledgeRow
 
 
 class KnowledgeImportTaskTests(unittest.TestCase):
@@ -21,6 +27,55 @@ class KnowledgeImportTaskTests(unittest.TestCase):
 
     def tearDown(self):
         self.engine.dispose()
+
+    @staticmethod
+    def _row(row_number, *, source_status="生效中", valid=True):
+        return ExcelKnowledgeRow(
+            row_number=row_number,
+            title=f"标题{row_number}",
+            business_type="self_operated",
+            category_id="cat-qc",
+            content=f"正文{row_number}",
+            subtitles=[],
+            applicable_scenes=[],
+            applicable_categories=["平板电脑"],
+            applicable_brands=[],
+            applicable_models=[],
+            source_status=source_status,
+            error_code=None if valid else "INVALID_ROW",
+            error_message=None if valid else "无效行",
+        )
+
+    @patch("app.routes.knowledge.embed_texts")
+    def test_import_embedding_precompute_batches_rows_and_keeps_review_light(self, embed):
+        embed.side_effect = lambda texts: [[float(index)] for index, _ in enumerate(texts)]
+        rows = [
+            self._row(2, source_status="生效中"),
+            self._row(3, source_status="待审核"),
+        ]
+
+        bundles = _precompute_import_embeddings(rows)
+
+        self.assertEqual(embed.call_count, 1)
+        # Published-source row has dedup (3) + search (1) documents; review
+        # row only needs the three deduplication documents.
+        self.assertEqual(len(embed.call_args.args[0]), 7)
+        self.assertEqual(len(bundles[2].dedup_vectors), 3)
+        self.assertEqual(bundles[3].search_vectors, {})
+
+    def test_import_embedding_batches_keep_invalid_and_deprecated_rows(self):
+        rows = [
+            self._row(2, valid=False),
+            self._row(3, source_status="已禁用"),
+            self._row(4),
+        ]
+
+        batches = _import_embedding_batches(rows)
+
+        self.assertEqual(
+            [row.row_number for batch in batches for row, _ in batch],
+            [2, 3, 4],
+        )
 
     @staticmethod
     def _workbook_bytes(rows):
@@ -106,7 +161,7 @@ class KnowledgeImportTaskTests(unittest.TestCase):
 
         with patch(
             "app.routes.knowledge._process_excel_import_row",
-            side_effect=lambda _db, row, _user: ExcelImportRowResult(
+            side_effect=lambda _db, row, _user, **_kwargs: ExcelImportRowResult(
                 row=row.row_number,
                 title=row.title,
                 status="imported",
@@ -121,12 +176,71 @@ class KnowledgeImportTaskTests(unittest.TestCase):
 
         self.assertEqual(process_row.call_count, 1)
         self.assertEqual(process_row.call_args.args[1].row_number, 3)
+        # A failed precomputation must fall back to the legacy three-argument
+        # row path so its original error handling remains authoritative.
+        self.assertEqual(process_row.call_args.kwargs, {})
         with self.session_factory() as db:
             task = db.query(KnowledgeImportTask).one()
             self.assertEqual(task.status, "completed")
             self.assertEqual(task.processed_rows, 2)
             self.assertEqual(task.imported, 2)
             self.assertEqual([item["row"] for item in task.results], [2, 3])
+
+    def test_reclaimed_attempt_stops_the_old_worker_before_row_write(self):
+        workbook = self._workbook_bytes(
+            [["唯一条", "自营回收", "cat-qc", "正文"]]
+        )
+        with self.session_factory() as db:
+            db.add(
+                Category(
+                    id="cat-qc",
+                    name="质检标准",
+                    parent_id=None,
+                    level=1,
+                    sort_order=1,
+                )
+            )
+            db.add(
+                self._task(
+                    "import-claim",
+                    workbook,
+                    status="running",
+                    total_rows=1,
+                    attempt_count=1,
+                    lease_expires_at=datetime.utcnow() + timedelta(minutes=1),
+                )
+            )
+            db.commit()
+
+        def steal_claim(rows, *, on_batch_complete):
+            with self.session_factory() as other_db:
+                task = other_db.query(KnowledgeImportTask).filter(
+                    KnowledgeImportTask.id == "import-claim"
+                ).one()
+                task.attempt_count = 2
+                other_db.commit()
+            on_batch_complete(1, 1)
+            return {}
+
+        with patch(
+            "app.routes.knowledge._precompute_import_embeddings",
+            side_effect=steal_claim,
+        ), patch(
+            "app.routes.knowledge._process_excel_import_row",
+        ) as process_row, patch(
+            "app.routes.knowledge.logger.exception",
+        ):
+            process_knowledge_import_task(
+                "import-claim",
+                session_factory=self.session_factory,
+            )
+
+        process_row.assert_not_called()
+        with self.session_factory() as db:
+            task = db.query(KnowledgeImportTask).one()
+            self.assertEqual(task.attempt_count, 2)
+            self.assertEqual(task.status, "running")
+            self.assertEqual(task.processed_rows, 0)
 
 
 if __name__ == "__main__":

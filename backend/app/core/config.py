@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     # keeps long Excel imports below reverse-proxy and model-server payload limits.
     EMBEDDING_MAX_BATCH_TEXTS: int = 16
     EMBEDDING_MAX_BATCH_CHARS: int = 12000
+    # Merge near-simultaneous retrieval cache misses into one model request.
+    # A short wait substantially improves CPU throughput without changing the
+    # model, vector dimensions, retrieval thresholds, or database ranking logic.
+    QUERY_EMBEDDING_BATCH_SIZE: int = 8
+    QUERY_EMBEDDING_BATCH_WAIT_MS: int = 20
 
     # Knowledge deduplication thresholds. Scores are cosine similarities.
     # >= block threshold: reject as a likely duplicate.
@@ -110,6 +115,9 @@ class Settings(BaseSettings):
     # not cancel work. A lease enables safe recovery after a backend restart.
     KNOWLEDGE_IMPORT_POLL_SECONDS: float = 1.0
     KNOWLEDGE_IMPORT_LEASE_SECONDS: int = 120
+    # Bound cross-row embedding preparation; text/character limits are still
+    # enforced by EMBEDDING_MAX_BATCH_TEXTS and EMBEDDING_MAX_BATCH_CHARS.
+    KNOWLEDGE_IMPORT_EMBEDDING_BATCH_ROWS: int = 4
     SESSION_TTL_HOURS: int = 24
 
     class Config:

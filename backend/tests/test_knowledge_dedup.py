@@ -1,10 +1,14 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Lock
+from time import sleep
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.knowledge import Category, Knowledge, KnowledgeEmbedding, KnowledgeStatus
 from app.services.knowledge_dedup import (
     _combined_dedup_similarity,
@@ -15,6 +19,8 @@ from app.services.knowledge_dedup import (
     build_embedding_text,
     build_search_documents,
     check_duplicate,
+    clear_query_embedding_cache,
+    _query_embedding,
 )
 
 
@@ -233,6 +239,108 @@ class KnowledgeDedupTextTests(unittest.TestCase):
         self.assertEqual(same_business.matches[0].business_type, "self_operated")
         self.assertEqual(other_business.action, "create")
         self.assertEqual(other_business.matches, [])
+
+
+class QueryEmbeddingCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.original_provider = settings.EMBEDDING_PROVIDER
+        self.original_base_url = settings.EMBEDDING_BASE_URL
+        self.original_model = settings.EMBEDDING_MODEL
+        self.original_dimensions = settings.EMBEDDING_DIMENSIONS
+        self.original_batch_size = settings.QUERY_EMBEDDING_BATCH_SIZE
+        self.original_batch_wait_ms = settings.QUERY_EMBEDDING_BATCH_WAIT_MS
+        clear_query_embedding_cache()
+        settings.EMBEDDING_DIMENSIONS = 2
+        settings.QUERY_EMBEDDING_BATCH_SIZE = 8
+        settings.QUERY_EMBEDDING_BATCH_WAIT_MS = 50
+
+    def tearDown(self):
+        clear_query_embedding_cache()
+        settings.EMBEDDING_PROVIDER = self.original_provider
+        settings.EMBEDDING_BASE_URL = self.original_base_url
+        settings.EMBEDDING_MODEL = self.original_model
+        settings.EMBEDDING_DIMENSIONS = self.original_dimensions
+        settings.QUERY_EMBEDDING_BATCH_SIZE = self.original_batch_size
+        settings.QUERY_EMBEDDING_BATCH_WAIT_MS = self.original_batch_wait_ms
+
+    @patch("app.services.knowledge_dedup.embed_texts")
+    def test_same_normalized_query_uses_one_embedding(self, embed):
+        embed.return_value = [[0.1, 0.2]]
+
+        first = _query_embedding("  同一个问题  ")
+        second = _query_embedding("同一个问题")
+
+        self.assertEqual(first, second)
+        embed.assert_called_once_with(["同一个问题"])
+
+    @patch("app.services.knowledge_dedup.embed_texts")
+    def test_model_or_dimension_change_does_not_reuse_vector(self, embed):
+        embed.side_effect = [[[0.1, 0.2]], [[0.3, 0.4]]]
+
+        _query_embedding("问题")
+        settings.EMBEDDING_MODEL = "Qwen/other"
+        _query_embedding("问题")
+
+        self.assertEqual(embed.call_count, 2)
+
+    @patch("app.services.knowledge_dedup.embed_texts")
+    def test_eight_concurrent_identical_queries_are_merged(self, embed):
+        """The batcher/cache must prevent an embedding stampede under load."""
+        start = Barrier(8)
+        calls_lock = Lock()
+        call_count = 0
+
+        def slow_embedding(texts):
+            nonlocal call_count
+            with calls_lock:
+                call_count += 1
+            # Keep the first request in flight while the other seven contend
+            # for the same key lock.
+            sleep(0.05)
+            self.assertEqual(texts, ["同一个问题"])
+            return [[0.1, 0.2]]
+
+        embed.side_effect = slow_embedding
+
+        def run_query(index):
+            start.wait(timeout=2)
+            # Vary only surrounding whitespace; all calls must share a key.
+            return _query_embedding(
+                ("  同一个问题  " if index % 2 else "同一个问题")
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            vectors = list(executor.map(run_query, range(8)))
+
+        self.assertEqual(call_count, 1)
+        self.assertEqual(vectors, [[0.1, 0.2]] * 8)
+
+    @patch("app.services.knowledge_dedup.embed_texts")
+    def test_eight_concurrent_different_queries_share_one_batch(self, embed):
+        start = Barrier(8)
+        expected = {
+            f"问题{index}": [float(index), float(index) + 0.5]
+            for index in range(8)
+        }
+
+        def batch_embedding(texts):
+            return [expected[text] for text in texts]
+
+        embed.side_effect = batch_embedding
+
+        def run_query(index):
+            start.wait(timeout=2)
+            return _query_embedding(f"问题{index}")
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            vectors = list(executor.map(run_query, range(8)))
+
+        embed.assert_called_once()
+        self.assertEqual(set(embed.call_args.args[0]), set(expected))
+        self.assertEqual(
+            vectors,
+            [expected[f"问题{index}"] for index in range(8)],
+        )
 
 
 if __name__ == "__main__":

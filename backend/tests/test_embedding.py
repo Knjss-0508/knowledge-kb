@@ -70,6 +70,36 @@ class EmbeddingProviderTests(unittest.TestCase):
             [["甲" * 3, "乙" * 2], ["丙" * 3, "丁"]],
         )
 
+    @patch("app.services.embedding.httpx.Client")
+    def test_batch_progress_hook_runs_after_each_embedding_batch(self, client_class):
+        settings.EMBEDDING_PROVIDER = "openai_compatible"
+        settings.EMBEDDING_MAX_BATCH_TEXTS = 2
+        settings.EMBEDDING_MAX_BATCH_CHARS = 100
+        client = client_class.return_value.__enter__.return_value
+
+        def response_for_request(*_args, **kwargs):
+            response = Mock()
+            response.json.return_value = {
+                "data": [
+                    {"embedding": [0.1, 0.2]}
+                    for _ in kwargs["json"]["input"]
+                ]
+            }
+            return response
+
+        client.post.side_effect = response_for_request
+        progress: list[tuple[int, int]] = []
+
+        vectors = embed_texts(
+            ["甲", "乙", "丙", "丁", "戊"],
+            on_batch_complete=lambda processed, total: progress.append(
+                (processed, total)
+            ),
+        )
+
+        self.assertEqual(len(vectors), 5)
+        self.assertEqual(progress, [(2, 5), (4, 5), (5, 5)])
+
 
 if __name__ == "__main__":
     unittest.main()
