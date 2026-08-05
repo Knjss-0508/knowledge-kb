@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     # not cancel work. A lease enables safe recovery after a backend restart.
     KNOWLEDGE_IMPORT_POLL_SECONDS: float = 1.0
     KNOWLEDGE_IMPORT_LEASE_SECONDS: int = 120
+    # Bound cross-row embedding preparation; text/character limits are still
+    # enforced by EMBEDDING_MAX_BATCH_TEXTS and EMBEDDING_MAX_BATCH_CHARS.
+    KNOWLEDGE_IMPORT_EMBEDDING_BATCH_ROWS: int = 4
     SESSION_TTL_HOURS: int = 24
 
     class Config:

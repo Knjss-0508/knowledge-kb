@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.knowledge import Category, Knowledge, KnowledgeEmbedding, KnowledgeStatus
 from app.services.knowledge_dedup import (
     _combined_dedup_similarity,
@@ -15,6 +16,8 @@ from app.services.knowledge_dedup import (
     build_embedding_text,
     build_search_documents,
     check_duplicate,
+    clear_query_embedding_cache,
+    _query_embedding,
 )
 
 
@@ -233,6 +236,43 @@ class KnowledgeDedupTextTests(unittest.TestCase):
         self.assertEqual(same_business.matches[0].business_type, "self_operated")
         self.assertEqual(other_business.action, "create")
         self.assertEqual(other_business.matches, [])
+
+
+class QueryEmbeddingCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.original_provider = settings.EMBEDDING_PROVIDER
+        self.original_base_url = settings.EMBEDDING_BASE_URL
+        self.original_model = settings.EMBEDDING_MODEL
+        self.original_dimensions = settings.EMBEDDING_DIMENSIONS
+        clear_query_embedding_cache()
+        settings.EMBEDDING_DIMENSIONS = 2
+
+    def tearDown(self):
+        clear_query_embedding_cache()
+        settings.EMBEDDING_PROVIDER = self.original_provider
+        settings.EMBEDDING_BASE_URL = self.original_base_url
+        settings.EMBEDDING_MODEL = self.original_model
+        settings.EMBEDDING_DIMENSIONS = self.original_dimensions
+
+    @patch("app.services.knowledge_dedup.embed_texts")
+    def test_same_normalized_query_uses_one_embedding(self, embed):
+        embed.return_value = [[0.1, 0.2]]
+
+        first = _query_embedding("  同一个问题  ")
+        second = _query_embedding("同一个问题")
+
+        self.assertEqual(first, second)
+        embed.assert_called_once_with(["同一个问题"])
+
+    @patch("app.services.knowledge_dedup.embed_texts")
+    def test_model_or_dimension_change_does_not_reuse_vector(self, embed):
+        embed.side_effect = [[[0.1, 0.2]], [[0.3, 0.4]]]
+
+        _query_embedding("问题")
+        settings.EMBEDDING_MODEL = "Qwen/other"
+        _query_embedding("问题")
+
+        self.assertEqual(embed.call_count, 2)
 
 
 if __name__ == "__main__":

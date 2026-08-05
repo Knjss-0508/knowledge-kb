@@ -5,11 +5,13 @@ import json
 import math
 import uuid
 from dataclasses import dataclass
+from functools import lru_cache
 from html.parser import HTMLParser
+from threading import Lock
 from typing import Any, Literal
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
 from app.models.knowledge import (
@@ -20,6 +22,53 @@ from app.models.knowledge import (
     KnowledgeTag,
 )
 from app.services.embedding import embed_texts
+
+
+_QUERY_EMBEDDING_LOCKS_GUARD = Lock()
+_QUERY_EMBEDDING_LOCKS: dict[tuple[str, str, str, int, str, str], Lock] = {}
+
+
+@lru_cache(maxsize=512)
+def _cached_query_embedding(
+    provider: str,
+    base_url: str,
+    model: str,
+    dimensions: int,
+    version: str,
+    query: str,
+) -> tuple[float, ...]:
+    """Cache deterministic query vectors and coalesce same-key misses."""
+    return tuple(embed_texts([query])[0])
+
+
+def clear_query_embedding_cache() -> None:
+    """Clear process-local query vectors after test/config changes."""
+    with _QUERY_EMBEDDING_LOCKS_GUARD:
+        _cached_query_embedding.cache_clear()
+        _QUERY_EMBEDDING_LOCKS.clear()
+
+
+def _query_embedding(query: str) -> list[float]:
+    normalized = query.strip()
+    if not normalized:
+        raise ValueError("Embedding input must not be blank.")
+    key = (
+        settings.EMBEDDING_PROVIDER.strip().lower(),
+        settings.EMBEDDING_BASE_URL.rstrip("/"),
+        settings.EMBEDDING_MODEL,
+        settings.EMBEDDING_DIMENSIONS,
+        settings.VERSION,
+        normalized,
+    )
+    with _QUERY_EMBEDDING_LOCKS_GUARD:
+        if len(_QUERY_EMBEDDING_LOCKS) >= 1024:
+            _QUERY_EMBEDDING_LOCKS.clear()
+        key_lock = _QUERY_EMBEDDING_LOCKS.setdefault(key, Lock())
+    with key_lock:
+        vector = _cached_query_embedding(
+            *key,
+        )
+    return [float(value) for value in vector]
 
 
 DedupAction = Literal["create", "review_duplicate", "block_duplicate"]
@@ -283,6 +332,7 @@ def check_duplicate(
     scene_tags: list[str] | None,
     business_type: str | None = None,
     exclude_knowledge_id: str | None = None,
+    embedding_vectors: tuple[list[float], list[float], list[float]] | None = None,
 ) -> DedupDecision:
     text, title_text, content_text = build_dedup_documents(title, content)
     if not text:
@@ -336,9 +386,14 @@ def check_duplicate(
             ],
         )
 
-    query_vector, title_vector, content_vector = embed_texts(
-        [text, title_text, content_text]
-    )
+    if embedding_vectors is None:
+        query_vector, title_vector, content_vector = embed_texts(
+            [text, title_text, content_text]
+        )
+    else:
+        if len(embedding_vectors) != 3:
+            raise ValueError("Precomputed deduplication embeddings are incomplete.")
+        query_vector, title_vector, content_vector = embedding_vectors
     if title_matches:
         return DedupDecision(
             action="review_duplicate",
@@ -441,23 +496,44 @@ def check_duplicate(
         .limit(settings.DEDUP_MAX_CANDIDATES)
         .all()
     )
+    records_by_id = {
+        item.id: _find_embedding(db, item.id)
+        for item, _ in candidates
+    }
+    missing_items = [
+        item
+        for item, _ in candidates
+        if (
+            records_by_id.get(item.id) is not None
+            and (
+                records_by_id[item.id].title_embedding_vector is None
+                or records_by_id[item.id].content_embedding_vector is None
+            )
+        )
+    ]
+    if missing_items:
+        missing_texts = [_knowledge_text(item) for item in missing_items]
+        _upsert_embeddings(
+            db,
+            missing_items,
+            missing_texts,
+            [content_hash_for_text(text) for text in missing_texts],
+        )
+        records_by_id.update(
+            {
+                item.id: _find_embedding(db, item.id)
+                for item in missing_items
+            }
+        )
+
     matches: list[DedupMatch] = []
     for item, _ in candidates:
-        record = _find_embedding(db, item.id)
-        if not record:
-            continue
+        record = records_by_id.get(item.id)
         if (
-            record.title_embedding_vector is None
+            not record
+            or record.title_embedding_vector is None
             or record.content_embedding_vector is None
         ):
-            _upsert_embeddings(
-                db,
-                [item],
-                [_knowledge_text(item)],
-                [content_hash_for_text(_knowledge_text(item))],
-            )
-            record = _find_embedding(db, item.id)
-        if not record or record.title_embedding_vector is None or record.content_embedding_vector is None:
             continue
         title_similarity = _cosine_similarity(
             title_vector,
@@ -577,22 +653,35 @@ def _split_search_chunks(text: str) -> list[str]:
     return chunks
 
 
-def build_search_documents(item: Knowledge) -> list[tuple[str, int, str]]:
-    """Build independent search documents without polluting the dedup vector."""
+def build_search_documents_for_fields(
+    title: str,
+    subtitles: list[str] | None,
+    content: Any,
+) -> list[tuple[str, int, str]]:
+    """Build search documents from fields without changing their text format."""
     documents: list[tuple[str, int, str]] = []
-    title = item.title.strip()
-    for index, subtitle in enumerate(item.subtitles or []):
+    normalized_title = title.strip()
+    for index, subtitle in enumerate(subtitles or []):
         subtitle_text = _content_to_text(subtitle)
         if subtitle_text:
-            documents.append(("subtitle", index, f"{title}\n{subtitle_text}"))
+            documents.append(("subtitle", index, f"{normalized_title}\n{subtitle_text}"))
 
-    content_text = _content_to_text(item.content)
+    content_text = _content_to_text(content)
     for index, chunk in enumerate(_split_search_chunks(content_text)):
-        documents.append(("content", index, f"{title}\n{chunk}"))
+        documents.append(("content", index, f"{normalized_title}\n{chunk}"))
 
-    if not documents and title:
-        documents.append(("title", 0, title))
+    if not documents and normalized_title:
+        documents.append(("title", 0, normalized_title))
     return documents
+
+
+def build_search_documents(item: Knowledge) -> list[tuple[str, int, str]]:
+    """Build independent search documents without polluting the dedup vector."""
+    return build_search_documents_for_fields(
+        item.title,
+        item.subtitles,
+        item.content,
+    )
 
 
 def _find_search_embedding(
@@ -613,8 +702,13 @@ def _find_search_embedding(
     )
 
 
-def ensure_search_embeddings(db: Session, item: Knowledge) -> int:
-    """Create or refresh subtitle and content chunk vectors for one knowledge item."""
+def ensure_search_embeddings(
+    db: Session,
+    item: Knowledge,
+    *,
+    precomputed_vectors: dict[tuple[str, int, str], list[float]] | None = None,
+) -> int:
+    """Create or refresh search vectors, reusing exact precomputed documents."""
     documents = build_search_documents(item)
     existing = (
         db.query(KnowledgeSearchEmbedding)
@@ -644,31 +738,61 @@ def ensure_search_embeddings(db: Session, item: Knowledge) -> int:
     ]
     for row in stale:
         db.delete(row)
-    if missing:
-        vectors = embed_texts([text for _, _, text, _ in missing])
-        for (kind, index, text, content_hash), vector in zip(missing, vectors):
-            row = existing_by_key.get((kind, index))
-            if row:
-                row.content_hash = content_hash
-                row.source_text = text
-                row.embedding_dimension = len(vector)
-                row.embedding = vector
-                row.embedding_vector = vector
-            else:
-                db.add(
-                    KnowledgeSearchEmbedding(
-                        id=f"se-{uuid.uuid4().hex[:16]}",
-                        knowledge_id=item.id,
-                        embedding_model=settings.EMBEDDING_MODEL,
-                        embedding_kind=kind,
-                        chunk_index=index,
-                        content_hash=content_hash,
-                        source_text=text,
-                        embedding_dimension=len(vector),
-                        embedding=vector,
-                        embedding_vector=vector,
-                    )
+    reusable_by_hash: dict[str, list[float]] = {}
+    dedup_record = _find_embedding(db, item.id)
+    if dedup_record:
+        dedup_text, title_text, content_text = _knowledge_dedup_documents(item)
+        for source_text, vector in (
+            (dedup_text, dedup_record.embedding_vector),
+            (title_text, dedup_record.title_embedding_vector),
+            (content_text, dedup_record.content_embedding_vector),
+        ):
+            if vector is not None:
+                reusable_by_hash[content_hash_for_text(source_text)] = [
+                    float(value) for value in vector
+                ]
+
+    vectors_by_key: dict[tuple[str, int, str], list[float]] = {}
+    unresolved = []
+    for kind, index, text, content_hash in missing:
+        key = (kind, index, content_hash)
+        vector = (precomputed_vectors or {}).get(key)
+        if vector is None:
+            vector = reusable_by_hash.get(content_hash)
+        if vector is None:
+            unresolved.append((kind, index, text, content_hash))
+        else:
+            vectors_by_key[key] = vector
+
+    if unresolved:
+        vectors = embed_texts([text for _, _, text, _ in unresolved])
+        for (kind, index, text, content_hash), vector in zip(unresolved, vectors):
+            vectors_by_key[(kind, index, content_hash)] = vector
+
+    for (kind, index, text, content_hash) in missing:
+        vector = vectors_by_key[(kind, index, content_hash)]
+        row = existing_by_key.get((kind, index))
+        if row:
+            row.content_hash = content_hash
+            row.source_text = text
+            row.embedding_dimension = len(vector)
+            row.embedding = vector
+            row.embedding_vector = vector
+        else:
+            db.add(
+                KnowledgeSearchEmbedding(
+                    id=f"se-{uuid.uuid4().hex[:16]}",
+                    knowledge_id=item.id,
+                    embedding_model=settings.EMBEDDING_MODEL,
+                    embedding_kind=kind,
+                    chunk_index=index,
+                    content_hash=content_hash,
+                    source_text=text,
+                    embedding_dimension=len(vector),
+                    embedding=vector,
+                    embedding_vector=vector,
                 )
+            )
     db.flush()
     return len(documents)
 
@@ -683,10 +807,11 @@ def search_embeddings(
     top_k: int = 10,
 ) -> list[tuple[Knowledge, float]]:
     """Semantic search in PostgreSQL, aggregated by the parent knowledge item."""
-    query_vector = embed_texts([query.strip()])[0]
+    query_vector = _query_embedding(query)
     distance = KnowledgeSearchEmbedding.embedding_vector.cosine_distance(query_vector)
     item_query = (
         db.query(Knowledge, distance.label("distance"))
+        .options(joinedload(Knowledge.category))
         .join(
             KnowledgeSearchEmbedding,
             KnowledgeSearchEmbedding.knowledge_id == Knowledge.id,

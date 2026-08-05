@@ -8,8 +8,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models.knowledge import Category, KnowledgeImportTask
-from app.routes.knowledge import process_next_knowledge_import_task
+from app.routes.knowledge import (
+    _import_embedding_batches,
+    _precompute_import_embeddings,
+    process_next_knowledge_import_task,
+)
 from app.schemas.knowledge import ExcelImportRowResult
+from app.services.knowledge_excel import ExcelKnowledgeRow
 
 
 class KnowledgeImportTaskTests(unittest.TestCase):
@@ -21,6 +26,55 @@ class KnowledgeImportTaskTests(unittest.TestCase):
 
     def tearDown(self):
         self.engine.dispose()
+
+    @staticmethod
+    def _row(row_number, *, source_status="生效中", valid=True):
+        return ExcelKnowledgeRow(
+            row_number=row_number,
+            title=f"标题{row_number}",
+            business_type="self_operated",
+            category_id="cat-qc",
+            content=f"正文{row_number}",
+            subtitles=[],
+            applicable_scenes=[],
+            applicable_categories=["平板电脑"],
+            applicable_brands=[],
+            applicable_models=[],
+            source_status=source_status,
+            error_code=None if valid else "INVALID_ROW",
+            error_message=None if valid else "无效行",
+        )
+
+    @patch("app.routes.knowledge.embed_texts")
+    def test_import_embedding_precompute_batches_rows_and_keeps_review_light(self, embed):
+        embed.side_effect = lambda texts: [[float(index)] for index, _ in enumerate(texts)]
+        rows = [
+            self._row(2, source_status="生效中"),
+            self._row(3, source_status="待审核"),
+        ]
+
+        bundles = _precompute_import_embeddings(rows)
+
+        self.assertEqual(embed.call_count, 1)
+        # Published-source row has dedup (3) + search (1) documents; review
+        # row only needs the three deduplication documents.
+        self.assertEqual(len(embed.call_args.args[0]), 7)
+        self.assertEqual(len(bundles[2].dedup_vectors), 3)
+        self.assertEqual(bundles[3].search_vectors, {})
+
+    def test_import_embedding_batches_keep_invalid_and_deprecated_rows(self):
+        rows = [
+            self._row(2, valid=False),
+            self._row(3, source_status="已禁用"),
+            self._row(4),
+        ]
+
+        batches = _import_embedding_batches(rows)
+
+        self.assertEqual(
+            [row.row_number for batch in batches for row, _ in batch],
+            [2, 3, 4],
+        )
 
     @staticmethod
     def _workbook_bytes(rows):
@@ -106,7 +160,7 @@ class KnowledgeImportTaskTests(unittest.TestCase):
 
         with patch(
             "app.routes.knowledge._process_excel_import_row",
-            side_effect=lambda _db, row, _user: ExcelImportRowResult(
+            side_effect=lambda _db, row, _user, **_kwargs: ExcelImportRowResult(
                 row=row.row_number,
                 title=row.title,
                 status="imported",

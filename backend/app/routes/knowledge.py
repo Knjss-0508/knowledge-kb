@@ -5,6 +5,7 @@ import logging
 import string
 import hashlib
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from io import BytesIO
 from types import SimpleNamespace
@@ -29,10 +30,13 @@ from app.models.knowledge import (
     KnowledgeDeduplicationFeedback, KnowledgeChangeLog, KnowledgeImportTask,
 )
 from app.core.config import settings
-from app.services.embedding import EmbeddingServiceUnavailable
+from app.services.embedding import EmbeddingServiceUnavailable, embed_texts
 from app.services.knowledge_dedup import (
     DedupDecision,
+    build_dedup_documents,
+    build_search_documents_for_fields,
     check_duplicate,
+    content_hash_for_text,
     ensure_embedding,
     ensure_search_embeddings,
     save_embedding,
@@ -66,6 +70,34 @@ from app.schemas.knowledge import (
 router = APIRouter(prefix="/knowledge", tags=["知识库管理"])
 logger = logging.getLogger(__name__)
 media_storage = get_media_storage()
+
+
+@dataclass
+class _ImportEmbeddingBundle:
+    """Vectors prepared before a row is processed, keyed by exact source text."""
+
+    dedup_vectors: tuple[list[float], list[float], list[float]] | None = None
+    search_vectors: dict[tuple[str, int, str], list[float]] | None = None
+    error: Exception | None = None
+
+
+@dataclass
+class _ImportEmbeddingPlan:
+    row_number: int
+    dedup_texts: tuple[str, str, str]
+    search_documents: list[tuple[str, int, str]]
+
+    @property
+    def texts(self) -> list[str]:
+        return [
+            *self.dedup_texts,
+            *(text for _, _, text in self.search_documents),
+        ]
+
+    @property
+    def character_count(self) -> int:
+        return sum(len(text) for text in self.texts)
+
 
 ALLOWED_IMAGE = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 ALLOWED_VIDEO = {"video/mp4", "video/webm", "video/quicktime"}
@@ -478,6 +510,7 @@ def _check_manual_deduplication(
     exclude_knowledge_id: str | None = None,
     confirm_dedup_review: bool = False,
     allow_duplicate_review: bool = False,
+    embedding_vectors: tuple[list[float], list[float], list[float]] | None = None,
 ) -> DedupDecision:
     try:
         decision = check_duplicate(
@@ -488,6 +521,7 @@ def _check_manual_deduplication(
             scene_tags=scene_tags,
             business_type=business_type,
             exclude_knowledge_id=exclude_knowledge_id,
+            embedding_vectors=embedding_vectors,
         )
     except EmbeddingServiceUnavailable as exc:
         raise HTTPException(
@@ -624,6 +658,9 @@ def _create_knowledge_item(
     *,
     source: str = "manual",
     allow_duplicate_review: bool = False,
+    embedding_vectors: tuple[list[float], list[float], list[float]] | None = None,
+    search_embedding_vectors: dict[tuple[str, int, str], list[float]] | None = None,
+    ensure_search_index: bool = True,
 ) -> Knowledge:
     _require_manual_applicable_category(
         source=source,
@@ -647,6 +684,7 @@ def _create_knowledge_item(
         business_type=body.business_type,
         confirm_dedup_review=body.confirm_dedup_review,
         allow_duplicate_review=allow_duplicate_review,
+        embedding_vectors=embedding_vectors,
     )
     item = Knowledge(
         id=_generate_knowledge_id(db),
@@ -692,7 +730,12 @@ def _create_knowledge_item(
             title_embedding=decision.title_embedding,
             content_embedding=decision.content_embedding,
         )
-    ensure_search_embeddings(db, item)
+    if ensure_search_index:
+        ensure_search_embeddings(
+            db,
+            item,
+            precomputed_vectors=search_embedding_vectors,
+        )
     return item
 
 
@@ -942,11 +985,158 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
     )
 
 
+def _excel_row_body(row) -> KnowledgeCreate:
+    return KnowledgeCreate(
+        title=row.title,
+        subtitles=row.subtitles or [],
+        content=row.content,
+        business_type=row.business_type,
+        category_id=row.category_id,
+        applicable_scenes=row.applicable_scenes or [],
+        applicable_categories=row.applicable_categories or [],
+        applicable_brands=row.applicable_brands or [],
+        applicable_models=row.applicable_models or [],
+        related_standard_items=row.related_standard_items or [],
+        source_topic_key=row.source_topic_key or None,
+        source_record_id=row.source_record_id or None,
+        source_knowledge_key=row.source_knowledge_key or None,
+        source_fields=row.source_fields,
+    )
+
+
+def _build_import_embedding_plan(row) -> _ImportEmbeddingPlan:
+    body = _excel_row_body(row)
+    normalized_content = _normalize_content(body.content)
+    dedup_texts = build_dedup_documents(body.title, normalized_content)
+    search_documents = (
+        build_search_documents_for_fields(
+            body.title,
+            body.subtitles or [],
+            normalized_content,
+        )
+        if row.source_status == IMPORTABLE_SOURCE_STATUS
+        else []
+    )
+    return _ImportEmbeddingPlan(
+        row_number=row.row_number,
+        dedup_texts=dedup_texts,
+        search_documents=search_documents,
+    )
+
+
+def _store_import_embedding_vectors(
+    plan: _ImportEmbeddingPlan,
+    vectors: list[list[float]],
+) -> _ImportEmbeddingBundle:
+    expected_count = len(plan.texts)
+    if len(vectors) != expected_count:
+        raise ValueError(
+            "Embedding result count does not match the import row plan."
+        )
+    search_vectors: dict[tuple[str, int, str], list[float]] = {}
+    for (kind, index, text), vector in zip(
+        plan.search_documents,
+        vectors[3:],
+    ):
+        search_vectors[(kind, index, content_hash_for_text(text))] = vector
+    return _ImportEmbeddingBundle(
+        dedup_vectors=(
+            vectors[0],
+            vectors[1],
+            vectors[2],
+        ),
+        search_vectors=search_vectors,
+    )
+
+
+def _import_embedding_batches(
+    rows: list,
+) -> list[list[tuple[object, _ImportEmbeddingPlan | None]]]:
+    max_rows = max(1, settings.KNOWLEDGE_IMPORT_EMBEDDING_BATCH_ROWS)
+    max_chars = max(settings.EMBEDDING_MAX_BATCH_CHARS, 1)
+    batches: list[list[tuple[object, _ImportEmbeddingPlan | None]]] = []
+    current: list[tuple[object, _ImportEmbeddingPlan | None]] = []
+    current_chars = 0
+    for row in rows:
+        if not row.is_valid or row.source_status == DEPRECATED_SOURCE_STATUS:
+            if current:
+                batches.append(current)
+                current = []
+                current_chars = 0
+            batches.append([(row, None)])
+            continue
+        try:
+            plan = _build_import_embedding_plan(row)
+        except Exception:
+            if current:
+                batches.append(current)
+                current = []
+                current_chars = 0
+            batches.append([(row, None)])
+            continue
+        plan_chars = plan.character_count
+        if current and (
+            len(current) >= max_rows
+            or current_chars + plan_chars > max_chars
+        ):
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append((row, plan))
+        current_chars += plan_chars
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _precompute_import_embeddings(
+    rows: list,
+) -> dict[int, _ImportEmbeddingBundle]:
+    bundles: dict[int, _ImportEmbeddingBundle] = {}
+    for batch in _import_embedding_batches(rows):
+        valid_plans = [
+            (row, plan)
+            for row, plan in batch
+            if plan is not None and plan.dedup_texts[0]
+        ]
+        if not valid_plans:
+            continue
+
+        flat_texts: list[str] = []
+        for _, plan in valid_plans:
+            flat_texts.extend(plan.texts)
+        try:
+            flat_vectors = embed_texts(flat_texts)
+            offset = 0
+            for row, plan in valid_plans:
+                count = len(plan.texts)
+                bundles[row.row_number] = _store_import_embedding_vectors(
+                    plan,
+                    flat_vectors[offset : offset + count],
+                )
+                offset += count
+        except Exception:
+            # A long document can make a combined request fail. Retry rows
+            # individually so one bad row does not fail the whole task.
+            for row, plan in valid_plans:
+                try:
+                    bundles[row.row_number] = _store_import_embedding_vectors(
+                        plan,
+                        embed_texts(plan.texts),
+                    )
+                except Exception as exc:
+                    bundles[row.row_number] = _ImportEmbeddingBundle(error=exc)
+    return bundles
+
+
 def _process_excel_import_row(
     db: Session,
     row,
     current_user: User,
+    *,
+    embedding_bundle: _ImportEmbeddingBundle | None = None,
 ) -> ExcelImportRowResult:
+    embedding_bundle = embedding_bundle or _ImportEmbeddingBundle()
     if not row.is_valid:
         return ExcelImportRowResult(
             row=row.row_number,
@@ -989,34 +1179,36 @@ def _process_excel_import_row(
             ),
         )
 
-    body = KnowledgeCreate(
-        title=row.title,
-        subtitles=row.subtitles or [],
-        content=row.content,
-        business_type=row.business_type,
-        category_id=row.category_id,
-        applicable_scenes=row.applicable_scenes or [],
-        applicable_categories=row.applicable_categories or [],
-        applicable_brands=row.applicable_brands or [],
-        applicable_models=row.applicable_models or [],
-        related_standard_items=row.related_standard_items or [],
-        source_topic_key=row.source_topic_key or None,
-        source_record_id=row.source_record_id or None,
-        source_knowledge_key=row.source_knowledge_key or None,
-        source_fields=row.source_fields,
-    )
+    if embedding_bundle.error is not None:
+        if isinstance(embedding_bundle.error, EmbeddingServiceUnavailable):
+            raise HTTPException(
+                status_code=503,
+                detail="Embedding 服务不可用，无法完成查重，请稍后再提交审核。",
+            ) from embedding_bundle.error
+        raise embedding_bundle.error
+
+    body = _excel_row_body(row)
     item = _create_knowledge_item(
         body,
         db,
         current_user,
         source="excel",
         allow_duplicate_review=True,
+        embedding_vectors=embedding_bundle.dedup_vectors,
+        search_embedding_vectors=embedding_bundle.search_vectors,
+        ensure_search_index=False,
     )
     _auto_publish_approved_source_excel(
         item,
         source_status=row.source_status,
         current_user=current_user,
     )
+    if item.status == KnowledgeStatus.PUBLISHED:
+        ensure_search_embeddings(
+            db,
+            item,
+            precomputed_vectors=embedding_bundle.search_vectors,
+        )
     deduplication = item.deduplication_metadata or {}
     is_review_required = deduplication.get("action") == "review_duplicate"
     is_pending_review = item.status == KnowledgeStatus.REVIEW
@@ -1120,20 +1312,55 @@ def process_knowledge_import_task(
         db.commit()
 
         background_user = SimpleNamespace(username=task.created_by)
-        for row in rows[task.processed_rows:]:
-            try:
-                result = _process_excel_import_row(db, row, background_user)
-            except Exception as exc:
-                db.rollback()
-                task = db.query(KnowledgeImportTask).filter(
-                    KnowledgeImportTask.id == task_id
-                ).first()
-                if not task or task.status != "running":
-                    return
-                result = _excel_row_failure_result(row, exc)
-
-            _append_import_task_result(task, result, now=datetime.utcnow())
+        remaining_rows = rows[task.processed_rows:]
+        for row_batch in _import_embedding_batches(remaining_rows):
+            task = db.query(KnowledgeImportTask).filter(
+                KnowledgeImportTask.id == task_id
+            ).first()
+            if not task or task.status != "running":
+                return
+            task.lease_expires_at = _task_lease_expiry(datetime.utcnow())
+            task.updated_at = datetime.utcnow()
             db.commit()
+
+            batch_rows = [row for row, _ in row_batch]
+            bundles = _precompute_import_embeddings(batch_rows)
+
+            task = db.query(KnowledgeImportTask).filter(
+                KnowledgeImportTask.id == task_id
+            ).first()
+            if not task or task.status != "running":
+                return
+            task.lease_expires_at = _task_lease_expiry(datetime.utcnow())
+            task.updated_at = datetime.utcnow()
+            db.commit()
+            for row in batch_rows:
+                try:
+                    bundle = bundles.get(row.row_number)
+                    if bundle is None:
+                        result = _process_excel_import_row(
+                            db,
+                            row,
+                            background_user,
+                        )
+                    else:
+                        result = _process_excel_import_row(
+                            db,
+                            row,
+                            background_user,
+                            embedding_bundle=bundle,
+                        )
+                except Exception as exc:
+                    db.rollback()
+                    task = db.query(KnowledgeImportTask).filter(
+                        KnowledgeImportTask.id == task_id
+                    ).first()
+                    if not task or task.status != "running":
+                        return
+                    result = _excel_row_failure_result(row, exc)
+
+                _append_import_task_result(task, result, now=datetime.utcnow())
+                db.commit()
 
         task = db.query(KnowledgeImportTask).filter(
             KnowledgeImportTask.id == task_id
