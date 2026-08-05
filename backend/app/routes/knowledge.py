@@ -105,6 +105,16 @@ class _ImportTaskLeaseLost(RuntimeError):
     """Raised when a persisted import task can no longer be renewed safely."""
 
 
+class _ImportTaskRetryableError(RuntimeError):
+    """Raised when a transient dependency failure should retry the whole task."""
+
+
+_RETRYABLE_IMPORT_RESULT_CODES = {
+    "EMBEDDING_UNAVAILABLE",
+    "DEDUP_UNAVAILABLE",
+}
+
+
 ALLOWED_IMAGE = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 ALLOWED_VIDEO = {"video/mp4", "video/webm", "video/quicktime"}
 MIME_EXTENSIONS = {
@@ -842,6 +852,12 @@ def _to_import_task_response(
         pending_review=task.pending_review,
         deprecated=task.deprecated,
         failed=task.failed,
+        retry_rows=[
+            int(row_number)
+            for row_number in (task.retry_rows or [])
+        ],
+        attempt_count=task.attempt_count,
+        next_attempt_at=task.next_attempt_at,
         error_message=task.error_message or "",
         created_at=task.created_at,
         started_at=task.started_at,
@@ -911,6 +927,246 @@ def get_knowledge_import_task(
     )
 
 
+def _retryable_import_result(result: dict) -> bool:
+    error_code = str(result.get("error_code") or "").strip()
+    if error_code in _RETRYABLE_IMPORT_RESULT_CODES:
+        return True
+    error_message = str(result.get("error_message") or "")
+    return (
+        error_code == "IMPORT_REJECTED"
+        and (
+            "Embedding 服务不可用" in error_message
+            or "Embedding service is unavailable" in error_message
+        )
+    )
+
+
+@router.post(
+    "/import/tasks/{task_id}/cancel",
+    response_model=KnowledgeImportTaskResponse,
+    summary="取消 Excel 后台导入任务",
+)
+def cancel_knowledge_import_task(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:create")),
+):
+    task = (
+        db.query(KnowledgeImportTask)
+        .filter(KnowledgeImportTask.id == task_id)
+        .with_for_update()
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="导入任务不存在。")
+    if not _can_view_import_task(task, current_user):
+        raise HTTPException(status_code=403, detail="无权取消该导入任务。")
+    if task.status == "cancelled":
+        return _to_import_task_response(task)
+    if task.status not in {"queued", "running"}:
+        raise HTTPException(
+            status_code=409,
+            detail="只有排队中或处理中的导入任务可以取消。",
+        )
+
+    now = datetime.utcnow()
+    task.status = "cancelled"
+    task.attempt_count = int(task.attempt_count or 0) + 1
+    task.lease_expires_at = None
+    task.completed_at = now
+    task.error_message = ""
+    task.updated_at = now
+    db.commit()
+    db.refresh(task)
+    return _to_import_task_response(task)
+
+
+@router.post(
+    "/import/tasks/{task_id}/retry-failed",
+    response_model=KnowledgeImportTaskResponse,
+    summary="重试 Excel 导入中的基础设施失败行",
+)
+def retry_failed_knowledge_import_task(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:create")),
+):
+    task = (
+        db.query(KnowledgeImportTask)
+        .filter(KnowledgeImportTask.id == task_id)
+        .with_for_update()
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="导入任务不存在。")
+    if not _can_view_import_task(task, current_user):
+        raise HTTPException(status_code=403, detail="无权重试该导入任务。")
+    if task.status != "completed_with_errors":
+        raise HTTPException(
+            status_code=409,
+            detail="只有“完成有失败”的导入任务可以重试失败行。",
+        )
+
+    file_content = bytes(task.file_content or b"")
+    if (
+        len(file_content) != int(task.file_size or 0)
+        or hashlib.sha256(file_content).hexdigest() != task.file_sha256
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="原始 Excel 文件完整性校验失败，无法安全重试。",
+        )
+
+    results = list(task.results or [])
+    try:
+        validated_results = [
+            ExcelImportRowResult.model_validate(result)
+            for result in results
+        ]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="任务逐行结果格式异常，无法安全重试。",
+        ) from exc
+
+    if int(task.processed_rows or 0) != len(validated_results):
+        raise HTTPException(
+            status_code=409,
+            detail="任务进度与逐行结果数量不一致，无法安全重试。",
+        )
+    result_row_numbers = [result.row for result in validated_results]
+    if (
+        any(row_number < 2 for row_number in result_row_numbers)
+        or len(set(result_row_numbers)) != len(result_row_numbers)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="任务逐行结果缺少唯一 Excel 行号，无法安全重试。",
+        )
+
+    failed_pairs = [
+        (raw_result, validated_result)
+        for raw_result, validated_result in zip(
+            results,
+            validated_results,
+            strict=True,
+        )
+        if validated_result.status == "failed"
+    ]
+    failed_results = [raw_result for raw_result, _ in failed_pairs]
+    if not failed_results:
+        raise HTTPException(
+            status_code=409,
+            detail="该任务没有可重试的失败行。",
+        )
+    if int(task.failed or 0) != len(failed_results):
+        raise HTTPException(
+            status_code=409,
+            detail="任务失败计数与逐行结果不一致，无法安全重试。",
+        )
+    non_retryable = [
+        result for result in failed_results
+        if not _retryable_import_result(result)
+    ]
+    if non_retryable:
+        rows = "、".join(
+            str(result.get("row") or "?")
+            for result in non_retryable[:10]
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"失败行包含数据或业务校验错误，不能自动重试：{rows}",
+        )
+
+    retry_rows = sorted(
+        result.row
+        for _, result in failed_pairs
+    )
+    categories = db.query(Category).order_by(
+        Category.level,
+        Category.sort_order,
+    ).all()
+    try:
+        workbook_rows = parse_knowledge_workbook(
+            file_content,
+            categories,
+        )
+    except KnowledgeExcelError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"原始 Excel 已无法重新解析，不能安全重试：{exc}",
+        ) from exc
+    if len(workbook_rows) != int(task.total_rows or 0):
+        raise HTTPException(
+            status_code=409,
+            detail="原始 Excel 行数与任务记录不一致，无法安全重试。",
+        )
+    available_row_numbers = {
+        int(row.row_number)
+        for row in workbook_rows
+    }
+    missing_retry_rows = sorted(
+        set(retry_rows) - available_row_numbers
+    )
+    if missing_retry_rows:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "原始 Excel 缺少待重试行，无法安全重试："
+                + "、".join(str(row) for row in missing_retry_rows[:20])
+            ),
+        )
+
+    now = datetime.utcnow()
+    remaining_pairs = [
+        (raw_result, validated_result)
+        for raw_result, validated_result in zip(
+            results,
+            validated_results,
+            strict=True,
+        )
+        if validated_result.status != "failed"
+    ]
+    task.results = [
+        raw_result
+        for raw_result, _ in remaining_pairs
+    ]
+    task.retry_rows = retry_rows
+    task.processed_rows = len(remaining_pairs)
+    task.imported = sum(
+        result.status in {
+            "imported",
+            "review_pending",
+            "review_required",
+        }
+        for _, result in remaining_pairs
+    )
+    task.review_required = sum(
+        result.status == "review_required"
+        for _, result in remaining_pairs
+    )
+    task.pending_review = sum(
+        result.status == "review_pending"
+        for _, result in remaining_pairs
+    )
+    task.deprecated = sum(
+        result.status == "deprecated"
+        for _, result in remaining_pairs
+    )
+    task.failed = 0
+    task.status = "queued"
+    task.attempt_count = 0
+    task.next_attempt_at = now
+    task.lease_expires_at = None
+    task.started_at = None
+    task.completed_at = None
+    task.error_message = ""
+    task.updated_at = now
+    db.commit()
+    db.refresh(task)
+    return _to_import_task_response(task)
+
+
 def _task_lease_expiry(now: datetime) -> datetime:
     return now + timedelta(
         seconds=max(30, settings.KNOWLEDGE_IMPORT_LEASE_SECONDS)
@@ -926,6 +1182,11 @@ def _append_import_task_result(
     results = list(task.results or [])
     results.append(result.model_dump(mode="json"))
     task.results = results
+    task.retry_rows = [
+        int(row_number)
+        for row_number in (task.retry_rows or [])
+        if int(row_number) != result.row
+    ]
     task.processed_rows = (task.processed_rows or 0) + 1
     if result.status in {"imported", "review_pending", "review_required"}:
         task.imported = (task.imported or 0) + 1
@@ -942,6 +1203,18 @@ def _append_import_task_result(
 
 
 def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
+    if isinstance(exc, EmbeddingServiceUnavailable):
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            error_code=(
+                "EMBEDDING_UNAVAILABLE"
+                if exc.retryable
+                else "EMBEDDING_REJECTED"
+            ),
+            error_message=str(exc),
+        )
     if isinstance(exc, HTTPException):
         detail = exc.detail
         error_code = "IMPORT_REJECTED"
@@ -1140,7 +1413,12 @@ def _precompute_import_embeddings(
                 offset += count
         except _ImportTaskLeaseLost:
             raise
-        except Exception:
+        except Exception as batch_exc:
+            if (
+                isinstance(batch_exc, EmbeddingServiceUnavailable)
+                and batch_exc.retryable
+            ):
+                raise
             # A long document can make a combined request fail. Retry rows
             # individually so one bad row does not fail the whole task.
             for row, plan in valid_plans:
@@ -1151,6 +1429,11 @@ def _precompute_import_embeddings(
                     )
                 except Exception as exc:
                     if isinstance(exc, _ImportTaskLeaseLost):
+                        raise
+                    if (
+                        isinstance(exc, EmbeddingServiceUnavailable)
+                        and exc.retryable
+                    ):
                         raise
                     bundles[row.row_number] = _ImportEmbeddingBundle(error=exc)
     return bundles
@@ -1208,10 +1491,7 @@ def _process_excel_import_row(
 
     if embedding_bundle.error is not None:
         if isinstance(embedding_bundle.error, EmbeddingServiceUnavailable):
-            raise HTTPException(
-                status_code=503,
-                detail="Embedding 服务不可用，无法完成查重，请稍后再提交审核。",
-            ) from embedding_bundle.error
+            raise embedding_bundle.error
         raise embedding_bundle.error
 
     body = _excel_row_body(row)
@@ -1277,17 +1557,94 @@ def _mark_import_task_failed(
     task.updated_at = now
 
 
+def _import_retry_delay_seconds(attempt_count: int) -> int:
+    base_seconds = max(
+        1,
+        int(settings.KNOWLEDGE_IMPORT_RETRY_BASE_SECONDS),
+    )
+    max_seconds = max(
+        base_seconds,
+        int(settings.KNOWLEDGE_IMPORT_RETRY_MAX_SECONDS),
+    )
+    exponent = max(0, int(attempt_count) - 1)
+    return min(max_seconds, base_seconds * (2 ** min(exponent, 20)))
+
+
 def _mark_import_task_retry(
     task: KnowledgeImportTask,
     message: str,
     *,
     now: datetime,
-) -> None:
+) -> bool:
+    max_attempts = max(1, int(settings.KNOWLEDGE_IMPORT_MAX_ATTEMPTS))
+    attempt_count = int(task.attempt_count or 0)
+    if attempt_count >= max_attempts:
+        _mark_import_task_failed(
+            task,
+            (
+                f"后台处理达到最大尝试次数（{attempt_count}/{max_attempts}）："
+                f"{message}"
+            ),
+            now=now,
+        )
+        return False
+
+    retry_delay = _import_retry_delay_seconds(attempt_count)
     task.status = "queued"
-    task.error_message = message[:2000]
+    task.error_message = (
+        f"后台处理暂时失败，将在 {retry_delay} 秒后自动重试"
+        f"（{attempt_count}/{max_attempts}）：{message}"
+    )[:2000]
     task.lease_expires_at = None
-    task.next_attempt_at = now + timedelta(seconds=5)
+    task.next_attempt_at = now + timedelta(seconds=retry_delay)
+    task.completed_at = None
     task.updated_at = now
+    return True
+
+
+def _is_retryable_import_exception(exc: Exception) -> bool:
+    if isinstance(exc, EmbeddingServiceUnavailable):
+        return exc.retryable
+    return (
+        isinstance(exc, _ImportTaskRetryableError)
+        or (
+            isinstance(exc, HTTPException)
+            and exc.status_code == 503
+        )
+    )
+
+
+def _retryable_import_exception(exc: Exception) -> _ImportTaskRetryableError:
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if isinstance(detail, dict):
+            message = str(detail.get("message") or detail)
+        else:
+            message = str(detail)
+    else:
+        message = str(exc)
+    return _ImportTaskRetryableError(
+        message or "Embedding 服务暂时不可用。"
+    )
+
+
+def _lock_import_task_attempt(
+    db: Session,
+    task_id: str,
+    claimed_attempt: int,
+) -> KnowledgeImportTask | None:
+    """Reload and lock the claimed task before mutating its lifecycle state."""
+
+    return (
+        db.query(KnowledgeImportTask)
+        .filter(
+            KnowledgeImportTask.id == task_id,
+            KnowledgeImportTask.attempt_count == claimed_attempt,
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+        .first()
+    )
 
 
 def process_knowledge_import_task(
@@ -1323,20 +1680,22 @@ def process_knowledge_import_task(
         try:
             rows = parse_knowledge_workbook(task.file_content, categories)
         except KnowledgeExcelError as exc:
-            current_task = db.query(KnowledgeImportTask).filter(
-                KnowledgeImportTask.id == task_id,
-                KnowledgeImportTask.attempt_count == claimed_attempt,
-            ).first()
+            current_task = _lock_import_task_attempt(
+                db,
+                task_id,
+                claimed_attempt,
+            )
             if not owns_import_task(current_task):
                 return
             _mark_import_task_failed(current_task, str(exc), now=datetime.utcnow())
             db.commit()
             return
 
-        current_task = db.query(KnowledgeImportTask).filter(
-            KnowledgeImportTask.id == task_id,
-            KnowledgeImportTask.attempt_count == claimed_attempt,
-        ).first()
+        current_task = _lock_import_task_attempt(
+            db,
+            task_id,
+            claimed_attempt,
+        )
         if not owns_import_task(current_task):
             return
         task = current_task
@@ -1365,10 +1724,11 @@ def process_knowledge_import_task(
         background_user = SimpleNamespace(username=task.created_by)
 
         def renew_import_task_lease(_processed: int, _total: int) -> None:
-            current_task = db.query(KnowledgeImportTask).filter(
-                KnowledgeImportTask.id == task_id,
-                KnowledgeImportTask.attempt_count == claimed_attempt,
-            ).first()
+            current_task = _lock_import_task_attempt(
+                db,
+                task_id,
+                claimed_attempt,
+            )
             if not owns_import_task(current_task):
                 raise _ImportTaskLeaseLost(
                     f"Import task {task_id} is no longer running."
@@ -1378,12 +1738,49 @@ def process_knowledge_import_task(
             current_task.updated_at = now
             db.commit()
 
-        remaining_rows = rows[task.processed_rows:]
+        retry_row_numbers = {
+            int(row_number)
+            for row_number in (task.retry_rows or [])
+        }
+        if retry_row_numbers:
+            available_row_numbers = {
+                int(row.row_number)
+                for row in rows
+            }
+            missing_retry_rows = sorted(
+                retry_row_numbers - available_row_numbers
+            )
+            if missing_retry_rows:
+                task = _lock_import_task_attempt(
+                    db,
+                    task_id,
+                    claimed_attempt,
+                )
+                if not owns_import_task(task):
+                    return
+                _mark_import_task_failed(
+                    task,
+                    (
+                        "原始 Excel 中缺少待重试行，任务已停止："
+                        + "、".join(str(row) for row in missing_retry_rows[:20])
+                    ),
+                    now=datetime.utcnow(),
+                )
+                db.commit()
+                return
+            remaining_rows = [
+                row
+                for row in rows
+                if int(row.row_number) in retry_row_numbers
+            ]
+        else:
+            remaining_rows = rows[task.processed_rows:]
         for row_batch in _import_embedding_batches(remaining_rows):
-            task = db.query(KnowledgeImportTask).filter(
-                KnowledgeImportTask.id == task_id,
-                KnowledgeImportTask.attempt_count == claimed_attempt,
-            ).first()
+            task = _lock_import_task_attempt(
+                db,
+                task_id,
+                claimed_attempt,
+            )
             if not owns_import_task(task):
                 return
             task.lease_expires_at = _task_lease_expiry(datetime.utcnow())
@@ -1396,25 +1793,36 @@ def process_knowledge_import_task(
                 on_batch_complete=renew_import_task_lease,
             )
 
-            task = db.query(KnowledgeImportTask).filter(
-                KnowledgeImportTask.id == task_id,
-                KnowledgeImportTask.attempt_count == claimed_attempt,
-            ).first()
+            task = _lock_import_task_attempt(
+                db,
+                task_id,
+                claimed_attempt,
+            )
             if not owns_import_task(task):
                 return
             task.lease_expires_at = _task_lease_expiry(datetime.utcnow())
             task.updated_at = datetime.utcnow()
             db.commit()
             for row in batch_rows:
-                task = db.query(KnowledgeImportTask).filter(
-                    KnowledgeImportTask.id == task_id,
-                    KnowledgeImportTask.attempt_count == claimed_attempt,
-                ).first()
+                task = _lock_import_task_attempt(
+                    db,
+                    task_id,
+                    claimed_attempt,
+                )
                 if not owns_import_task(task):
                     return
                 try:
                     bundle = bundles.get(row.row_number)
-                    if bundle is None or bundle.error is not None:
+                    if (
+                        bundle is None
+                        or (
+                            bundle.error is not None
+                            and not isinstance(
+                                bundle.error,
+                                EmbeddingServiceUnavailable,
+                            )
+                        )
+                    ):
                         result = _process_excel_import_row(
                             db,
                             row,
@@ -1429,27 +1837,25 @@ def process_knowledge_import_task(
                         )
                 except Exception as exc:
                     db.rollback()
-                    task = db.query(KnowledgeImportTask).filter(
-                        KnowledgeImportTask.id == task_id,
-                        KnowledgeImportTask.attempt_count == claimed_attempt,
-                    ).first()
+                    if _is_retryable_import_exception(exc):
+                        raise _retryable_import_exception(exc) from exc
+                    task = _lock_import_task_attempt(
+                        db,
+                        task_id,
+                        claimed_attempt,
+                    )
                     if not owns_import_task(task):
                         return
                     result = _excel_row_failure_result(row, exc)
 
-                task = db.query(KnowledgeImportTask).filter(
-                    KnowledgeImportTask.id == task_id,
-                    KnowledgeImportTask.attempt_count == claimed_attempt,
-                ).first()
-                if not owns_import_task(task):
-                    return
                 _append_import_task_result(task, result, now=datetime.utcnow())
                 db.commit()
 
-        task = db.query(KnowledgeImportTask).filter(
-            KnowledgeImportTask.id == task_id,
-            KnowledgeImportTask.attempt_count == claimed_attempt,
-        ).first()
+        task = _lock_import_task_attempt(
+            db,
+            task_id,
+            claimed_attempt,
+        )
         if not owns_import_task(task):
             return
         task.status = "completed_with_errors" if task.failed else "completed"
@@ -1460,30 +1866,55 @@ def process_knowledge_import_task(
         db.commit()
     except Exception as exc:
         db.rollback()
-        task_query = db.query(KnowledgeImportTask).filter(
-            KnowledgeImportTask.id == task_id
-        )
-        if claimed_attempt is not None:
-            task_query = task_query.filter(
-                KnowledgeImportTask.attempt_count == claimed_attempt
+        task = (
+            _lock_import_task_attempt(
+                db,
+                task_id,
+                claimed_attempt,
             )
-        task = task_query.first()
+            if claimed_attempt is not None
+            else None
+        )
         can_retry = (
             task is not None
             and task.status == "running"
-            and (
-                claimed_attempt is None
-                or int(task.attempt_count or 0) == claimed_attempt
-            )
         )
+        retry_scheduled = False
         if can_retry:
-            _mark_import_task_retry(
+            retry_scheduled = _mark_import_task_retry(
                 task,
-                f"后台处理异常，将自动重试：{str(exc) or type(exc).__name__}",
+                str(exc) or type(exc).__name__,
                 now=datetime.utcnow(),
             )
             db.commit()
-        logger.exception("Knowledge import task %s crashed.", task_id)
+        if isinstance(exc, _ImportTaskLeaseLost):
+            logger.info(
+                "Knowledge import task %s stopped because its lease was lost.",
+                task_id,
+            )
+        elif _is_retryable_import_exception(exc) and retry_scheduled:
+            logger.warning(
+                "Knowledge import task %s will retry after a transient failure: %s",
+                task_id,
+                exc,
+            )
+        elif (
+            _is_retryable_import_exception(exc)
+            and task is not None
+            and task.status == "failed"
+        ):
+            logger.error(
+                "Knowledge import task %s stopped after a transient failure: %s",
+                task_id,
+                exc,
+            )
+        elif _is_retryable_import_exception(exc):
+            logger.info(
+                "Knowledge import task %s stopped because its ownership changed.",
+                task_id,
+            )
+        else:
+            logger.exception("Knowledge import task %s crashed.", task_id)
     finally:
         db.close()
 
@@ -1518,6 +1949,21 @@ def process_next_knowledge_import_task(
         )
         if not task:
             return False
+        max_attempts = max(
+            1,
+            int(settings.KNOWLEDGE_IMPORT_MAX_ATTEMPTS),
+        )
+        if int(task.attempt_count or 0) >= max_attempts:
+            _mark_import_task_failed(
+                task,
+                (
+                    "后台任务租约已到期，且达到最大尝试次数"
+                    f"（{int(task.attempt_count or 0)}/{max_attempts}）。"
+                ),
+                now=now,
+            )
+            db.commit()
+            return True
         task.status = "running"
         task.attempt_count = (task.attempt_count or 0) + 1
         task.started_at = task.started_at or now

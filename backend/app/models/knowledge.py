@@ -270,6 +270,7 @@ class KnowledgeImportTask(Base):
     deprecated = Column(Integer, nullable=False, default=0)
     failed = Column(Integer, nullable=False, default=0)
     results = Column(JSON, nullable=False, default=list)
+    retry_rows = Column(JSON, nullable=False, default=list)
     error_message = Column(Text, nullable=False, default="")
     attempt_count = Column(Integer, nullable=False, default=0)
     next_attempt_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
@@ -281,7 +282,7 @@ class KnowledgeImportTask(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('queued', 'running', 'completed', 'completed_with_errors', 'failed')",
+            "status IN ('queued', 'running', 'completed', 'completed_with_errors', 'failed', 'cancelled')",
             name="ck_knowledge_import_task_status",
         ),
     )

@@ -12,6 +12,10 @@ from app.core.config import settings
 class EmbeddingServiceUnavailable(RuntimeError):
     """Raised when the internal embedding service cannot provide valid vectors."""
 
+    def __init__(self, message: str, *, retryable: bool = True):
+        super().__init__(message)
+        self.retryable = retryable
+
 
 def _authorization_headers() -> dict[str, str]:
     if not settings.EMBEDDING_API_KEY:
@@ -98,13 +102,33 @@ def _embedding_batches(texts: list[str]) -> list[list[str]]:
     return batches
 
 
+def _embedding_failure_is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        return (
+            status_code in {408, 425, 429}
+            or status_code >= 500
+        )
+    if isinstance(
+        exc,
+        (
+            httpx.TimeoutException,
+            httpx.NetworkError,
+            httpx.ProxyError,
+            httpx.RemoteProtocolError,
+        ),
+    ):
+        return True
+    return False
+
+
 def _embed_batch(
     client: httpx.Client,
     texts: list[str],
     headers: dict[str, str],
     provider: str,
 ) -> list[list[float]]:
-    errors: list[str] = []
+    errors: list[tuple[str, bool]] = []
     if provider in {"openai_compatible", "auto"}:
         try:
             response = client.post(
@@ -117,8 +141,13 @@ def _embed_batch(
             if len(vectors) != len(texts):
                 raise ValueError("Embedding result count does not match input count.")
             return vectors
-        except (httpx.HTTPError, ValueError) as exc:
-            errors.append(f"OpenAI-compatible endpoint: {exc}")
+        except (httpx.HTTPError, ValueError, TypeError, OverflowError) as exc:
+            errors.append(
+                (
+                    f"OpenAI-compatible endpoint: {exc}",
+                    _embedding_failure_is_retryable(exc),
+                )
+            )
 
     if provider in {"tei", "auto"}:
         try:
@@ -132,10 +161,18 @@ def _embed_batch(
             if len(vectors) != len(texts):
                 raise ValueError("Embedding result count does not match input count.")
             return vectors
-        except (httpx.HTTPError, ValueError) as exc:
-            errors.append(f"TEI endpoint: {exc}")
+        except (httpx.HTTPError, ValueError, TypeError, OverflowError) as exc:
+            errors.append(
+                (
+                    f"TEI endpoint: {exc}",
+                    _embedding_failure_is_retryable(exc),
+                )
+            )
 
-    raise EmbeddingServiceUnavailable("; ".join(errors))
+    raise EmbeddingServiceUnavailable(
+        "; ".join(message for message, _ in errors),
+        retryable=any(retryable for _, retryable in errors),
+    )
 
 
 def embed_texts(

@@ -54,16 +54,35 @@
     tr:hover td{background:#fafbfc}
     .tg{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:500}
     .tg-d{background:#f2f3f5;color:#86909c}.tg-r{background:#fff7e8;color:#ff7d00}.tg-p{background:#e8ffea;color:#00b42a}.tg-x{background:#fff0f0;color:#f53f3f}.tg-l{background:#e8f3ff;color:#3370ff}
-    .knowledge-table{min-width:1300px}
+    .knowledge-table{min-width:1460px}
+    .knowledge-title-col{min-width:240px;line-height:1.5}
     .status-cell{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:200px}
     .status-cell .tg{white-space:nowrap}
     .import-task-panel{margin:14px 0;padding:12px 14px;border:1px solid #d9ebe6;border-radius:7px;background:#f7fbfa}
     .import-task-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;color:#344054;font-size:13px;font-weight:700}
     .import-task-list{display:grid;gap:7px}
-    .import-task-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid #e5e6eb;border-radius:6px;background:#fff;font-size:12px}
+    .import-task-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 10px;border:1px solid #e5e6eb;border-radius:6px;background:#fff;font-size:12px}
     .import-task-file{min-width:0;flex:1;color:#344054;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .import-task-meta{color:#86909c;white-space:nowrap}
-    .import-task-error{margin-left:auto;max-width:300px;color:#c83827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .import-task-error{max-width:300px;color:#c83827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .import-task-actions{display:flex;align-items:center;gap:6px;margin-left:auto}
+    .import-task-empty{padding:16px;text-align:center;color:#98a2b3;font-size:12px}
+    .dlg.import-task-detail-dialog{width:min(920px,94vw)}
+    .import-task-detail-loading,.import-task-detail-empty{padding:42px 18px;text-align:center;color:#98a2b3;font-size:13px}
+    .import-task-detail-meta{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:14px;color:#667085;font-size:12px}
+    .import-task-detail-meta strong{color:#344054;font-size:13px}
+    .import-task-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px}
+    .import-task-summary-card{padding:13px 14px;border:1px solid #e5e6eb;border-radius:7px;background:#fff}
+    .import-task-summary-card span{display:block;color:#86909c;font-size:11px}
+    .import-task-summary-card b{display:block;margin-top:5px;color:#344054;font-size:23px;font-variant-numeric:tabular-nums}
+    .import-task-summary-card.suspected b{color:#c65b00}.import-task-summary-card.pending b{color:#765be6}.import-task-summary-card.failed b{color:#c83827}
+    .import-task-detail-error{margin-bottom:14px;padding:10px 12px;border:1px solid #ffd2c8;border-radius:6px;background:#fff5f2;color:#b42318;font-size:12px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+    .import-task-failure-title{margin:0 0 8px;color:#344054;font-size:13px;font-weight:700}
+    .import-task-failure-wrap{overflow-x:auto;border:1px solid #e5e6eb;border-radius:7px;background:#fff}
+    .import-task-failure-table{min-width:680px}
+    .import-task-failure-table th,.import-task-failure-table td{vertical-align:top}
+    .import-task-failure-reason{max-width:460px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+    @media(max-width:760px){.import-task-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dlg.import-task-detail-dialog{width:100%}}
     .mask{position:fixed;inset:0;background:rgba(19,36,51,.56);backdrop-filter:blur(3px);z-index:1000;display:flex;align-items:center;justify-content:center;padding:28px;overflow-y:auto}
     .dlg{width:min(980px,100%);max-height:calc(100vh - 56px);display:flex;flex-direction:column;overflow:hidden;background:#fff;border:1px solid rgba(229,233,239,.9);border-radius:8px;box-shadow:0 28px 80px rgba(16,24,40,.28)}
     .dlg-h{min-height:72px;padding:0 24px;border-bottom:1px solid #e8edf0;display:flex;align-items:center;justify-content:space-between;background:#fff}
@@ -363,19 +382,25 @@
       <button class="btn b-template" v-if="can('knowledge:create')" @click="downloadImportTemplate">下载导入模板</button>
       <button class="btn b-import" v-if="can('knowledge:create')" @click="chooseImportFile" :disabled="importing">{{importing?'上传中...':'Excel 批量导入'}}</button>
       <input ref="knowledgeImportFile" type="file" accept=".xlsx" style="display:none" @change="importKnowledgeExcel">
+      <button class="btn bd" v-if="can('knowledge:create')" @click="toggleImportHistory">{{showImportHistory?'收起导入记录':'导入记录'}}</button>
       <button class="btn bd" v-if="can('knowledge:view')" @click="exportKnowledgeExcel">导出知识</button>
       <button class="btn bp" v-if="can('knowledge:create')" @click="openNew">+ 新建知识</button>
     </div>
-    <div class="import-task-panel" v-if="importTasks.length && can('knowledge:create')">
-      <div class="import-task-head"><span>后台导入任务</span><button class="btn bd bsm" @click="loadImportTasks">刷新</button></div>
+    <div class="import-task-panel" v-if="can('knowledge:create') && (visibleImportTasks().length || showImportHistory)">
+      <div class="import-task-head"><span>{{showImportHistory?'导入记录（最近 100 条）':'正在处理的导入任务'}}</span><button class="btn bd bsm" @click="loadImportTasks">刷新</button></div>
       <div class="import-task-list">
-        <div class="import-task-row" v-for="task in importTasks" :key="task.id">
+        <div class="import-task-row" v-for="task in visibleImportTasks()" :key="task.id">
           <span class="tg" :class="importTaskStatusClass(task.status)">{{importTaskStatusLabel(task.status)}}</span>
           <span class="import-task-file" :title="task.original_filename">{{task.original_filename}}</span>
           <span class="import-task-meta">{{importTaskProgress(task)}}</span>
-          <span class="import-task-meta" v-if="task.processed_rows">成功 {{task.imported}} · 待审核 {{task.pending_review}} · 失败 {{task.failed}}</span>
+          <span class="import-task-meta" v-if="task.processed_rows">已创建 {{task.imported}} · 疑似重复 {{task.review_required}} · 待审核 {{task.pending_review}} · 失败 {{task.failed}}</span>
           <span class="import-task-error" v-if="task.error_message" :title="task.error_message">{{task.error_message}}</span>
+          <span class="import-task-actions">
+            <button class="btn br bsm" v-if="isImportTaskActive(task)" @click="cancelImportTask(task)" :disabled="importTaskCancellingId===task.id">{{importTaskCancellingId===task.id?'取消中...':'取消'}}</button>
+            <button class="btn bd bsm" v-if="isImportTaskTerminal(task)" @click="openImportTaskDetail(task)">查看</button>
+          </span>
         </div>
+        <div class="import-task-empty" v-if="!visibleImportTasks().length">{{showImportHistory?'暂无导入记录':'暂无正在处理的导入任务'}}</div>
       </div>
     </div>
     <div class="filter-tabs">
@@ -452,15 +477,13 @@
     </div>
     <div class="tw">
       <table class="knowledge-table">
-        <thead><tr><th v-if="can('knowledge:approve')" style="width:42px"><input class="review-checkbox" type="checkbox" :checked="allKnowledgeReviewSelected()" @change="toggleAllKnowledgeReviewSelection($event.target.checked)"></th><th style="width:130px">ID</th><th>标题</th><th style="width:110px">知识来源</th><th style="width:110px">业务类型</th><th style="width:150px">知识分类</th><th style="width:220px">状态</th><th style="width:210px">校验结果</th><th style="width:90px">创建人</th><th style="width:100px">最近变更人</th><th style="width:280px;text-align:right">操作</th></tr></thead>
+        <thead><tr><th v-if="can('knowledge:approve')" style="width:42px"><input class="review-checkbox" type="checkbox" :checked="allKnowledgeReviewSelected()" @change="toggleAllKnowledgeReviewSelection($event.target.checked)"></th><th style="width:130px">ID</th><th class="knowledge-title-col">标题</th><th style="width:110px">知识来源</th><th style="width:220px">状态</th><th style="width:210px">校验结果</th><th style="width:90px">创建人</th><th style="width:100px">最近变更人</th><th style="width:280px;text-align:right">操作</th></tr></thead>
         <tbody>
           <tr v-for="r in list" :key="r.id">
             <td v-if="can('knowledge:approve')"><input class="review-checkbox" type="checkbox" :disabled="!knowledgeReviewSelectable(r)" :checked="isKnowledgeReviewSelected(r.id)" @change="toggleKnowledgeReviewSelection(r.id)"></td>
             <td style="font-family:monospace;color:#86909c">{{r.id}}</td>
-            <td style="font-weight:500">{{r.title}}</td>
+            <td class="knowledge-title-col" style="font-weight:500">{{r.title}}</td>
             <td><span class="tg tg-l">{{knowledgeOriginLabel(r.knowledge_origin)}}</span></td>
-            <td><span class="tg tg-l">{{businessTypeLabel(r.business_type)}}</span></td>
-            <td><span class="tg tg-l">{{categoryLabel(r.category_id)}}</span></td>
             <td><div class="status-cell"><span class="tg" :class="{'tg-d':r.status==='draft','tg-r':r.status==='review','tg-p':r.status==='published','tg-x':r.status==='deprecated'}">{{sl(r.status)}}</span><span class="tg tg-r" v-if="r.status==='review' && r.deduplication_metadata && r.deduplication_metadata.action==='review_duplicate'" title="检测到语义相近的已有知识，请在审核时确认是否合并">疑似重复 {{dedupMatchIds(r)}}</span></div></td>
             <td class="import-validation-cell">
               <template v-if="r.status==='review' && validationRemark(r)">
@@ -481,7 +504,7 @@
               <button class="btn br bsm" v-if="can('knowledge:deprecate') && r.status!=='deprecated'" @click="act(r,'deprecate')">废弃</button>
             </td>
           </tr>
-          <tr v-if="!list.length"><td :colspan="can('knowledge:approve') ? 11 : 10" style="text-align:center;padding:40px;color:#c9cdd4">暂无数据</td></tr>
+          <tr v-if="!list.length"><td :colspan="can('knowledge:approve') ? 9 : 8" style="text-align:center;padding:40px;color:#c9cdd4">暂无数据</td></tr>
         </tbody>
       </table>
     </div>
@@ -672,6 +695,53 @@
     </div>
   </div>
   </main>
+  </div>
+
+  <div class="mask" v-if="importTaskDetail.open" @click.self="closeImportTaskDetail" role="dialog" aria-modal="true" aria-labelledby="import-task-detail-title">
+    <div class="dlg import-task-detail-dialog">
+      <div class="dlg-h">
+        <h3 id="import-task-detail-title">导入任务详情</h3>
+        <button class="dlg-x" @click="closeImportTaskDetail" aria-label="关闭导入任务详情">&times;</button>
+      </div>
+      <div class="dlg-b">
+        <div class="import-task-detail-loading" v-if="importTaskDetail.loading">正在加载导入结果...</div>
+        <template v-else-if="importTaskDetail.task">
+          <div class="import-task-detail-meta">
+            <strong :title="importTaskDetail.task.original_filename">{{importTaskDetail.task.original_filename}}</strong>
+            <span class="tg" :class="importTaskStatusClass(importTaskDetail.task.status)">{{importTaskStatusLabel(importTaskDetail.task.status)}}</span>
+            <span>{{importTaskProgress(importTaskDetail.task)}}</span>
+            <span v-if="importTaskDetail.task.deprecated">已废弃 {{importTaskDetail.task.deprecated}} 条</span>
+            <span>创建时间 {{formatDate(importTaskDetail.task.created_at)}}</span>
+          </div>
+          <div class="import-task-summary-grid">
+            <div class="import-task-summary-card"><span>成功</span><b>{{importTaskResultCount(importTaskDetail.task,'imported')}}</b></div>
+            <div class="import-task-summary-card suspected"><span>疑似重复</span><b>{{importTaskResultCount(importTaskDetail.task,'review_required')}}</b></div>
+            <div class="import-task-summary-card pending"><span>待审核</span><b>{{importTaskResultCount(importTaskDetail.task,'review_pending')}}</b></div>
+            <div class="import-task-summary-card failed"><span>失败</span><b>{{importTaskResultCount(importTaskDetail.task,'failed')}}</b></div>
+          </div>
+          <div class="import-task-detail-error" v-if="importTaskDetail.task.error_message">{{importTaskDetail.task.error_message}}</div>
+          <div v-if="importTaskFailureRows(importTaskDetail.task).length">
+            <div class="import-task-failure-title">失败行原因</div>
+            <div class="import-task-failure-wrap">
+              <table class="import-task-failure-table">
+                <thead><tr><th style="width:72px">Excel 行</th><th style="width:220px">标题</th><th style="width:150px">错误代码</th><th>失败原因</th></tr></thead>
+                <tbody>
+                  <tr v-for="row in importTaskFailureRows(importTaskDetail.task)" :key="row.row + ':' + row.title">
+                    <td>{{row.row}}</td>
+                    <td>{{row.title || '-'}}</td>
+                    <td>{{row.error_code || '-'}}</td>
+                    <td><div class="import-task-failure-reason">{{row.error_message || '未返回失败原因'}}</div></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="import-task-detail-empty" v-else-if="!importTaskDetail.task.error_message">没有失败行。</div>
+        </template>
+        <div class="import-task-detail-empty" v-else>{{importTaskDetail.error || '未能加载导入任务详情。'}}</div>
+      </div>
+      <div class="dlg-f"><button class="btn bd" @click="closeImportTaskDetail">关闭</button></div>
+    </div>
   </div>
 
   <div class="mask" v-if="candidateReviews.dlg" @click.self="closeCandidateReview">
@@ -1024,6 +1094,10 @@ Vue.createApp({
       importing: false,
       importTasks: [],
       importTaskPoller: null,
+      showImportHistory: false,
+      importTaskCancellingId: '',
+      importTaskDetailRequestId: 0,
+      importTaskDetail: {open:false, loading:false, error:'', task:null},
       ns: '',
       relatedStandardItemInput: '',
       drop: '',
@@ -1407,7 +1481,7 @@ Vue.createApp({
           });
         })
         .then(function(data) {
-          alert('文件已上传，服务器正在后台处理。可关闭当前页面，稍后可在“后台导入任务”中查看结果。');
+          alert('文件已上传，服务器正在后台处理。可关闭当前页面，稍后可在“导入记录”中查看结果。');
           self.loadImportTasks();
         })
         .catch(function(error) { alert(error.message); })
@@ -1422,7 +1496,8 @@ Vue.createApp({
         running:'处理中',
         completed:'已完成',
         completed_with_errors:'完成有失败',
-        failed:'任务失败'
+        failed:'任务失败',
+        cancelled:'已取消'
       }[status] || status;
     },
     importTaskStatusClass: function(status) {
@@ -1431,17 +1506,132 @@ Vue.createApp({
         running:'tg-r',
         completed:'tg-p',
         completed_with_errors:'tg-r',
-        failed:'tg-x'
+        failed:'tg-x',
+        cancelled:'tg-d'
       }[status] || 'tg-d';
     },
+    isImportTaskActive: function(task) {
+      return !!task && (task.status === 'queued' || task.status === 'running');
+    },
+    isImportTaskTerminal: function(task) {
+      return !!task && ['completed','completed_with_errors','failed','cancelled'].indexOf(task.status) !== -1;
+    },
+    visibleImportTasks: function() {
+      var self = this;
+      if (self.showImportHistory) return self.importTasks;
+      return self.importTasks.filter(function(task) { return self.isImportTaskActive(task); });
+    },
+    toggleImportHistory: function() {
+      this.showImportHistory = !this.showImportHistory;
+      if (this.showImportHistory) this.loadImportTasks();
+    },
     importTaskProgress: function(task) {
-      if (!Number(task.total_rows || 0)) return task.status === 'queued' ? '等待解析' : '正在解析';
-      return '已处理 ' + Number(task.processed_rows || 0) + '/' + Number(task.total_rows || 0) + ' 行';
+      var total = Number(task && task.total_rows || 0);
+      var processed = Number(task && task.processed_rows || 0);
+      if (!total) {
+        return {
+          queued:'等待解析',
+          running:'正在解析',
+          failed:'解析失败，未生成有效行',
+          cancelled:'已取消，未开始处理',
+          completed:'处理完成，无有效数据',
+          completed_with_errors:'处理结束，无有效数据'
+        }[task && task.status] || '尚未解析';
+      }
+      if (task.status === 'cancelled') return '已取消，已处理 ' + processed + '/' + total + ' 行';
+      if (task.status === 'failed') return '失败前已处理 ' + processed + '/' + total + ' 行';
+      return '已处理 ' + processed + '/' + total + ' 行';
+    },
+    importTaskResultCount: function(task, status) {
+      var results = task && Array.isArray(task.results) ? task.results : [];
+      if (results.length) {
+        return results.filter(function(row) { return row.status === status; }).length;
+      }
+      if (status === 'review_required') return Number(task && task.review_required || 0);
+      if (status === 'review_pending') return Number(task && task.pending_review || 0);
+      if (status === 'failed') return Number(task && task.failed || 0);
+      if (status === 'imported') {
+        return Math.max(
+          0,
+          Number(task && task.imported || 0)
+            - Number(task && task.review_required || 0)
+            - Number(task && task.pending_review || 0)
+        );
+      }
+      return 0;
+    },
+    importTaskFailureRows: function(task) {
+      var results = task && Array.isArray(task.results) ? task.results : [];
+      return results.filter(function(row) { return row.status === 'failed'; });
+    },
+    cancelImportTask: function(task) {
+      var self = this;
+      if (!self.isImportTaskActive(task) || self.importTaskCancellingId) return;
+      if (!confirm('确认取消导入任务“' + (task.original_filename || task.id) + '”？已处理并保存的知识不会自动回滚。')) return;
+      self.importTaskCancellingId = task.id;
+      fetch(API + '/knowledge/import/tasks/' + encodeURIComponent(task.id) + '/cancel', {
+        method:'POST',
+        headers:self.authHeaders()
+      })
+        .then(function(response) {
+          return response.text().then(function(text) {
+            var data = {};
+            if (text) {
+              try { data = JSON.parse(text); } catch (error) { data = {}; }
+            }
+            if (!response.ok) throw new Error(data.detail || '取消导入任务失败');
+            return data;
+          });
+        })
+        .then(function() {
+          alert('导入任务已取消。');
+          return self.loadImportTasks();
+        })
+        .then(function() {
+          self.load();
+          self.loadStats();
+        })
+        .catch(function(error) { alert(error.message); })
+        .finally(function() { self.importTaskCancellingId = ''; });
+    },
+    openImportTaskDetail: function(task) {
+      var self = this;
+      if (!self.isImportTaskTerminal(task)) return;
+      var requestId = ++self.importTaskDetailRequestId;
+      self.importTaskDetail = {open:true, loading:true, error:'', task:task};
+      fetch(
+        API + '/knowledge/import/tasks/' + encodeURIComponent(task.id)
+          + '?include_results=true&result_limit=500',
+        {headers:self.authHeaders()}
+      )
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(data.detail || '加载导入任务详情失败');
+            return data;
+          });
+        })
+        .then(function(data) {
+          if (requestId !== self.importTaskDetailRequestId) return;
+          self.importTaskDetail.task = data;
+        })
+        .catch(function(error) {
+          if (requestId !== self.importTaskDetailRequestId) return;
+          self.importTaskDetail.task = null;
+          self.importTaskDetail.error = error.message;
+        })
+        .finally(function() {
+          if (requestId === self.importTaskDetailRequestId) {
+            self.importTaskDetail.loading = false;
+          }
+        });
+    },
+    closeImportTaskDetail: function() {
+      this.importTaskDetailRequestId++;
+      this.importTaskDetail.open = false;
     },
     hasActiveImportTasks: function() {
-      return this.importTasks.some(function(task) {
-        return task.status === 'queued' || task.status === 'running';
-      });
+      var self = this;
+      return self.importTasks.some(function(task) { return self.isImportTaskActive(task); });
     },
     startImportTaskPolling: function() {
       var self = this;
@@ -1458,7 +1648,7 @@ Vue.createApp({
     loadImportTasks: function() {
       var self = this;
       if (!self.token || !self.can('knowledge:create')) return Promise.resolve();
-      return fetch(API + '/knowledge/import/tasks?limit=8', {headers:self.authHeaders()})
+      return fetch(API + '/knowledge/import/tasks?limit=100', {headers:self.authHeaders()})
         .then(function(response) {
           return response.json().then(function(data) {
             if (!response.ok) throw new Error(data.detail || '加载导入任务失败');
