@@ -323,6 +323,7 @@ class KnowledgeImportTaskResponse(BaseModel):
         "completed",
         "completed_with_errors",
         "failed",
+        "cancelled",
     ] = Field(description="任务状态")
     total_rows: int = Field(description="解析后的总行数")
     processed_rows: int = Field(description="已完成处理的行数")
@@ -331,6 +332,12 @@ class KnowledgeImportTaskResponse(BaseModel):
     pending_review: int = Field(description="进入待发布审核的知识数")
     deprecated: int = Field(description="已同步为废弃的知识数")
     failed: int = Field(description="失败行数")
+    retry_rows: list[int] = Field(
+        default_factory=list,
+        description="等待安全重试的 Excel 原始行号",
+    )
+    attempt_count: int = Field(description="当前处理周期已尝试次数")
+    next_attempt_at: datetime = Field(description="下次允许后台领取时间")
     error_message: str = Field("", description="任务级错误信息")
     created_at: datetime = Field(description="任务创建时间")
     started_at: datetime | None = Field(None, description="开始处理时间")

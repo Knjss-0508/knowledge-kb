@@ -222,6 +222,7 @@ def validate_schema() -> None:
     required_non_nullable_columns = {
         ("knowledge_items", "business_type"),
         ("knowledge_items", "knowledge_origin"),
+        ("knowledge_import_tasks", "retry_rows"),
     }
     required_categories = {
         "cat-qc-standard",
@@ -328,7 +329,8 @@ def validate_schema() -> None:
                 WHERE table_schema = 'public'
                   AND (table_name, column_name) IN (
                     ('knowledge_items', 'business_type'),
-                    ('knowledge_items', 'knowledge_origin')
+                    ('knowledge_items', 'knowledge_origin'),
+                    ('knowledge_import_tasks', 'retry_rows')
                   )
                 """
             )

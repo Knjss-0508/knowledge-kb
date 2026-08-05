@@ -167,6 +167,7 @@ CREATE TABLE public.knowledge_import_tasks (
     deprecated integer DEFAULT 0 NOT NULL,
     failed integer DEFAULT 0 NOT NULL,
     results json DEFAULT '[]'::json NOT NULL,
+    retry_rows json DEFAULT '[]'::json NOT NULL,
     error_message text DEFAULT ''::text NOT NULL,
     attempt_count integer DEFAULT 0 NOT NULL,
     next_attempt_at timestamp without time zone DEFAULT now() NOT NULL,
@@ -175,7 +176,7 @@ CREATE TABLE public.knowledge_import_tasks (
     completed_at timestamp without time zone,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    CONSTRAINT ck_knowledge_import_task_status CHECK (((status)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying, 'completed'::character varying, 'completed_with_errors'::character varying, 'failed'::character varying])::text[])))
+    CONSTRAINT ck_knowledge_import_task_status CHECK (((status)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying, 'completed'::character varying, 'completed_with_errors'::character varying, 'failed'::character varying, 'cancelled'::character varying])::text[])))
 );
 
 
@@ -1145,4 +1146,4 @@ INSERT INTO public.categories (id, name, parent_id, level, sort_order, created_a
     ('cat-extra-knowledge', '课外常识', NULL, 1, 40, CURRENT_TIMESTAMP);
 
 -- 版本标记必须最后写入，避免结构未完成却被误判为已迁移。
-INSERT INTO public.alembic_version (version_num) VALUES ('20260805_01');
+INSERT INTO public.alembic_version (version_num) VALUES ('20260805_02');
