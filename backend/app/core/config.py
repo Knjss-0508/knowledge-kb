@@ -114,13 +114,16 @@ class Settings(BaseSettings):
     # Excel imports are persisted before processing, so browser disconnects do
     # not cancel work. A lease enables safe recovery after a backend restart.
     KNOWLEDGE_IMPORT_POLL_SECONDS: float = 1.0
-    KNOWLEDGE_IMPORT_LEASE_SECONDS: int = 120
+    KNOWLEDGE_IMPORT_LEASE_SECONDS: int = 300
     KNOWLEDGE_IMPORT_MAX_ATTEMPTS: int = 5
     KNOWLEDGE_IMPORT_RETRY_BASE_SECONDS: int = 5
     KNOWLEDGE_IMPORT_RETRY_MAX_SECONDS: int = 300
     # Bound cross-row embedding preparation; text/character limits are still
     # enforced by EMBEDDING_MAX_BATCH_TEXTS and EMBEDDING_MAX_BATCH_CHARS.
     KNOWLEDGE_IMPORT_EMBEDDING_BATCH_ROWS: int = 4
+    # CPU embedding can take much longer for large Excel rows. Keep this
+    # separate from the short timeout used by interactive retrieval.
+    KNOWLEDGE_IMPORT_EMBEDDING_TIMEOUT_SECONDS: float = 180.0
     SESSION_TTL_HOURS: int = 24
 
     class Config:

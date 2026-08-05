@@ -1168,8 +1168,26 @@ def retry_failed_knowledge_import_task(
 
 
 def _task_lease_expiry(now: datetime) -> datetime:
+    # One CPU embedding request may legitimately occupy the worker until the
+    # import-specific timeout. Keep the lease alive beyond that request even
+    # when an older deployment still configures the previous 120-second lease.
+    # The auto provider may try both protocol variants before returning.
+    provider_attempts = (
+        2
+        if settings.EMBEDDING_PROVIDER.strip().lower() == "auto"
+        else 1
+    )
+    lease_seconds = max(
+        30.0,
+        float(settings.KNOWLEDGE_IMPORT_LEASE_SECONDS),
+        (
+            float(settings.KNOWLEDGE_IMPORT_EMBEDDING_TIMEOUT_SECONDS)
+            * provider_attempts
+            + 60.0
+        ),
+    )
     return now + timedelta(
-        seconds=max(30, settings.KNOWLEDGE_IMPORT_LEASE_SECONDS)
+        seconds=lease_seconds
     )
 
 
@@ -1385,8 +1403,19 @@ def _precompute_import_embeddings(
 ) -> dict[int, _ImportEmbeddingBundle]:
     def embed_with_progress(texts: list[str]) -> list[list[float]]:
         if on_batch_complete is None:
-            return embed_texts(texts)
-        return embed_texts(texts, on_batch_complete=on_batch_complete)
+            return embed_texts(
+                texts,
+                timeout_seconds=(
+                    settings.KNOWLEDGE_IMPORT_EMBEDDING_TIMEOUT_SECONDS
+                ),
+            )
+        return embed_texts(
+            texts,
+            on_batch_complete=on_batch_complete,
+            timeout_seconds=(
+                settings.KNOWLEDGE_IMPORT_EMBEDDING_TIMEOUT_SECONDS
+            ),
+        )
 
     bundles: dict[int, _ImportEmbeddingBundle] = {}
     for batch in _import_embedding_batches(rows):

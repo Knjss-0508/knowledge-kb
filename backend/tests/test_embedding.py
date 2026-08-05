@@ -55,6 +55,30 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertEqual(client.post.call_args.kwargs["json"]["input"], ["测试"])
 
     @patch("app.services.embedding.httpx.Client")
+    def test_timeout_override_does_not_change_the_global_default(
+        self,
+        client_class,
+    ):
+        settings.EMBEDDING_PROVIDER = "openai_compatible"
+        client = client_class.return_value.__enter__.return_value
+        response = Mock()
+        response.json.return_value = {
+            "data": [{"embedding": [0.1, 0.2]}],
+        }
+        client.post.return_value = response
+
+        embed_texts(["实时检索"])
+        default_timeout = client_class.call_args.kwargs["timeout"]
+        embed_texts(["后台导入"], timeout_seconds=180)
+        import_timeout = client_class.call_args.kwargs["timeout"]
+
+        self.assertEqual(
+            default_timeout.read,
+            settings.EMBEDDING_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(import_timeout.read, 180)
+
+    @patch("app.services.embedding.httpx.Client")
     def test_embedding_requests_are_batched_by_count_and_total_characters(self, client_class):
         settings.EMBEDDING_PROVIDER = "openai_compatible"
         settings.EMBEDDING_MAX_BATCH_TEXTS = 3
