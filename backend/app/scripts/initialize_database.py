@@ -153,6 +153,8 @@ def validate_schema() -> None:
         "alembic_version_pkc",
         "categories_pkey",
         "categories_parent_id_fkey",
+        "ck_knowledge_items_business_type",
+        "ck_knowledge_items_knowledge_origin",
         "ck_knowledge_import_task_status",
         "ck_media_upload_staging_status",
         "integration_ingestions_pkey",
@@ -201,6 +203,8 @@ def validate_schema() -> None:
         "ix_knowledge_items_applicable_categories_gin",
         "ix_knowledge_items_applicable_brands_gin",
         "ix_knowledge_items_applicable_models_gin",
+        "ix_knowledge_items_business_type",
+        "ix_knowledge_items_knowledge_origin",
         "ix_knowledge_items_source_topic_key",
         "ix_knowledge_items_source_record_id",
         "ix_knowledge_items_source_knowledge_key",
@@ -214,6 +218,10 @@ def validate_schema() -> None:
         "ix_media_deletion_tasks_storage_backend",
         "ix_media_upload_staging_expires_at",
         "ix_media_upload_staging_username",
+    }
+    required_non_nullable_columns = {
+        ("knowledge_items", "business_type"),
+        ("knowledge_items", "knowledge_origin"),
     }
     required_categories = {
         "cat-qc-standard",
@@ -310,6 +318,35 @@ def validate_schema() -> None:
             raise RuntimeError(
                 "Required database indexes are missing: "
                 + ", ".join(missing_indexes)
+            )
+
+        column_rows = connection.execute(
+            text(
+                """
+                SELECT table_name, column_name, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND (table_name, column_name) IN (
+                    ('knowledge_items', 'business_type'),
+                    ('knowledge_items', 'knowledge_origin')
+                  )
+                """
+            )
+        ).all()
+        column_nullability = {
+            (table, column): is_nullable
+            for table, column, is_nullable in column_rows
+        }
+        missing_or_nullable = [
+            f"{table}.{column}="
+            f"{column_nullability.get((table, column), 'missing')}"
+            for table, column in sorted(required_non_nullable_columns)
+            if column_nullability.get((table, column)) != "NO"
+        ]
+        if missing_or_nullable:
+            raise RuntimeError(
+                "Required non-nullable columns are missing or nullable: "
+                + ", ".join(missing_or_nullable)
             )
 
         actual_categories = set(

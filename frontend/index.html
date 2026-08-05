@@ -54,7 +54,7 @@
     tr:hover td{background:#fafbfc}
     .tg{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:500}
     .tg-d{background:#f2f3f5;color:#86909c}.tg-r{background:#fff7e8;color:#ff7d00}.tg-p{background:#e8ffea;color:#00b42a}.tg-x{background:#fff0f0;color:#f53f3f}.tg-l{background:#e8f3ff;color:#3370ff}
-    .knowledge-table{min-width:1190px}
+    .knowledge-table{min-width:1300px}
     .status-cell{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:200px}
     .status-cell .tg{white-space:nowrap}
     .import-task-panel{margin:14px 0;padding:12px 14px;border:1px solid #d9ebe6;border-radius:7px;background:#f7fbfa}
@@ -318,7 +318,7 @@
         <div class="todo-list">
           <div class="todo" v-for="item in dashboard.recentUpdates" :key="item.id">
             <span class="todo-dot teal"></span>
-            <div><h4>{{item.title}}</h4><p>{{sl(item.status)}} · 变更人：{{item.updated_by || item.created_by || '系统'}}</p></div>
+            <div><h4>{{item.title}}</h4><p>{{knowledgeOriginLabel(item.knowledge_origin)}} · {{sl(item.status)}} · 变更人：{{item.updated_by || item.created_by || '系统'}}</p></div>
             <time>{{formatDate(item.updated_at)}}</time>
           </div>
           <div class="todo" v-if="!dashboard.recentUpdates.length"><div></div><div><h4>暂无已发布知识</h4><p>审核发布后的知识会显示在这里。</p></div><time></time></div>
@@ -333,7 +333,7 @@
         <div class="todo-list">
           <div class="todo clickable" v-for="item in candidateDashboard.pending" :key="item.id" @click="openCandidateReview(item)">
             <span class="todo-dot" :class="item.priority_review?'violet':'gold'"></span>
-            <div><h4>{{item.title || '未命名候选'}}</h4><p>{{reviewKnowledgeValueLabel(item.model_review && item.model_review.knowledge_value)}} · {{item.source_system}} · {{item.source_conversation_id}}</p></div>
+            <div><h4>{{item.title || '未命名候选'}}</h4><p>{{knowledgeOriginLabel(item.knowledge_origin)}} · {{reviewKnowledgeValueLabel(item.model_review && item.model_review.knowledge_value)}} · {{item.source_system}} · {{item.source_conversation_id}}</p></div>
             <div class="todo-aside"><span class="priority-mini" v-if="item.priority_review">重点</span><time>{{formatDate(item.updated_at)}}</time></div>
           </div>
           <div class="todo" v-if="!candidateDashboard.pending.length"><div></div><div><h4>暂无待价值复核候选</h4><p>Answer Hub 同步的新候选会显示在这里。</p></div><time></time></div>
@@ -345,7 +345,7 @@
         <div class="todo-list">
           <div class="todo" v-for="item in dashboard.pending" :key="item.id">
             <span class="todo-dot"></span>
-            <div><h4>{{item.title}}</h4><p>{{item.id}} · {{item.created_by || '系统'}}</p></div>
+            <div><h4>{{item.title}}</h4><p>{{item.id}} · {{knowledgeOriginLabel(item.knowledge_origin)}} · {{item.created_by || '系统'}}</p></div>
             <time>{{formatDate(item.updated_at)}}</time>
           </div>
           <div class="todo" v-if="!dashboard.pending.length"><div></div><div><h4>暂无待发布审核知识</h4><p>通过价值门禁并提交送审的知识会显示在这里。</p></div><time></time></div>
@@ -382,6 +382,11 @@
       <div class="tab-row">
         <span class="tab-label">状态</span>
         <button class="tab-btn" v-for="tab in statusTabs()" :key="tab.value || 'all-status'" :class="{on:f.status===tab.value}" @click="setFilter('status', tab.value)">{{tab.label}}</button>
+      </div>
+      <div class="tab-row">
+        <span class="tab-label">知识来源</span>
+        <button class="tab-btn" :class="{on:!f.knowledge_origin}" @click="setFilter('knowledge_origin', '')">全部来源</button>
+        <button class="tab-btn" v-for="origin in knowledgeOrigins" :key="origin.value" :class="{on:f.knowledge_origin===origin.value}" @click="setFilter('knowledge_origin', origin.value)">{{origin.label}}</button>
       </div>
       <div class="tab-row">
         <span class="tab-label">业务类型</span>
@@ -447,12 +452,13 @@
     </div>
     <div class="tw">
       <table class="knowledge-table">
-        <thead><tr><th v-if="can('knowledge:approve')" style="width:42px"><input class="review-checkbox" type="checkbox" :checked="allKnowledgeReviewSelected()" @change="toggleAllKnowledgeReviewSelection($event.target.checked)"></th><th style="width:130px">ID</th><th>标题</th><th style="width:110px">业务类型</th><th style="width:150px">知识分类</th><th style="width:220px">状态</th><th style="width:210px">校验结果</th><th style="width:90px">创建人</th><th style="width:100px">最近变更人</th><th style="width:280px;text-align:right">操作</th></tr></thead>
+        <thead><tr><th v-if="can('knowledge:approve')" style="width:42px"><input class="review-checkbox" type="checkbox" :checked="allKnowledgeReviewSelected()" @change="toggleAllKnowledgeReviewSelection($event.target.checked)"></th><th style="width:130px">ID</th><th>标题</th><th style="width:110px">知识来源</th><th style="width:110px">业务类型</th><th style="width:150px">知识分类</th><th style="width:220px">状态</th><th style="width:210px">校验结果</th><th style="width:90px">创建人</th><th style="width:100px">最近变更人</th><th style="width:280px;text-align:right">操作</th></tr></thead>
         <tbody>
           <tr v-for="r in list" :key="r.id">
             <td v-if="can('knowledge:approve')"><input class="review-checkbox" type="checkbox" :disabled="!knowledgeReviewSelectable(r)" :checked="isKnowledgeReviewSelected(r.id)" @change="toggleKnowledgeReviewSelection(r.id)"></td>
             <td style="font-family:monospace;color:#86909c">{{r.id}}</td>
             <td style="font-weight:500">{{r.title}}</td>
+            <td><span class="tg tg-l">{{knowledgeOriginLabel(r.knowledge_origin)}}</span></td>
             <td><span class="tg tg-l">{{businessTypeLabel(r.business_type)}}</span></td>
             <td><span class="tg tg-l">{{categoryLabel(r.category_id)}}</span></td>
             <td><div class="status-cell"><span class="tg" :class="{'tg-d':r.status==='draft','tg-r':r.status==='review','tg-p':r.status==='published','tg-x':r.status==='deprecated'}">{{sl(r.status)}}</span><span class="tg tg-r" v-if="r.status==='review' && r.deduplication_metadata && r.deduplication_metadata.action==='review_duplicate'" title="检测到语义相近的已有知识，请在审核时确认是否合并">疑似重复 {{dedupMatchIds(r)}}</span></div></td>
@@ -475,7 +481,7 @@
               <button class="btn br bsm" v-if="can('knowledge:deprecate') && r.status!=='deprecated'" @click="act(r,'deprecate')">废弃</button>
             </td>
           </tr>
-          <tr v-if="!list.length"><td :colspan="can('knowledge:approve') ? 10 : 9" style="text-align:center;padding:40px;color:#c9cdd4">暂无数据</td></tr>
+          <tr v-if="!list.length"><td :colspan="can('knowledge:approve') ? 11 : 10" style="text-align:center;padding:40px;color:#c9cdd4">暂无数据</td></tr>
         </tbody>
       </table>
     </div>
@@ -542,11 +548,12 @@
     <div class="integration-hint">Answer Hub 同步到本页后，复核人可补充组员验证与修改意见。批量送审只创建“待发布审核”知识，不会直接发布。</div>
     <div class="tw" :class="{'review-loading':candidateReviews.loading}">
       <table class="review-table">
-        <thead><tr><th style="width:42px"><input class="review-checkbox" type="checkbox" :checked="allReviewSelected()" @change="toggleAllReviewSelection($event.target.checked)"></th><th>候选知识</th><th style="width:110px">业务类型</th><th style="width:120px">审核状态</th><th style="width:160px">模型初标</th><th style="width:175px">组员验证</th><th style="width:90px">复核级别</th><th style="width:180px">来源</th><th style="width:135px">更新时间</th><th style="width:90px;text-align:right">操作</th></tr></thead>
+        <thead><tr><th style="width:42px"><input class="review-checkbox" type="checkbox" :checked="allReviewSelected()" @change="toggleAllReviewSelection($event.target.checked)"></th><th>候选知识</th><th style="width:110px">知识来源</th><th style="width:110px">业务类型</th><th style="width:120px">审核状态</th><th style="width:160px">模型初标</th><th style="width:175px">组员验证</th><th style="width:90px">复核级别</th><th style="width:180px">上游来源</th><th style="width:135px">更新时间</th><th style="width:90px;text-align:right">操作</th></tr></thead>
         <tbody>
           <tr v-for="item in candidateReviews.items" :key="item.id">
             <td><input class="review-checkbox" type="checkbox" :disabled="!reviewSelectable(item)" :checked="isReviewSelected(item.id)" @change="toggleReviewSelection(item.id)"></td>
             <td><div class="review-title"><strong :title="item.title">{{item.title || '未命名候选'}}</strong><small>{{item.event_id}} · {{contentPreview(item.content)}}</small></div></td>
+            <td><span class="tg tg-l">{{knowledgeOriginLabel(item.knowledge_origin)}}</span></td>
             <td><span class="tg tg-l">{{businessTypeLabel(item.business_type)}}</span></td>
             <td><span class="review-badge" :class="reviewStatusClass(item.review_status)">{{reviewStatusLabel(item.review_status)}}</span><div class="review-error" v-if="item.error_message" :title="item.error_message">{{item.error_code || '送审失败'}}</div></td>
             <td><div class="review-model-summary"><b>{{reviewKnowledgeValueLabel(item.model_review && item.model_review.knowledge_value)}}</b><br>置信度 {{reviewConfidence(item.model_review && item.model_review.confidence)}}</div></td>
@@ -556,7 +563,7 @@
             <td>{{formatDate(item.updated_at)}}</td>
             <td style="text-align:right"><button class="btn bd bsm" @click="openCandidateReview(item)">{{item.review_status==='submitted'?'查看':'审核'}}</button></td>
           </tr>
-          <tr v-if="!candidateReviews.items.length"><td colspan="10" class="review-empty">{{candidateReviews.loading?'正在加载候选审核队列...':'暂无符合条件的候选知识'}}</td></tr>
+          <tr v-if="!candidateReviews.items.length"><td colspan="11" class="review-empty">{{candidateReviews.loading?'正在加载候选审核队列...':'暂无符合条件的候选知识'}}</td></tr>
         </tbody>
       </table>
     </div>
@@ -710,7 +717,7 @@
               <div style="margin-top:5px;font-size:12px;color:#7a5c25">以下知识与当前候选疑似重复。请逐条核对后，确认内容确实不同才可送审。</div>
               <div v-for="match in candidateReviews.current.deduplication.matches" :key="match.knowledge_id + ':' + match.match_type" style="margin-top:8px;padding:8px 10px;border:1px solid #f3dfbc;border-radius:6px;background:#fff">
                 <b style="font-size:12px">{{match.knowledge_id}} · {{match.title}}</b>
-                <div style="margin-top:3px;font-size:11px;color:#86909c">{{businessTypeLabel(match.business_type)}} · {{dedupMatchDescription(match)}} · 综合 {{formatSimilarity(match.similarity)}}</div>
+                <div style="margin-top:3px;font-size:11px;color:#86909c">{{knowledgeOriginLabel(match.knowledge_origin)}} · {{businessTypeLabel(match.business_type)}} · {{dedupMatchDescription(match)}} · 综合 {{formatSimilarity(match.similarity)}}</div>
               </div>
               <label v-if="!reviewReadonly()" style="display:flex;gap:7px;align-items:flex-start;margin-top:10px;font-size:12px;color:#5d4319;cursor:pointer">
                 <input type="checkbox" v-model="candidateReviews.form.confirmDedupReview" style="margin-top:2px">
@@ -720,6 +727,7 @@
             </div>
             <div class="review-form-grid">
               <div class="fg span-2"><label class="fl"><span class="req">*</span> 知识标题</label><input class="fi" v-model="candidateReviews.form.title" :disabled="reviewReadonly()" placeholder="输入知识标题"></div>
+              <div class="fg span-2"><label class="fl"><span class="req">*</span> 知识来源</label><select class="fi" v-model="candidateReviews.form.knowledge_origin" :disabled="reviewReadonly()"><option value="" disabled>请选择知识来源</option><option v-for="origin in knowledgeOrigins" :key="origin.value" :value="origin.value">{{origin.label}}</option></select></div>
               <div class="fg"><label class="fl"><span class="req">*</span> 业务类型</label><select class="fi" v-model="candidateReviews.form.business_type" :disabled="reviewReadonly()" @change="onCandidateBusinessTypeChange"><option value="" disabled>请选择业务类型</option><option v-for="businessType in businessTypes" :key="businessType.value" :value="businessType.value">{{businessType.label}}</option></select></div>
               <div class="fg"><label class="fl"><span class="req">*</span> 所属分类</label><select class="fi" v-model="candidateReviews.form.category_id" :disabled="reviewReadonly() || !candidateReviews.form.business_type"><option value="" disabled>{{candidateReviews.form.business_type?'请选择分类':'请先选择业务类型'}}</option><option v-for="cat in cats" :key="cat.id" :value="cat.id">{{cat.name}}</option></select></div>
               <div class="fg"><label class="fl">进入训练集</label><select class="fi" v-model="candidateReviews.form.training_eligible" :disabled="reviewReadonly()"><option value="">未标注</option><option value="是">是</option><option value="否">否</option></select></div>
@@ -739,8 +747,8 @@
       <div class="dlg-f">
         <div class="review-gate" v-if="candidateReviews.current"><span class="review-badge" :class="reviewStatusClass(candidateReviews.current.review_status)">{{reviewStatusLabel(candidateReviews.current.review_status)}}</span><span>{{candidateReviewGateReason(candidateReviews.current)}}</span></div>
         <button class="btn bd" @click="closeCandidateReview">关闭</button>
-        <button class="btn bd" v-if="!reviewReadonly()" @click="saveCandidateReview(false)" :disabled="candidateReviews.saving">{{candidateReviews.saving?'保存中...':'保存审核'}}</button>
-        <button class="btn bp" v-if="!reviewReadonly()" @click="saveCandidateReview(true)" :disabled="candidateReviews.saving||candidateReviews.submitting">{{candidateReviews.submitting?'送审中...':'保存并送审'}}</button>
+        <button class="btn bd" v-if="!reviewReadonly()" @click="saveCandidateReview(false)" :disabled="candidateReviews.saving || !candidateReviews.form.knowledge_origin">{{candidateReviews.saving?'保存中...':'保存审核'}}</button>
+        <button class="btn bp" v-if="!reviewReadonly()" @click="saveCandidateReview(true)" :disabled="candidateReviews.saving||candidateReviews.submitting || !candidateReviews.form.knowledge_origin">{{candidateReviews.submitting?'送审中...':'保存并送审'}}</button>
       </div>
     </div>
   </div>
@@ -752,6 +760,7 @@
       <div class="dlg-b" :class="{'save-locked':saving}" :inert="saving ? '' : null">
         <div class="sec">
           <div class="sec-t">知识信息</div>
+          <div class="fg"><label class="fl"><span class="req">*</span> 知识来源</label><select class="fi" v-model="fm.knowledgeOrigin" :disabled="viewOnly"><option value="" disabled>请选择知识来源</option><option v-for="origin in knowledgeOrigins" :key="origin.value" :value="origin.value">{{origin.label}}</option></select></div>
           <div class="row" style="grid-template-columns:repeat(2,minmax(0,1fr))">
             <div class="fg"><label class="fl"><span class="req">*</span> 业务类型</label><select class="fi" v-model="fm.businessType" :disabled="viewOnly" @change="onKnowledgeBusinessTypeChange"><option value="" disabled>请选择业务类型</option><option v-for="businessType in businessTypes" :key="businessType.value" :value="businessType.value">{{businessType.label}}</option></select></div>
             <div class="fg"><label class="fl"><span class="req">*</span> 所属分类</label><select class="fi" v-model="fm.cat" :disabled="viewOnly || !fm.businessType" @change="onKnowledgeCategoryChange"><option value="" disabled>{{fm.businessType?'请选择分类':'请先选择业务类型'}}</option><option v-for="c in cats" :key="c.id" :value="c.id">{{c.name}}</option></select></div>
@@ -802,7 +811,7 @@
             <div v-for="match in visibleDedupMatches(fm.deduplicationMetadata)" :key="match.knowledge_id" style="display:flex;gap:10px;align-items:center;padding:9px 10px;border:1px solid #e5e6eb;border-radius:6px">
               <div style="min-width:0;flex:1">
                 <div style="font-size:12px;font-weight:600">{{match.knowledge_id}} · {{match.title}}</div>
-                <div style="margin-top:3px;font-size:11px;color:#86909c">{{businessTypeLabel(match.business_type)}} · {{dedupMatchDescription(match)}} · 综合 {{formatSimilarity(match.similarity)}}<span v-if="typeof match.title_similarity==='number'"> · 标题 {{formatSimilarity(match.title_similarity)}} · 正文 {{formatSimilarity(match.content_similarity)}}</span></div>
+                <div style="margin-top:3px;font-size:11px;color:#86909c">{{knowledgeOriginLabel(match.knowledge_origin)}} · {{businessTypeLabel(match.business_type)}} · {{dedupMatchDescription(match)}} · 综合 {{formatSimilarity(match.similarity)}}<span v-if="typeof match.title_similarity==='number'"> · 标题 {{formatSimilarity(match.title_similarity)}} · 正文 {{formatSimilarity(match.content_similarity)}}</span></div>
               </div>
               <button class="btn bd bsm" v-if="auditMode && can('knowledge:approve')" @click="openDedupCompare({matches:[match]}, dedupCandidateFromForm(), false)">对比详情</button>
               <span v-if="hasDedupFeedback(match.knowledge_id)" style="font-size:11px;color:#00b42a">已确认不同</span>
@@ -892,7 +901,7 @@
         <div class="review-gate" v-if="auditMode && dedupPublishBlocked()"><span class="review-badge review-status-pending">发布已锁定</span><span>{{dedupPublishBlockReason()}}</span></div>
         <button class="btn bd" @click="closeDlg" :disabled="saving">{{auditMode?'取消发布审核':(viewOnly?'关闭':'取消')}}</button>
         <button class="btn bp" v-if="auditMode && can('knowledge:approve')" @click="approveFromDetail" :disabled="saving || dedupPublishBlocked()" :title="dedupPublishBlocked() ? dedupPublishBlockReason() : ''">{{saving?'发布中...':'发布'}}</button>
-        <button class="btn bp" v-if="!viewOnly" @click="save" :disabled="saving || !fm.businessType || !fm.cat">{{saving?'保存中...':(eid?'保存修改':'保存并提交发布审核')}}</button>
+        <button class="btn bp" v-if="!viewOnly" @click="save" :disabled="saving || !fm.knowledgeOrigin || !fm.businessType || !fm.cat">{{saving?'保存中...':(eid?'保存修改':'保存并提交发布审核')}}</button>
       </div>
     </div>
   </div>
@@ -906,6 +915,7 @@
           <div style="border:1px solid #e5e6eb;border-radius:6px;padding:12px;min-width:0">
             <div style="font-size:12px;font-weight:600;margin-bottom:8px">新建知识</div>
             <div style="font-size:12px;margin-bottom:5px"><b>标题：</b>{{dedupCompare.candidate.title}}</div>
+            <div style="font-size:12px;margin-bottom:5px"><b>知识来源：</b>{{knowledgeOriginLabel(dedupCompare.candidate.knowledge_origin)}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>业务类型：</b>{{businessTypeLabel(dedupCompare.candidate.business_type)}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{categoryLabel(dedupCompare.candidate.category_id)}}</div>
             <div class="linkified-text" style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word" v-html="linkifyText(contentPreview(dedupCompare.candidate.content))"></div>
@@ -913,6 +923,7 @@
           <div style="border:1px solid #e5e6eb;border-radius:6px;padding:12px;min-width:0">
             <div style="font-size:12px;font-weight:600;margin-bottom:8px">命中的已有知识 · {{dedupCompare.match.knowledge_id}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>标题：</b>{{dedupCompare.target.title || dedupCompare.match.title}}</div>
+            <div style="font-size:12px;margin-bottom:5px"><b>知识来源：</b>{{knowledgeOriginLabel(dedupCompare.target.knowledge_origin || dedupCompare.match.knowledge_origin)}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>业务类型：</b>{{businessTypeLabel(dedupCompare.target.business_type || dedupCompare.match.business_type)}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{categoryLabel(dedupCompare.target.category_id || dedupCompare.match.category_id)}}</div>
             <div class="linkified-text" style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word" v-html="linkifyText(contentPreview(dedupCompare.target.content))"></div>
@@ -962,6 +973,10 @@ Vue.createApp({
       knowledgePagination: {page:1, size:20, total:0, jumpPage:''},
       cats: [],
       businessTypes: [],
+      knowledgeOrigins: [
+        {value:'headquarters_standard', label:'总部标准'},
+        {value:'business_accumulation', label:'业务沉淀'}
+      ],
       stats: {total:0, published:0, review:0, draft:0},
       dashboard: {pending:[], recentUpdates:[], updatedAt:'-'},
       candidateDashboard: {
@@ -982,7 +997,7 @@ Vue.createApp({
         dlg: false,
         current: null,
         form: {
-          title:'', business_type:'', category_id:'', contentText:'', originalContentText:'', recommended_reply:'',
+          title:'', knowledge_origin:'', business_type:'', category_id:'', contentText:'', originalContentText:'', recommended_reply:'',
           applicableCategories:[], brands:[], models:[],
           knowledge_value:'pending', usability:'pending', modification_notes:'', feedback:'',
           decision:'', error_type:'', training_eligible:'', notes:'', confirmDedupReview:false
@@ -994,7 +1009,8 @@ Vue.createApp({
       changeLogs: {item:null, entries:[]},
       knowledgeReviewSelection: [],
       batchApproving: false,
-      f: {status:'', business_type:'', category_id:'', applicableCategoryIds:[], brandIds:[], modelIds:[], kw:''},
+      f: {status:'', knowledge_origin:'', business_type:'', category_id:'', applicableCategoryIds:[], brandIds:[], modelIds:[], kw:''},
+      appliedKeyword: '',
       filterDrop: '',
       listFilterCategoryKw: '',
       listFilterBrandKw: '',
@@ -1021,8 +1037,8 @@ Vue.createApp({
       mhCaches: {},
       option: {applicableCategories:[], brands:[], models:[]},
       optErr: {applicableCategories:'', brands:'', models:''},
-      fm: {title:'', subtitles:[], businessType:'', cat:'', by:'', scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]},
-      dedupCompare: {open:false, loading:false, allowSubmit:false, feedbackEnabled:false, feedbackRecorded:false, reason:'', submitting:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', business_type:'', category_id:'', content:{blocks:[]}}, target:{}},
+      fm: {title:'', subtitles:[], knowledgeOrigin:'', businessType:'', cat:'', by:'', scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]},
+      dedupCompare: {open:false, loading:false, allowSubmit:false, feedbackEnabled:false, feedbackRecorded:false, reason:'', submitting:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', knowledge_origin:'', business_type:'', category_id:'', content:{blocks:[]}}, target:{}},
       full:{show:false, src:'', isVideo:false, error:false}
     }
   },
@@ -1046,6 +1062,7 @@ Vue.createApp({
           self.loadStats();
           self.loadCandidateReviewDashboard();
           self.loadSearchAnalysis();
+          self.loadKnowledgeOrigins();
           self.loadBusinessTypes();
           self.loadCats();
           self.loadImportTasks();
@@ -1138,6 +1155,7 @@ Vue.createApp({
       this.knowledgeReviewSelection = [];
     },
     searchKnowledge: function() {
+      this.appliedKeyword = String(this.f.kw || '').trim();
       this.resetKnowledgePagination();
       this.load();
     },
@@ -1236,7 +1254,10 @@ Vue.createApp({
     selectAllPendingKnowledge: function() {
       var self = this;
       if (self.batchApproving) return;
-      fetch(API + '/knowledge/review:selection', {headers:self.authHeaders()})
+      var params = self.knowledgeFilterParams();
+      params.delete('status');
+      var suffix = params.toString();
+      fetch(API + '/knowledge/review:selection' + (suffix ? '?' + suffix : ''), {headers:self.authHeaders()})
         .then(function(response) {
           return response.json().then(function(data) {
             if (!response.ok) throw new Error(data.detail || '加载待审核知识失败');
@@ -1505,6 +1526,7 @@ Vue.createApp({
     openCandidateReviews: function() {
       if (!this.can('knowledge:submit')) return;
       this.view = 'candidateReviews';
+      if (!this.knowledgeOrigins.length) this.loadKnowledgeOrigins();
       if (!this.businessTypes.length) this.loadBusinessTypes();
       this.loadCats();
       this.loadCandidateReviews();
@@ -1680,6 +1702,7 @@ Vue.createApp({
       this.candidateReviews.current = current;
       this.candidateReviews.form = {
         title: current.title || '',
+        knowledge_origin: current.knowledge_origin || '',
         business_type: current.business_type || '',
         category_id: current.category_id || '',
         contentText: contentText === '暂无正文' ? '' : contentText,
@@ -1734,10 +1757,12 @@ Vue.createApp({
       var form = self.candidateReviews.form;
       if (!current || self.reviewReadonly()) return;
       if (!form.title.trim()) { alert('请输入知识标题'); return; }
+      if (!form.knowledge_origin) { alert('请选择知识来源'); return; }
       if (!form.business_type) { alert('请选择业务类型'); return; }
       if (!form.category_id) { alert('请选择所属分类'); return; }
       var body = {
         title: form.title.trim(),
+        knowledge_origin: form.knowledge_origin,
         business_type: form.business_type,
         category_id: form.category_id,
         applicable_categories: form.applicableCategories,
@@ -1887,23 +1912,25 @@ Vue.createApp({
       var p = new URLSearchParams();
       if (this.currentUser.role === 'visitor') p.set('status', 'published');
       else if (this.f.status) p.set('status', this.f.status);
+      if (this.f.knowledge_origin) p.set('knowledge_origin', this.f.knowledge_origin);
       if (this.f.business_type) p.set('business_type', this.f.business_type);
       if (this.f.category_id) p.set('category_id', this.f.category_id);
       (this.f.applicableCategoryIds || []).forEach(function(value) { p.append('applicable_category_ids', value); });
       (this.f.brandIds || []).forEach(function(value) { p.append('brand_ids', value); });
       (this.f.modelIds || []).forEach(function(value) { p.append('model_ids', value); });
-      if (this.f.kw) p.set('keyword', this.f.kw);
+      if (this.appliedKeyword) p.set('keyword', this.appliedKeyword);
       return p;
     },
     hasKnowledgeExportFilter: function() {
       return !!(
         this.f.status
+        || this.f.knowledge_origin
         || this.f.business_type
         || this.f.category_id
         || (this.f.applicableCategoryIds || []).length
         || (this.f.brandIds || []).length
         || (this.f.modelIds || []).length
-        || String(this.f.kw || '').trim()
+        || String(this.appliedKeyword || '').trim()
       );
     },
     load: function() {
@@ -2031,6 +2058,7 @@ Vue.createApp({
         title:'标题',
         subtitles:'副标题',
         content:'正文内容',
+        knowledge_origin:'知识来源',
         business_type:'业务类型',
         category_id:'所属分类',
         status:'状态',
@@ -2048,6 +2076,38 @@ Vue.createApp({
       });
       if (found) return found.label;
       return {self_operated:'自营回收', aggregated:'聚合回收'}[key] || key || '-';
+    },
+    knowledgeOriginLabel: function(value) {
+      var key = String(value || '');
+      var found = (this.knowledgeOrigins || []).find(function(item) {
+        return String(item.value || '') === key;
+      });
+      if (found) return found.label;
+      return {
+        headquarters_standard:'总部标准',
+        business_accumulation:'业务沉淀'
+      }[key] || key || '-';
+    },
+    loadKnowledgeOrigins: function() {
+      var self = this;
+      fetch(API + '/knowledge-origins', {headers:self.authHeaders()})
+        .then(function(r) {
+          return r.json().then(function(data) {
+            if (!r.ok) throw new Error(data.detail || '加载知识来源失败');
+            return data;
+          });
+        })
+        .then(function(data) {
+          if (Array.isArray(data) && data.length) self.knowledgeOrigins = data;
+        })
+        .catch(function(error) {
+          console.error(error);
+          // 保留内置字典，保证后端短暂不可用时筛选和表单仍可操作。
+          self.knowledgeOrigins = [
+            {value:'headquarters_standard', label:'总部标准'},
+            {value:'business_accumulation', label:'业务沉淀'}
+          ];
+        });
     },
     loadBusinessTypes: function() {
       var self = this;
@@ -2607,10 +2667,11 @@ Vue.createApp({
       this.viewOnly = false;
       this.auditMode = false;
       this.eid = '';
-      this.fm = {title:'', subtitles:[], businessType:'', cat:'', by:(this.currentUser.username || ''), scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]};
+      this.fm = {title:'', subtitles:[], knowledgeOrigin:'', businessType:'', cat:'', by:(this.currentUser.username || ''), scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]};
       this.ns = '';
       this.relatedStandardItemInput = '';
       this.dlg = true;
+      if (!this.knowledgeOrigins.length) this.loadKnowledgeOrigins();
       if (!this.businessTypes.length) this.loadBusinessTypes();
       this.loadCats();
     },
@@ -2629,6 +2690,7 @@ Vue.createApp({
       this.viewOnly = !!readonly;
       if (!this.viewOnly) this.auditMode = false;
       if (!this.viewOnly && !this.can('knowledge:create')) { alert('没有编辑权限'); return; }
+      if (!this.knowledgeOrigins.length) this.loadKnowledgeOrigins();
       if (!this.businessTypes.length) this.loadBusinessTypes();
       var self = this;
       self.eid = r.id;
@@ -2686,6 +2748,7 @@ Vue.createApp({
       self.fm = {
         title: r.title,
         subtitles: r.subtitles ? r.subtitles.slice() : [],
+        knowledgeOrigin: r.knowledge_origin || '',
         businessType: r.business_type || '',
         cat: r.category_id || '',
         by: r.created_by,
@@ -2749,6 +2812,7 @@ Vue.createApp({
     dedupCandidateFromForm: function() {
       return {
         title: this.fm.title,
+        knowledge_origin: this.fm.knowledgeOrigin,
         business_type: this.fm.businessType,
         category_id: this.fm.cat,
         content: {blocks: this.buildContentBlocks()}
@@ -3104,6 +3168,7 @@ Vue.createApp({
       if (this.saving) return;
       if (!this.can('knowledge:create')) { alert('没有保存权限'); return; }
       if (!this.fm.title) { alert('请输入标题'); return; }
+      if (!this.fm.knowledgeOrigin) { alert('请选择知识来源'); return; }
       if (!this.fm.businessType) { alert('请选择业务类型'); return; }
       if (!this.fm.cat) { alert('请选择所属分类'); return; }
       if (this.showManhattanFields() && !(this.fm.applicableCategories || []).length) {
@@ -3168,6 +3233,7 @@ Vue.createApp({
           title: form.title,
           subtitles: form.subtitles.filter(function(s) { return s && s.trim(); }),
           content: {blocks:self.buildContentBlocks(form)},
+          knowledge_origin: form.knowledgeOrigin,
           business_type: form.businessType,
           category_id: form.cat,
           applicable_scenes: form.scenes,
@@ -3227,6 +3293,7 @@ Vue.createApp({
             error.detail.deduplication,
             body || {
               title: operation.form.title,
+              knowledge_origin: operation.form.knowledgeOrigin,
               business_type: operation.form.businessType,
               category_id: operation.form.cat,
               content: {blocks:self.buildContentBlocks(operation.form)}

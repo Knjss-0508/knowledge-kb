@@ -12,7 +12,17 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import engine
-from app.routes import auth, business_type, category, integration, knowledge, manhattan, media, tag
+from app.routes import (
+    auth,
+    business_type,
+    category,
+    integration,
+    knowledge,
+    knowledge_origin,
+    manhattan,
+    media,
+    tag,
+)
 from app.services.media_deletion import run_media_deletion_worker
 from app.services.knowledge_import_worker import run_knowledge_import_worker
 
@@ -72,6 +82,7 @@ async def add_security_headers(request, call_next):
 
 app.include_router(knowledge.router, prefix=settings.API_V1_PREFIX)
 app.include_router(business_type.router, prefix=settings.API_V1_PREFIX)
+app.include_router(knowledge_origin.router, prefix=settings.API_V1_PREFIX)
 app.include_router(category.router, prefix=settings.API_V1_PREFIX)
 app.include_router(tag.router, prefix=settings.API_V1_PREFIX)
 app.include_router(manhattan.router, prefix=settings.API_V1_PREFIX)

@@ -52,6 +52,7 @@ from app.schemas.integration import (
 from app.schemas.knowledge import (
     BusinessTypeOption,
     CategoryResponse,
+    KnowledgeOriginOption,
     TagDimensionResponse,
     TagValueResponse,
 )
@@ -64,7 +65,7 @@ from app.services.candidate_review import (
 router = APIRouter(prefix="/integration", tags=["自动化接入"])
 logger = logging.getLogger(__name__)
 
-TAXONOMY_VERSION = "automation-v4"
+TAXONOMY_VERSION = "automation-v5"
 STANDARD_SEARCH_MAX_RESULTS = 5
 
 
@@ -80,6 +81,7 @@ def _to_dedup_response(decision: DedupDecision) -> IntegrationDedupResponse:
                 knowledge_id=match.knowledge_id,
                 title=match.title,
                 status=match.status,
+                knowledge_origin=match.knowledge_origin,
                 business_type=match.business_type,
                 category_id=match.category_id,
                 match_type=match.match_type,
@@ -108,9 +110,23 @@ def _to_ingestion_response(item: IntegrationIngestion) -> IntegrationIngestionRe
     )
 
 
-def _candidate_review_item(item: IntegrationIngestion) -> CandidateReviewListItem:
-    payload = dict(item.candidate_payload or {})
+def _candidate_payload_with_taxonomy_defaults(
+    candidate_payload: dict | None,
+) -> tuple[dict, dict]:
+    """Normalize candidates created before the taxonomy fields became required."""
+
+    payload = dict(candidate_payload or {})
     knowledge = dict(payload.get("knowledge") or {})
+    knowledge.setdefault("knowledge_origin", "business_accumulation")
+    knowledge.setdefault("business_type", "self_operated")
+    payload["knowledge"] = knowledge
+    return payload, knowledge
+
+
+def _candidate_review_item(item: IntegrationIngestion) -> CandidateReviewListItem:
+    payload, knowledge = _candidate_payload_with_taxonomy_defaults(
+        item.candidate_payload
+    )
     selection = dict(payload.get("selection") or item.selection_metadata or {})
     review_metadata = dict(item.review_metadata or {})
     model_review = dict(payload.get("model_review") or review_metadata.get("model_review") or {})
@@ -139,7 +155,8 @@ def _candidate_review_item(item: IntegrationIngestion) -> CandidateReviewListIte
         title=str(knowledge.get("title") or ""),
         subtitles=list(knowledge.get("subtitles") or []),
         content=knowledge.get("content") or {"blocks": []},
-        business_type=str(knowledge.get("business_type") or "self_operated"),
+        knowledge_origin=str(knowledge["knowledge_origin"]),
+        business_type=str(knowledge["business_type"]),
         category_id=str(knowledge.get("category_id") or ""),
         applicable_scenes=list(knowledge.get("scene_tags") or []),
         applicable_categories=list(knowledge.get("applicable_categories") or []),
@@ -330,6 +347,11 @@ def _to_standard_search_candidate(
         score=normalized_score,
         final_score=normalized_score,
         status="published",
+        knowledge_origin=getattr(
+            item,
+            "knowledge_origin",
+            "business_accumulation",
+        ),
         business_type=item.business_type,
         category_id=item.category_id,
         level1_label=str(getattr(category, "name", "") or ""),
@@ -369,6 +391,7 @@ def search_standard_provider_knowledge(
             db,
             query=body.normalized_question,
             business_type=inferred_business_type,
+            knowledge_origin=body.knowledge_origin,
             top_k=top_k,
         )
     except EmbeddingServiceUnavailable as exc:
@@ -513,6 +536,16 @@ def get_taxonomy(
     dimensions = db.query(TagDimension).all()
     return IntegrationTaxonomyResponse(
         version=TAXONOMY_VERSION,
+        knowledge_origins=[
+            KnowledgeOriginOption(
+                value="headquarters_standard",
+                label="总部标准",
+            ),
+            KnowledgeOriginOption(
+                value="business_accumulation",
+                label="业务沉淀",
+            ),
+        ],
         business_types=[
             BusinessTypeOption(value="self_operated", label="自营回收"),
             BusinessTypeOption(value="aggregated", label="聚合回收"),
@@ -553,6 +586,7 @@ def check_knowledge_deduplication(
             subtitles=body.knowledge.subtitles,
             content=_normalize_content(body.knowledge.content),
             scene_tags=body.knowledge.scene_tags,
+            knowledge_origin=body.knowledge.knowledge_origin,
             business_type=body.knowledge.business_type,
             exclude_knowledge_id=body.exclude_knowledge_id,
         )
@@ -641,6 +675,7 @@ def submit_knowledge_candidates(
                 subtitles=candidate.knowledge.subtitles,
                 content=_normalize_content(candidate.knowledge.content),
                 scene_tags=candidate.knowledge.scene_tags,
+                knowledge_origin=candidate.knowledge.knowledge_origin,
                 business_type=candidate.knowledge.business_type,
             )
         except EmbeddingServiceUnavailable as exc:
@@ -704,6 +739,7 @@ def submit_knowledge_candidates(
             title=candidate.knowledge.title,
             subtitles=candidate.knowledge.subtitles,
             content=_normalize_content(candidate.knowledge.content),
+            knowledge_origin=candidate.knowledge.knowledge_origin,
             business_type=candidate.knowledge.business_type,
             category_id=candidate.knowledge.category_id,
             status=KnowledgeStatus.REVIEW,
@@ -980,8 +1016,9 @@ def update_candidate_review(
     if item.review_status == "submitted":
         raise HTTPException(status_code=409, detail="Submitted candidate cannot be edited.")
 
-    payload = dict(item.candidate_payload or {})
-    knowledge = dict(payload.get("knowledge") or {})
+    payload, knowledge = _candidate_payload_with_taxonomy_defaults(
+        item.candidate_payload
+    )
     updates = body.model_dump(exclude_unset=True)
     confirm_dedup_review = updates.pop("confirm_dedup_review", None)
     deduplication_sensitive_changed = False
@@ -989,6 +1026,7 @@ def update_candidate_review(
         ("title", "title"),
         ("subtitles", "subtitles"),
         ("content", "content"),
+        ("knowledge_origin", "knowledge_origin"),
         ("business_type", "business_type"),
         ("category_id", "category_id"),
         ("applicable_scenes", "scene_tags"),
@@ -1116,7 +1154,10 @@ def submit_candidate_reviews(
             continue
 
         try:
-            candidate = IntegrationCandidate.model_validate(item.candidate_payload or {})
+            normalized_payload, _ = _candidate_payload_with_taxonomy_defaults(
+                item.candidate_payload
+            )
+            candidate = IntegrationCandidate.model_validate(normalized_payload)
             category = (
                 db.query(Category)
                 .filter(Category.id == candidate.knowledge.category_id)
@@ -1131,6 +1172,7 @@ def submit_candidate_reviews(
                 subtitles=candidate.knowledge.subtitles,
                 content=content,
                 scene_tags=candidate.knowledge.scene_tags,
+                knowledge_origin=candidate.knowledge.knowledge_origin,
                 business_type=candidate.knowledge.business_type,
             )
             deduplication = _to_dedup_response(decision)
@@ -1174,6 +1216,7 @@ def submit_candidate_reviews(
                 title=candidate.knowledge.title,
                 subtitles=candidate.knowledge.subtitles,
                 content=content,
+                knowledge_origin=candidate.knowledge.knowledge_origin,
                 business_type=candidate.knowledge.business_type,
                 category_id=candidate.knowledge.category_id,
                 status=KnowledgeStatus.REVIEW,

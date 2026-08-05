@@ -25,9 +25,10 @@ EXPORT_HEADERS = [
     "主标题",
     "副标题",
     "知识内容",
+    "知识来源",
     "业务类型",
     "知识分类",
-    "知识来源",
+    "录入方式",
     "关联标准项",
     "适用范围",
     "生效状态",
@@ -51,11 +52,13 @@ EXPORT_SOURCE_LABELS = {
     "manual": "手工录入",
     "excel": "Excel 批量导入",
     "integration": "接口导入",
+    "automation": "接口导入",
     "candidate": "候选知识",
 }
 
 HEADER_ALIASES = {
     "title": {"标题", "知识标题", "主标题"},
+    "knowledge_origin": {"知识来源", "业务来源"},
     "business_type": {"业务类型", "所属业务类型"},
     "category": {"知识分类", "所属分类", "分类", "知识分类ID", "分类ID"},
     "content": {"正文", "知识正文", "知识内容", "内容"},
@@ -81,6 +84,8 @@ EXPORT_HEADER_IMPORT_FIELDS = {
     "知识内容": "content",
     "业务类型": "business_type",
     "知识分类": "category",
+    "知识来源": "knowledge_origin",
+    "业务来源": "knowledge_origin",
     "关联标准项": "related_standard_items",
     "适用范围": "scope",
     "生效状态": "source_status",
@@ -101,6 +106,17 @@ BUSINESS_TYPE_VALUE_ALIASES = {
     "聚合回收": "aggregated",
     "self_operated": "self_operated",
     "aggregated": "aggregated",
+}
+
+KNOWLEDGE_ORIGIN_LABELS = {
+    "headquarters_standard": "总部标准",
+    "business_accumulation": "业务沉淀",
+}
+KNOWLEDGE_ORIGIN_VALUE_ALIASES = {
+    "总部标准": "headquarters_standard",
+    "业务沉淀": "business_accumulation",
+    "headquarters_standard": "headquarters_standard",
+    "business_accumulation": "business_accumulation",
 }
 
 VALID_SOURCE_STATUSES = {"生效中", "待审核", "已禁用"}
@@ -129,6 +145,7 @@ class KnowledgeExcelRowError(ValueError):
 class ExcelKnowledgeRow:
     row_number: int
     title: str
+    knowledge_origin: str = ""
     business_type: str = ""
     category_id: str = ""
     content: Any = ""
@@ -322,6 +339,24 @@ def _resolve_business_type(value) -> str:
     )
 
 
+def _resolve_knowledge_origin(value) -> str:
+    text = _cell_text(value)
+    if not text:
+        raise KnowledgeExcelRowError(
+            "KNOWLEDGE_ORIGIN_REQUIRED",
+            "知识来源不能为空。",
+        )
+    normalized = text.lower()
+    knowledge_origin = KNOWLEDGE_ORIGIN_VALUE_ALIASES.get(normalized)
+    if knowledge_origin:
+        return knowledge_origin
+    raise KnowledgeExcelRowError(
+        "KNOWLEDGE_ORIGIN_INVALID",
+        f"知识来源“{text}”不受支持，仅允许总部标准、业务沉淀、"
+        "headquarters_standard 或 business_accumulation。",
+    )
+
+
 def _header_indexes(header_row) -> dict[str, int]:
     normalized = {
         _normalize_header(value): index
@@ -347,6 +382,8 @@ def _header_indexes(header_row) -> dict[str, int]:
         )
     )
     missing = []
+    if "knowledge_origin" not in indexes:
+        missing.append("知识来源")
     if "business_type" not in indexes:
         missing.append("业务类型")
     if not is_source_deprecation_sheet:
@@ -434,6 +471,7 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
             )
 
         title = _cell_text(value_at(values, "title"))
+        knowledge_origin = _cell_text(value_at(values, "knowledge_origin"))
         business_type = _cell_text(value_at(values, "business_type"))
         source_status = _cell_text(value_at(values, "source_status"))
         source_scope = _cell_text(value_at(values, "scope"))
@@ -451,6 +489,7 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
             source_knowledge_key=source_knowledge_key,
         )
         try:
+            result.knowledge_origin = _resolve_knowledge_origin(knowledge_origin)
             result.business_type = _resolve_business_type(business_type)
             if "source_status" in indexes:
                 if not source_status:
@@ -627,6 +666,13 @@ def _export_business_type(value: Any) -> str:
     return BUSINESS_TYPE_LABELS.get(canonical, raw)
 
 
+def _export_knowledge_origin(value: Any) -> str:
+    raw = _export_cell_text(getattr(value, "value", value))
+    normalized = raw.lower()
+    canonical = KNOWLEDGE_ORIGIN_VALUE_ALIASES.get(normalized, normalized)
+    return KNOWLEDGE_ORIGIN_LABELS.get(canonical, raw)
+
+
 def _export_source_field(source_fields: Any, header: str, fallback: str) -> str:
     """导出时优先使用上传时保留的原始字段，旧数据则使用系统字段兜底。"""
     if not isinstance(source_fields, dict):
@@ -665,6 +711,13 @@ def build_knowledge_export_workbook(items) -> bytes:
                 "业务类型",
                 "",
             )
+        knowledge_origin = getattr(item, "knowledge_origin", None)
+        if not _export_cell_text(knowledge_origin):
+            knowledge_origin = _export_source_field(
+                source_fields,
+                "知识来源",
+                "",
+            )
         sheet.append(
             [
                 _export_cell_text(getattr(item, "id", None)),
@@ -674,9 +727,10 @@ def build_knowledge_export_workbook(items) -> bytes:
                 _export_source_field(source_fields, "主标题", _export_cell_text(getattr(item, "title", None))),
                 _export_source_field(source_fields, "副标题", _export_join(getattr(item, "subtitles", None), separator="\n")),
                 _export_source_field(source_fields, "知识内容", _export_content(getattr(item, "content", None))),
+                _export_knowledge_origin(knowledge_origin),
                 _export_business_type(business_type),
                 _export_source_field(source_fields, "知识分类", category_name),
-                _export_source_field(source_fields, "知识来源", _export_source(getattr(item, "source", None))),
+                _export_source(getattr(item, "source", None)),
                 _export_source_field(source_fields, "关联标准项", _export_join(getattr(item, "related_standard_items", None)),),
                 _export_source_field(source_fields, "适用范围", _export_scope(item)),
                 _export_source_field(source_fields, "生效状态", _export_status(getattr(item, "status", None))),
@@ -701,7 +755,7 @@ def build_knowledge_export_workbook(items) -> bytes:
     body_alignment = Alignment(vertical="top", wrap_text=True)
 
     sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:T{max(sheet.max_row, 1)}"
+    sheet.auto_filter.ref = f"A1:U{max(sheet.max_row, 1)}"
     sheet.row_dimensions[1].height = 30
     for cell in sheet[1]:
         cell.fill = header_fill
@@ -723,16 +777,17 @@ def build_knowledge_export_workbook(items) -> bytes:
         "H": 16,
         "I": 16,
         "J": 18,
-        "K": 28,
-        "L": 42,
-        "M": 14,
-        "N": 16,
+        "K": 18,
+        "L": 28,
+        "M": 42,
+        "N": 14,
         "O": 16,
         "P": 16,
         "Q": 16,
-        "R": 22,
-        "S": 28,
+        "R": 16,
+        "S": 22,
         "T": 28,
+        "U": 28,
     }
     for column, width in column_widths.items():
         sheet.column_dimensions[column].width = width
@@ -746,12 +801,14 @@ def build_knowledge_import_template(categories) -> bytes:
     workbook = Workbook()
     import_sheet = workbook.active
     import_sheet.title = IMPORT_SHEET_NAME
+    knowledge_origin_sheet = workbook.create_sheet("知识来源字典")
     business_type_sheet = workbook.create_sheet("业务类型字典")
     dictionary_sheet = workbook.create_sheet("分类字典")
     instructions_sheet = workbook.create_sheet("填写说明")
 
     headers = [
         "标题（必填）",
+        "知识来源（必填）",
         "业务类型（必填）",
         "知识分类（必填）",
         "正文（必填）",
@@ -764,43 +821,63 @@ def build_knowledge_import_template(categories) -> bytes:
     ]
     import_sheet.append(headers)
     import_sheet.freeze_panes = "A2"
-    import_sheet.auto_filter.ref = "A1:J1"
+    import_sheet.auto_filter.ref = "A1:K1"
     import_sheet.row_dimensions[1].height = 28
     import_sheet.column_dimensions["A"].width = 32
     import_sheet.column_dimensions["B"].width = 22
-    import_sheet.column_dimensions["C"].width = 28
-    import_sheet.column_dimensions["D"].width = 70
-    for column in ("E", "F", "G", "H", "I", "J"):
+    import_sheet.column_dimensions["C"].width = 22
+    import_sheet.column_dimensions["D"].width = 28
+    import_sheet.column_dimensions["E"].width = 70
+    for column in ("F", "G", "H", "I", "J", "K"):
         import_sheet.column_dimensions[column].width = 24
 
     required_fill = PatternFill("solid", fgColor="0F766E")
     optional_fill = PatternFill("solid", fgColor="475569")
     for index, cell in enumerate(import_sheet[1], start=1):
-        cell.fill = required_fill if index <= 4 else optional_fill
+        cell.fill = required_fill if index <= 5 else optional_fill
         cell.font = Font(color="FFFFFF", bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
     import_sheet["A1"].comment = Comment("必填，最多 256 个字符。", "知识库")
     import_sheet["B1"].comment = Comment(
+        "必填。可填写总部标准、业务沉淀，或对应代码 "
+        "headquarters_standard、business_accumulation。",
+        "知识库",
+    )
+    import_sheet["C1"].comment = Comment(
         "必填。可填写自营回收、聚合回收，或对应代码 "
         "self_operated、aggregated。",
         "知识库",
     )
-    import_sheet["C1"].comment = Comment(
+    import_sheet["D1"].comment = Comment(
         "必填。优先填写分类ID，也支持唯一分类名称或完整分类路径。",
         "知识库",
     )
-    import_sheet["D1"].comment = Comment(
+    import_sheet["E1"].comment = Comment(
         "必填。仅处理插件自动回填的 [img:https://...] 或 "
         "[video:https://...] 标记；其他 URL 保持原文。",
         "知识库",
     )
-    import_sheet["E1"].comment = Comment("多项请使用中文分号“；”分隔。", "知识库")
-    for cell_ref in ("F1", "G1", "H1", "I1", "J1"):
+    import_sheet["F1"].comment = Comment("多项请使用中文分号“；”分隔。", "知识库")
+    for cell_ref in ("G1", "H1", "I1", "J1", "K1"):
         import_sheet[cell_ref].comment = Comment(
             "多项请使用中文分号“；”分隔。",
             "知识库",
         )
+
+    knowledge_origin_sheet.append(["知识来源代码", "知识来源名称"])
+    for code, label in KNOWLEDGE_ORIGIN_LABELS.items():
+        knowledge_origin_sheet.append([code, label])
+    knowledge_origin_sheet.freeze_panes = "A2"
+    knowledge_origin_sheet.auto_filter.ref = (
+        f"A1:B{max(knowledge_origin_sheet.max_row, 1)}"
+    )
+    knowledge_origin_sheet.column_dimensions["A"].width = 28
+    knowledge_origin_sheet.column_dimensions["B"].width = 24
+    for cell in knowledge_origin_sheet[1]:
+        cell.fill = required_fill
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(horizontal="center")
 
     business_type_sheet.append(["业务类型代码", "业务类型名称"])
     for code, label in BUSINESS_TYPE_LABELS.items():
@@ -844,7 +921,13 @@ def build_knowledge_import_template(categories) -> bytes:
         cell.alignment = Alignment(horizontal="center")
 
     instructions = [
-        ("必填列", "标题、业务类型、知识分类、正文。"),
+        ("必填列", "标题、知识来源、业务类型、知识分类、正文。"),
+        (
+            "知识来源",
+            "从“知识来源字典”复制中文名称或代码；"
+            "仅允许总部标准、业务沉淀、headquarters_standard、"
+            "business_accumulation。",
+        ),
         (
             "业务类型",
             "从“业务类型字典”复制中文名称或代码；"
@@ -855,6 +938,7 @@ def build_knowledge_import_template(categories) -> bytes:
         (
             "兼容格式",
             "支持“知识库主表”的主标题、知识内容、适用范围和生效状态列；"
+            "主表也必须提供知识来源（兼容列名“业务来源”）；"
             "存在生效状态列时：生效中直接发布，待审核进入审核，"
             "已禁用按知识键、主题键或记录ID同步废弃原知识。",
         ),
@@ -877,7 +961,7 @@ def build_knowledge_import_template(categories) -> bytes:
         ("单次上限", f"每个文件最多 {MAX_IMPORT_ROWS} 条、文件最大 5MB，仅支持 .xlsx。"),
         (
             "示例",
-            "标题：设备无法开机；业务类型：自营回收；"
+            "标题：设备无法开机；知识来源：总部标准；业务类型：自营回收；"
             "知识分类：cat-qc-process；正文：先检查电量，再长按电源键。",
         ),
     ]

@@ -20,10 +20,12 @@ def _knowledge(
     index: int,
     *,
     status: KnowledgeStatus = KnowledgeStatus.PUBLISHED,
+    knowledge_origin: str = "business_accumulation",
     business_type: str = "self_operated",
 ):
     return SimpleNamespace(
         id=f"A-{index:05d}",
+        knowledge_origin=knowledge_origin,
         business_type=business_type,
         title=f"知识 {index}",
         subtitles=[f"问法 {index}", f"问法 {index}"],
@@ -51,6 +53,7 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         request = IntegrationStandardSearchRequest.model_validate(
             {
                 "normalizedQuestion": "  屏幕漏光怎么判断  ",
+                "knowledgeOrigin": "business_accumulation",
                 "businessType": "aggregated",
                 "productType": "手机",
                 "model": "iPhone 17e",
@@ -63,18 +66,23 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         )
 
         self.assertEqual(request.normalized_question, "屏幕漏光怎么判断")
+        self.assertEqual(request.knowledge_origin, "business_accumulation")
         self.assertEqual(request.business_type, "aggregated")
         self.assertEqual(request.part_terms, ["屏幕"])
         self.assertEqual(request.limit, 8)
 
         with self.assertRaises(ValidationError):
             IntegrationStandardSearchRequest.model_validate(
-                {"normalizedQuestion": "   "}
+                {
+                    "normalizedQuestion": "   ",
+                    "knowledgeOrigin": "business_accumulation",
+                }
             )
         with self.assertRaises(ValidationError):
             IntegrationStandardSearchRequest.model_validate(
                 {
                     "normalizedQuestion": "屏幕",
+                    "knowledgeOrigin": "business_accumulation",
                     "partTerms": ["项目"] * 101,
                 }
             )
@@ -86,7 +94,11 @@ class IntegrationStandardSearchTests(unittest.TestCase):
             for index in range(1, 8)
         ]
         body = IntegrationStandardSearchRequest.model_validate(
-            {"normalizedQuestion": "屏幕漏光", "limit": 8}
+            {
+                "normalizedQuestion": "屏幕漏光",
+                "knowledgeOrigin": "business_accumulation",
+                "limit": 8,
+            }
         )
 
         response = search_standard_provider_knowledge(body, MagicMock(), None)
@@ -94,6 +106,10 @@ class IntegrationStandardSearchTests(unittest.TestCase):
 
         search.assert_called_once()
         self.assertEqual(search.call_args.kwargs["query"], "屏幕漏光")
+        self.assertEqual(
+            search.call_args.kwargs["knowledge_origin"],
+            "business_accumulation",
+        )
         self.assertEqual(search.call_args.kwargs["business_type"], "self_operated")
         self.assertEqual(search.call_args.kwargs["top_k"], 5)
         self.assertEqual(len(payload["candidates"]), 5)
@@ -103,6 +119,7 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         )
         first = payload["candidates"][0]
         self.assertEqual(first["finalScore"], first["score"])
+        self.assertEqual(first["knowledgeOrigin"], "business_accumulation")
         self.assertEqual(first["businessType"], "self_operated")
         self.assertEqual(first["level1Label"], "质检标准")
         self.assertEqual(first["productType"], "phone")
@@ -118,6 +135,7 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         body = IntegrationStandardSearchRequest.model_validate(
             {
                 "normalizedQuestion": "聚合回收屏幕标准",
+                "knowledgeOrigin": "business_accumulation",
                 "businessType": "self_operated",
                 "productType": "聚合回收",
             }
@@ -135,14 +153,17 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         requests = [
             {
                 "normalizedQuestion": "屏幕标准",
+                "knowledgeOrigin": "business_accumulation",
                 "productType": "聚合回收",
             },
             {
                 "normalizedQuestion": "屏幕标准",
+                "knowledgeOrigin": "business_accumulation",
                 "orderInfo": {"category": "聚合回收"},
             },
             {
                 "normalizedQuestion": "屏幕标准",
+                "knowledgeOrigin": "business_accumulation",
                 "productType": "手机",
                 "orderInfo": {"category": "聚合回收"},
             },
@@ -166,7 +187,10 @@ class IntegrationStandardSearchTests(unittest.TestCase):
             (_knowledge(3, status=KnowledgeStatus.DEPRECATED), 0.89),
         ]
         body = IntegrationStandardSearchRequest.model_validate(
-            {"normalizedQuestion": "屏幕漏光"}
+            {
+                "normalizedQuestion": "屏幕漏光",
+                "knowledgeOrigin": "business_accumulation",
+            }
         )
 
         response = search_standard_provider_knowledge(body, MagicMock(), None)
@@ -176,7 +200,10 @@ class IntegrationStandardSearchTests(unittest.TestCase):
     @patch("app.routes.integration.search_embeddings", return_value=[])
     def test_no_match_returns_successful_empty_envelope(self, _search):
         body = IntegrationStandardSearchRequest.model_validate(
-            {"normalizedQuestion": "不存在的知识"}
+            {
+                "normalizedQuestion": "不存在的知识",
+                "knowledgeOrigin": "business_accumulation",
+            }
         )
 
         response = search_standard_provider_knowledge(body, MagicMock(), None)
@@ -190,7 +217,10 @@ class IntegrationStandardSearchTests(unittest.TestCase):
     )
     def test_embedding_unavailable_returns_503(self, _search):
         body = IntegrationStandardSearchRequest.model_validate(
-            {"normalizedQuestion": "屏幕漏光"}
+            {
+                "normalizedQuestion": "屏幕漏光",
+                "knowledgeOrigin": "business_accumulation",
+            }
         )
 
         with self.assertRaises(HTTPException) as raised:
@@ -287,6 +317,7 @@ class IntegrationStandardSearchTests(unittest.TestCase):
                 headers={"X-Integration-Key": "test-retrieval-key"},
                 json={
                     "normalizedQuestion": "屏幕漏光",
+                    "knowledgeOrigin": "business_accumulation",
                     "businessType": "aggregated",
                     "productType": "手机",
                     "model": "iPhone 17e",
@@ -304,6 +335,10 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         self.assertIn("retrievalMode", payload)
         self.assertIn("knowledgeVersion", payload)
         self.assertIn("finalScore", payload["candidates"][0])
+        self.assertEqual(
+            payload["candidates"][0]["knowledgeOrigin"],
+            "business_accumulation",
+        )
         self.assertEqual(payload["candidates"][0]["businessType"], "self_operated")
         self.assertNotIn("retrieval_mode", payload)
         self.assertNotIn("final_score", payload["candidates"][0])
@@ -375,7 +410,20 @@ class IntegrationStandardSearchTests(unittest.TestCase):
             )
             self.assertEqual(upstream_key_taxonomy.status_code, 200)
             taxonomy = upstream_key_taxonomy.json()
-            self.assertEqual(taxonomy["version"], "automation-v4")
+            self.assertEqual(taxonomy["version"], "automation-v5")
+            self.assertEqual(
+                taxonomy["knowledge_origins"],
+                [
+                    {
+                        "value": "headquarters_standard",
+                        "label": "总部标准",
+                    },
+                    {
+                        "value": "business_accumulation",
+                        "label": "业务沉淀",
+                    },
+                ],
+            )
             self.assertEqual(
                 taxonomy["business_types"],
                 [

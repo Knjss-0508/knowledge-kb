@@ -139,6 +139,8 @@ class KnowledgeDedupTextTests(unittest.TestCase):
             title="  按键颜色不符是什么意思  ",
             content={"blocks": [{"type": "text", "value": "请按标准核验颜色。"}]},
             status=SimpleNamespace(value="published"),
+            knowledge_origin="business_accumulation",
+            business_type="self_operated",
             category_id="cat-qc-standard",
         )
         db = self._title_match_session([existing])
@@ -150,6 +152,8 @@ class KnowledgeDedupTextTests(unittest.TestCase):
                 subtitles=[],
                 content={"blocks": [{"type": "text", "value": "请 按标准核验颜色。"}]},
                 scene_tags=[],
+                knowledge_origin="business_accumulation",
+                business_type="self_operated",
             )
 
         self.assertEqual(decision.action, "block_duplicate")
@@ -162,6 +166,8 @@ class KnowledgeDedupTextTests(unittest.TestCase):
             title="按键颜色不符是什么意思",
             content={"blocks": [{"type": "text", "value": "请按标准核验颜色。"}]},
             status=SimpleNamespace(value="published"),
+            knowledge_origin="business_accumulation",
+            business_type="self_operated",
             category_id="cat-qc-standard",
         )
         db = self._title_match_session([existing])
@@ -176,13 +182,15 @@ class KnowledgeDedupTextTests(unittest.TestCase):
                 subtitles=[],
                 content={"blocks": [{"type": "text", "value": "1"}]},
                 scene_tags=[],
+                knowledge_origin="business_accumulation",
+                business_type="self_operated",
             )
 
         self.assertEqual(decision.action, "review_duplicate")
         self.assertEqual(decision.matches[0].match_type, "title_exact")
         self.assertEqual(decision.matches[0].similarity, 1.0)
 
-    def test_exact_duplicate_is_blocked_only_inside_the_same_business_type(self):
+    def test_exact_duplicate_is_blocked_only_inside_same_origin_and_business(self):
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Category.__table__.create(engine)
         Knowledge.__table__.create(engine)
@@ -192,6 +200,23 @@ class KnowledgeDedupTextTests(unittest.TestCase):
             db.add(
                 Knowledge(
                     id="A-00001",
+                    knowledge_origin="business_accumulation",
+                    business_type="self_operated",
+                    title="按键颜色不符是什么意思",
+                    content={
+                        "blocks": [
+                            {"type": "text", "value": "测试内容"}
+                        ]
+                    },
+                    category_id="cat-qc-standard",
+                    status=KnowledgeStatus.PUBLISHED,
+                    created_by="tester",
+                )
+            )
+            db.add(
+                Knowledge(
+                    id="A-00002",
+                    knowledge_origin="headquarters_standard",
                     business_type="self_operated",
                     title="按键颜色不符是什么意思",
                     content={
@@ -216,6 +241,7 @@ class KnowledgeDedupTextTests(unittest.TestCase):
                     ]
                 },
                 scene_tags=[],
+                knowledge_origin="business_accumulation",
                 business_type="self_operated",
             )
             with patch(
@@ -232,13 +258,32 @@ class KnowledgeDedupTextTests(unittest.TestCase):
                         ]
                     },
                     scene_tags=[],
+                    knowledge_origin="business_accumulation",
                     business_type="aggregated",
                 )
+            same_business_other_origin = check_duplicate(
+                db,
+                title="按键颜色不符是什么意思",
+                subtitles=[],
+                content={
+                    "blocks": [
+                        {"type": "text", "value": "测试内容"}
+                    ]
+                },
+                scene_tags=[],
+                knowledge_origin="headquarters_standard",
+                business_type="self_operated",
+            )
 
         self.assertEqual(same_business.action, "block_duplicate")
         self.assertEqual(same_business.matches[0].business_type, "self_operated")
         self.assertEqual(other_business.action, "create")
         self.assertEqual(other_business.matches, [])
+        self.assertEqual(same_business_other_origin.action, "block_duplicate")
+        self.assertEqual(
+            same_business_other_origin.matches[0].knowledge_origin,
+            "headquarters_standard",
+        )
 
 
 class QueryEmbeddingCacheTests(unittest.TestCase):

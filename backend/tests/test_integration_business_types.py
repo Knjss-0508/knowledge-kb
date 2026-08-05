@@ -19,7 +19,11 @@ from app.schemas.integration import (
 from app.services.knowledge_dedup import DedupDecision, DedupMatch
 
 
-def _candidate_payload(*, business_type: str = "aggregated") -> dict:
+def _candidate_payload(
+    *,
+    knowledge_origin: str = "business_accumulation",
+    business_type: str = "aggregated",
+) -> dict:
     return {
         "event_id": "event-business-1",
         "idempotency_key": "business-1",
@@ -40,6 +44,7 @@ def _candidate_payload(*, business_type: str = "aggregated") -> dict:
         "knowledge": {
             "title": "聚合回收屏幕质检",
             "content": "检查屏幕显示是否正常。",
+            "knowledge_origin": knowledge_origin,
             "business_type": business_type,
             "category_id": "cat-qc-standard",
         },
@@ -54,6 +59,7 @@ def _create_decision(*, with_match: bool = False) -> DedupDecision:
                 knowledge_id="A-00001",
                 title="聚合回收屏幕质检",
                 status="published",
+                knowledge_origin="business_accumulation",
                 business_type="aggregated",
                 category_id="cat-qc-standard",
                 match_type="semantic",
@@ -85,8 +91,16 @@ class IntegrationBusinessTypeTests(unittest.TestCase):
         response = check_knowledge_deduplication(request, db, None)
 
         self.assertEqual(
+            check_duplicate.call_args.kwargs["knowledge_origin"],
+            "business_accumulation",
+        )
+        self.assertEqual(
             check_duplicate.call_args.kwargs["business_type"],
             "aggregated",
+        )
+        self.assertEqual(
+            response.matches[0].knowledge_origin,
+            "business_accumulation",
         )
         self.assertEqual(response.matches[0].business_type, "aggregated")
         db.commit.assert_called_once()
@@ -122,6 +136,10 @@ class IntegrationBusinessTypeTests(unittest.TestCase):
 
         self.assertEqual(response.accepted, 1)
         self.assertEqual(
+            check_duplicate.call_args.kwargs["knowledge_origin"],
+            "business_accumulation",
+        )
+        self.assertEqual(
             check_duplicate.call_args.kwargs["business_type"],
             "aggregated",
         )
@@ -131,10 +149,11 @@ class IntegrationBusinessTypeTests(unittest.TestCase):
             if isinstance(call.args[0], Knowledge)
         ]
         self.assertEqual(len(created), 1)
+        self.assertEqual(created[0].knowledge_origin, "business_accumulation")
         self.assertEqual(created[0].business_type, "aggregated")
         ensure_search_embeddings.assert_called_once_with(db, created[0])
 
-    def test_candidate_review_item_returns_business_type(self):
+    def test_candidate_review_item_returns_origin_and_business_type(self):
         now = datetime.now(UTC)
         payload = _candidate_payload()
         item = SimpleNamespace(
@@ -160,6 +179,7 @@ class IntegrationBusinessTypeTests(unittest.TestCase):
 
         response = _candidate_review_item(item)
 
+        self.assertEqual(response.knowledge_origin, "business_accumulation")
         self.assertEqual(response.business_type, "aggregated")
 
     @patch("app.routes.integration.ensure_search_embeddings")
@@ -206,6 +226,10 @@ class IntegrationBusinessTypeTests(unittest.TestCase):
 
         self.assertEqual(response.submitted, 1)
         self.assertEqual(
+            check_duplicate.call_args.kwargs["knowledge_origin"],
+            "business_accumulation",
+        )
+        self.assertEqual(
             check_duplicate.call_args.kwargs["business_type"],
             "aggregated",
         )
@@ -215,6 +239,7 @@ class IntegrationBusinessTypeTests(unittest.TestCase):
             if isinstance(call.args[0], Knowledge)
         ]
         self.assertEqual(len(created), 1)
+        self.assertEqual(created[0].knowledge_origin, "business_accumulation")
         self.assertEqual(created[0].business_type, "aggregated")
         self.assertEqual(item.review_status, "submitted")
         ensure_search_embeddings.assert_called_once_with(db, created[0])

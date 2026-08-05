@@ -130,6 +130,11 @@ bash scripts/deploy.sh --database-mode local --runtime auto
 
 服务器已经完成首次部署后，日常发布属于增量更新，不再重复执行整套部署脚本。普通前端、后端代码更新只更新 `backend`：
 
+迁移 `20260805_01` 会为旧知识补充“知识来源”。非空旧库必须先在 `.env`
+中明确设置 `KNOWLEDGE_ORIGIN_BACKFILL=headquarters_standard` 或
+`KNOWLEDGE_ORIGIN_BACKFILL=business_accumulation`；迁移会自动检测旧数据，
+未配置时停止，避免静默归错来源。空库无需设置。
+
 ```bash
 cd /www/wwwroot/knowledge-kb
 git status --short --branch

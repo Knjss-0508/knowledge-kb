@@ -1,5 +1,5 @@
 -- knowledge-kb 空白完整库（云平台网页 SQL 控制台版）
--- 生成日期：2026-07-24
+-- 生成日期：2026-08-05
 -- 文件自带事务；执行环境需支持一次运行整份脚本。
 -- 需要 PostgreSQL 16 兼容数据库，并将 pgvector 安装在 public schema。
 
@@ -150,6 +150,38 @@ CREATE TABLE public.knowledge_embeddings (
 
 
 --
+-- Name: knowledge_import_tasks; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.knowledge_import_tasks (
+    id character varying(64) NOT NULL,
+    created_by character varying(128) NOT NULL,
+    original_filename character varying(256) NOT NULL,
+    file_size integer DEFAULT 0 NOT NULL,
+    file_sha256 character varying(64) NOT NULL,
+    file_content bytea NOT NULL,
+    status character varying(32) DEFAULT 'queued'::character varying NOT NULL,
+    total_rows integer DEFAULT 0 NOT NULL,
+    processed_rows integer DEFAULT 0 NOT NULL,
+    imported integer DEFAULT 0 NOT NULL,
+    review_required integer DEFAULT 0 NOT NULL,
+    pending_review integer DEFAULT 0 NOT NULL,
+    deprecated integer DEFAULT 0 NOT NULL,
+    failed integer DEFAULT 0 NOT NULL,
+    results json DEFAULT '[]'::json NOT NULL,
+    error_message text DEFAULT ''::text NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    next_attempt_at timestamp without time zone DEFAULT now() NOT NULL,
+    lease_expires_at timestamp without time zone,
+    started_at timestamp without time zone,
+    completed_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    CONSTRAINT ck_knowledge_import_task_status CHECK (((status)::text = ANY ((ARRAY['queued'::character varying, 'running'::character varying, 'completed'::character varying, 'completed_with_errors'::character varying, 'failed'::character varying])::text[])))
+);
+
+
+--
 -- Name: knowledge_item_number_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -183,7 +215,16 @@ CREATE TABLE public.knowledge_items (
     created_by character varying(128) NOT NULL,
     updated_by character varying(128),
     updated_at timestamp without time zone,
-    created_at timestamp without time zone
+    created_at timestamp without time zone,
+    related_standard_items json NOT NULL,
+    source_topic_key character varying(512),
+    source_record_id character varying(256),
+    source_knowledge_key character varying(512),
+    source_fields json NOT NULL,
+    business_type character varying(32) NOT NULL,
+    knowledge_origin character varying(32) NOT NULL,
+    CONSTRAINT ck_knowledge_items_business_type CHECK (((business_type)::text = ANY ((ARRAY['self_operated'::character varying, 'aggregated'::character varying])::text[]))),
+    CONSTRAINT ck_knowledge_items_knowledge_origin CHECK (((knowledge_origin)::text = ANY ((ARRAY['headquarters_standard'::character varying, 'business_accumulation'::character varying])::text[])))
 );
 
 
@@ -411,6 +452,14 @@ ALTER TABLE ONLY public.knowledge_deduplication_feedback
 
 ALTER TABLE ONLY public.knowledge_embeddings
     ADD CONSTRAINT knowledge_embeddings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: knowledge_import_tasks knowledge_import_tasks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.knowledge_import_tasks
+    ADD CONSTRAINT knowledge_import_tasks_pkey PRIMARY KEY (id);
 
 
 --
@@ -702,6 +751,48 @@ CREATE INDEX ix_knowledge_embeddings_vector_hnsw ON public.knowledge_embeddings 
 
 
 --
+-- Name: ix_knowledge_import_tasks_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_knowledge_import_tasks_created_at ON public.knowledge_import_tasks USING btree (created_at);
+
+
+--
+-- Name: ix_knowledge_import_tasks_created_by; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_knowledge_import_tasks_created_by ON public.knowledge_import_tasks USING btree (created_by);
+
+
+--
+-- Name: ix_knowledge_import_tasks_file_sha256; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_knowledge_import_tasks_file_sha256 ON public.knowledge_import_tasks USING btree (file_sha256);
+
+
+--
+-- Name: ix_knowledge_import_tasks_lease_expires_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_knowledge_import_tasks_lease_expires_at ON public.knowledge_import_tasks USING btree (lease_expires_at);
+
+
+--
+-- Name: ix_knowledge_import_tasks_next_attempt_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_knowledge_import_tasks_next_attempt_at ON public.knowledge_import_tasks USING btree (next_attempt_at);
+
+
+--
+-- Name: ix_knowledge_import_tasks_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_knowledge_import_tasks_status ON public.knowledge_import_tasks USING btree (status);
+
+
+--
 -- Name: ix_knowledge_items_applicable_brands_gin; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -723,10 +814,45 @@ CREATE INDEX ix_knowledge_items_applicable_models_gin ON public.knowledge_items 
 
 
 --
+-- Name: ix_knowledge_items_business_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_knowledge_items_business_type ON public.knowledge_items USING btree (business_type);
+
+
+--
 -- Name: ix_knowledge_items_category_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX ix_knowledge_items_category_id ON public.knowledge_items USING btree (category_id);
+
+
+--
+-- Name: ix_knowledge_items_knowledge_origin; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_knowledge_items_knowledge_origin ON public.knowledge_items USING btree (knowledge_origin);
+
+
+--
+-- Name: ix_knowledge_items_source_knowledge_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_knowledge_items_source_knowledge_key ON public.knowledge_items USING btree (source_knowledge_key);
+
+
+--
+-- Name: ix_knowledge_items_source_record_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_knowledge_items_source_record_id ON public.knowledge_items USING btree (source_record_id);
+
+
+--
+-- Name: ix_knowledge_items_source_topic_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_knowledge_items_source_topic_key ON public.knowledge_items USING btree (source_topic_key);
 
 
 --
@@ -1021,5 +1147,5 @@ INSERT INTO public.categories (id, name, parent_id, level, sort_order, created_a
     ('cat-extra-knowledge', '课外常识', NULL, 1, 40, CURRENT_TIMESTAMP);
 
 -- 版本标记必须最后写入，避免结构未完成却被误判为已迁移。
-INSERT INTO public.alembic_version (version_num) VALUES ('20260724_02');
+INSERT INTO public.alembic_version (version_num) VALUES ('20260805_01');
 COMMIT;

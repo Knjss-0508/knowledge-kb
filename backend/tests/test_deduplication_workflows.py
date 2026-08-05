@@ -15,13 +15,14 @@ from app.routes.knowledge import (
     approve_knowledge,
     batch_approve_knowledge,
     list_review_selection,
+    update_knowledge,
 )
 from app.services.knowledge_excel import IMPORTABLE_SOURCE_STATUS
 from app.schemas.integration import (
     CandidateReviewBatchSubmit,
     IntegrationCandidateBatch,
 )
-from app.schemas.knowledge import KnowledgeBatchApprove
+from app.schemas.knowledge import KnowledgeBatchApprove, KnowledgeUpdate
 from app.services.knowledge_dedup import DedupDecision, DedupMatch
 
 
@@ -37,6 +38,7 @@ def _review_decision() -> DedupDecision:
                 knowledge_id="A-00001",
                 title="按键颜色不符是什么意思",
                 status="published",
+                knowledge_origin="business_accumulation",
                 business_type="self_operated",
                 category_id="cat-qc-standard",
                 match_type="title_exact",
@@ -71,6 +73,7 @@ def _candidate_batch() -> IntegrationCandidateBatch:
                     "knowledge": {
                         "title": "按键颜色不符是什么意思",
                         "content": {"blocks": [{"type": "text", "value": "1"}]},
+                        "knowledge_origin": "business_accumulation",
                         "business_type": "self_operated",
                         "category_id": "cat-qc-standard",
                     },
@@ -93,6 +96,7 @@ class DeduplicationWorkflowTests(unittest.TestCase):
                     title="按键颜色不符是什么意思",
                     subtitles=[],
                     content={"blocks": [{"type": "text", "value": "1"}]},
+                    knowledge_origin="business_accumulation",
                     scene_tags=[],
                     business_type="self_operated",
                 )
@@ -104,10 +108,11 @@ class DeduplicationWorkflowTests(unittest.TestCase):
 
             confirmed = _check_manual_deduplication(
                 MagicMock(),
-                title="按键颜色不符是什么意思",
-                subtitles=[],
-                content={"blocks": [{"type": "text", "value": "1"}]},
-                scene_tags=[],
+                    title="按键颜色不符是什么意思",
+                    subtitles=[],
+                    content={"blocks": [{"type": "text", "value": "1"}]},
+                    knowledge_origin="business_accumulation",
+                    scene_tags=[],
                 business_type="self_operated",
                 confirm_dedup_review=True,
             )
@@ -202,6 +207,7 @@ class DeduplicationWorkflowTests(unittest.TestCase):
                 title="按键颜色不符是什么意思",
                 subtitles=[],
                 content={"blocks": [{"type": "text", "value": "不同处理步骤"}]},
+                knowledge_origin="business_accumulation",
                 scene_tags=[],
                 business_type="self_operated",
                 allow_duplicate_review=True,
@@ -211,6 +217,77 @@ class DeduplicationWorkflowTests(unittest.TestCase):
         metadata = _deduplication_metadata(accepted)
         self.assertEqual(metadata["action"], "review_duplicate")
         self.assertNotIn("review_confirmation", metadata)
+
+    def test_published_item_returns_to_review_after_taxonomy_change_hits_duplicate(
+        self,
+    ):
+        item = SimpleNamespace(
+            id="A-00030",
+            title="摄像头检查",
+            subtitles=[],
+            content={"blocks": [{"type": "text", "value": "检查镜头"}]},
+            knowledge_origin="business_accumulation",
+            business_type="self_operated",
+            category_id="cat-qc-standard",
+            status=KnowledgeStatus.PUBLISHED,
+            source="manual",
+            created_by="editor",
+            applicable_scenes=[],
+            applicable_categories=[],
+            applicable_brands=[],
+            applicable_models=[],
+            deduplication_metadata={},
+        )
+        query = MagicMock()
+        query.filter.return_value.first.return_value = item
+        db = MagicMock()
+        db.query.return_value = query
+
+        def snapshot(current):
+            return {
+                "knowledge_origin": current.knowledge_origin,
+                "business_type": current.business_type,
+                "status": current.status.value,
+            }
+
+        with patch(
+            "app.routes.knowledge._require_manual_applicable_category"
+        ), patch(
+            "app.routes.knowledge._validate_business_applicable_categories"
+        ), patch(
+            "app.routes.knowledge._check_manual_deduplication",
+            return_value=_review_decision(),
+        ), patch(
+            "app.routes.knowledge._knowledge_snapshot",
+            side_effect=snapshot,
+        ), patch(
+            "app.routes.knowledge._to_response",
+            return_value={"status": "review"},
+        ):
+            response = update_knowledge(
+                item.id,
+                KnowledgeUpdate(
+                    knowledge_origin="headquarters_standard",
+                ),
+                db,
+                SimpleNamespace(
+                    username="admin",
+                    role="super_admin",
+                    permissions=[],
+                ),
+            )
+
+        self.assertEqual(response["status"], "review")
+        self.assertEqual(item.status, KnowledgeStatus.REVIEW)
+        self.assertEqual(
+            item.deduplication_metadata["action"],
+            "review_duplicate",
+        )
+        self.assertNotIn(
+            "review_confirmation",
+            item.deduplication_metadata,
+        )
+        db.commit.assert_called_once_with()
 
     def test_active_source_excel_is_published_unless_duplicate_review_is_required(self):
         current_user = SimpleNamespace(username="importer")
@@ -404,7 +481,17 @@ class DeduplicationWorkflowTests(unittest.TestCase):
         db = MagicMock()
         db.query.return_value = query
 
-        response = list_review_selection(db, None)
+        response = list_review_selection(
+            db,
+            None,
+            knowledge_origin=None,
+            business_type=None,
+            category_id=None,
+            applicable_category_ids=None,
+            brand_ids=None,
+            model_ids=None,
+            keyword=None,
+        )
 
         self.assertEqual(response.total, 2)
         self.assertEqual(response.knowledge_ids, ["A-00020", "A-00021"])

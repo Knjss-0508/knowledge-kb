@@ -208,6 +208,7 @@ class DedupMatch:
     knowledge_id: str
     title: str
     status: str
+    knowledge_origin: str
     business_type: str
     category_id: str
     match_type: DedupMatchType
@@ -453,7 +454,8 @@ def check_duplicate(
     subtitles: list[str] | None,
     content: Any,
     scene_tags: list[str] | None,
-    business_type: str | None = None,
+    knowledge_origin: str,
+    business_type: str,
     exclude_knowledge_id: str | None = None,
     embedding_vectors: tuple[list[float], list[float], list[float]] | None = None,
 ) -> DedupDecision:
@@ -468,9 +470,9 @@ def check_duplicate(
     title_query = db.query(Knowledge).filter(
         Knowledge.status.in_(active_statuses),
         func.lower(func.trim(Knowledge.title)) == title_text.lower(),
+        Knowledge.knowledge_origin == knowledge_origin,
+        Knowledge.business_type == business_type,
     )
-    if business_type:
-        title_query = title_query.filter(Knowledge.business_type == business_type)
     if exclude_knowledge_id:
         title_query = title_query.filter(Knowledge.id != exclude_knowledge_id)
     title_matches = [
@@ -500,6 +502,7 @@ def check_duplicate(
                     knowledge_id=item.id,
                     title=item.title,
                     status=item.status.value,
+                    knowledge_origin=getattr(item, "knowledge_origin", ""),
                     business_type=getattr(item, "business_type", ""),
                     category_id=item.category_id,
                     match_type="exact",
@@ -529,6 +532,7 @@ def check_duplicate(
                     knowledge_id=item.id,
                     title=item.title,
                     status=item.status.value,
+                    knowledge_origin=getattr(item, "knowledge_origin", ""),
                     business_type=getattr(item, "business_type", ""),
                     category_id=item.category_id,
                     match_type="title_exact",
@@ -548,8 +552,10 @@ def check_duplicate(
     )
     if exclude_knowledge_id:
         query = query.filter(Knowledge.id != exclude_knowledge_id)
-    if business_type:
-        query = query.filter(Knowledge.business_type == business_type)
+    query = query.filter(
+        Knowledge.knowledge_origin == knowledge_origin,
+        Knowledge.business_type == business_type,
+    )
     exact_matches = (
         query.filter(KnowledgeEmbedding.content_hash == content_hash)
         .order_by(Knowledge.updated_at.desc())
@@ -568,6 +574,7 @@ def check_duplicate(
                     knowledge_id=item.id,
                     title=item.title,
                     status=item.status.value,
+                    knowledge_origin=getattr(item, "knowledge_origin", ""),
                     business_type=getattr(item, "business_type", ""),
                     category_id=item.category_id,
                     match_type="exact",
@@ -594,6 +601,7 @@ def check_duplicate(
                     knowledge_id=item.id,
                     title=item.title,
                     status=item.status.value,
+                    knowledge_origin=getattr(item, "knowledge_origin", ""),
                     business_type=getattr(item, "business_type", ""),
                     category_id=item.category_id,
                     match_type="content_containment",
@@ -671,6 +679,7 @@ def check_duplicate(
                 knowledge_id=item.id,
                 title=item.title,
                 status=item.status.value,
+                knowledge_origin=getattr(item, "knowledge_origin", ""),
                 business_type=getattr(item, "business_type", ""),
                 category_id=item.category_id,
                 match_type="semantic",
@@ -924,7 +933,8 @@ def search_embeddings(
     db: Session,
     *,
     query: str,
-    business_type: str | None = None,
+    knowledge_origin: str,
+    business_type: str,
     category_id: str | None = None,
     tags: list[str] | None = None,
     top_k: int = 10,
@@ -941,14 +951,14 @@ def search_embeddings(
         )
         .filter(
             Knowledge.status == KnowledgeStatus.PUBLISHED,
+            Knowledge.knowledge_origin == knowledge_origin,
+            Knowledge.business_type == business_type,
             KnowledgeSearchEmbedding.embedding_model == settings.EMBEDDING_MODEL,
             KnowledgeSearchEmbedding.embedding_vector.is_not(None),
         )
     )
     if category_id:
         item_query = item_query.filter(Knowledge.category_id == category_id)
-    if business_type:
-        item_query = item_query.filter(Knowledge.business_type == business_type)
     if tags:
         item_query = item_query.filter(
             Knowledge.tags.any(KnowledgeTag.tag_value_id.in_(tags))

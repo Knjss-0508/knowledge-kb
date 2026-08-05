@@ -39,6 +39,7 @@ class BusinessTypeTests(unittest.TestCase):
 
     def test_business_type_is_required_and_restricted_in_write_schemas(self):
         base_knowledge = {
+            "knowledge_origin": "business_accumulation",
             "title": "屏幕质检",
             "content": "检查屏幕显示是否正常",
             "category_id": "cat-qc-standard",
@@ -63,6 +64,7 @@ class BusinessTypeTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             CandidateSubmit.model_validate(
                 {
+                    "knowledge_origin": "business_accumulation",
                     "title": "候选知识",
                     "content": "候选内容",
                     "category_id": "cat-qc-standard",
@@ -72,13 +74,28 @@ class BusinessTypeTests(unittest.TestCase):
     def test_search_filter_and_readonly_dictionary_contract(self):
         self.assertEqual(
             SearchRequest.model_validate(
-                {"query": "屏幕", "business_type": "aggregated"}
+                {
+                    "query": "屏幕",
+                    "knowledge_origin": "business_accumulation",
+                    "business_type": "aggregated",
+                }
             ).business_type,
             "aggregated",
         )
         with self.assertRaises(ValidationError):
             SearchRequest.model_validate(
-                {"query": "屏幕", "business_type": "invalid"}
+                {
+                    "query": "屏幕",
+                    "knowledge_origin": "business_accumulation",
+                }
+            )
+        with self.assertRaises(ValidationError):
+            SearchRequest.model_validate(
+                {
+                    "query": "屏幕",
+                    "knowledge_origin": "business_accumulation",
+                    "business_type": "invalid",
+                }
             )
 
         options = list_business_types()

@@ -59,6 +59,7 @@ from app.services.media_deletion import (
 from app.services.media_storage import MediaStorageError, get_media_storage
 from app.schemas.knowledge import (
     BusinessType,
+    KnowledgeOrigin,
     KnowledgeCreate, KnowledgeUpdate, KnowledgeResponse,
     CandidateSubmit, DeduplicationFeedbackSubmit, FeedbackSubmit,
     ExcelImportRowResult, KnowledgeImportTaskListResponse,
@@ -267,6 +268,9 @@ def _find_source_knowledge(db: Session, row) -> Knowledge:
         if not value:
             continue
         query = db.query(Knowledge).filter(identifier_columns[label] == value)
+        knowledge_origin = str(getattr(row, "knowledge_origin", "") or "").strip()
+        if knowledge_origin:
+            query = query.filter(Knowledge.knowledge_origin == knowledge_origin)
         business_type = str(getattr(row, "business_type", "") or "").strip()
         if business_type:
             query = query.filter(Knowledge.business_type == business_type)
@@ -451,6 +455,7 @@ def _deduplication_metadata(
                 "knowledge_id": match.knowledge_id,
                 "title": match.title,
                 "status": match.status,
+                "knowledge_origin": match.knowledge_origin,
                 "business_type": match.business_type,
                 "category_id": match.category_id,
                 "match_type": match.match_type,
@@ -511,6 +516,7 @@ def _check_manual_deduplication(
     subtitles: list[str],
     content: dict,
     scene_tags: list[str],
+    knowledge_origin: str,
     business_type: str,
     exclude_knowledge_id: str | None = None,
     confirm_dedup_review: bool = False,
@@ -524,6 +530,7 @@ def _check_manual_deduplication(
             subtitles=subtitles,
             content=content,
             scene_tags=scene_tags,
+            knowledge_origin=knowledge_origin,
             business_type=business_type,
             exclude_knowledge_id=exclude_knowledge_id,
             embedding_vectors=embedding_vectors,
@@ -630,6 +637,7 @@ def _to_response(item: Knowledge) -> dict:
         "title": item.title,
         "subtitles": item.subtitles or [],
         "content": item.content,
+        "knowledge_origin": getattr(item, "knowledge_origin", "business_accumulation"),
         "business_type": item.business_type,
         "category_id": item.category_id,
         "status": item.status.value,
@@ -685,6 +693,7 @@ def _create_knowledge_item(
         title=body.title,
         subtitles=body.subtitles or [],
         content=normalized_content,
+        knowledge_origin=body.knowledge_origin,
         scene_tags=body.applicable_scenes or [],
         business_type=body.business_type,
         confirm_dedup_review=body.confirm_dedup_review,
@@ -696,6 +705,7 @@ def _create_knowledge_item(
         title=body.title,
         subtitles=body.subtitles or [],
         content=normalized_content,
+        knowledge_origin=body.knowledge_origin,
         business_type=body.business_type,
         category_id=body.category_id,
         status=KnowledgeStatus.REVIEW,
@@ -995,6 +1005,7 @@ def _excel_row_body(row) -> KnowledgeCreate:
         title=row.title,
         subtitles=row.subtitles or [],
         content=row.content,
+        knowledge_origin=row.knowledge_origin,
         business_type=row.business_type,
         category_id=row.category_id,
         applicable_scenes=row.applicable_scenes or [],
@@ -1530,6 +1541,7 @@ def _filtered_knowledge_query(
     current_user: User,
     *,
     status: str | None = None,
+    knowledge_origin: str | None = None,
     business_type: str | None = None,
     category_id: str | None = None,
     applicable_category_ids: list[str] | None = None,
@@ -1557,6 +1569,8 @@ def _filtered_knowledge_query(
         q = q.filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
     if status:
         q = q.filter(Knowledge.status == KnowledgeStatus(status))
+    if knowledge_origin:
+        q = q.filter(Knowledge.knowledge_origin == knowledge_origin)
     if business_type:
         q = q.filter(Knowledge.business_type == business_type)
     if category_id:
@@ -1610,6 +1624,7 @@ def _filtered_knowledge_query(
 def _has_knowledge_export_filter(
     *,
     status: str | None,
+    knowledge_origin: str | None = None,
     business_type: str | None = None,
     category_id: str | None,
     applicable_category_ids: list[str] | None,
@@ -1620,6 +1635,7 @@ def _has_knowledge_export_filter(
     """Avoid accidentally exporting the full knowledge base without a filter."""
     return bool(
         status
+        or knowledge_origin
         or business_type
         or category_id
         or any(applicable_category_ids or [])
@@ -1632,6 +1648,7 @@ def _has_knowledge_export_filter(
 @router.get("/export/excel", summary="导出知识库 Excel")
 def export_knowledge_excel(
     status: str | None = Query(None, description="状态筛选"),
+    knowledge_origin: KnowledgeOrigin | None = Query(None, description="知识来源"),
     business_type: BusinessType | None = Query(None, description="业务类型"),
     category_id: str | None = Query(None, description="分类ID"),
     applicable_category_ids: list[str] | None = Query(None, description="适用类目ID，可多选"),
@@ -1647,6 +1664,7 @@ def export_knowledge_excel(
 ):
     if not _has_knowledge_export_filter(
         status=status,
+        knowledge_origin=knowledge_origin,
         business_type=business_type,
         category_id=category_id,
         applicable_category_ids=applicable_category_ids,
@@ -1662,6 +1680,7 @@ def export_knowledge_excel(
         db,
         current_user,
         status=status,
+        knowledge_origin=knowledge_origin,
         business_type=business_type,
         category_id=category_id,
         applicable_category_ids=applicable_category_ids,
@@ -1703,11 +1722,12 @@ def export_knowledge_excel(
         }
     },
     summary="查询知识条目列表",
-    description="支持按状态、业务类型、知识分类、适用类目、品牌和机型筛选，分页查询",
+    description="支持按状态、知识来源、业务类型、知识分类、适用类目、品牌和机型筛选，分页查询",
 )
 def list_knowledge(
     response: Response,
     status: str | None = Query(None, description="状态筛选"),
+    knowledge_origin: KnowledgeOrigin | None = Query(None, description="知识来源"),
     business_type: BusinessType | None = Query(None, description="业务类型"),
     category_id: str | None = Query(None, description="分类ID"),
     applicable_category_ids: list[str] | None = Query(None, description="适用类目ID，可多选"),
@@ -1727,6 +1747,7 @@ def list_knowledge(
         db,
         current_user,
         status=status,
+        knowledge_origin=knowledge_origin,
         business_type=business_type,
         category_id=category_id,
         applicable_category_ids=applicable_category_ids,
@@ -1747,13 +1768,75 @@ def list_knowledge(
 def list_review_selection(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("knowledge:approve")),
+    knowledge_origin: KnowledgeOrigin | None = Query(None, description="知识来源"),
+    business_type: BusinessType | None = Query(None, description="业务类型"),
+    category_id: str | None = Query(None, description="分类ID"),
+    applicable_category_ids: list[str] | None = Query(None, description="适用类目ID，可多选"),
+    brand_ids: list[str] | None = Query(None, description="适用品牌ID，可多选"),
+    model_ids: list[str] | None = Query(None, description="适用机型ID，可多选"),
+    keyword: str | None = Query(None, description="知识关键词"),
 ):
+    query = db.query(Knowledge.id).filter(
+        Knowledge.status == KnowledgeStatus.REVIEW
+    )
+    if knowledge_origin:
+        query = query.filter(Knowledge.knowledge_origin == knowledge_origin)
+    if business_type:
+        query = query.filter(Knowledge.business_type == business_type)
+    if category_id:
+        query = query.filter(Knowledge.category_id == category_id)
+    for column, values in (
+        (Knowledge.applicable_categories, applicable_category_ids),
+        (Knowledge.applicable_brands, brand_ids),
+        (Knowledge.applicable_models, model_ids),
+    ):
+        normalized_values = [
+            value.strip()
+            for value in (values or [])
+            if value and value.strip()
+        ]
+        if normalized_values:
+            query = query.filter(
+                or_(
+                    *[
+                        cast(column, JSONB).contains([value])
+                        for value in dict.fromkeys(normalized_values)
+                    ]
+                )
+            )
+    normalized_keyword = (keyword or "").strip()
+    if normalized_keyword:
+        keyword_pattern = f"%{normalized_keyword}%"
+        query = query.filter(
+            or_(
+                Knowledge.title.ilike(keyword_pattern),
+                _jsonb_text_match(
+                    Knowledge.subtitles,
+                    "$[*]",
+                    normalized_keyword,
+                ),
+                _jsonb_text_match(
+                    Knowledge.content,
+                    "$.blocks[*].value",
+                    normalized_keyword,
+                ),
+                _jsonb_text_match(
+                    Knowledge.related_standard_items,
+                    "$[*]",
+                    normalized_keyword,
+                ),
+                _jsonb_text_match(
+                    Knowledge.applicable_scenes,
+                    "$[*]",
+                    normalized_keyword,
+                ),
+                Knowledge.category.has(Category.name.ilike(keyword_pattern)),
+            )
+        )
     knowledge_ids = [
         item_id
         for (item_id,) in (
-            db.query(Knowledge.id)
-            .filter(Knowledge.status == KnowledgeStatus.REVIEW)
-            .order_by(Knowledge.created_at.desc())
+            query.order_by(Knowledge.created_at.desc())
             .all()
         )
     ]
@@ -1802,6 +1885,7 @@ def get_dashboard(
             {
                 "id": item.id,
                 "title": item.title,
+                "knowledge_origin": getattr(item, "knowledge_origin", "business_accumulation"),
                 "status": item.status.value,
                 "updated_at": item.updated_at,
                 "created_by": item.created_by,
@@ -1813,6 +1897,7 @@ def get_dashboard(
             {
                 "id": item.id,
                 "title": item.title,
+                "knowledge_origin": getattr(item, "knowledge_origin", "business_accumulation"),
                 "status": item.status.value,
                 "updated_at": item.updated_at,
                 "created_by": item.created_by,
@@ -1828,6 +1913,7 @@ def _knowledge_snapshot(item: Knowledge) -> dict:
         "title": item.title,
         "subtitles": deepcopy(item.subtitles or []),
         "content": deepcopy(item.content or {}),
+        "knowledge_origin": getattr(item, "knowledge_origin", "business_accumulation"),
         "business_type": item.business_type,
         "category_id": item.category_id,
         "status": item.status.value,
@@ -1953,6 +2039,15 @@ def update_knowledge(
     before_data = _knowledge_snapshot(item) if was_published else None
     updates = body.model_dump(exclude_unset=True)
     updated_fields = set(updates)
+    origin_changed = (
+        "knowledge_origin" in updates
+        and updates["knowledge_origin"]
+        != getattr(item, "knowledge_origin", "business_accumulation")
+    )
+    business_type_changed = (
+        "business_type" in updates
+        and updates["business_type"] != item.business_type
+    )
     if (
         "business_type" in updates
         and updates["business_type"] != item.business_type
@@ -2015,6 +2110,39 @@ def update_knowledge(
                 setattr(item, field, KnowledgeStatus(val))
             else:
                 setattr(item, field, val)
+        if origin_changed or business_type_changed:
+            refreshed_decision = _check_manual_deduplication(
+                db,
+                title=item.title,
+                subtitles=item.subtitles or [],
+                content=item.content,
+                scene_tags=item.applicable_scenes or [],
+                knowledge_origin=getattr(
+                    item,
+                    "knowledge_origin",
+                    "business_accumulation",
+                ),
+                business_type=item.business_type,
+                exclude_knowledge_id=item.id,
+                allow_duplicate_review=True,
+            )
+            item.deduplication_metadata = _deduplication_metadata(
+                refreshed_decision
+            )
+            if (
+                was_published
+                and refreshed_decision.action == "review_duplicate"
+            ):
+                item.status = KnowledgeStatus.REVIEW
+            if refreshed_decision.embedding:
+                save_embedding(
+                    db,
+                    knowledge=item,
+                    content_hash=refreshed_decision.content_hash,
+                    embedding=refreshed_decision.embedding,
+                    title_embedding=refreshed_decision.title_embedding,
+                    content_embedding=refreshed_decision.content_embedding,
+                )
         after_data = _knowledge_snapshot(item)
         changed_fields = [
             field for field, before_value in (before_data or {}).items()
@@ -2162,6 +2290,7 @@ def submit_review(
         subtitles=item.subtitles or [],
         content=item.content,
         scene_tags=item.applicable_scenes or [],
+        knowledge_origin=item.knowledge_origin,
         business_type=item.business_type,
         exclude_knowledge_id=item.id,
         confirm_dedup_review=confirm_dedup_review,
@@ -2667,6 +2796,7 @@ def submit_candidate(
         subtitles=[],
         content=_normalize_content(body.content),
         scene_tags=body.applicable_scenes,
+        knowledge_origin=body.knowledge_origin,
         business_type=body.business_type,
         confirm_dedup_review=body.confirm_dedup_review,
     )
@@ -2675,6 +2805,7 @@ def submit_candidate(
         id=_generate_knowledge_id(db),
         title=body.title,
         content=_normalize_content(body.content),
+        knowledge_origin=body.knowledge_origin,
         business_type=body.business_type,
         category_id=body.category_id,
         status=KnowledgeStatus.REVIEW,
@@ -2720,6 +2851,7 @@ def search_knowledge(
         ranked = search_embeddings(
             db,
             query=body.query,
+            knowledge_origin=body.knowledge_origin,
             business_type=body.business_type,
             category_id=body.category_id,
             tags=body.tags,
@@ -2731,9 +2863,11 @@ def search_knowledge(
     # Existing installations can still serve title matches while search vectors
     # are being rebuilt in the background.
     if not ranked:
-        q = db.query(Knowledge).filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
-        if body.business_type:
-            q = q.filter(Knowledge.business_type == body.business_type)
+        q = db.query(Knowledge).filter(
+            Knowledge.status == KnowledgeStatus.PUBLISHED,
+            Knowledge.knowledge_origin == body.knowledge_origin,
+            Knowledge.business_type == body.business_type,
+        )
         if body.category_id:
             q = q.filter(Knowledge.category_id == body.category_id)
         if body.tags:
@@ -2750,6 +2884,7 @@ def search_knowledge(
             id=i.id, title=i.title, content=i.content,
             score=round(score, 6),
             status=i.status.value,
+            knowledge_origin=i.knowledge_origin,
             business_type=i.business_type,
             category_id=i.category_id,
         )
