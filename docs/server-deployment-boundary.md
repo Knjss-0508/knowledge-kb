@@ -1,6 +1,6 @@
 # 生产服务器部署边界与安全更新说明
 
-> 最后只读核验：2026-07-27
+> 最后只读核验：2026-08-05
 > 目的：明确本项目在共享服务器上的部署范围。后续任何运维操作只能作用于本文件列出的项目资源，不能影响服务器上的其他网站、服务、数据或容器。
 
 ## 1. 已确认的项目范围
@@ -17,7 +17,7 @@
 
 ## 2. 已确认的运行服务
 
-Docker 面板于 2026-07-27 显示以下知识库专属容器：
+服务器于 2026-08-05 只读核验以下知识库专属容器：
 
 | 容器 | 当前状态 | 用途 | 操作边界 |
 |---|---|---|---|
@@ -76,7 +76,16 @@ docker compose -p knowledge-kb \
 分别验证：检索专用密钥能访问 `standard-search` 和
 `retrieval-events:batch`，但不能访问 `taxonomy`；上游密钥的访问范围正好相反。
 
-如果本次代码包含新的 Alembic 迁移，应只额外构建并运行迁移服务，再更新后端：
+如果本次代码包含新的 Alembic 迁移，应只额外构建并运行迁移服务，再更新后端。
+`20260805_01` 会为旧知识补充“知识来源”，非空旧库必须先在项目 `.env`
+中明确设置一次：
+
+```text
+KNOWLEDGE_ORIGIN_BACKFILL=headquarters_standard
+```
+
+或者设置为 `business_accumulation`。迁移会自动检测旧知识和旧候选；非空旧库
+未配置时会停止并提示，避免静默归错来源。迁移完成且验收无误后可删除该临时配置。
 
 ```bash
 docker compose -p knowledge-kb \
@@ -85,11 +94,19 @@ docker compose -p knowledge-kb \
   -f docker-compose.embedding-cpu.yml \
   build migrate backend
 
+docker inspect kb-postgres --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}'
+
 docker compose -p knowledge-kb \
   -f docker-compose.yml \
   -f docker-compose.local.yml \
   -f docker-compose.embedding-cpu.yml \
-  run --rm migrate
+  stop -t 30 backend
+
+docker compose -p knowledge-kb \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.embedding-cpu.yml \
+  run --rm --no-deps migrate
 
 docker compose -p knowledge-kb \
   -f docker-compose.yml \
@@ -97,6 +114,14 @@ docker compose -p knowledge-kb \
   -f docker-compose.embedding-cpu.yml \
   up -d --no-deps backend
 ```
+
+迁移先把镜像构建完成，再在短维护窗口中停止旧后端、以 `--no-deps`
+运行迁移并立即启动新后端。这样既避免旧后端在新约束生效后继续写入旧结构，
+也确保迁移命令不会创建、重建或重启 PostgreSQL、Redis 和 Embedding。
+
+如果迁移命令退出码非 0，不得直接重启旧后端。迁移入口在数据库升级后还会执行
+结构校验和管理员初始化，因此应先查看迁移日志并查询 `alembic_version`，确认
+数据库是否已升级，再决定修复后启动新后端或按备份回滚。
 
 只有首次安装，或经过评审的数据库、Redis、Embedding、Compose 拓扑变更，才允许使用 `scripts/deploy.sh`。日常代码更新禁止执行全项目 `up -d --build`、`--remove-orphans` 或重新构建 Embedding。
 

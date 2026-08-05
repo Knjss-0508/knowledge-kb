@@ -33,6 +33,7 @@ class KnowledgeImportTaskTests(unittest.TestCase):
         return ExcelKnowledgeRow(
             row_number=row_number,
             title=f"标题{row_number}",
+            knowledge_origin="business_accumulation",
             business_type="self_operated",
             category_id="cat-qc",
             content=f"正文{row_number}",
@@ -81,7 +82,7 @@ class KnowledgeImportTaskTests(unittest.TestCase):
     def _workbook_bytes(rows):
         workbook = Workbook()
         sheet = workbook.active
-        sheet.append(["标题", "业务类型", "知识分类", "正文"])
+        sheet.append(["标题", "知识来源", "业务类型", "知识分类", "正文"])
         for row in rows:
             sheet.append(row)
         output = BytesIO()
@@ -124,8 +125,8 @@ class KnowledgeImportTaskTests(unittest.TestCase):
     def test_expired_task_resumes_at_the_first_uncommitted_row(self):
         workbook = self._workbook_bytes(
             [
-                ["第一条", "自营回收", "cat-qc", "正文一"],
-                ["第二条", "自营回收", "cat-qc", "正文二"],
+                ["第一条", "业务沉淀", "自营回收", "cat-qc", "正文一"],
+                ["第二条", "业务沉淀", "自营回收", "cat-qc", "正文二"],
             ]
         )
         with self.session_factory() as db:
@@ -188,7 +189,7 @@ class KnowledgeImportTaskTests(unittest.TestCase):
 
     def test_reclaimed_attempt_stops_the_old_worker_before_row_write(self):
         workbook = self._workbook_bytes(
-            [["唯一条", "自营回收", "cat-qc", "正文"]]
+            [["唯一条", "业务沉淀", "自营回收", "cat-qc", "正文"]]
         )
         with self.session_factory() as db:
             db.add(

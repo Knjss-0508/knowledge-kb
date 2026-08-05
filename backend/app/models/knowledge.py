@@ -23,6 +23,7 @@ class Knowledge(Base):
     __tablename__ = "knowledge_items"
 
     id = Column(String(64), primary_key=True)
+    knowledge_origin = Column(String(32), nullable=False, index=True)
     business_type = Column(String(32), nullable=False, index=True)
     title = Column(String(256), nullable=False, index=True)
     subtitles = Column(JSON, default=list, nullable=True)
@@ -70,6 +71,10 @@ class Knowledge(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "knowledge_origin IN ('headquarters_standard', 'business_accumulation')",
+            name="ck_knowledge_items_knowledge_origin",
+        ),
         CheckConstraint(
             "business_type IN ('self_operated', 'aggregated')",
             name="ck_knowledge_items_business_type",

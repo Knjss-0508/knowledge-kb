@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 BusinessType = Literal["self_operated", "aggregated"]
+KnowledgeOrigin = Literal["headquarters_standard", "business_accumulation"]
 
 
 # ---- 富文本内容块 ----
@@ -48,7 +49,13 @@ class BusinessTypeOption(BaseModel):
     label: str = Field(description="业务类型名称")
 
 
+class KnowledgeOriginOption(BaseModel):
+    value: KnowledgeOrigin = Field(description="知识来源编码")
+    label: str = Field(description="知识来源名称")
+
+
 class KnowledgeCreate(BaseModel):
+    knowledge_origin: KnowledgeOrigin = Field(..., description="知识来源")
     business_type: BusinessType = Field(..., description="业务类型")
     title: str = Field(..., max_length=256, description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表，可多条")
@@ -79,6 +86,7 @@ class KnowledgeCreate(BaseModel):
 
 
 class KnowledgeUpdate(BaseModel):
+    knowledge_origin: Optional[KnowledgeOrigin] = Field(None, description="知识来源")
     business_type: Optional[BusinessType] = Field(None, description="业务类型")
     title: Optional[str] = Field(None, description="知识标题")
     subtitles: Optional[list[str]] = Field(None, description="副标题列表")
@@ -104,6 +112,16 @@ class KnowledgeUpdate(BaseModel):
             raise ValueError("业务类型不能为空")
         return value
 
+    @field_validator("knowledge_origin")
+    @classmethod
+    def knowledge_origin_must_not_be_null(
+        cls,
+        value: Optional[KnowledgeOrigin],
+    ) -> Optional[KnowledgeOrigin]:
+        if value is None:
+            raise ValueError("知识来源不能为空")
+        return value
+
     @field_validator("category_id")
     @classmethod
     def category_id_must_not_be_blank(cls, value: Optional[str]) -> Optional[str]:
@@ -117,13 +135,14 @@ class KnowledgeUpdate(BaseModel):
 
 class KnowledgeResponse(BaseModel):
     id: str = Field(description="知识条目ID")
+    knowledge_origin: KnowledgeOrigin = Field(description="知识来源")
     business_type: BusinessType = Field(description="业务类型")
     title: str = Field(description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表")
     content: Any = Field(description="知识内容")
     category_id: Optional[str] = Field(None, description="所属分类ID")
     status: str = Field(description="当前状态")
-    source: str = Field(description="来源")
+    source: str = Field(description="录入方式")
     quality_score: float = Field(description="质量评分")
     applicable_scenes: list[str] = Field(default=[], description="场景标签")
     applicable_categories: list[Any] = Field(default=[], description="适用类目")
@@ -210,7 +229,8 @@ class TagDimensionResponse(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, description="搜索关键词")
-    business_type: Optional[BusinessType] = Field(None, description="限定业务类型")
+    knowledge_origin: KnowledgeOrigin = Field(..., description="限定知识来源")
+    business_type: BusinessType = Field(..., description="限定业务类型")
     category_id: Optional[str] = Field(None, description="限定分类ID")
     tags: Optional[list[str]] = Field(None, description="限定标签")
     top_k: int = Field(default=10, ge=1, le=50, description="返回条数上限")
@@ -218,6 +238,7 @@ class SearchRequest(BaseModel):
 
 class SearchResult(BaseModel):
     id: str = Field(description="知识条目ID")
+    knowledge_origin: KnowledgeOrigin = Field(description="知识来源")
     business_type: BusinessType = Field(description="业务类型")
     title: str = Field(description="知识标题")
     content: Any = Field(description="知识内容")
@@ -235,6 +256,7 @@ class SearchResponse(BaseModel):
 # ---- 候选池 ----
 
 class CandidateSubmit(BaseModel):
+    knowledge_origin: KnowledgeOrigin = Field(..., description="知识来源")
     business_type: BusinessType = Field(..., description="业务类型")
     title: str = Field(..., description="标题")
     content: Any = Field(..., description="内容")

@@ -43,18 +43,31 @@ class KnowledgeExcelTests(unittest.TestCase):
         headers,
         rows,
         *,
+        include_knowledge_origin=True,
+        knowledge_origin="总部标准",
         include_business_type=True,
         business_type="自营回收",
     ):
         headers = list(headers)
         rows = [list(row) for row in rows]
+        prefix_headers = []
+        prefix_values = []
+        has_knowledge_origin = any(
+            str(header).startswith("知识来源") or header == "业务来源"
+            for header in headers
+        )
         has_business_type = any(
             str(header).startswith("业务类型") or header == "所属业务类型"
             for header in headers
         )
+        if include_knowledge_origin and not has_knowledge_origin:
+            prefix_headers.append("知识来源")
+            prefix_values.append(knowledge_origin)
         if include_business_type and not has_business_type:
-            headers.insert(0, "业务类型")
-            rows = [[business_type, *row] for row in rows]
+            prefix_headers.append("业务类型")
+            prefix_values.append(business_type)
+        headers = [*prefix_headers, *headers]
+        rows = [[*prefix_values, *row] for row in rows]
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = "知识导入"
@@ -71,13 +84,14 @@ class KnowledgeExcelTests(unittest.TestCase):
 
         self.assertEqual(
             workbook.sheetnames,
-            ["知识导入", "业务类型字典", "分类字典", "填写说明"],
+            ["知识导入", "知识来源字典", "业务类型字典", "分类字典", "填写说明"],
         )
         headers = [
             cell.value
             for cell in next(workbook["知识导入"].iter_rows(max_row=1))
         ]
         self.assertIn("标题（必填）", headers)
+        self.assertIn("知识来源（必填）", headers)
         self.assertIn("业务类型（必填）", headers)
         self.assertIn("知识分类（必填）", headers)
         self.assertIn("正文（必填）", headers)
@@ -91,6 +105,20 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertNotIn("适用业务", headers)
         self.assertNotIn("机型个性化", headers)
         self.assertNotIn("确认疑似重复（选填）", headers)
+        self.assertLess(
+            headers.index("知识来源（必填）"),
+            headers.index("业务类型（必填）"),
+        )
+        knowledge_origin_rows = list(
+            workbook["知识来源字典"].iter_rows(min_row=2, values_only=True)
+        )
+        self.assertEqual(
+            knowledge_origin_rows,
+            [
+                ("headquarters_standard", "总部标准"),
+                ("business_accumulation", "业务沉淀"),
+            ],
+        )
         dictionary_rows = list(
             workbook["分类字典"].iter_rows(min_row=2, values_only=True)
         )
@@ -109,6 +137,7 @@ class KnowledgeExcelTests(unittest.TestCase):
     def test_export_matches_knowledge_main_sheet_format_and_maps_supported_fields(self):
         item = SimpleNamespace(
             id="K-00001",
+            knowledge_origin="headquarters_standard",
             business_type="self_operated",
             title="平板外观检查",
             subtitles=["平板外观如何检查", "屏幕划痕如何判定"],
@@ -153,15 +182,15 @@ class KnowledgeExcelTests(unittest.TestCase):
         workbook = load_workbook(BytesIO(payload), data_only=True)
         sheet = workbook["知识库主表"]
 
-        self.assertEqual(sheet.max_column, 20)
+        self.assertEqual(sheet.max_column, 21)
         self.assertEqual(sheet.title, "知识库主表")
         self.assertEqual(
             [cell.value for cell in sheet[1]],
             [
                 "知识ID", "主题键", "记录ID", "知识键", "主标题", "副标题", "知识内容",
-                "业务类型", "知识分类", "知识来源", "关联标准项", "适用范围", "生效状态",
-                "来源版本", "变更类型", "创建类型", "失效类型", "失效原因",
-                "来源追溯", "校验备注",
+                "知识来源", "业务类型", "知识分类", "录入方式", "关联标准项",
+                "适用范围", "生效状态", "来源版本", "变更类型", "创建类型",
+                "失效类型", "失效原因", "来源追溯", "校验备注",
             ],
         )
         self.assertEqual(sheet["A2"].value, "K-00001")
@@ -175,29 +204,30 @@ class KnowledgeExcelTests(unittest.TestCase):
             "按标准检查外观。\n[img:https://cdn.example.com/front.png]\n"
             "[video:https://cdn.example.com/check.mp4]\n[图片：本地拍摄图片]",
         )
-        self.assertEqual(sheet["H2"].value, "自营回收")
-        self.assertEqual(sheet["I2"].value, "质检标准")
-        self.assertEqual(sheet["J2"].value, "Excel 批量导入")
-        self.assertEqual(sheet["K2"].value, "屏幕检测；外观检测")
+        self.assertEqual(sheet["H2"].value, "总部标准")
+        self.assertEqual(sheet["I2"].value, "自营回收")
+        self.assertEqual(sheet["J2"].value, "质检标准")
+        self.assertEqual(sheet["K2"].value, "Excel 批量导入")
+        self.assertEqual(sheet["L2"].value, "屏幕检测；外观检测")
         self.assertEqual(
-            sheet["L2"].value,
+            sheet["M2"].value,
             "场景：验机；适用类目：平板；适用品牌：Apple；适用机型：iPad Pro",
         )
-        self.assertEqual(sheet["M2"].value, "生效中")
-        self.assertEqual(sheet["N2"].value, "2026.07")
-        self.assertEqual(sheet["O2"].value, "新增")
-        self.assertEqual(sheet["P2"].value, "标准同步")
-        self.assertEqual(sheet["Q2"].value, "不适用")
-        self.assertEqual(sheet["R2"].value, "-")
-        self.assertEqual(sheet["S2"].value, "平板质检标准主表")
-        self.assertEqual(sheet["T2"].value, "已完成字段校验")
+        self.assertEqual(sheet["N2"].value, "生效中")
+        self.assertEqual(sheet["O2"].value, "2026.07")
+        self.assertEqual(sheet["P2"].value, "新增")
+        self.assertEqual(sheet["Q2"].value, "标准同步")
+        self.assertEqual(sheet["R2"].value, "不适用")
+        self.assertEqual(sheet["S2"].value, "-")
+        self.assertEqual(sheet["T2"].value, "平板质检标准主表")
+        self.assertEqual(sheet["U2"].value, "已完成字段校验")
         self.assertEqual(sheet["A1"].font.name, "宋体")
         self.assertTrue(sheet["A1"].font.bold)
         self.assertTrue(sheet["A1"].alignment.wrap_text)
         self.assertTrue(sheet["A2"].alignment.wrap_text)
         self.assertTrue(sheet["A1"].fill.fgColor.rgb.endswith("D9E8FB"))
         self.assertEqual(sheet.freeze_panes, "A2")
-        self.assertEqual(sheet.auto_filter.ref, "A1:T2")
+        self.assertEqual(sheet.auto_filter.ref, "A1:U2")
 
     def test_parse_accepts_category_id_and_splits_multi_value_fields(self):
         payload = self.workbook_bytes(
@@ -217,6 +247,7 @@ class KnowledgeExcelTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0].is_valid)
+        self.assertEqual(rows[0].knowledge_origin, "headquarters_standard")
         self.assertEqual(rows[0].business_type, "self_operated")
         self.assertEqual(rows[0].category_id, "cat-process")
         self.assertEqual(rows[0].subtitles, ["黑屏怎么办", "无法启动"])
@@ -225,6 +256,7 @@ class KnowledgeExcelTests(unittest.TestCase):
     def test_export_maps_aggregated_business_type_to_chinese_label(self):
         item = SimpleNamespace(
             id="K-00002",
+            knowledge_origin="business_accumulation",
             business_type="aggregated",
             title="聚合回收说明",
             content="聚合回收正文。",
@@ -236,7 +268,8 @@ class KnowledgeExcelTests(unittest.TestCase):
         payload = build_knowledge_export_workbook([item])
         workbook = load_workbook(BytesIO(payload), data_only=True)
 
-        self.assertEqual(workbook["知识库主表"]["H2"].value, "聚合回收")
+        self.assertEqual(workbook["知识库主表"]["H2"].value, "业务沉淀")
+        self.assertEqual(workbook["知识库主表"]["I2"].value, "聚合回收")
 
     def test_parse_splits_related_standard_items(self):
         payload = self.workbook_bytes(
@@ -364,6 +397,7 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertEqual(
             row.source_fields,
             {
+                "知识来源": "总部标准",
                 "业务类型": "自营回收",
                 "主题键": "基本情况-外观::通用",
                 "记录ID": "rec-source-001",
@@ -430,6 +464,49 @@ class KnowledgeExcelTests(unittest.TestCase):
         )
         self.assertTrue(all(row.is_valid for row in rows))
 
+    def test_parse_accepts_knowledge_origin_labels_codes_and_business_source_alias(self):
+        payload = self.workbook_bytes(
+            ["知识来源", "业务类型", "标题", "知识分类", "正文"],
+            [
+                ["总部标准", "自营回收", "总部中文", "cat-process", "正文。"],
+                [
+                    "headquarters_standard",
+                    "self_operated",
+                    "总部代码",
+                    "cat-process",
+                    "正文。",
+                ],
+                ["业务沉淀", "聚合回收", "业务中文", "cat-process", "正文。"],
+                [
+                    "business_accumulation",
+                    "aggregated",
+                    "业务代码",
+                    "cat-process",
+                    "正文。",
+                ],
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(
+            [row.knowledge_origin for row in rows],
+            [
+                "headquarters_standard",
+                "headquarters_standard",
+                "business_accumulation",
+                "business_accumulation",
+            ],
+        )
+        self.assertTrue(all(row.is_valid for row in rows))
+
+        alias_payload = self.workbook_bytes(
+            ["业务来源", "业务类型", "标题", "知识分类", "正文"],
+            [["总部标准", "自营回收", "兼容别名", "cat-process", "正文。"]],
+        )
+        alias_row = parse_knowledge_workbook(alias_payload, self.categories)[0]
+        self.assertEqual(alias_row.knowledge_origin, "headquarters_standard")
+
     def test_parse_reports_missing_and_invalid_business_type_per_row(self):
         payload = self.workbook_bytes(
             ["业务类型", "标题", "知识分类", "正文"],
@@ -445,6 +522,22 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertEqual(rows[0].error_message, "业务类型不能为空。")
         self.assertEqual(rows[1].error_code, "BUSINESS_TYPE_INVALID")
         self.assertIn("仅允许自营回收、聚合回收", rows[1].error_message)
+
+    def test_parse_reports_missing_and_invalid_knowledge_origin_per_row(self):
+        payload = self.workbook_bytes(
+            ["知识来源", "业务类型", "标题", "知识分类", "正文"],
+            [
+                ["", "自营回收", "缺失来源", "cat-process", "正文。"],
+                ["内部草稿", "自营回收", "非法来源", "cat-process", "正文。"],
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(rows[0].error_code, "KNOWLEDGE_ORIGIN_REQUIRED")
+        self.assertEqual(rows[0].error_message, "知识来源不能为空。")
+        self.assertEqual(rows[1].error_code, "KNOWLEDGE_ORIGIN_INVALID")
+        self.assertIn("仅允许总部标准、业务沉淀", rows[1].error_message)
 
     def test_parse_only_promotes_prefixed_media_tokens(self):
         payload = self.workbook_bytes(
@@ -658,6 +751,60 @@ class KnowledgeExcelTests(unittest.TestCase):
             "缺少必填列：业务类型",
         ):
             parse_knowledge_workbook(payload, self.categories)
+
+    def test_main_sheet_without_knowledge_origin_header_is_rejected(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容", "生效状态"],
+            [["主表缺少来源", "cat-process", "正文。", "生效中"]],
+            include_knowledge_origin=False,
+        )
+
+        with self.assertRaisesRegex(
+            KnowledgeExcelError,
+            "缺少必填列：知识来源",
+        ):
+            parse_knowledge_workbook(payload, self.categories)
+
+    def test_export_uses_business_source_fallback_and_separate_entry_method(self):
+        item = SimpleNamespace(
+            id="K-00003",
+            knowledge_origin=None,
+            business_type="self_operated",
+            title="来源兼容导出",
+            content="正文。",
+            category_id="cat-process",
+            category=SimpleNamespace(name="操作流程"),
+            source="manual",
+            source_fields={"业务来源": "业务沉淀"},
+            status="review",
+        )
+
+        payload = build_knowledge_export_workbook([item])
+        workbook = load_workbook(BytesIO(payload), data_only=True)
+        sheet = workbook["知识库主表"]
+
+        self.assertEqual(sheet["H2"].value, "业务沉淀")
+        self.assertEqual(sheet["K2"].value, "手工录入")
+
+    def test_export_labels_automation_as_api_entry(self):
+        item = SimpleNamespace(
+            id="K-00004",
+            knowledge_origin="business_accumulation",
+            business_type="aggregated",
+            title="自动化入库",
+            content="正文。",
+            category_id="cat-process",
+            category=SimpleNamespace(name="操作流程"),
+            source="automation",
+            source_fields={},
+            status="review",
+        )
+
+        payload = build_knowledge_export_workbook([item])
+        workbook = load_workbook(BytesIO(payload), data_only=True)
+        sheet = workbook["知识库主表"]
+
+        self.assertEqual(sheet["K2"].value, "接口导入")
 
 
 if __name__ == "__main__":

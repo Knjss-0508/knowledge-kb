@@ -7,6 +7,8 @@ from app.schemas.knowledge import (
     BusinessType,
     BusinessTypeOption,
     CategoryResponse,
+    KnowledgeOrigin,
+    KnowledgeOriginOption,
     TagDimensionResponse,
 )
 
@@ -91,6 +93,7 @@ class IntegrationKnowledgePayload(BaseModel):
     title: str = Field(..., min_length=1, max_length=256, description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表")
     content: Any = Field(..., description="改写后的知识内容，支持富文本 blocks 结构")
+    knowledge_origin: KnowledgeOrigin = Field(..., description="知识来源")
     business_type: BusinessType = Field(..., description="知识所属业务类型")
     category_id: str = Field(..., min_length=1, max_length=64, description="知识库分类ID")
     scene_tags: list[str] = Field(default=[], description="场景标签")
@@ -137,6 +140,7 @@ class IntegrationDedupMatch(BaseModel):
     knowledge_id: str
     title: str
     status: Literal["review", "published"]
+    knowledge_origin: KnowledgeOrigin
     business_type: BusinessType
     category_id: str
     match_type: Literal["exact", "title_exact", "semantic", "content_containment"]
@@ -202,6 +206,7 @@ class CandidateReviewUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=256)
     subtitles: list[str] | None = None
     content: Any | None = None
+    knowledge_origin: KnowledgeOrigin | None = None
     business_type: BusinessType | None = None
     category_id: str | None = Field(None, min_length=1, max_length=64)
     applicable_scenes: list[str] | None = None
@@ -223,6 +228,16 @@ class CandidateReviewUpdate(BaseModel):
         description="已对比当前疑似重复命中并确认内容确实不同",
     )
 
+    @field_validator("knowledge_origin", "business_type")
+    @classmethod
+    def taxonomy_field_must_not_be_null(
+        cls,
+        value: KnowledgeOrigin | BusinessType | None,
+    ) -> KnowledgeOrigin | BusinessType | None:
+        if value is None:
+            raise ValueError("taxonomy field must not be null")
+        return value
+
 
 class CandidateReviewListItem(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
@@ -237,6 +252,7 @@ class CandidateReviewListItem(BaseModel):
     title: str
     subtitles: list[str] = Field(default_factory=list)
     content: Any
+    knowledge_origin: KnowledgeOrigin
     business_type: BusinessType
     category_id: str
     applicable_scenes: list[str] = Field(default_factory=list)
@@ -304,6 +320,7 @@ class IntegrationIngestionResponse(BaseModel):
 
 class IntegrationTaxonomyResponse(BaseModel):
     version: str
+    knowledge_origins: list[KnowledgeOriginOption]
     business_types: list[BusinessTypeOption]
     categories: list[CategoryResponse]
     tag_dimensions: list[TagDimensionResponse]
@@ -325,6 +342,7 @@ class IntegrationStandardSearchRequest(BaseModel):
         min_length=1,
         max_length=8000,
     )
+    knowledge_origin: KnowledgeOrigin = Field(..., alias="knowledgeOrigin")
     business_type: BusinessType | None = Field(None, alias="businessType")
     product_type: str = Field("", alias="productType", max_length=500)
     model: str = Field("", max_length=500)
@@ -376,6 +394,7 @@ class IntegrationStandardSearchCandidate(BaseModel):
     score: float = Field(ge=0, le=1)
     final_score: float = Field(alias="finalScore", ge=0, le=1)
     status: Literal["published"] = "published"
+    knowledge_origin: KnowledgeOrigin = Field(alias="knowledgeOrigin")
     business_type: BusinessType = Field(alias="businessType")
     category_id: str | None = Field(None, alias="categoryId")
     level1_label: str = Field("", alias="level1Label")
