@@ -1,4 +1,7 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Lock
+from time import sleep
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -273,6 +276,38 @@ class QueryEmbeddingCacheTests(unittest.TestCase):
         _query_embedding("问题")
 
         self.assertEqual(embed.call_count, 2)
+
+    @patch("app.services.knowledge_dedup.embed_texts")
+    def test_eight_concurrent_identical_queries_are_merged(self, embed):
+        """The per-key lock must prevent an embedding stampede under load."""
+        start = Barrier(8)
+        calls_lock = Lock()
+        call_count = 0
+
+        def slow_embedding(texts):
+            nonlocal call_count
+            with calls_lock:
+                call_count += 1
+            # Keep the first request in flight while the other seven contend
+            # for the same key lock.
+            sleep(0.05)
+            self.assertEqual(texts, ["同一个问题"])
+            return [[0.1, 0.2]]
+
+        embed.side_effect = slow_embedding
+
+        def run_query(index):
+            start.wait(timeout=2)
+            # Vary only surrounding whitespace; all calls must share a key.
+            return _query_embedding(
+                ("  同一个问题  " if index % 2 else "同一个问题")
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            vectors = list(executor.map(run_query, range(8)))
+
+        self.assertEqual(call_count, 1)
+        self.assertEqual(vectors, [[0.1, 0.2]] * 8)
 
 
 if __name__ == "__main__":

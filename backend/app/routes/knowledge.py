@@ -4,6 +4,7 @@ import uuid
 import logging
 import string
 import hashlib
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -97,6 +98,10 @@ class _ImportEmbeddingPlan:
     @property
     def character_count(self) -> int:
         return sum(len(text) for text in self.texts)
+
+
+class _ImportTaskLeaseLost(RuntimeError):
+    """Raised when a persisted import task can no longer be renewed safely."""
 
 
 ALLOWED_IMAGE = {"image/png", "image/jpeg", "image/gif", "image/webp"}
@@ -1091,7 +1096,14 @@ def _import_embedding_batches(
 
 def _precompute_import_embeddings(
     rows: list,
+    *,
+    on_batch_complete: Callable[[int, int], None] | None = None,
 ) -> dict[int, _ImportEmbeddingBundle]:
+    def embed_with_progress(texts: list[str]) -> list[list[float]]:
+        if on_batch_complete is None:
+            return embed_texts(texts)
+        return embed_texts(texts, on_batch_complete=on_batch_complete)
+
     bundles: dict[int, _ImportEmbeddingBundle] = {}
     for batch in _import_embedding_batches(rows):
         valid_plans = [
@@ -1106,7 +1118,7 @@ def _precompute_import_embeddings(
         for _, plan in valid_plans:
             flat_texts.extend(plan.texts)
         try:
-            flat_vectors = embed_texts(flat_texts)
+            flat_vectors = embed_with_progress(flat_texts)
             offset = 0
             for row, plan in valid_plans:
                 count = len(plan.texts)
@@ -1115,6 +1127,8 @@ def _precompute_import_embeddings(
                     flat_vectors[offset : offset + count],
                 )
                 offset += count
+        except _ImportTaskLeaseLost:
+            raise
         except Exception:
             # A long document can make a combined request fail. Retry rows
             # individually so one bad row does not fail the whole task.
@@ -1122,9 +1136,11 @@ def _precompute_import_embeddings(
                 try:
                     bundles[row.row_number] = _store_import_embedding_vectors(
                         plan,
-                        embed_texts(plan.texts),
+                        embed_with_progress(plan.texts),
                     )
                 except Exception as exc:
+                    if isinstance(exc, _ImportTaskLeaseLost):
+                        raise
                     bundles[row.row_number] = _ImportEmbeddingBundle(error=exc)
     return bundles
 
@@ -1271,12 +1287,23 @@ def process_knowledge_import_task(
     """Process a persisted task from the first uncommitted Excel row onward."""
 
     db = session_factory()
+    claimed_attempt: int | None = None
+
+    def owns_import_task(candidate: KnowledgeImportTask | None) -> bool:
+        return bool(
+            candidate
+            and claimed_attempt is not None
+            and candidate.status == "running"
+            and int(candidate.attempt_count or 0) == claimed_attempt
+        )
+
     try:
         task = db.query(KnowledgeImportTask).filter(
             KnowledgeImportTask.id == task_id
         ).first()
         if not task or task.status != "running":
             return
+        claimed_attempt = int(task.attempt_count or 0)
 
         categories = db.query(Category).order_by(
             Category.level,
@@ -1285,10 +1312,23 @@ def process_knowledge_import_task(
         try:
             rows = parse_knowledge_workbook(task.file_content, categories)
         except KnowledgeExcelError as exc:
-            _mark_import_task_failed(task, str(exc), now=datetime.utcnow())
+            current_task = db.query(KnowledgeImportTask).filter(
+                KnowledgeImportTask.id == task_id,
+                KnowledgeImportTask.attempt_count == claimed_attempt,
+            ).first()
+            if not owns_import_task(current_task):
+                return
+            _mark_import_task_failed(current_task, str(exc), now=datetime.utcnow())
             db.commit()
             return
 
+        current_task = db.query(KnowledgeImportTask).filter(
+            KnowledgeImportTask.id == task_id,
+            KnowledgeImportTask.attempt_count == claimed_attempt,
+        ).first()
+        if not owns_import_task(current_task):
+            return
+        task = current_task
         if task.total_rows and task.total_rows != len(rows):
             _mark_import_task_failed(
                 task,
@@ -1312,32 +1352,58 @@ def process_knowledge_import_task(
         db.commit()
 
         background_user = SimpleNamespace(username=task.created_by)
+
+        def renew_import_task_lease(_processed: int, _total: int) -> None:
+            current_task = db.query(KnowledgeImportTask).filter(
+                KnowledgeImportTask.id == task_id,
+                KnowledgeImportTask.attempt_count == claimed_attempt,
+            ).first()
+            if not owns_import_task(current_task):
+                raise _ImportTaskLeaseLost(
+                    f"Import task {task_id} is no longer running."
+                )
+            now = datetime.utcnow()
+            current_task.lease_expires_at = _task_lease_expiry(now)
+            current_task.updated_at = now
+            db.commit()
+
         remaining_rows = rows[task.processed_rows:]
         for row_batch in _import_embedding_batches(remaining_rows):
             task = db.query(KnowledgeImportTask).filter(
-                KnowledgeImportTask.id == task_id
+                KnowledgeImportTask.id == task_id,
+                KnowledgeImportTask.attempt_count == claimed_attempt,
             ).first()
-            if not task or task.status != "running":
+            if not owns_import_task(task):
                 return
             task.lease_expires_at = _task_lease_expiry(datetime.utcnow())
             task.updated_at = datetime.utcnow()
             db.commit()
 
             batch_rows = [row for row, _ in row_batch]
-            bundles = _precompute_import_embeddings(batch_rows)
+            bundles = _precompute_import_embeddings(
+                batch_rows,
+                on_batch_complete=renew_import_task_lease,
+            )
 
             task = db.query(KnowledgeImportTask).filter(
-                KnowledgeImportTask.id == task_id
+                KnowledgeImportTask.id == task_id,
+                KnowledgeImportTask.attempt_count == claimed_attempt,
             ).first()
-            if not task or task.status != "running":
+            if not owns_import_task(task):
                 return
             task.lease_expires_at = _task_lease_expiry(datetime.utcnow())
             task.updated_at = datetime.utcnow()
             db.commit()
             for row in batch_rows:
+                task = db.query(KnowledgeImportTask).filter(
+                    KnowledgeImportTask.id == task_id,
+                    KnowledgeImportTask.attempt_count == claimed_attempt,
+                ).first()
+                if not owns_import_task(task):
+                    return
                 try:
                     bundle = bundles.get(row.row_number)
-                    if bundle is None:
+                    if bundle is None or bundle.error is not None:
                         result = _process_excel_import_row(
                             db,
                             row,
@@ -1353,19 +1419,27 @@ def process_knowledge_import_task(
                 except Exception as exc:
                     db.rollback()
                     task = db.query(KnowledgeImportTask).filter(
-                        KnowledgeImportTask.id == task_id
+                        KnowledgeImportTask.id == task_id,
+                        KnowledgeImportTask.attempt_count == claimed_attempt,
                     ).first()
-                    if not task or task.status != "running":
+                    if not owns_import_task(task):
                         return
                     result = _excel_row_failure_result(row, exc)
 
+                task = db.query(KnowledgeImportTask).filter(
+                    KnowledgeImportTask.id == task_id,
+                    KnowledgeImportTask.attempt_count == claimed_attempt,
+                ).first()
+                if not owns_import_task(task):
+                    return
                 _append_import_task_result(task, result, now=datetime.utcnow())
                 db.commit()
 
         task = db.query(KnowledgeImportTask).filter(
-            KnowledgeImportTask.id == task_id
+            KnowledgeImportTask.id == task_id,
+            KnowledgeImportTask.attempt_count == claimed_attempt,
         ).first()
-        if not task or task.status != "running":
+        if not owns_import_task(task):
             return
         task.status = "completed_with_errors" if task.failed else "completed"
         task.error_message = ""
@@ -1375,10 +1449,23 @@ def process_knowledge_import_task(
         db.commit()
     except Exception as exc:
         db.rollback()
-        task = db.query(KnowledgeImportTask).filter(
+        task_query = db.query(KnowledgeImportTask).filter(
             KnowledgeImportTask.id == task_id
-        ).first()
-        if task and task.status == "running":
+        )
+        if claimed_attempt is not None:
+            task_query = task_query.filter(
+                KnowledgeImportTask.attempt_count == claimed_attempt
+            )
+        task = task_query.first()
+        can_retry = (
+            task is not None
+            and task.status == "running"
+            and (
+                claimed_attempt is None
+                or int(task.attempt_count or 0) == claimed_attempt
+            )
+        )
+        if can_retry:
             _mark_import_task_retry(
                 task,
                 f"后台处理异常，将自动重试：{str(exc) or type(exc).__name__}",

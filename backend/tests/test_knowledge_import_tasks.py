@@ -11,6 +11,7 @@ from app.models.knowledge import Category, KnowledgeImportTask
 from app.routes.knowledge import (
     _import_embedding_batches,
     _precompute_import_embeddings,
+    process_knowledge_import_task,
     process_next_knowledge_import_task,
 )
 from app.schemas.knowledge import ExcelImportRowResult
@@ -175,12 +176,71 @@ class KnowledgeImportTaskTests(unittest.TestCase):
 
         self.assertEqual(process_row.call_count, 1)
         self.assertEqual(process_row.call_args.args[1].row_number, 3)
+        # A failed precomputation must fall back to the legacy three-argument
+        # row path so its original error handling remains authoritative.
+        self.assertEqual(process_row.call_args.kwargs, {})
         with self.session_factory() as db:
             task = db.query(KnowledgeImportTask).one()
             self.assertEqual(task.status, "completed")
             self.assertEqual(task.processed_rows, 2)
             self.assertEqual(task.imported, 2)
             self.assertEqual([item["row"] for item in task.results], [2, 3])
+
+    def test_reclaimed_attempt_stops_the_old_worker_before_row_write(self):
+        workbook = self._workbook_bytes(
+            [["唯一条", "自营回收", "cat-qc", "正文"]]
+        )
+        with self.session_factory() as db:
+            db.add(
+                Category(
+                    id="cat-qc",
+                    name="质检标准",
+                    parent_id=None,
+                    level=1,
+                    sort_order=1,
+                )
+            )
+            db.add(
+                self._task(
+                    "import-claim",
+                    workbook,
+                    status="running",
+                    total_rows=1,
+                    attempt_count=1,
+                    lease_expires_at=datetime.utcnow() + timedelta(minutes=1),
+                )
+            )
+            db.commit()
+
+        def steal_claim(rows, *, on_batch_complete):
+            with self.session_factory() as other_db:
+                task = other_db.query(KnowledgeImportTask).filter(
+                    KnowledgeImportTask.id == "import-claim"
+                ).one()
+                task.attempt_count = 2
+                other_db.commit()
+            on_batch_complete(1, 1)
+            return {}
+
+        with patch(
+            "app.routes.knowledge._precompute_import_embeddings",
+            side_effect=steal_claim,
+        ), patch(
+            "app.routes.knowledge._process_excel_import_row",
+        ) as process_row, patch(
+            "app.routes.knowledge.logger.exception",
+        ):
+            process_knowledge_import_task(
+                "import-claim",
+                session_factory=self.session_factory,
+            )
+
+        process_row.assert_not_called()
+        with self.session_factory() as db:
+            task = db.query(KnowledgeImportTask).one()
+            self.assertEqual(task.attempt_count, 2)
+            self.assertEqual(task.status, "running")
+            self.assertEqual(task.processed_rows, 0)
 
 
 if __name__ == "__main__":
