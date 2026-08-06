@@ -458,8 +458,8 @@ def _deduplication_metadata(
         "action": decision.action,
         "embedding_model": settings.EMBEDDING_MODEL,
         "content_hash": decision.content_hash,
-        "block_threshold": settings.DEDUP_BLOCK_THRESHOLD,
-        "review_threshold": settings.DEDUP_REVIEW_THRESHOLD,
+        "block_threshold": decision.block_threshold,
+        "review_threshold": decision.review_threshold,
         "matches": [
             {
                 "knowledge_id": match.knowledge_id,

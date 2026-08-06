@@ -16,6 +16,7 @@ from app.routes import (
     auth,
     business_type,
     category,
+    embedding_admin,
     integration,
     knowledge,
     knowledge_origin,
@@ -88,6 +89,7 @@ app.include_router(tag.router, prefix=settings.API_V1_PREFIX)
 app.include_router(manhattan.router, prefix=settings.API_V1_PREFIX)
 app.include_router(auth.router, prefix=settings.API_V1_PREFIX)
 app.include_router(integration.router, prefix=settings.API_V1_PREFIX)
+app.include_router(embedding_admin.router, prefix=settings.API_V1_PREFIX)
 app.include_router(media.router)
 
 app.mount("/lib", StaticFiles(directory=str(FRONTEND_DIR / "lib")), name="lib")

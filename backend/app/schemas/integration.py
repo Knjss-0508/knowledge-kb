@@ -426,16 +426,63 @@ class IntegrationStandardSearchResponse(BaseModel):
     candidates: list[IntegrationStandardSearchCandidate]
 
 
+class RetrievalQualityCandidatePayload(BaseModel):
+    knowledge_id: str = Field(..., min_length=1, max_length=64)
+    rank: int = Field(..., ge=1, le=100)
+    title: str = Field("", max_length=256)
+    embedding_score: float | None = Field(None, ge=0, le=1)
+    rerank_score: float | None = Field(None, ge=0, le=1)
+    final_score: float | None = Field(None, ge=0, le=1)
+    selected: bool = False
+
+
 class RetrievalQualityEventPayload(BaseModel):
     idempotency_key: str = Field(..., min_length=1, max_length=128)
     source_system: str = Field(..., min_length=1, max_length=64)
     query: str = Field(..., min_length=1, max_length=1000)
     conversation_id: str | None = Field(None, max_length=128)
+    schema_version: int = Field(1, ge=1, le=10)
+    request_status: Literal[
+        "success",
+        "no_match",
+        "timeout",
+        "error",
+        "invalid_response",
+        "fallback",
+    ] = "success"
     candidate_count: int = Field(..., ge=0)
     top_knowledge_id: str | None = Field(None, max_length=64)
     top_rerank_score: float | None = Field(None, ge=0, le=1)
     score_threshold: float = Field(..., ge=0, le=1)
     selected: bool = False
+    selected_knowledge_id: str | None = Field(None, max_length=64)
+    selected_candidate_rank: int | None = Field(None, ge=1, le=100)
+    expected_knowledge_id: str | None = Field(None, max_length=64)
+    feedback_type: Literal["none", "helpful", "unhelpful", "corrected"] = "none"
+    failure_reason: Literal[
+        "",
+        "knowledge_missing",
+        "wrong_ranking",
+        "wrong_scope",
+        "stale_content",
+        "threshold_too_high",
+        "threshold_too_low",
+        "query_misunderstood",
+        "candidate_irrelevant",
+        "answer_not_used",
+        "technical_failure",
+        "unknown",
+    ] = ""
+    candidates: list[RetrievalQualityCandidatePayload] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    embedding_model: str = Field("", max_length=256)
+    reranker_model: str = Field("", max_length=256)
+    prompt_version: str = Field("", max_length=128)
+    retrieval_latency_ms: float | None = Field(None, ge=0)
+    rerank_latency_ms: float | None = Field(None, ge=0)
+    total_latency_ms: float | None = Field(None, ge=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("top_rerank_score")
@@ -445,6 +492,18 @@ class RetrievalQualityEventPayload(BaseModel):
             raise ValueError("top_rerank_score is required when candidate_count is greater than 0")
         return value
 
+    @model_validator(mode="after")
+    def validate_feedback_dimensions(self):
+        if self.candidates:
+            ranks = [item.rank for item in self.candidates]
+            if len(ranks) != len(set(ranks)):
+                raise ValueError("candidate ranks must be unique")
+            if self.candidate_count != len(self.candidates):
+                raise ValueError("candidate_count must match candidates length")
+        if self.selected_candidate_rank is not None and not self.selected_knowledge_id:
+            raise ValueError("selected_knowledge_id is required when selected_candidate_rank is set")
+        return self
+
 
 class RetrievalQualityEventBatch(BaseModel):
     items: list[RetrievalQualityEventPayload] = Field(..., min_length=1, max_length=100)
@@ -453,7 +512,14 @@ class RetrievalQualityEventBatch(BaseModel):
 class RetrievalQualityEventResult(BaseModel):
     idempotency_key: str
     status: Literal["recorded", "reused"]
-    outcome: Literal["accepted", "low_score", "no_candidates", "not_selected"]
+    outcome: Literal[
+        "accepted",
+        "accepted_alternative",
+        "low_score",
+        "no_candidates",
+        "not_selected",
+        "technical_failure",
+    ]
     event_id: str
 
 
