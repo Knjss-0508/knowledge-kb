@@ -511,8 +511,9 @@ Content-Type: application/json
 ```
 
 该接口与“答疑智能推荐助手 0.2.2”的 `external-standard-provider` 契约兼容。
-服务端只检索 `published` 已发布知识，并按向量相关性返回最多 5 条；待审核、
-草稿和已废弃知识不会出现在响应中。
+服务端只检索 `published` 已发布知识，并分别检索“总部标准”和“业务沉淀”：
+每个知识来源最多返回 5 条，合并后最多 10 条。待审核、草稿和已废弃知识不会
+出现在响应中。
 
 请求示例：
 
@@ -539,22 +540,23 @@ Content-Type: application/json
 | 字段 | 必填 | 说明 |
 |---|---:|---|
 | `normalizedQuestion` | 是 | 插件整理后的检索问题，不能为空 |
-| `knowledgeOrigin` | 是 | 知识来源硬过滤，只允许 `headquarters_standard` 或 `business_accumulation` |
+| `knowledgeOrigin` | 否 | 兼容旧插件的来源字段；当前接口固定同时检索总部标准和业务沉淀 |
 | `businessType` | 否 | 业务类型硬过滤，只允许 `self_operated` 或 `aggregated`；新插件应明确传递 |
 | `productType` / `model` | 否 | 插件提供的商品类目和机型上下文 |
 | `orderInfo` | 否 | 插件订单上下文，当前保留 `category` 和 `model` |
 | `partTerms` / `phenomenonTerms` / `categoryIntent` | 否 | 插件已解析的检索上下文 |
-| `limit` | 否 | 兼容插件的 1～20 输入；知识库实际最多返回 5 条 |
+| `limit` | 否 | 每个知识来源的候选上限；兼容 1～20 输入，服务端每组实际最多返回 5 条 |
 
-当前版本只使用 `normalizedQuestion` 生成查询向量，并使用 `knowledgeOrigin` + `businessType`
-对已发布知识执行硬过滤。插件传入的类目和机型是中文名称，而知识库适用范围保存的是
-曼哈顿 ID，尚未建立名称到 ID 的稳定映射，因此其他上下文字段暂不作为硬过滤
-条件，避免误删正确候选。
+当前版本只使用 `normalizedQuestion` 生成查询向量，并使用 `businessType` 对已发布
+知识执行硬过滤；同一个查询向量会分别在 `headquarters_standard` 和
+`business_accumulation` 范围内检索。插件传入的类目和机型是中文名称，而知识库
+适用范围保存的是曼哈顿 ID，尚未建立名称到 ID 的稳定映射，因此其他上下文字段
+暂不作为硬过滤条件，避免误删正确候选。
 
 为兼容尚未发送 `businessType` 的旧插件，服务端仍会检查 `productType` 和
 `orderInfo.category`：任一字段明确等于“聚合回收”时按 `aggregated` 检索，
-其他情况默认按 `self_operated` 检索；知识来源不提供兼容猜测，缺少 `knowledgeOrigin`
-会返回 HTTP 422，避免跨来源召回。
+其他情况默认按 `self_operated` 检索。`knowledgeOrigin` 仍接受旧值，但不再限制
+单一来源。
 
 响应示例：
 
@@ -585,11 +587,12 @@ Content-Type: application/json
 }
 ```
 
+响应按“总部标准 TOP5、业务沉淀 TOP5”的组顺序合并，每组内部按相关性从高到低。
 每条候选都会返回实际所属的 `knowledgeOrigin` 和 `businessType`。知识正文会转换为纯文本返回；
 图片和视频地址不会下发，但其 `alt`、`caption`
 等可读说明会保留。无命中时返回 HTTP 200、`status: "no_match"` 和空
-`candidates`；无命中只表示当前知识来源与业务类型范围内没有结果，不会自动跨来源或跨业务
-扩大检索。Embedding 服务不可用时返回 HTTP 503。
+`candidates`。某个知识来源不足 5 条时只返回实际命中数，不会用另一来源补位或
+复制结果；当前接口不会跨业务类型扩大检索。Embedding 服务不可用时返回 HTTP 503。
 
 插件的 Provider 配置示例：
 
@@ -598,7 +601,7 @@ Content-Type: application/json
   {
     "id": "knowledge-kb",
     "enabled": true,
-    "searchUrl": "https://<知识库地址>/api/v1/integration/standard-search",
+    "searchUrl": "https://zsk2.powerzhuan.cn/api/v1/integration/standard-search",
     "apiKeyEnv": "KNOWLEDGE_KB_RETRIEVAL_KEY",
     "authHeader": "X-Integration-Key",
     "authScheme": "",

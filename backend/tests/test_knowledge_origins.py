@@ -101,7 +101,7 @@ class KnowledgeOriginTests(unittest.TestCase):
             "#/components/schemas/KnowledgeOriginOption",
         )
 
-    def test_automation_review_and_retrieval_require_explicit_origin(self):
+    def test_automation_review_requires_origin_but_dual_retrieval_does_not(self):
         self.assertIsNone(
             CandidateReviewUpdate.model_validate({}).knowledge_origin
         )
@@ -113,10 +113,10 @@ class KnowledgeOriginTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             CandidateReviewUpdate.model_validate({"business_type": None})
 
-        with self.assertRaises(ValidationError):
-            IntegrationStandardSearchRequest.model_validate(
-                {"normalizedQuestion": "屏幕漏光"}
-            )
+        dual_origin_request = IntegrationStandardSearchRequest.model_validate(
+            {"normalizedQuestion": "屏幕漏光"}
+        )
+        self.assertIsNone(dual_origin_request.knowledge_origin)
         with self.assertRaises(ValidationError):
             SearchRequest.model_validate(
                 {

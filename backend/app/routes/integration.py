@@ -67,6 +67,10 @@ logger = logging.getLogger(__name__)
 
 TAXONOMY_VERSION = "automation-v5"
 STANDARD_SEARCH_MAX_RESULTS = 5
+STANDARD_SEARCH_KNOWLEDGE_ORIGINS = (
+    "headquarters_standard",
+    "business_accumulation",
+)
 
 
 def _to_dedup_response(decision: DedupDecision) -> IntegrationDedupResponse:
@@ -372,7 +376,7 @@ def search_standard_provider_knowledge(
     db: Session = Depends(get_db),
     _: None = Depends(require_retrieval_key),
 ):
-    top_k = min(body.limit, STANDARD_SEARCH_MAX_RESULTS)
+    top_k_per_origin = min(body.limit, STANDARD_SEARCH_MAX_RESULTS)
     inferred_business_type = body.business_type
     if not inferred_business_type:
         inferred_business_type = (
@@ -387,13 +391,16 @@ def search_standard_provider_knowledge(
             else "self_operated"
         )
     try:
-        ranked = search_embeddings(
-            db,
-            query=body.normalized_question,
-            business_type=inferred_business_type,
-            knowledge_origin=body.knowledge_origin,
-            top_k=top_k,
-        )
+        ranked_by_origin = {
+            knowledge_origin: search_embeddings(
+                db,
+                query=body.normalized_question,
+                business_type=inferred_business_type,
+                knowledge_origin=knowledge_origin,
+                top_k=top_k_per_origin,
+            )
+            for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS
+        }
     except EmbeddingServiceUnavailable as exc:
         logger.warning("Embedding unavailable during standard provider search: %s", exc)
         raise HTTPException(
@@ -401,11 +408,15 @@ def search_standard_provider_knowledge(
             detail="Embedding 服务不可用，无法完成语义检索",
         ) from exc
 
-    published_ranked = [
-        (item, score)
-        for item, score in ranked
-        if item.status == KnowledgeStatus.PUBLISHED
-    ][:top_k]
+    published_ranked: list[tuple[Knowledge, float]] = []
+    for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS:
+        published_ranked.extend(
+            [
+                (item, score)
+                for item, score in ranked_by_origin[knowledge_origin]
+                if item.status == KnowledgeStatus.PUBLISHED
+            ][:top_k_per_origin]
+        )
     candidates = [
         _to_standard_search_candidate(item, score)
         for item, score in published_ranked

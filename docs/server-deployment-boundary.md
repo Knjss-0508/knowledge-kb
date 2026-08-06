@@ -35,6 +35,25 @@
 
 公网访问必须经项目专属 Nginx/宝塔站点反向代理进入。不得把 `8000`、PostgreSQL 或 Redis 直接暴露到公网。
 
+答疑插件的加密调用经用户于 2026-08-06 确认后，允许复用
+`zsk2.powerzhuan.cn` 的受信任 HTTPS 证书，但权限边界仅限新增以下文件：
+
+```text
+/www/server/panel/vhost/nginx/extension/zsk2.powerzhuan.cn/knowledge-kb-integration.conf
+```
+
+该文件必须来自仓库
+`deploy/nginx/knowledge-kb-integration.conf`，且只允许代理：
+
+```text
+/api/v1/integration/standard-search
+/api/v1/integration/retrieval-events:batch
+```
+
+不得修改 `zsk2.powerzhuan.cn` 的站点根目录、PHP 配置、重写规则、证书文件或
+其他接口。原 `http://111.230.109.227:8801` 入口暂时保留用于旧客户端兼容；
+新客户端应使用 `https://zsk2.powerzhuan.cn`。
+
 ## 3. 项目专属更新配置
 
 服务器已完成首次部署，后续发布均按“更新现有服务”处理，不得默认重新部署整套环境。

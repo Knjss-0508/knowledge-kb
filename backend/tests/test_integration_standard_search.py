@@ -70,6 +70,10 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         self.assertEqual(request.business_type, "aggregated")
         self.assertEqual(request.part_terms, ["屏幕"])
         self.assertEqual(request.limit, 8)
+        request_without_origin = IntegrationStandardSearchRequest.model_validate(
+            {"normalizedQuestion": "屏幕漏光怎么判断"}
+        )
+        self.assertIsNone(request_without_origin.knowledge_origin)
 
         with self.assertRaises(ValidationError):
             IntegrationStandardSearchRequest.model_validate(
@@ -88,11 +92,19 @@ class IntegrationStandardSearchTests(unittest.TestCase):
             )
 
     @patch("app.routes.integration.search_embeddings")
-    def test_returns_highest_five_in_plugin_compatible_shape(self, search):
-        search.return_value = [
-            (_knowledge(index), 0.99 - index * 0.01)
-            for index in range(1, 8)
-        ]
+    def test_returns_top_five_per_origin_in_plugin_compatible_shape(self, search):
+        def ranked_for_origin(*_args, **kwargs):
+            origin = kwargs["knowledge_origin"]
+            start = 1 if origin == "headquarters_standard" else 101
+            return [
+                (
+                    _knowledge(index, knowledge_origin=origin),
+                    0.99 - offset * 0.01,
+                )
+                for offset, index in enumerate(range(start, start + 7))
+            ]
+
+        search.side_effect = ranked_for_origin
         body = IntegrationStandardSearchRequest.model_validate(
             {
                 "normalizedQuestion": "屏幕漏光",
@@ -104,22 +116,34 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         response = search_standard_provider_knowledge(body, MagicMock(), None)
         payload = response.model_dump(mode="json", by_alias=True)
 
-        search.assert_called_once()
-        self.assertEqual(search.call_args.kwargs["query"], "屏幕漏光")
+        self.assertEqual(search.call_count, 2)
         self.assertEqual(
-            search.call_args.kwargs["knowledge_origin"],
-            "business_accumulation",
+            [
+                call.kwargs["knowledge_origin"]
+                for call in search.call_args_list
+            ],
+            ["headquarters_standard", "business_accumulation"],
         )
-        self.assertEqual(search.call_args.kwargs["business_type"], "self_operated")
-        self.assertEqual(search.call_args.kwargs["top_k"], 5)
-        self.assertEqual(len(payload["candidates"]), 5)
+        for call in search.call_args_list:
+            self.assertEqual(call.kwargs["query"], "屏幕漏光")
+            self.assertEqual(call.kwargs["business_type"], "self_operated")
+            self.assertEqual(call.kwargs["top_k"], 5)
+        self.assertEqual(len(payload["candidates"]), 10)
         self.assertEqual(
             [item["id"] for item in payload["candidates"]],
-            [f"A-{index:05d}" for index in range(1, 6)],
+            [
+                *[f"A-{index:05d}" for index in range(1, 6)],
+                *[f"A-{index:05d}" for index in range(101, 106)],
+            ],
         )
         first = payload["candidates"][0]
         self.assertEqual(first["finalScore"], first["score"])
-        self.assertEqual(first["knowledgeOrigin"], "business_accumulation")
+        self.assertEqual(first["knowledgeOrigin"], "headquarters_standard")
+        self.assertEqual(
+            [item["knowledgeOrigin"] for item in payload["candidates"]],
+            ["headquarters_standard"] * 5
+            + ["business_accumulation"] * 5,
+        )
         self.assertEqual(first["businessType"], "self_operated")
         self.assertEqual(first["level1Label"], "质检标准")
         self.assertEqual(first["productType"], "phone")
@@ -143,10 +167,9 @@ class IntegrationStandardSearchTests(unittest.TestCase):
 
         search_standard_provider_knowledge(body, MagicMock(), None)
 
-        self.assertEqual(
-            search.call_args.kwargs["business_type"],
-            "self_operated",
-        )
+        self.assertEqual(search.call_count, 2)
+        for call in search.call_args_list:
+            self.assertEqual(call.kwargs["business_type"], "self_operated")
 
     @patch("app.routes.integration.search_embeddings", return_value=[])
     def test_legacy_aggregated_hint_selects_aggregated_business(self, search):
@@ -174,17 +197,41 @@ class IntegrationStandardSearchTests(unittest.TestCase):
                 search.reset_mock()
                 body = IntegrationStandardSearchRequest.model_validate(payload)
                 search_standard_provider_knowledge(body, MagicMock(), None)
-                self.assertEqual(
-                    search.call_args.kwargs["business_type"],
-                    "aggregated",
-                )
+                self.assertEqual(search.call_count, 2)
+                for call in search.call_args_list:
+                    self.assertEqual(call.kwargs["business_type"], "aggregated")
 
     @patch("app.routes.integration.search_embeddings")
     def test_defensively_excludes_non_published_items(self, search):
-        search.return_value = [
-            (_knowledge(1, status=KnowledgeStatus.REVIEW), 0.99),
-            (_knowledge(2), 0.90),
-            (_knowledge(3, status=KnowledgeStatus.DEPRECATED), 0.89),
+        search.side_effect = [
+            [
+                (
+                    _knowledge(
+                        1,
+                        status=KnowledgeStatus.REVIEW,
+                        knowledge_origin="headquarters_standard",
+                    ),
+                    0.99,
+                ),
+                (
+                    _knowledge(2, knowledge_origin="headquarters_standard"),
+                    0.90,
+                ),
+            ],
+            [
+                (
+                    _knowledge(
+                        3,
+                        status=KnowledgeStatus.DEPRECATED,
+                        knowledge_origin="business_accumulation",
+                    ),
+                    0.89,
+                ),
+                (
+                    _knowledge(4, knowledge_origin="business_accumulation"),
+                    0.88,
+                ),
+            ],
         ]
         body = IntegrationStandardSearchRequest.model_validate(
             {
@@ -195,9 +242,15 @@ class IntegrationStandardSearchTests(unittest.TestCase):
 
         response = search_standard_provider_knowledge(body, MagicMock(), None)
 
-        self.assertEqual([item.id for item in response.candidates], ["A-00002"])
+        self.assertEqual(
+            [item.id for item in response.candidates],
+            ["A-00002", "A-00004"],
+        )
 
-    @patch("app.routes.integration.search_embeddings", return_value=[])
+    @patch(
+        "app.routes.integration.search_embeddings",
+        side_effect=[[], []],
+    )
     def test_no_match_returns_successful_empty_envelope(self, _search):
         body = IntegrationStandardSearchRequest.model_validate(
             {
@@ -210,6 +263,40 @@ class IntegrationStandardSearchTests(unittest.TestCase):
 
         self.assertEqual(response.status, "no_match")
         self.assertEqual(response.candidates, [])
+
+    @patch("app.routes.integration.search_embeddings")
+    def test_per_origin_limit_and_partial_match_are_preserved(self, search):
+        search.side_effect = [
+            [
+                (
+                    _knowledge(
+                        index,
+                        knowledge_origin="headquarters_standard",
+                    ),
+                    0.99 - index * 0.01,
+                )
+                for index in range(1, 5)
+            ],
+            [],
+        ]
+        body = IntegrationStandardSearchRequest.model_validate(
+            {
+                "normalizedQuestion": "屏幕漏光",
+                "limit": 2,
+            }
+        )
+
+        response = search_standard_provider_knowledge(body, MagicMock(), None)
+
+        self.assertEqual(response.status, "success")
+        self.assertEqual(
+            [item.id for item in response.candidates],
+            ["A-00001", "A-00002"],
+        )
+        self.assertEqual(
+            [call.kwargs["top_k"] for call in search.call_args_list],
+            [2, 2],
+        )
 
     @patch(
         "app.routes.integration.search_embeddings",
@@ -289,10 +376,22 @@ class IntegrationStandardSearchTests(unittest.TestCase):
 
     @patch("app.routes.integration.search_embeddings")
     def test_http_contract_uses_retrieval_key_and_camel_case(self, search):
-        search.return_value = [
-            (_knowledge(index), 0.99 - index * 0.01)
-            for index in range(1, 8)
-        ]
+        def ranked_for_origin(*_args, **kwargs):
+            origin = kwargs["knowledge_origin"]
+            start = 1 if origin == "headquarters_standard" else 101
+            return [
+                (
+                    _knowledge(
+                        index,
+                        knowledge_origin=origin,
+                        business_type="aggregated",
+                    ),
+                    0.99 - offset * 0.01,
+                )
+                for offset, index in enumerate(range(start, start + 7))
+            ]
+
+        search.side_effect = ranked_for_origin
         original_integration = settings.INTEGRATION_API_KEY
         original_retrieval = settings.RETRIEVAL_API_KEY
         settings.INTEGRATION_API_KEY = "test-integration-key"
@@ -331,18 +430,25 @@ class IntegrationStandardSearchTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(len(payload["candidates"]), 5)
+        self.assertEqual(len(payload["candidates"]), 10)
         self.assertIn("retrievalMode", payload)
         self.assertIn("knowledgeVersion", payload)
         self.assertIn("finalScore", payload["candidates"][0])
         self.assertEqual(
             payload["candidates"][0]["knowledgeOrigin"],
-            "business_accumulation",
+            "headquarters_standard",
         )
-        self.assertEqual(payload["candidates"][0]["businessType"], "self_operated")
+        self.assertEqual(payload["candidates"][0]["businessType"], "aggregated")
+        self.assertEqual(
+            [item["knowledgeOrigin"] for item in payload["candidates"]],
+            ["headquarters_standard"] * 5
+            + ["business_accumulation"] * 5,
+        )
         self.assertNotIn("retrieval_mode", payload)
         self.assertNotIn("final_score", payload["candidates"][0])
-        self.assertEqual(search.call_args.kwargs["business_type"], "aggregated")
+        self.assertEqual(search.call_count, 2)
+        for call in search.call_args_list:
+            self.assertEqual(call.kwargs["business_type"], "aggregated")
 
     def test_http_retrieval_key_scope_includes_feedback_but_not_taxonomy(self):
         original_integration = settings.INTEGRATION_API_KEY
