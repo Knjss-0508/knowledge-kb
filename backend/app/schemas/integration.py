@@ -342,7 +342,14 @@ class IntegrationStandardSearchRequest(BaseModel):
         min_length=1,
         max_length=8000,
     )
-    knowledge_origin: KnowledgeOrigin = Field(..., alias="knowledgeOrigin")
+    knowledge_origin: KnowledgeOrigin | None = Field(
+        None,
+        alias="knowledgeOrigin",
+        description=(
+            "兼容旧客户端的知识来源字段；标准检索当前固定同时检索"
+            "总部标准和业务沉淀。"
+        ),
+    )
     business_type: BusinessType | None = Field(None, alias="businessType")
     product_type: str = Field("", alias="productType", max_length=500)
     model: str = Field("", max_length=500)
@@ -361,7 +368,12 @@ class IntegrationStandardSearchRequest(BaseModel):
         alias="categoryIntent",
         max_length=100,
     )
-    limit: int = Field(5, ge=1, le=20)
+    limit: int = Field(
+        5,
+        ge=1,
+        le=20,
+        description="每个知识来源的候选上限，服务端最多取 5 条。",
+    )
 
     @field_validator("normalized_question")
     @classmethod

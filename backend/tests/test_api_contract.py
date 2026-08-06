@@ -263,8 +263,13 @@ class ApiContractTests(unittest.TestCase):
         response_properties = schemas[
             "IntegrationStandardSearchResponse"
         ]["properties"]
+        request_required = set(
+            schemas["IntegrationStandardSearchRequest"].get("required", [])
+        )
 
         self.assertIn("normalizedQuestion", request_properties)
+        self.assertIn("knowledgeOrigin", request_properties)
+        self.assertNotIn("knowledgeOrigin", request_required)
         self.assertIn("businessType", request_properties)
         self.assertIn("productType", request_properties)
         self.assertIn("businessType", candidate_properties)
