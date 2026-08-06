@@ -26,6 +26,9 @@ Desktop.ini
 # 上传文件
 backend/uploads/
 backend/app/uploads/
+training-runner/.env
+training-runner/artifacts/
+training-runner/.cache/
 
 # 前端临时/测试页面
 frontend/test.html

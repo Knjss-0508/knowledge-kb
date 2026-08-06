@@ -17,6 +17,17 @@ from app.routes.knowledge import (
 
 
 class ApiContractTests(unittest.TestCase):
+    def test_embedding_model_upload_and_deploy_are_not_exposed(self):
+        paths = app.openapi()["paths"]
+        self.assertNotIn(
+            "/api/v1/embedding-model/models/{model_id}/upload",
+            paths,
+        )
+        self.assertNotIn(
+            "/api/v1/embedding-model/models/{model_id}/deploy",
+            paths,
+        )
+
     def test_excel_import_routes_are_exposed(self):
         paths = app.openapi()["paths"]
         self.assertIn("/api/v1/knowledge/import/template", paths)

@@ -24,6 +24,7 @@ from app.models.knowledge import (
     KnowledgeTag,
 )
 from app.services.embedding import embed_texts
+from app.services.embedding_runtime import get_active_runtime_values
 
 
 _QueryEmbeddingKey = tuple[str, str, str, int, str, str]
@@ -225,6 +226,8 @@ class DedupDecision:
     title_embedding: list[float] | None
     content_embedding: list[float] | None
     matches: list[DedupMatch]
+    block_threshold: float = 0.96
+    review_threshold: float = 0.88
 
 
 class _VisibleTextParser(HTMLParser):
@@ -336,9 +339,17 @@ def _combined_dedup_similarity(title_similarity: float, content_similarity: floa
     return round(min(title_similarity, content_similarity), 6)
 
 
-def _has_enough_semantic_content(content_text: str) -> bool:
+def _has_enough_semantic_content(
+    content_text: str,
+    minimum_chars: int | None = None,
+) -> bool:
     """Short fragments do not provide reliable semantic duplicate evidence."""
-    return len(content_text.strip()) >= settings.DEDUP_MIN_SEMANTIC_CONTENT_CHARS
+    minimum = (
+        settings.DEDUP_MIN_SEMANTIC_CONTENT_CHARS
+        if minimum_chars is None
+        else minimum_chars
+    )
+    return len(content_text.strip()) >= minimum
 
 
 def _normalized_containment_text(content_text: str) -> str:
@@ -350,13 +361,22 @@ def _normalized_comparison_text(value: str) -> str:
     return "".join(value.split()).casefold()
 
 
-def _has_content_containment(left: str, right: str) -> bool:
+def _has_content_containment(
+    left: str,
+    right: str,
+    minimum_chars: int | None = None,
+) -> bool:
     """Detect meaningful literal inclusion that embedding similarity can miss."""
     normalized_left = _normalized_containment_text(left)
     normalized_right = _normalized_containment_text(right)
+    minimum = (
+        settings.DEDUP_MIN_CONTAINMENT_CONTENT_CHARS
+        if minimum_chars is None
+        else minimum_chars
+    )
     if (
-        len(normalized_left) < settings.DEDUP_MIN_CONTAINMENT_CONTENT_CHARS
-        or len(normalized_right) < settings.DEDUP_MIN_CONTAINMENT_CONTENT_CHARS
+        len(normalized_left) < minimum
+        or len(normalized_right) < minimum
     ):
         return False
     return normalized_left in normalized_right or normalized_right in normalized_left
@@ -459,6 +479,20 @@ def check_duplicate(
     exclude_knowledge_id: str | None = None,
     embedding_vectors: tuple[list[float], list[float], list[float]] | None = None,
 ) -> DedupDecision:
+    runtime = get_active_runtime_values(db)
+    max_candidates = int(runtime["dedup_max_candidates"])
+    block_threshold = float(runtime["dedup_block_threshold"])
+    review_threshold = float(runtime["dedup_review_threshold"])
+    minimum_semantic_chars = int(runtime["dedup_min_semantic_content_chars"])
+    minimum_containment_chars = int(runtime["dedup_min_containment_content_chars"])
+
+    def _decision(**values) -> DedupDecision:
+        return DedupDecision(
+            block_threshold=block_threshold,
+            review_threshold=review_threshold,
+            **values,
+        )
+
     text, title_text, content_text = build_dedup_documents(title, content)
     if not text:
         raise ValueError("Knowledge content is empty after normalization.")
@@ -479,7 +513,7 @@ def check_duplicate(
         item
         for item in (
             title_query.order_by(Knowledge.updated_at.desc())
-            .limit(settings.DEDUP_MAX_CANDIDATES)
+            .limit(max_candidates)
             .all()
         )
         if _normalized_comparison_text(item.title) == normalized_title
@@ -491,7 +525,7 @@ def check_duplicate(
         == normalized_content
     ]
     if exact_title_and_content_matches:
-        return DedupDecision(
+        return _decision(
             action="block_duplicate",
             content_hash=content_hash,
             embedding=None,
@@ -521,7 +555,7 @@ def check_duplicate(
             raise ValueError("Precomputed deduplication embeddings are incomplete.")
         query_vector, title_vector, content_vector = embedding_vectors
     if title_matches:
-        return DedupDecision(
+        return _decision(
             action="review_duplicate",
             content_hash=content_hash,
             embedding=query_vector,
@@ -559,11 +593,11 @@ def check_duplicate(
     exact_matches = (
         query.filter(KnowledgeEmbedding.content_hash == content_hash)
         .order_by(Knowledge.updated_at.desc())
-        .limit(settings.DEDUP_MAX_CANDIDATES)
+        .limit(max_candidates)
         .all()
     )
     if exact_matches:
-        return DedupDecision(
+        return _decision(
             action="block_duplicate",
             content_hash=content_hash,
             embedding=None,
@@ -580,17 +614,21 @@ def check_duplicate(
                     match_type="exact",
                     similarity=1.0,
                 )
-                for item in exact_matches[: settings.DEDUP_MAX_CANDIDATES]
+                for item in exact_matches[:max_candidates]
             ],
         )
 
     containment_matches = [
         item
         for item in query.all()
-        if _has_content_containment(content_text, _content_to_text(item.content))
+        if _has_content_containment(
+            content_text,
+            _content_to_text(item.content),
+            minimum_containment_chars,
+        )
     ]
     if containment_matches:
-        return DedupDecision(
+        return _decision(
             action="review_duplicate",
             content_hash=content_hash,
             embedding=query_vector,
@@ -607,11 +645,11 @@ def check_duplicate(
                     match_type="content_containment",
                     similarity=1.0,
                 )
-                for item in containment_matches[: settings.DEDUP_MAX_CANDIDATES]
+                for item in containment_matches[:max_candidates]
             ],
         )
-    if not _has_enough_semantic_content(content_text):
-        return DedupDecision(
+    if not _has_enough_semantic_content(content_text, minimum_semantic_chars):
+        return _decision(
             action="create",
             content_hash=content_hash,
             embedding=query_vector,
@@ -624,7 +662,7 @@ def check_duplicate(
         query.filter(KnowledgeEmbedding.embedding_vector.is_not(None))
         .with_entities(Knowledge, distance.label("distance"))
         .order_by(distance)
-        .limit(settings.DEDUP_MAX_CANDIDATES)
+        .limit(max_candidates)
         .all()
     )
     records_by_id = {
@@ -695,16 +733,16 @@ def check_duplicate(
     matches = [
         item
         for item in matches
-        if item.similarity >= settings.DEDUP_REVIEW_THRESHOLD
-    ][: settings.DEDUP_MAX_CANDIDATES]
+        if item.similarity >= review_threshold
+    ][:max_candidates]
     top_score = matches[0].similarity if matches else 0.0
     action: DedupAction = "create"
-    if top_score >= settings.DEDUP_BLOCK_THRESHOLD:
+    if top_score >= block_threshold:
         action = "block_duplicate"
-    elif top_score >= settings.DEDUP_REVIEW_THRESHOLD:
+    elif top_score >= review_threshold:
         action = "review_duplicate"
 
-    return DedupDecision(
+    return _decision(
         action=action,
         content_hash=content_hash,
         embedding=query_vector,
@@ -748,12 +786,23 @@ def save_embedding(
     db.flush()
 
 
-def _split_search_chunks(text: str) -> list[str]:
+def _split_search_chunks(
+    text: str,
+    *,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
+) -> list[str]:
     normalized = text.strip()
     if not normalized:
         return []
-    chunk_size = max(settings.SEARCH_CHUNK_SIZE, 100)
-    overlap = min(max(settings.SEARCH_CHUNK_OVERLAP, 0), chunk_size - 1)
+    chunk_size = max(
+        settings.SEARCH_CHUNK_SIZE if chunk_size is None else int(chunk_size),
+        100,
+    )
+    overlap = min(
+        max(settings.SEARCH_CHUNK_OVERLAP if overlap is None else int(overlap), 0),
+        chunk_size - 1,
+    )
     if len(normalized) <= chunk_size:
         return [normalized]
 
@@ -789,6 +838,9 @@ def build_search_documents_for_fields(
     title: str,
     subtitles: list[str] | None,
     content: Any,
+    *,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ) -> list[tuple[str, int, str]]:
     """Build search documents from fields without changing their text format."""
     documents: list[tuple[str, int, str]] = []
@@ -799,7 +851,13 @@ def build_search_documents_for_fields(
             documents.append(("subtitle", index, f"{normalized_title}\n{subtitle_text}"))
 
     content_text = _content_to_text(content)
-    for index, chunk in enumerate(_split_search_chunks(content_text)):
+    for index, chunk in enumerate(
+        _split_search_chunks(
+            content_text,
+            chunk_size=chunk_size,
+            overlap=chunk_overlap,
+        )
+    ):
         documents.append(("content", index, f"{normalized_title}\n{chunk}"))
 
     if not documents and normalized_title:
@@ -807,12 +865,19 @@ def build_search_documents_for_fields(
     return documents
 
 
-def build_search_documents(item: Knowledge) -> list[tuple[str, int, str]]:
+def build_search_documents(
+    item: Knowledge,
+    *,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> list[tuple[str, int, str]]:
     """Build independent search documents without polluting the dedup vector."""
     return build_search_documents_for_fields(
         item.title,
         item.subtitles,
         item.content,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
     )
 
 
@@ -841,7 +906,12 @@ def ensure_search_embeddings(
     precomputed_vectors: dict[tuple[str, int, str], list[float]] | None = None,
 ) -> int:
     """Create or refresh search vectors, reusing exact precomputed documents."""
-    documents = build_search_documents(item)
+    runtime = get_active_runtime_values(db)
+    documents = build_search_documents(
+        item,
+        chunk_size=int(runtime["search_chunk_size"]),
+        chunk_overlap=int(runtime["search_chunk_overlap"]),
+    )
     existing = (
         db.query(KnowledgeSearchEmbedding)
         .filter(

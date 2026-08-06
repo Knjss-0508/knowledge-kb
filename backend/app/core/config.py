@@ -91,6 +91,12 @@ class Settings(BaseSettings):
     SEARCH_CHUNK_SIZE: int = 800
     SEARCH_CHUNK_OVERLAP: int = 120
 
+    # Outbound GPU runner authentication. The runner polls this backend, so the
+    # user's workstation never needs an inbound public port.
+    EMBEDDING_TRAINING_RUNNER_TOKEN: str = ""
+    EMBEDDING_TRAINING_JOB_LEASE_SECONDS: int = 300
+    EMBEDDING_TRAINING_RUNNER_OFFLINE_SECONDS: int = 90
+
     # Empty means <backend>/uploads. Containers override this with /app/uploads.
     UPLOAD_DIR: str = ""
     UPLOAD_MAX_BYTES: int = 20 * 1024 * 1024

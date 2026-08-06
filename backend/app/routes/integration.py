@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -78,8 +78,8 @@ def _to_dedup_response(decision: DedupDecision) -> IntegrationDedupResponse:
         action=decision.action,
         embedding_model=settings.EMBEDDING_MODEL,
         content_hash=decision.content_hash,
-        block_threshold=settings.DEDUP_BLOCK_THRESHOLD,
-        review_threshold=settings.DEDUP_REVIEW_THRESHOLD,
+        block_threshold=decision.block_threshold,
+        review_threshold=decision.review_threshold,
         matches=[
             IntegrationDedupMatch(
                 knowledge_id=match.knowledge_id,
@@ -313,14 +313,132 @@ def _queue_duplicate_candidate(
     )
 
 
+_RETRIEVAL_TECHNICAL_FAILURES = {"timeout", "error", "invalid_response"}
+
+
+def _metadata_value(candidate, key, default=None):
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    return metadata.get(key, default)
+
+
+def _retrieval_candidate_snapshot(candidate) -> list[dict]:
+    if candidate.candidates:
+        return [
+            {
+                "knowledge_id": item.knowledge_id,
+                "rank": item.rank,
+                "title": item.title,
+                "embedding_score": item.embedding_score,
+                "rerank_score": item.rerank_score,
+                "final_score": item.final_score,
+                "selected": item.selected,
+            }
+            for item in sorted(candidate.candidates, key=lambda item: item.rank)
+        ]
+
+    candidate_ids = _metadata_value(candidate, "candidate_ids", [])
+    if not isinstance(candidate_ids, list):
+        candidate_ids = []
+    selected_id = candidate.selected_knowledge_id or _metadata_value(
+        candidate,
+        "selected_knowledge_id",
+    )
+    selected_rank = candidate.selected_candidate_rank or _metadata_value(
+        candidate,
+        "selected_candidate_rank",
+    )
+    snapshot = []
+    for index, knowledge_id in enumerate(candidate_ids[: candidate.candidate_count], start=1):
+        normalized_id = str(knowledge_id or "").strip()
+        if not normalized_id:
+            continue
+        snapshot.append(
+            {
+                "knowledge_id": normalized_id[:64],
+                "rank": index,
+                "title": "",
+                "embedding_score": None,
+                "rerank_score": candidate.top_rerank_score if index == 1 else None,
+                "final_score": candidate.top_rerank_score if index == 1 else None,
+                "selected": (
+                    normalized_id == selected_id
+                    or (selected_rank is not None and index == int(selected_rank))
+                ),
+            }
+        )
+    if not snapshot and candidate.top_knowledge_id:
+        snapshot.append(
+            {
+                "knowledge_id": candidate.top_knowledge_id,
+                "rank": 1,
+                "title": "",
+                "embedding_score": None,
+                "rerank_score": candidate.top_rerank_score,
+                "final_score": candidate.top_rerank_score,
+                "selected": bool(candidate.selected),
+            }
+        )
+    return snapshot
+
+
+def _retrieval_feedback_dimensions(candidate) -> dict:
+    selected_knowledge_id = (
+        candidate.selected_knowledge_id
+        or _metadata_value(candidate, "selected_knowledge_id")
+        or (candidate.top_knowledge_id if candidate.selected else None)
+    )
+    selected_candidate_rank = (
+        candidate.selected_candidate_rank
+        or _metadata_value(candidate, "selected_candidate_rank")
+        or (1 if candidate.selected else None)
+    )
+
+    if candidate.request_status in _RETRIEVAL_TECHNICAL_FAILURES:
+        threshold_status = "not_applicable"
+        selection_status = "not_evaluated"
+        outcome = "technical_failure"
+    elif candidate.candidate_count == 0:
+        threshold_status = "not_applicable"
+        selection_status = "not_evaluated"
+        outcome = "no_candidates"
+    else:
+        threshold_status = (
+            "below"
+            if candidate.top_rerank_score < candidate.score_threshold
+            else "passed"
+        )
+        if selected_knowledge_id:
+            selection_status = (
+                "top_selected"
+                if (
+                    selected_knowledge_id == candidate.top_knowledge_id
+                    or selected_candidate_rank == 1
+                )
+                else "alternative_selected"
+            )
+        else:
+            selection_status = "none_selected"
+
+        if threshold_status == "below":
+            outcome = "low_score"
+        elif selection_status == "top_selected":
+            outcome = "accepted"
+        elif selection_status == "alternative_selected":
+            outcome = "accepted_alternative"
+        else:
+            outcome = "not_selected"
+
+    return {
+        "selected_knowledge_id": selected_knowledge_id,
+        "selected_candidate_rank": selected_candidate_rank,
+        "threshold_status": threshold_status,
+        "selection_status": selection_status,
+        "outcome": outcome,
+    }
+
+
 def _resolve_retrieval_outcome(candidate) -> str:
-    if candidate.candidate_count == 0:
-        return "no_candidates"
-    if candidate.top_rerank_score < candidate.score_threshold:
-        return "low_score"
-    if not candidate.selected:
-        return "not_selected"
-    return "accepted"
+    return _retrieval_feedback_dimensions(candidate)["outcome"]
 
 
 def _standard_search_strings(values, *, limit: int = 100) -> list[str]:
@@ -461,7 +579,10 @@ def submit_retrieval_quality_events(
             )
             continue
 
-        outcome = _resolve_retrieval_outcome(candidate)
+        dimensions = _retrieval_feedback_dimensions(candidate)
+        outcome = dimensions["outcome"]
+        candidate_snapshot = _retrieval_candidate_snapshot(candidate)
+        latency_ms = _metadata_value(candidate, "latency_ms")
         event = RetrievalQualityEvent(
             id=f"rqe-{uuid.uuid4().hex[:12]}",
             idempotency_key=candidate.idempotency_key,
@@ -474,6 +595,35 @@ def submit_retrieval_quality_events(
             score_threshold=candidate.score_threshold,
             selected=candidate.selected,
             outcome=outcome,
+            schema_version=max(
+                candidate.schema_version,
+                2 if candidate.candidates else 1,
+            ),
+            request_status=candidate.request_status,
+            threshold_status=dimensions["threshold_status"],
+            selection_status=dimensions["selection_status"],
+            selected_knowledge_id=dimensions["selected_knowledge_id"],
+            selected_candidate_rank=dimensions["selected_candidate_rank"],
+            expected_knowledge_id=candidate.expected_knowledge_id,
+            feedback_type=candidate.feedback_type,
+            failure_reason=candidate.failure_reason,
+            candidate_snapshot=candidate_snapshot,
+            embedding_model=candidate.embedding_model,
+            reranker_model=candidate.reranker_model,
+            prompt_version=candidate.prompt_version,
+            retrieval_latency_ms=candidate.retrieval_latency_ms,
+            rerank_latency_ms=candidate.rerank_latency_ms,
+            total_latency_ms=(
+                candidate.total_latency_ms
+                if candidate.total_latency_ms is not None
+                else (
+                    max(0.0, float(latency_ms))
+                    if latency_ms is not None
+                    else None
+                )
+            ),
+            training_eligible=False,
+            review_status="unreviewed",
             event_metadata=candidate.metadata,
         )
         db.add(event)
@@ -500,7 +650,24 @@ def get_retrieval_analytics(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("knowledge:view")),
 ):
-    summary = {"total": 0, "accepted": 0, "low_score": 0, "no_candidates": 0, "not_selected": 0}
+    summary = {
+        "total": 0,
+        "accepted": 0,
+        "accepted_alternative": 0,
+        "low_score": 0,
+        "no_candidates": 0,
+        "not_selected": 0,
+        "technical_failure": 0,
+        "successful_requests": 0,
+        "candidate_queries": 0,
+        "threshold_passed": 0,
+        "threshold_below": 0,
+        "top_selected": 0,
+        "alternative_selected": 0,
+        "none_selected": 0,
+        "reviewed": 0,
+        "training_eligible": 0,
+    }
     for outcome, total in (
         db.query(RetrievalQualityEvent.outcome, func.count(RetrievalQualityEvent.id))
         .group_by(RetrievalQualityEvent.outcome)
@@ -508,18 +675,148 @@ def get_retrieval_analytics(
     ):
         summary[outcome] = total
 
+    request_counts = dict(
+        db.query(
+            RetrievalQualityEvent.request_status,
+            func.count(RetrievalQualityEvent.id),
+        )
+        .group_by(RetrievalQualityEvent.request_status)
+        .all()
+    )
+    threshold_counts = dict(
+        db.query(
+            RetrievalQualityEvent.threshold_status,
+            func.count(RetrievalQualityEvent.id),
+        )
+        .group_by(RetrievalQualityEvent.threshold_status)
+        .all()
+    )
+    selection_counts = dict(
+        db.query(
+            RetrievalQualityEvent.selection_status,
+            func.count(RetrievalQualityEvent.id),
+        )
+        .group_by(RetrievalQualityEvent.selection_status)
+        .all()
+    )
+    summary["successful_requests"] = sum(
+        int(request_counts.get(key, 0))
+        for key in ("success", "no_match", "fallback")
+    )
+    summary["candidate_queries"] = sum(
+        int(threshold_counts.get(key, 0))
+        for key in ("passed", "below")
+    )
+    summary["threshold_passed"] = int(threshold_counts.get("passed", 0))
+    summary["threshold_below"] = int(threshold_counts.get("below", 0))
+    summary["top_selected"] = int(selection_counts.get("top_selected", 0))
+    summary["alternative_selected"] = int(
+        selection_counts.get("alternative_selected", 0)
+    )
+    summary["none_selected"] = int(selection_counts.get("none_selected", 0))
+    summary["reviewed"] = (
+        db.query(func.count(RetrievalQualityEvent.id))
+        .filter(RetrievalQualityEvent.review_status == "confirmed")
+        .scalar()
+        or 0
+    )
+    summary["training_eligible"] = (
+        db.query(func.count(RetrievalQualityEvent.id))
+        .filter(RetrievalQualityEvent.training_eligible.is_(True))
+        .scalar()
+        or 0
+    )
+
     risks = (
         db.query(RetrievalQualityEvent)
-        .filter(RetrievalQualityEvent.outcome != "accepted")
+        .filter(
+            or_(
+                RetrievalQualityEvent.outcome.notin_(["accepted", "accepted_alternative"]),
+                RetrievalQualityEvent.review_status == "unreviewed",
+            )
+        )
         .order_by(RetrievalQualityEvent.created_at.desc())
         .limit(50)
         .all()
     )
     summary["total"] = sum(
-        summary[key] for key in ("accepted", "low_score", "no_candidates", "not_selected")
+        int(summary.get(key, 0))
+        for key in (
+            "accepted",
+            "accepted_alternative",
+            "low_score",
+            "no_candidates",
+            "not_selected",
+            "technical_failure",
+        )
     )
+
+    def rate(numerator: int, denominator: int) -> float:
+        return round(numerator / denominator, 4) if denominator else 0.0
+
+    rates = {
+        "candidate_coverage_rate": rate(
+            summary["candidate_queries"],
+            summary["successful_requests"],
+        ),
+        "threshold_pass_rate": rate(
+            summary["threshold_passed"],
+            summary["candidate_queries"],
+        ),
+        "any_selection_rate": rate(
+            summary["top_selected"] + summary["alternative_selected"],
+            summary["candidate_queries"],
+        ),
+        "top1_selection_rate": rate(
+            summary["top_selected"],
+            summary["candidate_queries"],
+        ),
+        "alternative_selection_rate": rate(
+            summary["alternative_selected"],
+            summary["candidate_queries"],
+        ),
+        "no_selection_rate": rate(
+            summary["none_selected"],
+            summary["candidate_queries"],
+        ),
+        "review_coverage_rate": rate(summary["reviewed"], summary["total"]),
+    }
+
+    latencies = sorted(
+        float(value)
+        for (value,) in (
+            db.query(RetrievalQualityEvent.total_latency_ms)
+            .filter(RetrievalQualityEvent.total_latency_ms.is_not(None))
+            .order_by(RetrievalQualityEvent.created_at.desc())
+            .limit(5000)
+            .all()
+        )
+    )
+
+    def percentile(values: list[float], percentile_value: float) -> float | None:
+        if not values:
+            return None
+        index = min(len(values) - 1, max(0, round((len(values) - 1) * percentile_value)))
+        return round(values[index], 2)
+
+    latency = {
+        "count": len(latencies),
+        "average_ms": round(sum(latencies) / len(latencies), 2) if latencies else None,
+        "p50_ms": percentile(latencies, 0.5),
+        "p95_ms": percentile(latencies, 0.95),
+    }
     return {
         "summary": summary,
+        "rates": rates,
+        "latency": latency,
+        "definitions": {
+            "candidate_coverage_rate": "成功请求中至少返回一条候选知识的比例",
+            "threshold_pass_rate": "有候选请求中最高分达到当次阈值的比例",
+            "top1_selection_rate": "有候选请求中最终采用第一名的比例",
+            "alternative_selection_rate": "有候选请求中最终采用第二名及以后候选的比例",
+            "no_selection_rate": "有候选请求中最终没有采用任何候选的比例",
+            "review_coverage_rate": "已由人工明确原因和正确目标的事件比例",
+        },
         "risks": [
             {
                 "id": event.id,
@@ -531,6 +828,24 @@ def get_retrieval_analytics(
                 "score_threshold": event.score_threshold,
                 "selected": event.selected,
                 "outcome": event.outcome,
+                "schema_version": event.schema_version,
+                "request_status": event.request_status,
+                "threshold_status": event.threshold_status,
+                "selection_status": event.selection_status,
+                "selected_knowledge_id": event.selected_knowledge_id,
+                "selected_candidate_rank": event.selected_candidate_rank,
+                "expected_knowledge_id": event.expected_knowledge_id,
+                "feedback_type": event.feedback_type,
+                "failure_reason": event.failure_reason,
+                "candidates": event.candidate_snapshot or [],
+                "embedding_model": event.embedding_model,
+                "reranker_model": event.reranker_model,
+                "prompt_version": event.prompt_version,
+                "retrieval_latency_ms": event.retrieval_latency_ms,
+                "rerank_latency_ms": event.rerank_latency_ms,
+                "total_latency_ms": event.total_latency_ms,
+                "training_eligible": event.training_eligible,
+                "review_status": event.review_status,
                 "created_at": event.created_at,
             }
             for event in risks

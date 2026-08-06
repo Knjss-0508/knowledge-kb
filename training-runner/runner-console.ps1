@@ -1,0 +1,800 @@
+[CmdletBinding()]
+param(
+    [string]$ConfigPath = (Join-Path $PSScriptRoot ".env"),
+    [string]$RuntimeRoot = "D:\knowledge-kb-training-runtime",
+    [switch]$ValidateOnly
+)
+
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = "Stop"
+
+Add-Type -AssemblyName PresentationCore
+Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName WindowsBase
+
+$RunnerDirectory = $PSScriptRoot
+$HostRunnerPath = Join-Path $RunnerDirectory "host-runner.ps1"
+$PwshPath = (Get-Command "pwsh.exe" -ErrorAction Stop).Source
+$NvidiaSmiCommand = Get-Command "nvidia-smi.exe" -ErrorAction SilentlyContinue
+$NvidiaSmiPath = if ($NvidiaSmiCommand) {
+    $NvidiaSmiCommand.Source
+} else {
+    ""
+}
+$script:ActionProcess = $null
+$script:ActionName = ""
+$script:ActionStdout = ""
+$script:ActionStderr = ""
+$script:RunnerProcess = $null
+$script:RunnerStdout = ""
+$script:RunnerStderr = ""
+$script:ServerProbeState = "unknown"
+$script:FooterMessage = "控制台已就绪"
+
+[xml]$Xaml = @'
+<Window
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="知识库模型训练控制台"
+    Width="1120"
+    Height="760"
+    MinWidth="920"
+    MinHeight="640"
+    WindowStartupLocation="CenterScreen"
+    Background="#F4F7F8"
+    FontFamily="Segoe UI, Microsoft YaHei UI"
+    TextOptions.TextFormattingMode="Display">
+  <Window.Resources>
+    <SolidColorBrush x:Key="PrimaryBrush" Color="#087F6B"/>
+    <SolidColorBrush x:Key="PrimaryDarkBrush" Color="#123B3A"/>
+    <SolidColorBrush x:Key="BorderBrush" Color="#DDE5E8"/>
+    <Style x:Key="PrimaryButton" TargetType="Button">
+      <Setter Property="MinHeight" Value="40"/>
+      <Setter Property="Padding" Value="16,8"/>
+      <Setter Property="Margin" Value="0,0,8,8"/>
+      <Setter Property="Background" Value="{StaticResource PrimaryBrush}"/>
+      <Setter Property="Foreground" Value="White"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Cursor" Value="Hand"/>
+    </Style>
+    <Style x:Key="SecondaryButton" TargetType="Button">
+      <Setter Property="MinHeight" Value="40"/>
+      <Setter Property="Padding" Value="16,8"/>
+      <Setter Property="Margin" Value="0,0,8,8"/>
+      <Setter Property="Background" Value="White"/>
+      <Setter Property="Foreground" Value="#344054"/>
+      <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Cursor" Value="Hand"/>
+    </Style>
+    <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+      <Setter Property="Foreground" Value="#B42318"/>
+      <Setter Property="BorderBrush" Value="#F4B7B2"/>
+      <Setter Property="Background" Value="#FFF7F6"/>
+    </Style>
+    <Style TargetType="TextBox">
+      <Setter Property="MinHeight" Value="36"/>
+      <Setter Property="Padding" Value="9,6"/>
+      <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Background" Value="White"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+    </Style>
+    <Style TargetType="PasswordBox">
+      <Setter Property="MinHeight" Value="36"/>
+      <Setter Property="Padding" Value="9,6"/>
+      <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Background" Value="White"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+    </Style>
+  </Window.Resources>
+
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="84"/>
+      <RowDefinition Height="116"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="42"/>
+    </Grid.RowDefinitions>
+
+    <Border Grid.Row="0" Background="{StaticResource PrimaryDarkBrush}">
+      <Grid Margin="24,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel VerticalAlignment="Center">
+          <TextBlock Text="知识库模型训练控制台" Foreground="White" FontSize="23" FontWeight="Bold"/>
+          <TextBlock Text="本机只承担 GPU 训练，不启动知识库容器或业务服务" Foreground="#B9D8D5" FontSize="12" Margin="0,6,0,0"/>
+        </StackPanel>
+        <Border Grid.Column="1" VerticalAlignment="Center" Background="#1D504D" BorderBrush="#39716D" BorderThickness="1" CornerRadius="6" Padding="12,8">
+          <StackPanel>
+            <TextBlock Text="发布权限" Foreground="#B9D8D5" FontSize="11"/>
+            <TextBlock Text="上传与替换均锁定" Foreground="White" FontSize="13" FontWeight="SemiBold" Margin="0,3,0,0"/>
+          </StackPanel>
+        </Border>
+      </Grid>
+    </Border>
+
+    <UniformGrid Grid.Row="1" Columns="4" Margin="20,14,20,8">
+      <Border Margin="0,0,10,0" Padding="14,12" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Ellipse x:Name="ConfigDot" Width="11" Height="11" Fill="#98A2B3" VerticalAlignment="Top" Margin="0,4,10,0"/>
+          <StackPanel Grid.Column="1"><TextBlock Text="1. 连接配置" FontWeight="SemiBold" Foreground="#344054"/><TextBlock x:Name="ConfigStatus" Text="待检查" Margin="0,6,0,0" Foreground="#667085" TextWrapping="Wrap"/></StackPanel>
+        </Grid>
+      </Border>
+      <Border Margin="0,0,10,0" Padding="14,12" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Ellipse x:Name="EnvironmentDot" Width="11" Height="11" Fill="#98A2B3" VerticalAlignment="Top" Margin="0,4,10,0"/>
+          <StackPanel Grid.Column="1"><TextBlock Text="2. 训练环境" FontWeight="SemiBold" Foreground="#344054"/><TextBlock x:Name="EnvironmentStatus" Text="待检查" Margin="0,6,0,0" Foreground="#667085" TextWrapping="Wrap"/></StackPanel>
+        </Grid>
+      </Border>
+      <Border Margin="0,0,10,0" Padding="14,12" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Ellipse x:Name="RunnerDot" Width="11" Height="11" Fill="#98A2B3" VerticalAlignment="Top" Margin="0,4,10,0"/>
+          <StackPanel Grid.Column="1"><TextBlock Text="3. 本机 Runner" FontWeight="SemiBold" Foreground="#344054"/><TextBlock x:Name="RunnerStatus" Text="未运行" Margin="0,6,0,0" Foreground="#667085" TextWrapping="Wrap"/></StackPanel>
+        </Grid>
+      </Border>
+      <Border Padding="14,12" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Ellipse x:Name="ServerDot" Width="11" Height="11" Fill="#98A2B3" VerticalAlignment="Top" Margin="0,4,10,0"/>
+          <StackPanel Grid.Column="1"><TextBlock Text="4. 服务器连接" FontWeight="SemiBold" Foreground="#344054"/><TextBlock x:Name="ServerStatus" Text="尚未检测" Margin="0,6,0,0" Foreground="#667085" TextWrapping="Wrap"/></StackPanel>
+        </Grid>
+      </Border>
+    </UniformGrid>
+
+    <Grid Grid.Row="2" Margin="20,8,20,16">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="390"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+
+      <Grid Grid.Column="0">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Padding="16" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+          <StackPanel>
+            <TextBlock Text="快速操作" FontSize="16" FontWeight="Bold" Foreground="#1D2939"/>
+            <TextBlock Text="常用操作固定在首屏；配置与详细工具可在下方滚动查看。" Margin="0,5,0,12" Foreground="#667085" FontSize="11"/>
+            <WrapPanel>
+              <Button x:Name="QuickStartButton" Content="启动 Runner" Style="{StaticResource PrimaryButton}"/>
+              <Button x:Name="QuickStopButton" Content="停止 Runner" Style="{StaticResource DangerButton}"/>
+              <Button x:Name="QuickCheckButton" Content="环境检查" Style="{StaticResource SecondaryButton}"/>
+              <Button x:Name="QuickProbeButton" Content="检测服务器" Style="{StaticResource SecondaryButton}"/>
+            </WrapPanel>
+          </StackPanel>
+        </Border>
+
+        <ScrollViewer Grid.Row="1" Margin="0,14,0,0" VerticalScrollBarVisibility="Auto">
+          <StackPanel>
+          <Border Padding="18" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+            <StackPanel>
+              <TextBlock Text="服务器与本机配置" FontSize="16" FontWeight="Bold" Foreground="#1D2939"/>
+              <TextBlock Text="Token 只保存到本机 training-runner\.env，不显示在日志中。" Margin="0,5,0,14" Foreground="#667085" FontSize="11" TextWrapping="Wrap"/>
+
+              <TextBlock Text="服务器工作台地址" FontWeight="SemiBold" Foreground="#475467"/>
+              <TextBox x:Name="ServerUrlInput" Margin="0,5,0,11" ToolTip="例如 https://knowledge.example.com，不包含 /app 或 /api/v1"/>
+
+              <TextBlock Text="Runner 标识" FontWeight="SemiBold" Foreground="#475467"/>
+              <TextBox x:Name="RunnerIdInput" Margin="0,5,0,11"/>
+
+              <TextBlock Text="显示名称" FontWeight="SemiBold" Foreground="#475467"/>
+              <TextBox x:Name="RunnerNameInput" Margin="0,5,0,11"/>
+
+              <TextBlock Text="Runner 密钥" FontWeight="SemiBold" Foreground="#475467"/>
+              <PasswordBox x:Name="TokenInput" Margin="0,5,0,11"/>
+
+              <TextBlock Text="独立运行目录" FontWeight="SemiBold" Foreground="#475467"/>
+              <TextBox x:Name="RuntimeRootInput" Margin="0,5,0,14"/>
+
+              <Button x:Name="SaveConfigButton" Content="保存本机配置" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left"/>
+            </StackPanel>
+          </Border>
+
+          <Border Margin="0,14,0,0" Padding="18" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+            <StackPanel>
+              <TextBlock Text="训练操作" FontSize="16" FontWeight="Bold" Foreground="#1D2939"/>
+              <TextBlock Text="安装、检查和实训不会连接服务器；连接检测和启动 Runner 才会使用服务器配置。" Margin="0,5,0,14" Foreground="#667085" FontSize="11" TextWrapping="Wrap"/>
+              <WrapPanel>
+                <Button x:Name="InstallButton" Content="安装环境" Style="{StaticResource SecondaryButton}"/>
+                <Button x:Name="CheckButton" Content="环境检查" Style="{StaticResource SecondaryButton}"/>
+                <Button x:Name="SmokeButton" Content="1 Step 实训" Style="{StaticResource SecondaryButton}"/>
+                <Button x:Name="ProbeButton" Content="检测服务器" Style="{StaticResource SecondaryButton}"/>
+                <Button x:Name="StartButton" Content="启动 Runner" Style="{StaticResource PrimaryButton}"/>
+                <Button x:Name="StopButton" Content="停止 Runner" Style="{StaticResource DangerButton}"/>
+                <Button x:Name="OpenArtifactsButton" Content="打开训练产物" Style="{StaticResource SecondaryButton}"/>
+              </WrapPanel>
+            </StackPanel>
+          </Border>
+
+          <Border Margin="0,14,0,0" Padding="16" Background="#FFF9ED" BorderBrush="#F2D18A" BorderThickness="1" CornerRadius="8">
+            <StackPanel>
+              <TextBlock Text="高风险发布操作已锁定" FontWeight="Bold" Foreground="#7A5200"/>
+              <TextBlock Text="模型上传、替换生产模型、全量向量重建不在本控制台执行。每一步都必须取得你的单独授权。" Margin="0,6,0,0" Foreground="#8A6300" FontSize="12" TextWrapping="Wrap" LineHeight="18"/>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+        </ScrollViewer>
+      </Grid>
+
+      <Grid Grid.Column="1" Margin="16,0,0,0">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Padding="18" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+          <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,18,0">
+              <TextBlock Text="GPU 状态" FontWeight="SemiBold" Foreground="#475467"/>
+              <TextBlock x:Name="GpuSummaryText" Text="正在读取..." Margin="0,6,0,0" FontSize="14" FontWeight="SemiBold" Foreground="#1D2939" TextWrapping="Wrap"/>
+            </StackPanel>
+            <StackPanel Grid.Row="0" Grid.Column="1">
+              <TextBlock Text="当前操作" FontWeight="SemiBold" Foreground="#475467"/>
+              <TextBlock x:Name="CurrentActionText" Text="空闲" Margin="0,6,0,0" FontSize="14" FontWeight="SemiBold" Foreground="#1D2939" TextWrapping="Wrap"/>
+            </StackPanel>
+            <ProgressBar x:Name="ActionProgress" Grid.Row="1" Grid.ColumnSpan="2" Height="6" Margin="0,16,0,0" IsIndeterminate="False" Value="0"/>
+          </Grid>
+        </Border>
+
+        <Border Grid.Row="1" Margin="0,14,0,0" Padding="0" Background="#101828" BorderBrush="#243247" BorderThickness="1" CornerRadius="8">
+          <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="48"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+            <Border Grid.Row="0" Background="#182230" CornerRadius="8,8,0,0">
+              <Grid Margin="16,0">
+                <TextBlock Text="运行日志" Foreground="White" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                <TextBlock Text="仅展示状态与日志，不显示 Runner 密钥" Foreground="#98A2B3" FontSize="11" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+              </Grid>
+            </Border>
+            <TextBox x:Name="LogBox" Grid.Row="1" Margin="0" Padding="16,12" Background="#101828" Foreground="#D0D5DD" BorderThickness="0" FontFamily="Consolas" FontSize="12" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"/>
+          </Grid>
+        </Border>
+      </Grid>
+    </Grid>
+
+    <Border Grid.Row="3" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0">
+      <Grid Margin="20,0">
+        <TextBlock x:Name="FooterText" Text="控制台已就绪" Foreground="#667085" VerticalAlignment="Center"/>
+        <TextBlock Text="本机训练控制台 · 不启动项目容器" Foreground="#98A2B3" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+      </Grid>
+    </Border>
+  </Grid>
+</Window>
+'@
+
+$Reader = New-Object System.Xml.XmlNodeReader $Xaml
+$Window = [Windows.Markup.XamlReader]::Load($Reader)
+
+$ControlNames = @(
+    "ConfigDot", "ConfigStatus", "EnvironmentDot", "EnvironmentStatus",
+    "RunnerDot", "RunnerStatus", "ServerDot", "ServerStatus",
+    "ServerUrlInput", "RunnerIdInput", "RunnerNameInput", "TokenInput",
+    "RuntimeRootInput", "SaveConfigButton", "InstallButton", "CheckButton",
+    "SmokeButton", "ProbeButton", "StartButton", "StopButton",
+    "QuickStartButton", "QuickStopButton", "QuickCheckButton",
+    "QuickProbeButton", "OpenArtifactsButton", "GpuSummaryText", "CurrentActionText",
+    "ActionProgress", "LogBox", "FooterText"
+)
+$Controls = @{}
+foreach ($Name in $ControlNames) {
+    $Controls[$Name] = $Window.FindName($Name)
+}
+
+$StateColors = @{
+    good = "#12A87A"
+    warn = "#D98A00"
+    bad = "#D92D20"
+    idle = "#98A2B3"
+    busy = "#456FE8"
+}
+
+function Set-Indicator {
+    param(
+        [Parameter(Mandatory = $true)]$Dot,
+        [Parameter(Mandatory = $true)]$Text,
+        [Parameter(Mandatory = $true)][string]$State,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+    $Color = $StateColors[$State]
+    if (-not $Color) {
+        $Color = $StateColors.idle
+    }
+    $Dot.Fill = New-Object Windows.Media.SolidColorBrush (
+        [Windows.Media.ColorConverter]::ConvertFromString($Color)
+    )
+    $Text.Text = $Message
+}
+
+function Show-Message {
+    param(
+        [string]$Message,
+        [string]$Title = "知识库模型训练控制台",
+        [Windows.MessageBoxImage]$Icon = [Windows.MessageBoxImage]::Information
+    )
+    [void][Windows.MessageBox]::Show(
+        $Window,
+        $Message,
+        $Title,
+        [Windows.MessageBoxButton]::OK,
+        $Icon
+    )
+}
+
+function Read-RunnerConfig {
+    $Values = @{}
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        return $Values
+    }
+    foreach ($RawLine in Get-Content -LiteralPath $ConfigPath -Encoding UTF8) {
+        $Line = $RawLine.Trim()
+        if (-not $Line -or $Line.StartsWith("#")) {
+            continue
+        }
+        $Separator = $Line.IndexOf("=")
+        if ($Separator -le 0) {
+            continue
+        }
+        $Name = $Line.Substring(0, $Separator).Trim()
+        $Value = $Line.Substring($Separator + 1).Trim()
+        $Values[$Name] = $Value
+    }
+    return $Values
+}
+
+function Current-RuntimeRoot {
+    $Value = $Controls.RuntimeRootInput.Text.Trim()
+    if (-not $Value) {
+        $Value = $RuntimeRoot
+    }
+    return [IO.Path]::GetFullPath($Value)
+}
+
+function Test-ConfigComplete {
+    $Url = $Controls.ServerUrlInput.Text.Trim()
+    $RunnerId = $Controls.RunnerIdInput.Text.Trim()
+    $Token = $Controls.TokenInput.Password
+    $Uri = $null
+    $ValidUrl = (
+        [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$Uri) -and
+        $Uri.Scheme -in @("http", "https")
+    )
+    return (
+        $ValidUrl -and
+        $RunnerId -match "^[A-Za-z0-9._-]+$" -and
+        $Token.Length -ge 24
+    )
+}
+
+function Save-RunnerConfig {
+    param([switch]$Silent)
+    try {
+        $Url = $Controls.ServerUrlInput.Text.Trim().TrimEnd("/")
+        $RunnerId = $Controls.RunnerIdInput.Text.Trim()
+        $RunnerName = $Controls.RunnerNameInput.Text.Trim()
+        $Token = $Controls.TokenInput.Password
+        $ResolvedRoot = Current-RuntimeRoot
+        if ($Url -and $Url -match "(/app|/api/v1)/?$") {
+            throw "服务器地址不能包含 /app 或 /api/v1"
+        }
+        if ($RunnerId -and $RunnerId -notmatch "^[A-Za-z0-9._-]+$") {
+            throw "Runner 标识只允许字母、数字、点、横线和下划线"
+        }
+        if ($Token -and $Token.Length -lt 24) {
+            throw "Runner 密钥至少需要 24 位"
+        }
+        foreach ($Value in @($Url, $RunnerId, $RunnerName, $Token, $ResolvedRoot)) {
+            if ($Value -match "[`r`n]") {
+                throw "配置值不能包含换行"
+            }
+        }
+        if (-not $RunnerName) {
+            $RunnerName = $RunnerId
+        }
+        $Lines = @(
+            "# 由知识库模型训练控制台保存。请勿提交此文件。",
+            "TRAINING_CONTROL_BASE_URL=$Url",
+            "TRAINING_RUNNER_TOKEN=$Token",
+            "TRAINING_RUNNER_ID=$RunnerId",
+            "TRAINING_RUNNER_NAME=$RunnerName",
+            "TRAINING_POLL_SECONDS=10",
+            "CUDA_VISIBLE_DEVICES=0",
+            "TRAINING_RUNTIME_ROOT=$ResolvedRoot"
+        )
+        [IO.File]::WriteAllLines(
+            $ConfigPath,
+            $Lines,
+            [Text.UTF8Encoding]::new($false)
+        )
+        $Controls.RuntimeRootInput.Text = $ResolvedRoot
+        $script:FooterMessage = "本机配置已保存"
+        if (-not $Silent) {
+            Show-Message "配置已保存到本机。Runner 密钥不会写入运行日志。"
+        }
+        return $true
+    } catch {
+        Show-Message $_.Exception.Message "配置保存失败" ([Windows.MessageBoxImage]::Error)
+        return $false
+    }
+}
+
+function Get-GpuSnapshot {
+    try {
+        if (-not $NvidiaSmiPath) {
+            throw "nvidia-smi 不可用"
+        }
+        $Line = & $NvidiaSmiPath `
+            --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu `
+            --format=csv,noheader,nounits 2>$null |
+            Select-Object -First 1
+        if (-not $Line) {
+            throw "nvidia-smi 不可用"
+        }
+        $Parts = @($Line -split "," | ForEach-Object { $_.Trim() })
+        return @{
+            name = $Parts[0]
+            total = [int][double]$Parts[1]
+            used = [int][double]$Parts[2]
+            free = [int][double]$Parts[3]
+            utilization = [int][double]$Parts[4]
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Test-EnvironmentReady {
+    $Root = Current-RuntimeRoot
+    return (
+        (Test-Path -LiteralPath (Join-Path $Root ".venv\Scripts\python.exe")) -and
+        (Test-Path -LiteralPath (Join-Path $Root ".venv\Scripts\swift.exe"))
+    )
+}
+
+function Runner-PidFile {
+    return Join-Path (Current-RuntimeRoot) "runner.pid"
+}
+
+function Get-RunnerPid {
+    $PidFile = Runner-PidFile
+    if (-not (Test-Path -LiteralPath $PidFile -PathType Leaf)) {
+        return 0
+    }
+    $Value = Get-Content -LiteralPath $PidFile -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    $Parsed = 0
+    if (-not [int]::TryParse([string]$Value, [ref]$Parsed)) {
+        return 0
+    }
+    if (-not (Get-Process -Id $Parsed -ErrorAction SilentlyContinue)) {
+        return 0
+    }
+    return $Parsed
+}
+
+function Stop-ProcessTree {
+    param([Parameter(Mandatory = $true)][int]$RootPid)
+    $Processes = @(Get-CimInstance Win32_Process)
+    $Targets = [Collections.Generic.HashSet[int]]::new()
+    [void]$Targets.Add($RootPid)
+    do {
+        $Added = $false
+        foreach ($Process in $Processes) {
+            if (
+                $Targets.Contains([int]$Process.ParentProcessId) -and
+                -not $Targets.Contains([int]$Process.ProcessId)
+            ) {
+                [void]$Targets.Add([int]$Process.ProcessId)
+                $Added = $true
+            }
+        }
+    } while ($Added)
+    $Targets |
+        Sort-Object -Descending |
+        ForEach-Object {
+            Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
+        }
+}
+
+function Start-HostProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$Action,
+        [Parameter(Mandatory = $true)][string]$LogPrefix
+    )
+    $Root = Current-RuntimeRoot
+    New-Item -ItemType Directory -Force -Path $Root | Out-Null
+    $Stdout = Join-Path $Root "$LogPrefix.stdout.log"
+    $Stderr = Join-Path $Root "$LogPrefix.stderr.log"
+    Remove-Item -LiteralPath $Stdout, $Stderr -Force -ErrorAction SilentlyContinue
+    $Arguments = (
+        "-NoProfile -File `"$HostRunnerPath`" " +
+        "-Action $Action " +
+        "-RuntimeRoot `"$Root`" " +
+        "-ConfigPath `"$ConfigPath`""
+    )
+    $Process = Start-Process `
+        -FilePath $PwshPath `
+        -ArgumentList $Arguments `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $Stdout `
+        -RedirectStandardError $Stderr `
+        -PassThru
+    return @{
+        process = $Process
+        stdout = $Stdout
+        stderr = $Stderr
+    }
+}
+
+function Start-HostAction {
+    param([Parameter(Mandatory = $true)][string]$Action)
+    if ($script:ActionProcess -and -not $script:ActionProcess.HasExited) {
+        Show-Message "已有操作正在执行，请等待当前操作结束。"
+        return
+    }
+    if ($Action -eq "probe") {
+        if (-not (Save-RunnerConfig -Silent)) {
+            return
+        }
+        if (-not (Test-ConfigComplete)) {
+            Show-Message "请先填写完整的服务器地址、Runner 标识和至少 24 位密钥。" "配置不完整" ([Windows.MessageBoxImage]::Warning)
+            return
+        }
+    }
+    try {
+        $Started = Start-HostProcess -Action $Action -LogPrefix "console-action"
+        $script:ActionProcess = $Started.process
+        $script:ActionStdout = $Started.stdout
+        $script:ActionStderr = $Started.stderr
+        $script:ActionName = $Action
+        $script:FooterMessage = "正在执行：$Action"
+    } catch {
+        Show-Message $_.Exception.Message "无法启动操作" ([Windows.MessageBoxImage]::Error)
+    }
+}
+
+function Start-Runner {
+    if (Get-RunnerPid) {
+        Show-Message "Runner 已经在运行。"
+        return
+    }
+    if (-not (Save-RunnerConfig -Silent)) {
+        return
+    }
+    if (-not (Test-ConfigComplete)) {
+        Show-Message "请先填写完整的服务器地址、Runner 标识和至少 24 位密钥。" "配置不完整" ([Windows.MessageBoxImage]::Warning)
+        return
+    }
+    if (-not (Test-EnvironmentReady)) {
+        Show-Message "训练环境尚未安装，请先点击“安装环境”。" "环境未就绪" ([Windows.MessageBoxImage]::Warning)
+        return
+    }
+    try {
+        $Started = Start-HostProcess -Action "run" -LogPrefix "runner"
+        $script:RunnerProcess = $Started.process
+        $script:RunnerStdout = $Started.stdout
+        $script:RunnerStderr = $Started.stderr
+        [IO.File]::WriteAllText(
+            (Runner-PidFile),
+            [string]$Started.process.Id,
+            [Text.Encoding]::ASCII
+        )
+        $script:FooterMessage = "Runner 已启动，正在连接服务器"
+    } catch {
+        Show-Message $_.Exception.Message "Runner 启动失败" ([Windows.MessageBoxImage]::Error)
+    }
+}
+
+function Stop-Runner {
+    $RunnerPid = Get-RunnerPid
+    if (-not $RunnerPid) {
+        Show-Message "Runner 当前没有运行。"
+        return
+    }
+    $Choice = [Windows.MessageBox]::Show(
+        $Window,
+        "停止 Runner 可能中断正在进行的训练。服务器会在租约过期后重新排队任务。是否继续？",
+        "确认停止 Runner",
+        [Windows.MessageBoxButton]::YesNo,
+        [Windows.MessageBoxImage]::Warning
+    )
+    if ($Choice -ne [Windows.MessageBoxResult]::Yes) {
+        return
+    }
+    Stop-ProcessTree -RootPid $RunnerPid
+    Remove-Item -LiteralPath (Runner-PidFile) -Force -ErrorAction SilentlyContinue
+    $script:RunnerProcess = $null
+    $script:FooterMessage = "Runner 已停止"
+}
+
+function Log-Tail {
+    param([string]$Path, [string]$Title)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return @()
+    }
+    return @(
+        "===== $Title ====="
+        Get-Content -LiteralPath $Path -Tail 160 -ErrorAction SilentlyContinue
+    )
+}
+
+function Update-LogView {
+    $Lines = @()
+    $Lines += Log-Tail -Path $script:ActionStdout -Title "最近操作"
+    $Lines += Log-Tail -Path $script:ActionStderr -Title "最近操作错误输出"
+    $Lines += Log-Tail -Path $script:RunnerStdout -Title "Runner"
+    $Lines += Log-Tail -Path $script:RunnerStderr -Title "Runner 错误输出"
+    if ($Lines.Count -eq 0) {
+        $Lines = @(
+            "等待操作。",
+            "",
+            "建议顺序：保存配置 → 环境检查 → 检测服务器 → 启动 Runner。",
+            "首次使用可先执行 1 Step 实训确认本机 GPU 训练能力。"
+        )
+    }
+    $Text = $Lines -join "`r`n"
+    if ($Controls.LogBox.Text -ne $Text) {
+        $Controls.LogBox.Text = $Text
+        $Controls.LogBox.ScrollToEnd()
+    }
+}
+
+function Update-ConsoleState {
+    $ConfigComplete = Test-ConfigComplete
+    if ($ConfigComplete) {
+        Set-Indicator $Controls.ConfigDot $Controls.ConfigStatus "good" "服务器与 Runner 配置完整"
+    } else {
+        Set-Indicator $Controls.ConfigDot $Controls.ConfigStatus "warn" "可安装和实训；连接服务器前需补全配置"
+    }
+
+    $EnvironmentReady = Test-EnvironmentReady
+    if ($EnvironmentReady) {
+        Set-Indicator $Controls.EnvironmentDot $Controls.EnvironmentStatus "good" "Python、CUDA 与 ms-swift 已安装"
+    } else {
+        Set-Indicator $Controls.EnvironmentDot $Controls.EnvironmentStatus "warn" "尚未安装独立训练环境"
+    }
+
+    $RunnerPid = Get-RunnerPid
+    if ($RunnerPid) {
+        Set-Indicator $Controls.RunnerDot $Controls.RunnerStatus "good" "运行中，PID $RunnerPid"
+    } else {
+        Set-Indicator $Controls.RunnerDot $Controls.RunnerStatus "idle" "未运行"
+    }
+
+    switch ($script:ServerProbeState) {
+        "good" { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "good" "Runner 密钥和服务器接口可用" }
+        "bad" { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "bad" "连接失败，请查看日志" }
+        default { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "idle" "尚未检测" }
+    }
+
+    $Gpu = Get-GpuSnapshot
+    if ($Gpu) {
+        $Controls.GpuSummaryText.Text = (
+            "{0}`n显存 {1} / {2} MB，空闲 {3} MB，利用率 {4}%" -f
+            $Gpu.name, $Gpu.used, $Gpu.total, $Gpu.free, $Gpu.utilization
+        )
+    } else {
+        $Controls.GpuSummaryText.Text = "未检测到 NVIDIA GPU 或 nvidia-smi 不可用"
+    }
+
+    $ActionRunning = (
+        $script:ActionProcess -and
+        -not $script:ActionProcess.HasExited
+    )
+    if ($ActionRunning) {
+        $Controls.CurrentActionText.Text = "正在执行：$($script:ActionName)"
+        $Controls.ActionProgress.IsIndeterminate = $true
+    } else {
+        if ($script:ActionProcess) {
+            $ExitCode = $script:ActionProcess.ExitCode
+            if ($script:ActionName -eq "probe") {
+                $script:ServerProbeState = if ($ExitCode -eq 0) { "good" } else { "bad" }
+            }
+            $script:FooterMessage = if ($ExitCode -eq 0) {
+                "操作完成：$($script:ActionName)"
+            } else {
+                "操作失败：$($script:ActionName)，退出码 $ExitCode"
+            }
+            $script:ActionProcess = $null
+            $script:ActionName = ""
+        }
+        $Controls.CurrentActionText.Text = if ($RunnerPid) {
+            "Runner 正在后台轮询训练任务"
+        } else {
+            "空闲"
+        }
+        $Controls.ActionProgress.IsIndeterminate = $false
+        $Controls.ActionProgress.Value = 0
+    }
+
+    $Controls.FooterText.Text = $script:FooterMessage
+    $Controls.InstallButton.IsEnabled = -not $ActionRunning -and -not $RunnerPid
+    $Controls.CheckButton.IsEnabled = -not $ActionRunning -and -not $RunnerPid
+    $Controls.SmokeButton.IsEnabled = -not $ActionRunning -and -not $RunnerPid
+    $Controls.ProbeButton.IsEnabled = -not $ActionRunning -and -not $RunnerPid
+    $Controls.StartButton.IsEnabled = -not $ActionRunning -and -not $RunnerPid
+    $Controls.StopButton.IsEnabled = [bool]$RunnerPid
+    $Controls.QuickStartButton.IsEnabled = $Controls.StartButton.IsEnabled
+    $Controls.QuickStopButton.IsEnabled = $Controls.StopButton.IsEnabled
+    $Controls.QuickCheckButton.IsEnabled = $Controls.CheckButton.IsEnabled
+    $Controls.QuickProbeButton.IsEnabled = $Controls.ProbeButton.IsEnabled
+    Update-LogView
+}
+
+$Existing = Read-RunnerConfig
+$Controls.ServerUrlInput.Text = [string]($Existing["TRAINING_CONTROL_BASE_URL"])
+$Controls.RunnerIdInput.Text = if ($Existing["TRAINING_RUNNER_ID"]) {
+    [string]$Existing["TRAINING_RUNNER_ID"]
+} else {
+    "local-rtx4070"
+}
+$Controls.RunnerNameInput.Text = if ($Existing["TRAINING_RUNNER_NAME"]) {
+    [string]$Existing["TRAINING_RUNNER_NAME"]
+} else {
+    "本地 RTX 4070"
+}
+$Controls.TokenInput.Password = [string]($Existing["TRAINING_RUNNER_TOKEN"])
+$Controls.RuntimeRootInput.Text = if ($Existing["TRAINING_RUNTIME_ROOT"]) {
+    [string]$Existing["TRAINING_RUNTIME_ROOT"]
+} else {
+    $RuntimeRoot
+}
+
+$Controls.SaveConfigButton.Add_Click({
+    [void](Save-RunnerConfig)
+    Update-ConsoleState
+})
+$Controls.InstallButton.Add_Click({ Start-HostAction "install" })
+$Controls.CheckButton.Add_Click({ Start-HostAction "check" })
+$Controls.SmokeButton.Add_Click({
+    $Choice = [Windows.MessageBox]::Show(
+        $Window,
+        "将执行 1 Step 真实 QLoRA，并占用本机 GPU。是否继续？",
+        "确认实训",
+        [Windows.MessageBoxButton]::YesNo,
+        [Windows.MessageBoxImage]::Question
+    )
+    if ($Choice -eq [Windows.MessageBoxResult]::Yes) {
+        Start-HostAction "smoke"
+    }
+})
+$Controls.ProbeButton.Add_Click({ Start-HostAction "probe" })
+$Controls.StartButton.Add_Click({ Start-Runner })
+$Controls.StopButton.Add_Click({ Stop-Runner })
+$Controls.QuickProbeButton.Add_Click({ Start-HostAction "probe" })
+$Controls.QuickStartButton.Add_Click({ Start-Runner })
+$Controls.QuickStopButton.Add_Click({ Stop-Runner })
+$Controls.QuickCheckButton.Add_Click({ Start-HostAction "check" })
+$Controls.OpenArtifactsButton.Add_Click({
+    $Path = Join-Path (Current-RuntimeRoot) "artifacts"
+    New-Item -ItemType Directory -Force -Path $Path | Out-Null
+    Start-Process -FilePath "explorer.exe" -ArgumentList "`"$Path`""
+})
+
+$Timer = New-Object Windows.Threading.DispatcherTimer
+$Timer.Interval = [TimeSpan]::FromSeconds(1.5)
+$Timer.Add_Tick({ Update-ConsoleState })
+$Timer.Start()
+
+$Window.Add_Closed({
+    $Timer.Stop()
+})
+
+Update-ConsoleState
+if ($ValidateOnly) {
+    $Timer.Stop()
+    Write-Output "Runner console validation passed"
+    exit 0
+}
+[void]$Window.ShowDialog()
