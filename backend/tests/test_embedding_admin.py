@@ -1,7 +1,9 @@
+import hashlib
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -14,13 +16,18 @@ from app.models.embedding_admin import (
     EmbeddingTrainingSample,
 )
 from app.routes.embedding_admin import (
+    _task_runner_url,
     activate_embedding_config,
+    claim_task_training_job,
     claim_training_job,
+    complete_task_training_job,
     complete_training_job,
     create_embedding_config,
     create_training_job,
     decide_model_version,
     fail_training_job,
+    probe_task_runner_access,
+    regenerate_training_job_runner_access,
     runner_heartbeat,
 )
 from app.schemas.embedding_admin import (
@@ -39,6 +46,8 @@ from app.services.embedding_runtime import default_embedding_runtime_config
 
 class EmbeddingAdminTests(unittest.TestCase):
     def setUp(self):
+        self.public_base_url = settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL
+        settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL = "https://kb.example.test"
         self.engine = create_engine("sqlite+pysqlite:///:memory:")
         for table in (
             EmbeddingRuntimeConfig.__table__,
@@ -53,6 +62,7 @@ class EmbeddingAdminTests(unittest.TestCase):
         self.user = SimpleNamespace(username="admin")
 
     def tearDown(self):
+        settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL = self.public_base_url
         self.db.close()
         self.engine.dispose()
 
@@ -117,6 +127,27 @@ class EmbeddingAdminTests(unittest.TestCase):
         self.assertEqual(activated["status"], "active")
         self.assertEqual(activated["activated_by"], "admin")
 
+    def test_task_runner_public_base_url_requires_clean_https_origin(self):
+        settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL = "https://kb.example.test/"
+        self.assertEqual(
+            _task_runner_url("etj-test"),
+            "https://kb.example.test/api/v1/embedding-model/runner/tasks/etj-test",
+        )
+
+        for invalid_url in (
+            "http://kb.example.test",
+            "https://kb.example.test/app",
+            "https://kb.example.test/api/v1",
+            "https://kb.example.test/path",
+            "https://user:pass@kb.example.test",
+            "https://kb.example.test?source=console",
+        ):
+            with self.subTest(invalid_url=invalid_url):
+                settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL = invalid_url
+                with self.assertRaises(HTTPException) as invalid:
+                    _task_runner_url("etj-test")
+                self.assertEqual(invalid.exception.status_code, 503)
+
     def _add_split_complete_samples(self):
         for index in range(1, 500):
             self.db.add(
@@ -148,7 +179,7 @@ class EmbeddingAdminTests(unittest.TestCase):
                 return
         self.fail("未能构造同时包含训练、验证和测试分片的样本")
 
-    def test_training_job_claim_retry_and_complete(self):
+    def _prepare_training_context(self):
         runtime = default_embedding_runtime_config()
         runtime["training_min_verified_samples"] = 20
         self.db.add(
@@ -166,6 +197,8 @@ class EmbeddingAdminTests(unittest.TestCase):
         )
         self._add_split_complete_samples()
 
+    def test_training_job_claim_retry_and_complete(self):
+        self._prepare_training_context()
         created = create_training_job(
             EmbeddingTrainingJobCreate(
                 candidate_model_name="kb-test-candidate",
@@ -180,6 +213,24 @@ class EmbeddingAdminTests(unittest.TestCase):
         self.assertEqual(created["training_config"]["gradient_accumulation_steps"], 16)
         self.assertEqual(created["training_config"]["evaluation_batch_size"], 1)
         self.assertEqual(created["training_config"]["min_free_gpu_memory_mb"], 3200)
+        self.assertTrue(created["runner_access"]["url"].endswith(created["id"]))
+        self.assertGreaterEqual(len(created["runner_access"]["token"]), 24)
+        stored_job = self.db.get(EmbeddingTrainingJob, created["id"])
+        self.assertEqual(
+            stored_job.runner_access_token_hash,
+            hashlib.sha256(
+                created["runner_access"]["token"].encode("utf-8")
+            ).hexdigest(),
+        )
+        self.assertNotEqual(
+            stored_job.runner_access_token_hash,
+            created["runner_access"]["token"],
+        )
+        # Simulate an old queued job so the legacy global Runner path remains
+        # covered without allowing it to steal newly issued task-scoped jobs.
+        stored_job.runner_access_token_hash = None
+        stored_job.runner_access_expires_at = None
+        self.db.commit()
 
         runner_heartbeat(
             EmbeddingRunnerHeartbeat(
@@ -263,6 +314,124 @@ class EmbeddingAdminTests(unittest.TestCase):
         self.assertEqual(approved["status"], "approved")
         self.assertIsNone(approved["deployed_at"])
         self.assertTrue(approved["artifact_uri"].startswith("local-runner://"))
+
+    def test_task_scoped_access_rotates_and_only_claims_bound_job(self):
+        self._prepare_training_context()
+        first = create_training_job(
+            EmbeddingTrainingJobCreate(
+                candidate_model_name="kb-task-first",
+                train_type="lora",
+            ),
+            self.db,
+            self.user,
+        )
+        second = create_training_job(
+            EmbeddingTrainingJobCreate(
+                candidate_model_name="kb-task-second",
+                train_type="lora",
+            ),
+            self.db,
+            self.user,
+        )
+        self.assertTrue(first["runner_access"]["url"].startswith("https://"))
+        runner_heartbeat(
+            EmbeddingRunnerHeartbeat(
+                runner_id="legacy-runner",
+                name="旧版 Runner",
+                status="online",
+            ),
+            self.db,
+            None,
+        )
+        legacy_claim = claim_training_job(
+            EmbeddingRunnerClaim(runner_id="legacy-runner"),
+            self.db,
+            None,
+        )
+        self.assertIsNone(legacy_claim["job"])
+        old_token = first["runner_access"]["token"]
+        rotated = regenerate_training_job_runner_access(
+            first["id"],
+            self.db,
+            self.user,
+        )
+        new_token = rotated["runner_access"]["token"]
+        self.assertNotEqual(old_token, new_token)
+        heartbeat = EmbeddingRunnerHeartbeat(
+            runner_id="runner-other-pc",
+            name="其他训练电脑",
+            hostname="gpu-workstation",
+            status="online",
+            gpu_name="NVIDIA GeForce RTX 4070",
+            gpu_memory_mb=8192,
+            gpu_free_memory_mb=7000,
+            cuda_version="12.6",
+            runner_version="0.3.0",
+        )
+        with self.assertRaises(HTTPException) as invalid:
+            probe_task_runner_access(
+                first["id"],
+                heartbeat,
+                self.db,
+                old_token,
+            )
+        self.assertEqual(invalid.exception.status_code, 401)
+        with self.assertRaises(HTTPException) as cross_task:
+            probe_task_runner_access(
+                second["id"],
+                heartbeat,
+                self.db,
+                new_token,
+            )
+        self.assertEqual(cross_task.exception.status_code, 401)
+
+        claimed = claim_task_training_job(
+            first["id"],
+            heartbeat,
+            self.db,
+            new_token,
+        )
+        self.assertEqual(claimed["job"]["id"], first["id"])
+        self.assertEqual(claimed["job"]["runner_id"], "runner-other-pc")
+        self.assertTrue(claimed["job"]["dataset"])
+        untouched = self.db.get(EmbeddingTrainingJob, second["id"])
+        self.assertEqual(untouched.status, "queued")
+        self.assertIsNone(untouched.runner_id)
+
+        completion = EmbeddingRunnerComplete(
+            runner_id="runner-other-pc",
+            metrics={"quality_gate": {"status": "pass"}},
+            artifact_uri="local-runner://runner-other-pc/jobs/first/model",
+            artifact_sha256="b" * 64,
+            dimension=settings.EMBEDDING_DIMENSIONS,
+            log_tail="done",
+        )
+        with self.assertRaises(HTTPException) as legacy_update:
+            complete_training_job(
+                first["id"],
+                completion,
+                self.db,
+                None,
+            )
+        self.assertEqual(legacy_update.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as rotate_after_claim:
+            regenerate_training_job_runner_access(
+                first["id"],
+                self.db,
+                self.user,
+            )
+        self.assertEqual(rotate_after_claim.exception.status_code, 409)
+
+        completed = complete_task_training_job(
+            first["id"],
+            completion,
+            self.db,
+            new_token,
+        )
+        self.assertEqual(completed["status"], "completed")
+        finished = self.db.get(EmbeddingTrainingJob, first["id"])
+        self.assertIsNone(finished.runner_access_token_hash)
+        self.assertFalse(completed["job"]["runner_access"]["configured"])
 
     def test_expired_lease_releases_stale_runner_before_reclaim(self):
         now = datetime.utcnow()
