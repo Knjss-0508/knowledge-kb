@@ -2,7 +2,7 @@
 
 本机仅作为 GPU 算力节点，不运行知识库前端、后端、PostgreSQL、Redis、
 Embedding 服务或本项目 Docker 容器。知识库完整服务运行在服务器，
-Runner 只通过出站 HTTPS 请求领取训练任务、回传进度和结果。
+Runner 只通过出站 HTTPS 请求领取指定训练任务、回传进度和结果。
 
 ## 目录边界
 
@@ -26,15 +26,22 @@ ms-swift 与 bitsandbytes。它不会执行 Docker Compose，也不会启动项�
 
 ## 配置
 
-复制 `training-runner\.env.example` 为 `training-runner\.env`，至少填写：
+在工作台“训练与版本”中创建 LoRA 任务后，会显示一次性可复制的：
 
-- `TRAINING_CONTROL_BASE_URL`：服务器工作台入口，不包含 `/app`
-- `TRAINING_RUNNER_TOKEN`：与服务器
-  `EMBEDDING_TRAINING_RUNNER_TOKEN` 完全一致
+- `TRAINING_JOB_URL`：精确绑定该任务的完整 HTTPS 地址
+- `TRAINING_JOB_TOKEN`：只允许领取和更新该任务的短期密钥
+
+将两项粘贴到桌面“知识库模型训练控制台”，点击“保存并开始此任务”。
+控制台会自动保存到 `training-runner\.env`，不需要从服务器查找或复制
+全局密钥。
+
+其余本机配置包括：
+
 - `TRAINING_RUNNER_ID`：本机稳定标识
 - `TRAINING_RUNTIME_ROOT`：项目目录外的运行目录
 
-Runner 只发起出站连接，本机无需开放端口。
+Runner 只发起出站连接，本机无需开放端口。每次启动只执行 URL 绑定的
+一条任务，完成、取消或失败后自动退出；不会领取其他排队任务。
 
 ## 校验与运行
 
@@ -58,10 +65,10 @@ pwsh -File .\training-runner\runner-console.ps1
 
 控制台提供：
 
-- 服务器地址、Runner 标识、名称和密钥的本机配置；
+- 任务 URL、任务密钥、Runner 标识和名称的本机配置；
 - GPU、独立训练环境、Runner 进程和服务器连接状态；
 - 安装环境、环境检查、1 Step 实训、连接检测；
-- 启动/停止 Runner、查看日志和打开训练产物目录；
+- 保存并开始指定任务、停止当前训练、查看日志和打开训练产物目录；
 - 上传模型、替换生产模型和全量向量重建的锁定提示。
 
 创建桌面快捷方式：
