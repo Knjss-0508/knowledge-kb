@@ -15,6 +15,8 @@ from app.models.knowledge import Category, Knowledge, KnowledgeStatus, TagDimens
 from app.models.user import User
 from app.routes.auth import get_current_user, require_permission
 from app.routes.knowledge import _generate_knowledge_id, _normalize_content
+from app.routes.manhattan import _read_cache as _read_manhattan_cache
+from app.services.applicability import resolve_applicability_scope
 from app.services.embedding import EmbeddingServiceUnavailable
 from app.services.knowledge_dedup import (
     DedupDecision,
@@ -24,6 +26,7 @@ from app.services.knowledge_dedup import (
     save_embedding,
     search_embeddings,
 )
+from app.services.retrieval_quality import latest_retrieval_quality_event_ids
 from app.schemas.integration import (
     CandidateReviewBatchSubmit,
     CandidateReviewBatchSubmitResponse,
@@ -509,12 +512,42 @@ def search_standard_provider_knowledge(
             else "self_operated"
         )
     try:
+        manhattan_cache = _read_manhattan_cache()
+    except (OSError, ValueError) as exc:
+        logger.warning("Unable to read Manhattan applicability cache: %s", exc)
+        manhattan_cache = {}
+    applicability_scope = resolve_applicability_scope(
+        manhattan_cache,
+        inferred_business_type,
+        category_values=(
+            body.category_id,
+            body.product_type,
+            body.order_info.category_id,
+            body.order_info.category,
+        ),
+        brand_values=(
+            body.brand_id,
+            body.brand,
+            body.order_info.brand_id,
+            body.order_info.brand,
+        ),
+        model_values=(
+            body.model_id,
+            body.model,
+            body.order_info.model_id,
+            body.order_info.model,
+        ),
+    )
+    try:
         ranked_by_origin = {
             knowledge_origin: search_embeddings(
                 db,
                 query=body.normalized_question,
                 business_type=inferred_business_type,
                 knowledge_origin=knowledge_origin,
+                applicable_category_keys=applicability_scope["categories"],
+                applicable_brand_keys=applicability_scope["brands"],
+                applicable_model_keys=applicability_scope["models"],
                 top_k=top_k_per_origin,
             )
             for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS
@@ -668,15 +701,21 @@ def get_retrieval_analytics(
         "reviewed": 0,
         "training_eligible": 0,
     }
+    latest_events = db.query(RetrievalQualityEvent).filter(
+        RetrievalQualityEvent.id.in_(latest_retrieval_quality_event_ids())
+    )
     for outcome, total in (
-        db.query(RetrievalQualityEvent.outcome, func.count(RetrievalQualityEvent.id))
+        latest_events.with_entities(
+            RetrievalQualityEvent.outcome,
+            func.count(RetrievalQualityEvent.id),
+        )
         .group_by(RetrievalQualityEvent.outcome)
         .all()
     ):
         summary[outcome] = total
 
     request_counts = dict(
-        db.query(
+        latest_events.with_entities(
             RetrievalQualityEvent.request_status,
             func.count(RetrievalQualityEvent.id),
         )
@@ -684,7 +723,7 @@ def get_retrieval_analytics(
         .all()
     )
     threshold_counts = dict(
-        db.query(
+        latest_events.with_entities(
             RetrievalQualityEvent.threshold_status,
             func.count(RetrievalQualityEvent.id),
         )
@@ -692,7 +731,7 @@ def get_retrieval_analytics(
         .all()
     )
     selection_counts = dict(
-        db.query(
+        latest_events.with_entities(
             RetrievalQualityEvent.selection_status,
             func.count(RetrievalQualityEvent.id),
         )
@@ -715,20 +754,18 @@ def get_retrieval_analytics(
     )
     summary["none_selected"] = int(selection_counts.get("none_selected", 0))
     summary["reviewed"] = (
-        db.query(func.count(RetrievalQualityEvent.id))
+        latest_events
         .filter(RetrievalQualityEvent.review_status == "confirmed")
-        .scalar()
-        or 0
+        .count()
     )
     summary["training_eligible"] = (
-        db.query(func.count(RetrievalQualityEvent.id))
+        latest_events
         .filter(RetrievalQualityEvent.training_eligible.is_(True))
-        .scalar()
-        or 0
+        .count()
     )
 
     risks = (
-        db.query(RetrievalQualityEvent)
+        latest_events
         .filter(
             or_(
                 RetrievalQualityEvent.outcome.notin_(["accepted", "accepted_alternative"]),
@@ -785,7 +822,7 @@ def get_retrieval_analytics(
     latencies = sorted(
         float(value)
         for (value,) in (
-            db.query(RetrievalQualityEvent.total_latency_ms)
+            latest_events.with_entities(RetrievalQualityEvent.total_latency_ms)
             .filter(RetrievalQualityEvent.total_latency_ms.is_not(None))
             .order_by(RetrievalQualityEvent.created_at.desc())
             .limit(5000)
