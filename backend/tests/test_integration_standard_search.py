@@ -56,8 +56,19 @@ class IntegrationStandardSearchTests(unittest.TestCase):
                 "knowledgeOrigin": "business_accumulation",
                 "businessType": "aggregated",
                 "productType": "手机",
+                "categoryId": "101",
+                "brand": "苹果",
+                "brandId": "1",
                 "model": "iPhone 17e",
-                "orderInfo": {"category": "手机", "model": "iPhone 17e"},
+                "modelId": "17",
+                "orderInfo": {
+                    "category": "手机",
+                    "categoryId": "101",
+                    "brand": "苹果",
+                    "brandId": "1",
+                    "model": "iPhone 17e",
+                    "modelId": "17",
+                },
                 "partTerms": [" 屏幕 ", ""],
                 "phenomenonTerms": ["漏光"],
                 "categoryIntent": ["外观问题"],
@@ -70,6 +81,11 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         self.assertEqual(request.business_type, "aggregated")
         self.assertEqual(request.part_terms, ["屏幕"])
         self.assertEqual(request.limit, 8)
+        self.assertEqual(request.category_id, "101")
+        self.assertEqual(request.brand, "苹果")
+        self.assertEqual(request.brand_id, "1")
+        self.assertEqual(request.model_id, "17")
+        self.assertEqual(request.order_info.brand, "苹果")
         request_without_origin = IntegrationStandardSearchRequest.model_validate(
             {"normalizedQuestion": "屏幕漏光怎么判断"}
         )
