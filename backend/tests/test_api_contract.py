@@ -28,6 +28,41 @@ class ApiContractTests(unittest.TestCase):
             paths,
         )
 
+    def test_task_scoped_embedding_runner_routes_are_exposed(self):
+        specification = app.openapi()
+        paths = specification["paths"]
+        route_schemas = {
+            "probe": "EmbeddingRunnerHeartbeat",
+            "claim": "EmbeddingRunnerHeartbeat",
+            "heartbeat": "EmbeddingRunnerHeartbeat",
+            "progress": "EmbeddingRunnerProgress",
+            "complete": "EmbeddingRunnerComplete",
+            "fail": "EmbeddingRunnerFailure",
+        }
+
+        for action, request_schema in route_schemas.items():
+            with self.subTest(action=action):
+                operation = paths[
+                    f"/api/v1/embedding-model/runner/tasks/{{job_id}}/{action}"
+                ]["post"]
+                parameters = {
+                    (parameter["name"], parameter["in"])
+                    for parameter in operation["parameters"]
+                }
+                request_ref = operation["requestBody"]["content"][
+                    "application/json"
+                ]["schema"]["$ref"]
+
+                self.assertIn(("job_id", "path"), parameters)
+                self.assertIn(
+                    ("X-Embedding-Task-Token", "header"),
+                    parameters,
+                )
+                self.assertEqual(
+                    request_ref,
+                    f"#/components/schemas/{request_schema}",
+                )
+
     def test_excel_import_routes_are_exposed(self):
         paths = app.openapi()["paths"]
         self.assertIn("/api/v1/knowledge/import/template", paths)
