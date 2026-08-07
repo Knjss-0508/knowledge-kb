@@ -327,14 +327,32 @@ class IntegrationTaxonomyResponse(BaseModel):
 
 
 class IntegrationStandardSearchOrderInfo(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
+
     category: str = Field("", max_length=500)
+    category_id: str = Field("", alias="categoryId", max_length=128)
+    brand: str = Field("", max_length=500)
+    brand_id: str = Field("", alias="brandId", max_length=128)
     model: str = Field("", max_length=500)
+    model_id: str = Field("", alias="modelId", max_length=128)
+
+    @field_validator(
+        "category",
+        "category_id",
+        "brand",
+        "brand_id",
+        "model",
+        "model_id",
+    )
+    @classmethod
+    def normalize_scope_value(cls, value: str) -> str:
+        return value.strip()
 
 
 class IntegrationStandardSearchRequest(BaseModel):
     """答疑智能推荐助手 external-standard-provider 的请求契约。"""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
 
     normalized_question: str = Field(
         ...,
@@ -352,7 +370,11 @@ class IntegrationStandardSearchRequest(BaseModel):
     )
     business_type: BusinessType | None = Field(None, alias="businessType")
     product_type: str = Field("", alias="productType", max_length=500)
+    category_id: str = Field("", alias="categoryId", max_length=128)
+    brand: str = Field("", max_length=500)
+    brand_id: str = Field("", alias="brandId", max_length=128)
     model: str = Field("", max_length=500)
+    model_id: str = Field("", alias="modelId", max_length=128)
     order_info: IntegrationStandardSearchOrderInfo = Field(
         default_factory=IntegrationStandardSearchOrderInfo,
         alias="orderInfo",
@@ -382,6 +404,18 @@ class IntegrationStandardSearchRequest(BaseModel):
         if not value:
             raise ValueError("normalizedQuestion must not be blank")
         return value
+
+    @field_validator(
+        "product_type",
+        "category_id",
+        "brand",
+        "brand_id",
+        "model",
+        "model_id",
+    )
+    @classmethod
+    def normalize_scope_value(cls, value: str) -> str:
+        return value.strip()
 
     @field_validator("part_terms", "phenomenon_terms", "category_intent")
     @classmethod
@@ -484,6 +518,12 @@ class RetrievalQualityEventPayload(BaseModel):
     rerank_latency_ms: float | None = Field(None, ge=0)
     total_latency_ms: float | None = Field(None, ge=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("conversation_id")
+    @classmethod
+    def normalize_conversation_id(cls, value: str | None) -> str | None:
+        normalized = (value or "").strip()
+        return normalized or None
 
     @field_validator("top_rerank_score")
     @classmethod
