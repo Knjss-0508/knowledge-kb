@@ -165,12 +165,12 @@ $script:FooterMessage = "控制台已就绪"
         <Border Grid.Row="0" Padding="16" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
           <StackPanel>
             <TextBlock Text="快速操作" FontSize="16" FontWeight="Bold" Foreground="#1D2939"/>
-            <TextBlock Text="常用操作固定在首屏；配置与详细工具可在下方滚动查看。" Margin="0,5,0,12" Foreground="#667085" FontSize="11"/>
+            <TextBlock Text="从工作台创建 LoRA 任务，粘贴任务 URL 和密钥后即可在本机开始。" Margin="0,5,0,12" Foreground="#667085" FontSize="11" TextWrapping="Wrap"/>
             <WrapPanel>
-              <Button x:Name="QuickStartButton" Content="启动 Runner" Style="{StaticResource PrimaryButton}"/>
-              <Button x:Name="QuickStopButton" Content="停止 Runner" Style="{StaticResource DangerButton}"/>
+              <Button x:Name="QuickStartButton" Content="保存并开始此任务" Style="{StaticResource PrimaryButton}"/>
+              <Button x:Name="QuickStopButton" Content="停止当前训练" Style="{StaticResource DangerButton}"/>
               <Button x:Name="QuickCheckButton" Content="环境检查" Style="{StaticResource SecondaryButton}"/>
-              <Button x:Name="QuickProbeButton" Content="检测服务器" Style="{StaticResource SecondaryButton}"/>
+              <Button x:Name="QuickProbeButton" Content="检测任务连接" Style="{StaticResource SecondaryButton}"/>
             </WrapPanel>
           </StackPanel>
         </Border>
@@ -179,11 +179,11 @@ $script:FooterMessage = "控制台已就绪"
           <StackPanel>
           <Border Padding="18" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
             <StackPanel>
-              <TextBlock Text="服务器与本机配置" FontSize="16" FontWeight="Bold" Foreground="#1D2939"/>
-              <TextBlock Text="Token 只保存到本机 training-runner\.env，不显示在日志中。" Margin="0,5,0,14" Foreground="#667085" FontSize="11" TextWrapping="Wrap"/>
+              <TextBlock Text="LoRA 任务接入" FontSize="16" FontWeight="Bold" Foreground="#1D2939"/>
+              <TextBlock Text="任务 URL 和密钥由工作台在创建任务时生成。密钥只保存到本机 training-runner\.env，不显示在日志中。" Margin="0,5,0,14" Foreground="#667085" FontSize="11" TextWrapping="Wrap"/>
 
-              <TextBlock Text="服务器工作台地址" FontWeight="SemiBold" Foreground="#475467"/>
-              <TextBox x:Name="ServerUrlInput" Margin="0,5,0,11" ToolTip="例如 https://knowledge.example.com，不包含 /app 或 /api/v1"/>
+              <TextBlock Text="任务接入 URL" FontWeight="SemiBold" Foreground="#475467"/>
+              <TextBox x:Name="ServerUrlInput" Margin="0,5,0,11" ToolTip="粘贴工作台生成的完整 HTTPS 任务 URL"/>
 
               <TextBlock Text="Runner 标识" FontWeight="SemiBold" Foreground="#475467"/>
               <TextBox x:Name="RunnerIdInput" Margin="0,5,0,11"/>
@@ -191,27 +191,27 @@ $script:FooterMessage = "控制台已就绪"
               <TextBlock Text="显示名称" FontWeight="SemiBold" Foreground="#475467"/>
               <TextBox x:Name="RunnerNameInput" Margin="0,5,0,11"/>
 
-              <TextBlock Text="Runner 密钥" FontWeight="SemiBold" Foreground="#475467"/>
+              <TextBlock Text="任务密钥" FontWeight="SemiBold" Foreground="#475467"/>
               <PasswordBox x:Name="TokenInput" Margin="0,5,0,11"/>
 
               <TextBlock Text="独立运行目录" FontWeight="SemiBold" Foreground="#475467"/>
               <TextBox x:Name="RuntimeRootInput" Margin="0,5,0,14"/>
 
-              <Button x:Name="SaveConfigButton" Content="保存本机配置" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left"/>
+              <Button x:Name="SaveConfigButton" Content="仅保存任务信息" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left"/>
             </StackPanel>
           </Border>
 
           <Border Margin="0,14,0,0" Padding="18" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
             <StackPanel>
               <TextBlock Text="训练操作" FontSize="16" FontWeight="Bold" Foreground="#1D2939"/>
-              <TextBlock Text="安装、检查和实训不会连接服务器；连接检测和启动 Runner 才会使用服务器配置。" Margin="0,5,0,14" Foreground="#667085" FontSize="11" TextWrapping="Wrap"/>
+              <TextBlock Text="安装、检查和 1 Step 实训不会连接服务器；检测任务连接和开始任务才会使用任务密钥。" Margin="0,5,0,14" Foreground="#667085" FontSize="11" TextWrapping="Wrap"/>
               <WrapPanel>
                 <Button x:Name="InstallButton" Content="安装环境" Style="{StaticResource SecondaryButton}"/>
                 <Button x:Name="CheckButton" Content="环境检查" Style="{StaticResource SecondaryButton}"/>
                 <Button x:Name="SmokeButton" Content="1 Step 实训" Style="{StaticResource SecondaryButton}"/>
-                <Button x:Name="ProbeButton" Content="检测服务器" Style="{StaticResource SecondaryButton}"/>
-                <Button x:Name="StartButton" Content="启动 Runner" Style="{StaticResource PrimaryButton}"/>
-                <Button x:Name="StopButton" Content="停止 Runner" Style="{StaticResource DangerButton}"/>
+                <Button x:Name="ProbeButton" Content="检测任务连接" Style="{StaticResource SecondaryButton}"/>
+                <Button x:Name="StartButton" Content="保存并开始此任务" Style="{StaticResource PrimaryButton}"/>
+                <Button x:Name="StopButton" Content="停止当前训练" Style="{StaticResource DangerButton}"/>
                 <Button x:Name="OpenArtifactsButton" Content="打开训练产物" Style="{StaticResource SecondaryButton}"/>
               </WrapPanel>
             </StackPanel>
@@ -255,7 +255,7 @@ $script:FooterMessage = "控制台已就绪"
             <Border Grid.Row="0" Background="#182230" CornerRadius="8,8,0,0">
               <Grid Margin="16,0">
                 <TextBlock Text="运行日志" Foreground="White" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                <TextBlock Text="仅展示状态与日志，不显示 Runner 密钥" Foreground="#98A2B3" FontSize="11" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                <TextBlock Text="仅展示状态与日志，不显示任务密钥" Foreground="#98A2B3" FontSize="11" VerticalAlignment="Center" HorizontalAlignment="Right"/>
               </Grid>
             </Border>
             <TextBox x:Name="LogBox" Grid.Row="1" Margin="0" Padding="16,12" Background="#101828" Foreground="#D0D5DD" BorderThickness="0" FontFamily="Consolas" FontSize="12" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"/>
@@ -267,7 +267,7 @@ $script:FooterMessage = "控制台已就绪"
     <Border Grid.Row="3" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0">
       <Grid Margin="20,0">
         <TextBlock x:Name="FooterText" Text="控制台已就绪" Foreground="#667085" VerticalAlignment="Center"/>
-        <TextBlock Text="本机训练控制台 · 不启动项目容器" Foreground="#98A2B3" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+        <TextBlock Text="单任务本机训练 · 不启动项目容器" Foreground="#98A2B3" VerticalAlignment="Center" HorizontalAlignment="Right"/>
       </Grid>
     </Border>
   </Grid>
@@ -368,7 +368,12 @@ function Test-ConfigComplete {
     $Uri = $null
     $ValidUrl = (
         [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$Uri) -and
-        $Uri.Scheme -in @("http", "https")
+        $Uri.Scheme -in @("http", "https") -and
+        ($Uri.Scheme -eq "https" -or $Uri.IsLoopback) -and
+        -not $Uri.UserInfo -and
+        -not $Uri.Query -and
+        -not $Uri.Fragment -and
+        $Uri.AbsolutePath -match "^/api/v1/embedding-model/runner/tasks/etj-[A-Za-z0-9._-]+/?$"
     )
     return (
         $ValidUrl -and
@@ -385,8 +390,19 @@ function Save-RunnerConfig {
         $RunnerName = $Controls.RunnerNameInput.Text.Trim()
         $Token = $Controls.TokenInput.Password
         $ResolvedRoot = Current-RuntimeRoot
-        if ($Url -and $Url -match "(/app|/api/v1)/?$") {
-            throw "服务器地址不能包含 /app 或 /api/v1"
+        $TaskUri = $null
+        if (
+            -not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$TaskUri) -or
+            $TaskUri.Scheme -notin @("http", "https") -or
+            $TaskUri.UserInfo -or
+            $TaskUri.Query -or
+            $TaskUri.Fragment -or
+            $TaskUri.AbsolutePath -notmatch "^/api/v1/embedding-model/runner/tasks/etj-[A-Za-z0-9._-]+/?$"
+        ) {
+            throw "请粘贴工作台生成的完整 LoRA 任务接入 URL"
+        }
+        if ($TaskUri.Scheme -ne "https" -and -not $TaskUri.IsLoopback) {
+            throw "公网任务接入 URL 必须使用 HTTPS"
         }
         if ($RunnerId -and $RunnerId -notmatch "^[A-Za-z0-9._-]+$") {
             throw "Runner 标识只允许字母、数字、点、横线和下划线"
@@ -404,8 +420,8 @@ function Save-RunnerConfig {
         }
         $Lines = @(
             "# 由知识库模型训练控制台保存。请勿提交此文件。",
-            "TRAINING_CONTROL_BASE_URL=$Url",
-            "TRAINING_RUNNER_TOKEN=$Token",
+            "TRAINING_JOB_URL=$Url",
+            "TRAINING_JOB_TOKEN=$Token",
             "TRAINING_RUNNER_ID=$RunnerId",
             "TRAINING_RUNNER_NAME=$RunnerName",
             "TRAINING_POLL_SECONDS=10",
@@ -418,9 +434,9 @@ function Save-RunnerConfig {
             [Text.UTF8Encoding]::new($false)
         )
         $Controls.RuntimeRootInput.Text = $ResolvedRoot
-        $script:FooterMessage = "本机配置已保存"
+        $script:FooterMessage = "任务接入信息已保存"
         if (-not $Silent) {
-            Show-Message "配置已保存到本机。Runner 密钥不会写入运行日志。"
+            Show-Message "任务 URL 和密钥已保存到本机。任务密钥不会写入运行日志。"
         }
         return $true
     } catch {
@@ -475,9 +491,28 @@ function Get-RunnerPid {
         Select-Object -First 1
     $Parsed = 0
     if (-not [int]::TryParse([string]$Value, [ref]$Parsed)) {
+        Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
         return 0
     }
     if (-not (Get-Process -Id $Parsed -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+        return 0
+    }
+    $ProcessRecord = Get-CimInstance Win32_Process `
+        -Filter "ProcessId = $Parsed" `
+        -ErrorAction SilentlyContinue
+    $CommandLine = [string]$ProcessRecord.CommandLine
+    if (
+        -not $CommandLine.Contains(
+            $HostRunnerPath,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not $CommandLine.Contains(
+            "-Action run",
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
         return 0
     }
     return $Parsed
@@ -548,7 +583,7 @@ function Start-HostAction {
             return
         }
         if (-not (Test-ConfigComplete)) {
-            Show-Message "请先填写完整的服务器地址、Runner 标识和至少 24 位密钥。" "配置不完整" ([Windows.MessageBoxImage]::Warning)
+            Show-Message "请先粘贴完整的任务 URL、任务密钥，并填写 Runner 标识。" "任务信息不完整" ([Windows.MessageBoxImage]::Warning)
             return
         }
     }
@@ -566,14 +601,14 @@ function Start-HostAction {
 
 function Start-Runner {
     if (Get-RunnerPid) {
-        Show-Message "Runner 已经在运行。"
+        Show-Message "当前 LoRA 任务已经在运行。"
         return
     }
     if (-not (Save-RunnerConfig -Silent)) {
         return
     }
     if (-not (Test-ConfigComplete)) {
-        Show-Message "请先填写完整的服务器地址、Runner 标识和至少 24 位密钥。" "配置不完整" ([Windows.MessageBoxImage]::Warning)
+        Show-Message "请先粘贴完整的任务 URL、任务密钥，并填写 Runner 标识。" "任务信息不完整" ([Windows.MessageBoxImage]::Warning)
         return
     }
     if (-not (Test-EnvironmentReady)) {
@@ -590,7 +625,7 @@ function Start-Runner {
             [string]$Started.process.Id,
             [Text.Encoding]::ASCII
         )
-        $script:FooterMessage = "Runner 已启动，正在连接服务器"
+        $script:FooterMessage = "LoRA 任务已启动，正在领取指定任务"
     } catch {
         Show-Message $_.Exception.Message "Runner 启动失败" ([Windows.MessageBoxImage]::Error)
     }
@@ -604,8 +639,8 @@ function Stop-Runner {
     }
     $Choice = [Windows.MessageBox]::Show(
         $Window,
-        "停止 Runner 可能中断正在进行的训练。服务器会在租约过期后重新排队任务。是否继续？",
-        "确认停止 Runner",
+        "停止当前训练会中断 LoRA 任务。服务器会在租约过期后允许使用同一任务 URL 和密钥重新开始。是否继续？",
+        "确认停止当前训练",
         [Windows.MessageBoxButton]::YesNo,
         [Windows.MessageBoxImage]::Warning
     )
@@ -615,7 +650,7 @@ function Stop-Runner {
     Stop-ProcessTree -RootPid $RunnerPid
     Remove-Item -LiteralPath (Runner-PidFile) -Force -ErrorAction SilentlyContinue
     $script:RunnerProcess = $null
-    $script:FooterMessage = "Runner 已停止"
+    $script:FooterMessage = "当前训练已停止"
 }
 
 function Log-Tail {
@@ -639,7 +674,7 @@ function Update-LogView {
         $Lines = @(
             "等待操作。",
             "",
-            "建议顺序：保存配置 → 环境检查 → 检测服务器 → 启动 Runner。",
+            "建议顺序：粘贴任务 URL 和密钥 → 环境检查 → 保存并开始此任务。",
             "首次使用可先执行 1 Step 实训确认本机 GPU 训练能力。"
         )
     }
@@ -651,11 +686,22 @@ function Update-LogView {
 }
 
 function Update-ConsoleState {
+    if ($script:RunnerProcess -and $script:RunnerProcess.HasExited) {
+        $RunnerExitCode = $script:RunnerProcess.ExitCode
+        Remove-Item -LiteralPath (Runner-PidFile) -Force -ErrorAction SilentlyContinue
+        $script:FooterMessage = if ($RunnerExitCode -eq 0) {
+            "当前 LoRA 任务已结束，Runner 已退出"
+        } else {
+            "当前 LoRA 任务执行失败，退出码 $RunnerExitCode"
+        }
+        $script:RunnerProcess = $null
+    }
+
     $ConfigComplete = Test-ConfigComplete
     if ($ConfigComplete) {
-        Set-Indicator $Controls.ConfigDot $Controls.ConfigStatus "good" "服务器与 Runner 配置完整"
+        Set-Indicator $Controls.ConfigDot $Controls.ConfigStatus "good" "LoRA 任务 URL 和密钥完整"
     } else {
-        Set-Indicator $Controls.ConfigDot $Controls.ConfigStatus "warn" "可安装和实训；连接服务器前需补全配置"
+        Set-Indicator $Controls.ConfigDot $Controls.ConfigStatus "warn" "可安装和实训；开始任务前需粘贴 URL 和密钥"
     }
 
     $EnvironmentReady = Test-EnvironmentReady
@@ -667,15 +713,15 @@ function Update-ConsoleState {
 
     $RunnerPid = Get-RunnerPid
     if ($RunnerPid) {
-        Set-Indicator $Controls.RunnerDot $Controls.RunnerStatus "good" "运行中，PID $RunnerPid"
+        Set-Indicator $Controls.RunnerDot $Controls.RunnerStatus "good" "任务运行中，PID $RunnerPid"
     } else {
-        Set-Indicator $Controls.RunnerDot $Controls.RunnerStatus "idle" "未运行"
+        Set-Indicator $Controls.RunnerDot $Controls.RunnerStatus "idle" "当前没有训练任务"
     }
 
     switch ($script:ServerProbeState) {
-        "good" { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "good" "Runner 密钥和服务器接口可用" }
-        "bad" { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "bad" "连接失败，请查看日志" }
-        default { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "idle" "尚未检测" }
+        "good" { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "good" "任务 URL 和密钥可用" }
+        "bad" { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "bad" "任务连接失败，请查看日志" }
+        default { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "idle" "尚未检测任务连接" }
     }
 
     $Gpu = Get-GpuSnapshot
@@ -710,7 +756,7 @@ function Update-ConsoleState {
             $script:ActionName = ""
         }
         $Controls.CurrentActionText.Text = if ($RunnerPid) {
-            "Runner 正在后台轮询训练任务"
+            "正在执行指定 LoRA 任务"
         } else {
             "空闲"
         }
@@ -733,7 +779,7 @@ function Update-ConsoleState {
 }
 
 $Existing = Read-RunnerConfig
-$Controls.ServerUrlInput.Text = [string]($Existing["TRAINING_CONTROL_BASE_URL"])
+$Controls.ServerUrlInput.Text = [string]($Existing["TRAINING_JOB_URL"])
 $Controls.RunnerIdInput.Text = if ($Existing["TRAINING_RUNNER_ID"]) {
     [string]$Existing["TRAINING_RUNNER_ID"]
 } else {
@@ -744,7 +790,7 @@ $Controls.RunnerNameInput.Text = if ($Existing["TRAINING_RUNNER_NAME"]) {
 } else {
     "本地 RTX 4070"
 }
-$Controls.TokenInput.Password = [string]($Existing["TRAINING_RUNNER_TOKEN"])
+$Controls.TokenInput.Password = [string]($Existing["TRAINING_JOB_TOKEN"])
 $Controls.RuntimeRootInput.Text = if ($Existing["TRAINING_RUNTIME_ROOT"]) {
     [string]$Existing["TRAINING_RUNTIME_ROOT"]
 } else {
@@ -771,6 +817,11 @@ $Controls.SmokeButton.Add_Click({
 })
 $Controls.ProbeButton.Add_Click({ Start-HostAction "probe" })
 $Controls.StartButton.Add_Click({ Start-Runner })
+$Controls.TokenInput.Add_KeyDown({
+    if ($_.Key -eq [Windows.Input.Key]::Enter) {
+        Start-Runner
+    }
+})
 $Controls.StopButton.Add_Click({ Stop-Runner })
 $Controls.QuickProbeButton.Add_Click({ Start-HostAction "probe" })
 $Controls.QuickStartButton.Add_Click({ Start-Runner })
