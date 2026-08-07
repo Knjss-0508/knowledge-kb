@@ -152,6 +152,101 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
             "technical_failure",
         )
 
+    def test_selection_rank_is_calculated_within_each_knowledge_origin_pool(self):
+        business_top = self._payload(
+            "business-top",
+            selected=False,
+            selected_knowledge_id="A-00002",
+            selected_candidate_rank=2,
+            metadata={
+                "candidate_origins": [
+                    "headquarters_standard",
+                    "business_accumulation",
+                ]
+            },
+            candidates=[
+                {
+                    "knowledge_id": "A-00001",
+                    "rank": 1,
+                    "title": "总部标准第一名",
+                    "final_score": 0.92,
+                    "selected": False,
+                },
+                {
+                    "knowledge_id": "A-00002",
+                    "rank": 2,
+                    "title": "业务沉淀第一名",
+                    "final_score": 0.89,
+                    "selected": True,
+                },
+            ],
+        )
+
+        dimensions = _retrieval_feedback_dimensions(business_top)
+        snapshot = _retrieval_candidate_snapshot(business_top)
+
+        self.assertEqual(dimensions["selected_candidate_rank"], 2)
+        self.assertEqual(dimensions["selection_status"], "top_selected")
+        self.assertEqual(dimensions["outcome"], "accepted")
+        self.assertEqual(
+            [candidate["knowledge_origin"] for candidate in snapshot],
+            ["headquarters_standard", "business_accumulation"],
+        )
+
+    def test_analytics_reclassifies_legacy_cross_origin_first_candidate(self):
+        payload = self._payload(
+            "legacy-business-top",
+            selected=False,
+            selected_knowledge_id="A-00002",
+            selected_candidate_rank=2,
+            metadata={
+                "candidate_origins": [
+                    "headquarters_standard",
+                    "business_accumulation",
+                ]
+            },
+            candidates=[
+                {
+                    "knowledge_id": "A-00001",
+                    "rank": 1,
+                    "final_score": 0.92,
+                    "selected": False,
+                },
+                {
+                    "knowledge_id": "A-00002",
+                    "rank": 2,
+                    "final_score": 0.89,
+                    "selected": True,
+                },
+            ],
+        )
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=[payload]),
+            self.db,
+            None,
+        )
+        event = (
+            self.db.query(RetrievalQualityEvent)
+            .filter(
+                RetrievalQualityEvent.idempotency_key
+                == "legacy-business-top"
+            )
+            .one()
+        )
+        event.selection_status = "alternative_selected"
+        event.outcome = "accepted_alternative"
+        self.db.commit()
+
+        analytics = get_retrieval_analytics(self.db, None)
+
+        self.assertEqual(analytics["summary"]["accepted"], 1)
+        self.assertEqual(analytics["summary"]["accepted_alternative"], 0)
+        self.assertEqual(analytics["summary"]["top_selected"], 1)
+        self.assertEqual(analytics["summary"]["alternative_selected"], 0)
+        self.assertEqual(analytics["rates"]["top1_selection_rate"], 1.0)
+        self.assertEqual(analytics["risks"][0]["selection_status"], "top_selected")
+        self.assertEqual(analytics["risks"][0]["outcome"], "accepted")
+
     def test_batch_persists_v2_fields_and_analytics_rates(self):
         items = [
             self._payload("accepted", total_latency_ms=10),
@@ -161,6 +256,12 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
                 selected_knowledge_id="A-00002",
                 selected_candidate_rank=2,
                 total_latency_ms=20,
+                metadata={
+                    "candidate_origins": [
+                        "headquarters_standard",
+                        "headquarters_standard",
+                    ]
+                },
                 candidates=[
                     {
                         "knowledge_id": "A-00001",
@@ -270,6 +371,18 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
         self.assertEqual(analytics["rates"]["no_selection_rate"], 0.3333)
         self.assertEqual(analytics["latency"]["p50_ms"], 30.0)
         self.assertEqual(analytics["latency"]["p95_ms"], 50.0)
+        alternative_risk = next(
+            item
+            for item in analytics["risks"]
+            if item["id"] == alternative.id
+        )
+        self.assertEqual(
+            [
+                candidate["knowledge_origin"]
+                for candidate in alternative_risk["candidates"]
+            ],
+            ["headquarters_standard", "headquarters_standard"],
+        )
 
     def test_analytics_keeps_only_latest_event_per_work_order(self):
         items = [
