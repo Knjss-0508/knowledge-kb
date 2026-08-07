@@ -19,6 +19,7 @@ from app.models.knowledge import (
     KnowledgeDeduplicationFeedback,
 )
 from app.services.knowledge_dedup import _content_to_text, build_embedding_text
+from app.services.retrieval_quality import latest_retrieval_quality_event_ids
 
 
 def next_runtime_config_version(db: Session) -> int:
@@ -110,6 +111,7 @@ def import_retrieval_samples(db: Session, *, created_by: str) -> int:
     events = (
         db.query(RetrievalQualityEvent)
         .filter(
+            RetrievalQualityEvent.id.in_(latest_retrieval_quality_event_ids()),
             RetrievalQualityEvent.review_status == "confirmed",
             RetrievalQualityEvent.training_eligible.is_(True),
             RetrievalQualityEvent.expected_knowledge_id.is_not(None),
