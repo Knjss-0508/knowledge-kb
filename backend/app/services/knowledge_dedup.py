@@ -23,6 +23,7 @@ from app.models.knowledge import (
     KnowledgeStatus,
     KnowledgeTag,
 )
+from app.services.applicability import filter_applicable_rows
 from app.services.embedding import embed_texts
 from app.services.embedding_runtime import get_active_runtime_values
 
@@ -1007,9 +1008,40 @@ def search_embeddings(
     business_type: str,
     category_id: str | None = None,
     tags: list[str] | None = None,
+    applicable_category_keys: set[str] | None = None,
+    applicable_brand_keys: set[str] | None = None,
+    applicable_model_keys: set[str] | None = None,
     top_k: int = 10,
 ) -> list[tuple[Knowledge, float]]:
     """Semantic search in PostgreSQL, aggregated by the parent knowledge item."""
+    allowed_knowledge_ids: list[str] | None = None
+    if (
+        applicable_category_keys
+        or applicable_brand_keys
+        or applicable_model_keys
+    ):
+        scope_query = db.query(
+            Knowledge.id.label("knowledge_id"),
+            Knowledge.applicable_categories,
+            Knowledge.applicable_brands,
+            Knowledge.applicable_models,
+        ).filter(
+            Knowledge.status == KnowledgeStatus.PUBLISHED,
+            Knowledge.knowledge_origin == knowledge_origin,
+            Knowledge.business_type == business_type,
+        )
+        if category_id:
+            scope_query = scope_query.filter(Knowledge.category_id == category_id)
+        scoped_rows = filter_applicable_rows(
+            scope_query.all(),
+            category_keys=applicable_category_keys,
+            brand_keys=applicable_brand_keys,
+            model_keys=applicable_model_keys,
+        )
+        allowed_knowledge_ids = [row.knowledge_id for row in scoped_rows]
+        if not allowed_knowledge_ids:
+            return []
+
     query_vector = _query_embedding(query)
     distance = KnowledgeSearchEmbedding.embedding_vector.cosine_distance(query_vector)
     item_query = (
@@ -1029,6 +1061,8 @@ def search_embeddings(
     )
     if category_id:
         item_query = item_query.filter(Knowledge.category_id == category_id)
+    if allowed_knowledge_ids is not None:
+        item_query = item_query.filter(Knowledge.id.in_(allowed_knowledge_ids))
     if tags:
         item_query = item_query.filter(
             Knowledge.tags.any(KnowledgeTag.tag_value_id.in_(tags))
