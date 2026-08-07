@@ -1,5 +1,5 @@
-import io
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -8,7 +8,6 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
-
 
 RUNNER_PATH = (
     Path(__file__).resolve().parents[2]
@@ -228,6 +227,103 @@ class EmbeddingTrainingRunnerTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["status"], "connected")
         self.assertEqual(payload["runner"]["id"], "runner-local")
+
+    def test_task_access_url_requires_exact_job_path_and_https(self):
+        self.assertEqual(
+            RUNNER.validate_task_access_url(
+                "https://kb.example.test/api/v1/embedding-model/"
+                "runner/tasks/etj-bound/"
+            ),
+            "https://kb.example.test/api/v1/embedding-model/"
+            "runner/tasks/etj-bound",
+        )
+        self.assertTrue(
+            RUNNER.validate_task_access_url(
+                "http://127.0.0.1/api/v1/embedding-model/"
+                "runner/tasks/etj-local"
+            ).startswith("http://127.0.0.1/")
+        )
+
+        for invalid_url in (
+            (
+                "http://kb.example.test/api/v1/embedding-model/"
+                "runner/tasks/etj-bound"
+            ),
+            (
+                "https://kb.example.test/api/v1/embedding-model/"
+                "runner/tasks/etj-bound/claim"
+            ),
+            (
+                "https://kb.example.test/api/v1/embedding-model/"
+                "runner/tasks/etj-bound?source=console"
+            ),
+            (
+                "https://user:pass@kb.example.test/api/v1/embedding-model/"
+                "runner/tasks/etj-bound"
+            ),
+        ):
+            with (
+                self.subTest(invalid_url=invalid_url),
+                self.assertRaises(RuntimeError),
+            ):
+                RUNNER.validate_task_access_url(invalid_url)
+
+    def test_task_mode_claims_only_bound_job_endpoint(self):
+        with (
+            patch.object(RUNNER, "TASK_MODE", True),
+            patch.object(
+                RUNNER,
+                "runner_heartbeat_payload",
+                return_value={"runner_id": "runner-local"},
+            ),
+            patch.object(
+                RUNNER,
+                "request_json",
+                return_value={"job": {"id": "etj-bound"}},
+            ) as request_json,
+        ):
+            job = RUNNER.claim_job()
+
+        self.assertEqual(job["id"], "etj-bound")
+        request_json.assert_called_once_with(
+            "POST",
+            "/claim",
+            payload={"runner_id": "runner-local"},
+        )
+
+    def test_task_mode_reports_progress_to_task_relative_endpoint(self):
+        with (
+            patch.object(RUNNER, "TASK_MODE", True),
+            patch.object(RUNNER, "request_json") as request_json,
+        ):
+            RUNNER.report_progress(
+                "etj-bound",
+                status="running",
+                stage="LoRA 训练",
+                progress=45,
+                log_tail="training",
+            )
+
+        request_json.assert_called_once()
+        args, kwargs = request_json.call_args
+        self.assertEqual(args, ("POST", "/progress"))
+        self.assertEqual(kwargs["payload"]["runner_id"], "test-runner")
+        self.assertTrue(kwargs["cancelled_on_conflict"])
+
+    def test_task_mode_runs_one_job_and_exits(self):
+        with (
+            patch.object(RUNNER, "TASK_MODE", True),
+            patch.object(
+                RUNNER,
+                "claim_job",
+                return_value={"id": "etj-bound"},
+            ) as claim_job,
+            patch.object(RUNNER, "process_job") as process_job,
+        ):
+            RUNNER.main()
+
+        claim_job.assert_called_once_with()
+        process_job.assert_called_once_with({"id": "etj-bound"})
 
 
 if __name__ == "__main__":
