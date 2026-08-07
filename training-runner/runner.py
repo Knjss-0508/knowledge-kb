@@ -15,12 +15,15 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
-
-RUNNER_VERSION = "0.2.0"
+RUNNER_VERSION = "0.3.0"
 SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+TASK_ACCESS_PATH = re.compile(
+    r"^/api/v1/embedding-model/runner/tasks/etj-[A-Za-z0-9._-]+$"
+)
 RUNNER_DIRECTORY = Path(__file__).resolve().parent
 EVALUATOR_PATH = RUNNER_DIRECTORY / "evaluate_model.py"
 
@@ -40,18 +43,60 @@ def required_env(name: str) -> str:
     return value
 
 
-CONTROL_BASE_URL = required_env("TRAINING_CONTROL_BASE_URL").rstrip("/")
-RUNNER_TOKEN = required_env("TRAINING_RUNNER_TOKEN")
+def validate_task_access_url(value: str) -> str:
+    normalized = value.strip().rstrip("/")
+    parsed = urlparse(normalized)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or not parsed.hostname
+    ):
+        raise RuntimeError("TRAINING_JOB_URL must be an absolute HTTP(S) URL")
+    if (
+        parsed.scheme != "https"
+        and parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+    ):
+        raise RuntimeError("TRAINING_JOB_URL must use HTTPS outside localhost")
+    if (
+        parsed.username
+        or parsed.password
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or not TASK_ACCESS_PATH.fullmatch(parsed.path)
+    ):
+        raise RuntimeError("TRAINING_JOB_URL is not an exact LoRA task access URL")
+    return normalized
+
+
+TASK_ACCESS_URL = os.getenv("TRAINING_JOB_URL", "").strip()
+TASK_ACCESS_TOKEN = os.getenv("TRAINING_JOB_TOKEN", "").strip()
+TASK_MODE = bool(TASK_ACCESS_URL or TASK_ACCESS_TOKEN)
+if TASK_MODE:
+    if not TASK_ACCESS_URL or not TASK_ACCESS_TOKEN:
+        raise RuntimeError(
+            "TRAINING_JOB_URL and TRAINING_JOB_TOKEN must be configured together"
+        )
+    TASK_ACCESS_URL = validate_task_access_url(TASK_ACCESS_URL)
+    CONTROL_BASE_URL = ""
+    RUNNER_TOKEN = TASK_ACCESS_TOKEN
+    API_ROOT = TASK_ACCESS_URL
+    TOKEN_HEADER = "X-Embedding-Task-Token"
+else:
+    CONTROL_BASE_URL = required_env("TRAINING_CONTROL_BASE_URL").rstrip("/")
+    RUNNER_TOKEN = required_env("TRAINING_RUNNER_TOKEN")
+    API_ROOT = f"{CONTROL_BASE_URL}/api/v1/embedding-model"
+    TOKEN_HEADER = "X-Embedding-Runner-Token"
 RUNNER_ID = required_env("TRAINING_RUNNER_ID")
 RUNNER_NAME = os.getenv("TRAINING_RUNNER_NAME", RUNNER_ID).strip() or RUNNER_ID
 POLL_SECONDS = max(2.0, float(os.getenv("TRAINING_POLL_SECONDS", "10")))
 ARTIFACT_ROOT = Path(
     os.getenv("TRAINING_ARTIFACT_ROOT", str(RUNNER_DIRECTORY / "artifacts"))
 ).resolve()
-API_ROOT = f"{CONTROL_BASE_URL}/api/v1/embedding-model"
 
 if len(RUNNER_TOKEN) < 24:
-    raise RuntimeError("TRAINING_RUNNER_TOKEN must contain at least 24 characters")
+    token_name = "TRAINING_JOB_TOKEN" if TASK_MODE else "TRAINING_RUNNER_TOKEN"
+    raise RuntimeError(f"{token_name} must contain at least 24 characters")
 if not SAFE_ID.fullmatch(RUNNER_ID):
     raise RuntimeError("TRAINING_RUNNER_ID contains unsupported characters")
 
@@ -72,7 +117,7 @@ def swift_executable() -> str:
 def api_client() -> httpx.Client:
     return httpx.Client(
         timeout=httpx.Timeout(30.0, connect=10.0),
-        headers={"X-Embedding-Runner-Token": RUNNER_TOKEN},
+        headers={TOKEN_HEADER: RUNNER_TOKEN},
     )
 
 
@@ -81,10 +126,11 @@ def request_json(
     path: str,
     *,
     payload: dict[str, Any] | None = None,
+    cancelled_on_conflict: bool = False,
 ) -> dict[str, Any]:
     with api_client() as client:
         response = client.request(method, f"{API_ROOT}{path}", json=payload)
-        if response.status_code == 409:
+        if response.status_code == 409 and cancelled_on_conflict:
             raise JobCancelled(response.text)
         response.raise_for_status()
         return response.json()
@@ -134,33 +180,52 @@ def gpu_snapshot() -> dict[str, Any]:
         }
 
 
-def heartbeat(status: str = "online", current_job_id: str | None = None) -> dict:
+def runner_heartbeat_payload(
+    status: str = "online",
+    current_job_id: str | None = None,
+) -> dict[str, Any]:
     gpu = gpu_snapshot()
+    return {
+        "runner_id": RUNNER_ID,
+        "name": RUNNER_NAME,
+        "hostname": socket.gethostname(),
+        "status": status,
+        "gpu_name": gpu.get("gpu_name", ""),
+        "gpu_memory_mb": gpu.get("gpu_memory_mb", 0),
+        "gpu_free_memory_mb": gpu.get("gpu_free_memory_mb", 0),
+        "cuda_version": gpu.get("cuda_version", ""),
+        "runner_version": RUNNER_VERSION,
+        "current_job_id": current_job_id,
+        "metadata": {
+            "platform": platform.platform(),
+            "python": sys.version.split()[0],
+            "driver_version": gpu.get("driver_version", ""),
+            "gpu_error": gpu.get("gpu_error", ""),
+        },
+    }
+
+
+def heartbeat(status: str = "online", current_job_id: str | None = None) -> dict:
+    if TASK_MODE:
+        path = "/heartbeat" if current_job_id else "/probe"
+    else:
+        path = "/runner/heartbeat"
     return request_json(
         "POST",
-        "/runner/heartbeat",
-        payload={
-            "runner_id": RUNNER_ID,
-            "name": RUNNER_NAME,
-            "hostname": socket.gethostname(),
-            "status": status,
-            "gpu_name": gpu.get("gpu_name", ""),
-            "gpu_memory_mb": gpu.get("gpu_memory_mb", 0),
-            "gpu_free_memory_mb": gpu.get("gpu_free_memory_mb", 0),
-            "cuda_version": gpu.get("cuda_version", ""),
-            "runner_version": RUNNER_VERSION,
-            "current_job_id": current_job_id,
-            "metadata": {
-                "platform": platform.platform(),
-                "python": sys.version.split()[0],
-                "driver_version": gpu.get("driver_version", ""),
-                "gpu_error": gpu.get("gpu_error", ""),
-            },
-        },
+        path,
+        payload=runner_heartbeat_payload(status, current_job_id),
+        cancelled_on_conflict=bool(TASK_MODE and current_job_id),
     )
 
 
 def claim_job() -> dict[str, Any] | None:
+    if TASK_MODE:
+        response = request_json(
+            "POST",
+            "/claim",
+            payload=runner_heartbeat_payload(),
+        )
+        return response.get("job")
     response = request_json(
         "POST",
         "/runner/claim",
@@ -283,7 +348,7 @@ def report_progress(
 ) -> None:
     request_json(
         "POST",
-        f"/runner/jobs/{job_id}/progress",
+        "/progress" if TASK_MODE else f"/runner/jobs/{job_id}/progress",
         payload={
             "runner_id": RUNNER_ID,
             "status": status,
@@ -292,6 +357,7 @@ def report_progress(
             "log_tail": log_tail[-20000:],
             "lease_seconds": 300,
         },
+        cancelled_on_conflict=True,
     )
 
 
@@ -612,7 +678,7 @@ def process_job(job: dict[str, Any]) -> None:
     artifact_uri = f"local-runner://{RUNNER_ID}/jobs/{job_id}/model"
     request_json(
         "POST",
-        f"/runner/jobs/{job_id}/complete",
+        "/complete" if TASK_MODE else f"/runner/jobs/{job_id}/complete",
         payload={
             "runner_id": RUNNER_ID,
             "metrics": metrics,
@@ -623,6 +689,7 @@ def process_job(job: dict[str, Any]) -> None:
                 part for part in (train_log, merge_log, evaluation_log) if part
             )[-20000:],
         },
+        cancelled_on_conflict=True,
     )
 
 
@@ -630,13 +697,14 @@ def report_failure(job_id: str, error: Exception, *, retryable: bool) -> None:
     try:
         request_json(
             "POST",
-            f"/runner/jobs/{job_id}/fail",
+            "/fail" if TASK_MODE else f"/runner/jobs/{job_id}/fail",
             payload={
                 "runner_id": RUNNER_ID,
                 "error_message": str(error)[:10000],
                 "log_tail": str(error)[-20000:],
                 "retryable": retryable,
             },
+            cancelled_on_conflict=True,
         )
     except JobCancelled:
         return
@@ -650,6 +718,29 @@ def is_retryable_training_exception(error: Exception) -> bool:
 
 
 def main() -> None:
+    if TASK_MODE:
+        job = claim_job()
+        if not job:
+            raise RuntimeError("任务 URL 没有可领取的 LoRA 训练任务")
+        try:
+            process_job(job)
+            print(
+                f"training job {job['id']} completed",
+                flush=True,
+            )
+        except JobCancelled:
+            print(
+                f"training job {job['id']} was cancelled",
+                flush=True,
+            )
+        except RetryableTrainingError as exc:
+            report_failure(str(job["id"]), exc, retryable=True)
+            raise
+        except Exception as exc:
+            retryable = is_retryable_training_exception(exc)
+            report_failure(str(job["id"]), exc, retryable=retryable)
+            raise
+        return
     while True:
         try:
             heartbeat()
