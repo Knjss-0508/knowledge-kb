@@ -93,7 +93,11 @@ class Settings(BaseSettings):
 
     # Outbound GPU runner authentication. The runner polls this backend, so the
     # user's workstation never needs an inbound public port.
+    # The global token remains for legacy runners. New LoRA jobs use a
+    # short-lived, task-scoped token that is shown only when issued.
     EMBEDDING_TRAINING_RUNNER_TOKEN: str = ""
+    EMBEDDING_TRAINING_PUBLIC_BASE_URL: str = ""
+    EMBEDDING_TRAINING_TASK_TOKEN_TTL_HOURS: int = 24
     EMBEDDING_TRAINING_JOB_LEASE_SECONDS: int = 300
     EMBEDDING_TRAINING_RUNNER_OFFLINE_SECONDS: int = 90
 

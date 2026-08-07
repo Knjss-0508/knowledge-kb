@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import re
+import secrets
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -57,10 +60,11 @@ from app.services.embedding_runtime import (
     get_active_runtime_values,
 )
 
-
 router = APIRouter(prefix="/embedding-model", tags=["向量模型管理"])
 _MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{2,255}$")
 _TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
+_ACTIVE_JOB_STATUSES = {"claimed", "running", "evaluating"}
+_TASK_RUNNER_PATH = "/api/v1/embedding-model/runner/tasks"
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -75,6 +79,106 @@ def _runner_token(
         raise HTTPException(503, "本地 GPU Runner 密钥尚未配置")
     if not token or not hmac.compare_digest(token, configured):
         raise HTTPException(401, "GPU Runner authentication failed")
+
+
+def _task_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _task_runner_url(job_id: str) -> str:
+    base_url = settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL.strip().rstrip("/")
+    path = f"{_TASK_RUNNER_PATH}/{job_id}"
+    if not base_url:
+        raise HTTPException(503, "尚未配置训练任务 HTTPS 公网地址")
+    parsed = urlparse(base_url)
+    if parsed.scheme.lower() != "https":
+        raise HTTPException(503, "训练任务公网地址必须使用 HTTPS")
+    if not parsed.netloc or not parsed.hostname:
+        raise HTTPException(503, "训练任务公网地址格式无效")
+    if (
+        parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise HTTPException(503, "训练任务公网地址只能填写 HTTPS 根地址")
+    return f"{base_url}{path}"
+
+
+def _runner_access_metadata(job: EmbeddingTrainingJob) -> dict[str, Any]:
+    now = datetime.utcnow()
+    expires_at = job.runner_access_expires_at
+    return {
+        "configured": bool(job.runner_access_token_hash),
+        "issued_at": _iso(job.runner_access_issued_at),
+        "expires_at": _iso(expires_at),
+        "expired": bool(expires_at and expires_at <= now),
+        "last_used_at": _iso(job.runner_access_last_used_at),
+        "can_regenerate": (
+            job.status == "queued"
+            and not job.runner_id
+        ),
+    }
+
+
+def _issue_task_runner_access(
+    job: EmbeddingTrainingJob,
+    *,
+    issued_by: str,
+) -> tuple[str, dict[str, Any]]:
+    now = datetime.utcnow()
+    token = secrets.token_urlsafe(32)
+    ttl_hours = max(1, settings.EMBEDDING_TRAINING_TASK_TOKEN_TTL_HOURS)
+    job.runner_access_token_hash = _task_token_hash(token)
+    job.runner_access_issued_at = now
+    job.runner_access_expires_at = now + timedelta(hours=ttl_hours)
+    job.runner_access_last_used_at = None
+    job.runner_access_issued_by = issued_by
+    return token, {
+        "url": _task_runner_url(job.id),
+        "token": token,
+        "expires_at": _iso(job.runner_access_expires_at),
+        "shown_once": True,
+    }
+
+
+def _require_task_runner_job(
+    db: Session,
+    job_id: str,
+    token: str,
+    *,
+    lock: bool = False,
+) -> EmbeddingTrainingJob:
+    query = db.query(EmbeddingTrainingJob).filter(
+        EmbeddingTrainingJob.id == job_id
+    )
+    if lock:
+        query = query.with_for_update()
+    job = query.first()
+    if not job:
+        raise HTTPException(404, "训练任务不存在")
+    if job.status in _TERMINAL_JOB_STATUSES:
+        raise HTTPException(409, "训练任务已经结束")
+    if not job.runner_access_token_hash:
+        raise HTTPException(401, "训练任务密钥尚未签发或已撤销")
+    now = datetime.utcnow()
+    if job.runner_access_expires_at and job.runner_access_expires_at <= now:
+        raise HTTPException(410, "训练任务密钥已过期，请在工作台重新生成")
+    if not token or not hmac.compare_digest(
+        _task_token_hash(token),
+        job.runner_access_token_hash,
+    ):
+        raise HTTPException(401, "训练任务密钥无效")
+    job.runner_access_last_used_at = now
+    if job.status in _ACTIVE_JOB_STATUSES:
+        ttl_hours = max(1, settings.EMBEDDING_TRAINING_TASK_TOKEN_TTL_HOURS)
+        job.runner_access_expires_at = max(
+            job.runner_access_expires_at or now,
+            now + timedelta(hours=ttl_hours),
+        )
+    return job
 
 
 def _embedding_health_url() -> str:
@@ -171,6 +275,7 @@ def _job_payload(job: EmbeddingTrainingJob, *, include_dataset: bool = False) ->
         "artifact_uri": job.artifact_uri,
         "artifact_sha256": job.artifact_sha256,
         "runner_id": job.runner_id,
+        "runner_access": _runner_access_metadata(job),
         "requested_by": job.requested_by,
         "error_message": job.error_message,
         "lease_expires_at": _iso(job.lease_expires_at),
@@ -331,6 +436,7 @@ def get_embedding_overview(
         },
         "runner": _runner_payload(runner),
         "runner_configured": len(settings.EMBEDDING_TRAINING_RUNNER_TOKEN.strip()) >= 24,
+        "runner_access_mode": "task_scoped",
         "active_config": _config_payload(active_config),
         "updated_at": datetime.utcnow().isoformat(),
     }
@@ -727,7 +833,7 @@ def create_training_job(
     job = EmbeddingTrainingJob(
         id=f"etj-{uuid.uuid4().hex[:16]}",
         status="queued",
-        stage="等待本地 GPU Runner",
+        stage="等待本机粘贴任务 URL 和密钥",
         progress=0.0,
         base_model=settings.EMBEDDING_MODEL,
         candidate_model_name=candidate_model_name,
@@ -741,10 +847,48 @@ def create_training_job(
         test_count=counts["test"],
         requested_by=current_user.username,
     )
+    _, runner_access = _issue_task_runner_access(
+        job,
+        issued_by=current_user.username,
+    )
     db.add(job)
     db.commit()
     db.refresh(job)
-    return _job_payload(job)
+    payload = _job_payload(job)
+    payload["runner_access"] = {
+        **payload["runner_access"],
+        **runner_access,
+    }
+    return payload
+
+
+@router.post("/jobs/{job_id}/runner-access")
+def regenerate_training_job_runner_access(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("embedding:manage")),
+):
+    job = (
+        db.query(EmbeddingTrainingJob)
+        .filter(EmbeddingTrainingJob.id == job_id)
+        .with_for_update()
+        .first()
+    )
+    if not job:
+        raise HTTPException(404, "训练任务不存在")
+    _release_expired_training_job(db, job, now=datetime.utcnow())
+    if job.status != "queued" or job.runner_id:
+        raise HTTPException(409, "只有尚未被 Runner 领取的排队任务可以重新生成接入信息")
+    _, runner_access = _issue_task_runner_access(
+        job,
+        issued_by=current_user.username,
+    )
+    db.commit()
+    db.refresh(job)
+    return {
+        "job": _job_payload(job),
+        "runner_access": runner_access,
+    }
 
 
 @router.post("/jobs/{job_id}/cancel")
@@ -766,6 +910,8 @@ def cancel_training_job(
     job.stage = "已取消"
     job.completed_at = datetime.utcnow()
     job.lease_expires_at = None
+    job.runner_access_token_hash = None
+    job.runner_access_expires_at = datetime.utcnow()
     runner = (
         db.query(EmbeddingTrainingRunner)
         .filter(EmbeddingTrainingRunner.id == job.runner_id)
@@ -846,6 +992,112 @@ def runner_heartbeat(
     return {"status": "ok", "runner": _runner_payload(runner)}
 
 
+def _release_expired_training_job(
+    db: Session,
+    job: EmbeddingTrainingJob,
+    *,
+    now: datetime,
+) -> None:
+    if (
+        job.status not in _ACTIVE_JOB_STATUSES
+        or not job.lease_expires_at
+        or job.lease_expires_at >= now
+    ):
+        return
+    previous_runner_id = job.runner_id
+    job.status = "queued"
+    job.stage = "Runner 离线，等待重新连接"
+    job.runner_id = None
+    job.lease_expires_at = None
+    if previous_runner_id:
+        previous_runner = (
+            db.query(EmbeddingTrainingRunner)
+            .filter(EmbeddingTrainingRunner.id == previous_runner_id)
+            .first()
+        )
+        if previous_runner and previous_runner.current_job_id == job.id:
+            previous_runner.status = "offline"
+            previous_runner.current_job_id = None
+
+
+@router.post("/runner/tasks/{job_id}/probe")
+def probe_task_runner_access(
+    job_id: str,
+    body: EmbeddingRunnerHeartbeat,
+    db: Session = Depends(get_db),
+    token: str = Header(default="", alias="X-Embedding-Task-Token"),
+):
+    job = _require_task_runner_job(db, job_id, token)
+    if job.runner_id and job.runner_id != body.runner_id:
+        raise HTTPException(409, "训练任务已由其他 Runner 领取")
+    body.current_job_id = job.id if job.runner_id == body.runner_id else None
+    body.status = "busy" if body.current_job_id else "online"
+    runner = _upsert_runner(db, body)
+    db.commit()
+    db.refresh(runner)
+    return {
+        "status": "connected",
+        "job": _job_payload(job),
+        "runner": _runner_payload(runner),
+    }
+
+
+@router.post("/runner/tasks/{job_id}/claim")
+def claim_task_training_job(
+    job_id: str,
+    body: EmbeddingRunnerHeartbeat,
+    db: Session = Depends(get_db),
+    token: str = Header(default="", alias="X-Embedding-Task-Token"),
+):
+    job = _require_task_runner_job(db, job_id, token, lock=True)
+    now = datetime.utcnow()
+    _release_expired_training_job(db, job, now=now)
+    if job.status in _ACTIVE_JOB_STATUSES and job.runner_id != body.runner_id:
+        raise HTTPException(409, "训练任务已由其他 Runner 领取")
+    if job.status not in {"queued", *_ACTIVE_JOB_STATUSES}:
+        raise HTTPException(409, "训练任务当前不可领取")
+    runner = _upsert_runner(db, body)
+    lease_seconds = max(60, settings.EMBEDDING_TRAINING_JOB_LEASE_SECONDS)
+    job.status = "claimed"
+    job.stage = "Runner 已通过任务密钥领取"
+    job.runner_id = runner.id
+    job.lease_expires_at = now + timedelta(seconds=lease_seconds)
+    job.started_at = job.started_at or now
+    ttl_hours = max(1, settings.EMBEDDING_TRAINING_TASK_TOKEN_TTL_HOURS)
+    job.runner_access_expires_at = max(
+        job.runner_access_expires_at or now,
+        now + timedelta(hours=ttl_hours),
+    )
+    runner.status = "busy"
+    runner.current_job_id = job.id
+    runner.last_seen_at = now
+    db.commit()
+    db.refresh(job)
+    return {"job": _job_payload(job, include_dataset=True)}
+
+
+@router.post("/runner/tasks/{job_id}/heartbeat")
+def task_runner_heartbeat(
+    job_id: str,
+    body: EmbeddingRunnerHeartbeat,
+    db: Session = Depends(get_db),
+    token: str = Header(default="", alias="X-Embedding-Task-Token"),
+):
+    job = _require_task_runner_job(db, job_id, token)
+    if job.runner_id != body.runner_id:
+        raise HTTPException(409, "训练任务不属于当前 Runner")
+    now = datetime.utcnow()
+    runner = _upsert_runner(db, body)
+    if job.status in _ACTIVE_JOB_STATUSES:
+        lease_seconds = max(60, settings.EMBEDDING_TRAINING_JOB_LEASE_SECONDS)
+        job.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        runner.status = "busy"
+        runner.current_job_id = job.id
+    db.commit()
+    db.refresh(runner)
+    return {"status": "ok", "runner": _runner_payload(runner)}
+
+
 @router.post("/runner/claim")
 def claim_training_job(
     body: EmbeddingRunnerClaim,
@@ -863,24 +1115,14 @@ def claim_training_job(
         .all()
     )
     for expired in expired_jobs:
-        previous_runner_id = expired.runner_id
-        expired.status = "queued"
-        expired.stage = "Runner 离线，等待重新领取"
-        expired.runner_id = None
-        expired.lease_expires_at = None
-        if previous_runner_id:
-            previous_runner = (
-                db.query(EmbeddingTrainingRunner)
-                .filter(EmbeddingTrainingRunner.id == previous_runner_id)
-                .first()
-            )
-            if previous_runner and previous_runner.current_job_id == expired.id:
-                previous_runner.status = "offline"
-                previous_runner.current_job_id = None
+        _release_expired_training_job(db, expired, now=now)
 
     job = (
         db.query(EmbeddingTrainingJob)
-        .filter(EmbeddingTrainingJob.status == "queued")
+        .filter(
+            EmbeddingTrainingJob.status == "queued",
+            EmbeddingTrainingJob.runner_access_token_hash.is_(None),
+        )
         .order_by(EmbeddingTrainingJob.created_at)
         .with_for_update(skip_locked=True)
         .first()
@@ -915,6 +1157,8 @@ def _owned_job(
     db: Session,
     job_id: str,
     runner_id: str,
+    *,
+    allow_task_scoped: bool = False,
 ) -> EmbeddingTrainingJob:
     job = (
         db.query(EmbeddingTrainingJob)
@@ -927,17 +1171,24 @@ def _owned_job(
         raise HTTPException(409, "训练任务不属于当前 Runner")
     if job.status in _TERMINAL_JOB_STATUSES:
         raise HTTPException(409, "训练任务已经结束")
+    if job.runner_access_token_hash and not allow_task_scoped:
+        raise HTTPException(409, "任务级训练必须使用任务专属接口")
     return job
 
 
-@router.post("/runner/jobs/{job_id}/progress")
-def update_training_progress(
+def _record_training_progress(
     job_id: str,
     body: EmbeddingRunnerProgress,
-    db: Session = Depends(get_db),
-    _: None = Depends(_runner_token),
+    db: Session,
+    *,
+    allow_task_scoped: bool,
 ):
-    job = _owned_job(db, job_id, body.runner_id)
+    job = _owned_job(
+        db,
+        job_id,
+        body.runner_id,
+        allow_task_scoped=allow_task_scoped,
+    )
     job.status = body.status
     job.stage = body.stage
     job.progress = body.progress
@@ -956,14 +1207,50 @@ def update_training_progress(
     return {"status": "recorded"}
 
 
-@router.post("/runner/jobs/{job_id}/complete")
-def complete_training_job(
+@router.post("/runner/jobs/{job_id}/progress")
+def update_training_progress(
     job_id: str,
-    body: EmbeddingRunnerComplete,
+    body: EmbeddingRunnerProgress,
     db: Session = Depends(get_db),
     _: None = Depends(_runner_token),
 ):
-    job = _owned_job(db, job_id, body.runner_id)
+    return _record_training_progress(
+        job_id,
+        body,
+        db,
+        allow_task_scoped=False,
+    )
+
+
+@router.post("/runner/tasks/{job_id}/progress")
+def update_task_training_progress(
+    job_id: str,
+    body: EmbeddingRunnerProgress,
+    db: Session = Depends(get_db),
+    token: str = Header(default="", alias="X-Embedding-Task-Token"),
+):
+    _require_task_runner_job(db, job_id, token)
+    return _record_training_progress(
+        job_id,
+        body,
+        db,
+        allow_task_scoped=True,
+    )
+
+
+def _record_training_completion(
+    job_id: str,
+    body: EmbeddingRunnerComplete,
+    db: Session,
+    *,
+    allow_task_scoped: bool,
+):
+    job = _owned_job(
+        db,
+        job_id,
+        body.runner_id,
+        allow_task_scoped=allow_task_scoped,
+    )
     if body.dimension != settings.EMBEDDING_DIMENSIONS:
         raise HTTPException(
             422,
@@ -979,6 +1266,8 @@ def complete_training_job(
     job.log_tail = body.log_tail[-20000:]
     job.error_message = ""
     job.lease_expires_at = None
+    job.runner_access_token_hash = None
+    job.runner_access_expires_at = now
     job.completed_at = now
     model = (
         db.query(EmbeddingModelVersion)
@@ -1012,14 +1301,50 @@ def complete_training_job(
     return {"status": "completed", "job": _job_payload(job)}
 
 
-@router.post("/runner/jobs/{job_id}/fail")
-def fail_training_job(
+@router.post("/runner/jobs/{job_id}/complete")
+def complete_training_job(
     job_id: str,
-    body: EmbeddingRunnerFailure,
+    body: EmbeddingRunnerComplete,
     db: Session = Depends(get_db),
     _: None = Depends(_runner_token),
 ):
-    job = _owned_job(db, job_id, body.runner_id)
+    return _record_training_completion(
+        job_id,
+        body,
+        db,
+        allow_task_scoped=False,
+    )
+
+
+@router.post("/runner/tasks/{job_id}/complete")
+def complete_task_training_job(
+    job_id: str,
+    body: EmbeddingRunnerComplete,
+    db: Session = Depends(get_db),
+    token: str = Header(default="", alias="X-Embedding-Task-Token"),
+):
+    _require_task_runner_job(db, job_id, token)
+    return _record_training_completion(
+        job_id,
+        body,
+        db,
+        allow_task_scoped=True,
+    )
+
+
+def _record_training_failure(
+    job_id: str,
+    body: EmbeddingRunnerFailure,
+    db: Session,
+    *,
+    allow_task_scoped: bool,
+):
+    job = _owned_job(
+        db,
+        job_id,
+        body.runner_id,
+        allow_task_scoped=allow_task_scoped,
+    )
     job.error_message = body.error_message
     job.log_tail = body.log_tail[-20000:]
     job.lease_expires_at = None
@@ -1031,6 +1356,8 @@ def fail_training_job(
     else:
         job.status = "failed"
         job.stage = "训练失败"
+        job.runner_access_token_hash = None
+        job.runner_access_expires_at = datetime.utcnow()
         job.completed_at = datetime.utcnow()
     runner = (
         db.query(EmbeddingTrainingRunner)
@@ -1044,3 +1371,34 @@ def fail_training_job(
     db.commit()
     db.refresh(job)
     return {"status": job.status, "job": _job_payload(job)}
+
+
+@router.post("/runner/jobs/{job_id}/fail")
+def fail_training_job(
+    job_id: str,
+    body: EmbeddingRunnerFailure,
+    db: Session = Depends(get_db),
+    _: None = Depends(_runner_token),
+):
+    return _record_training_failure(
+        job_id,
+        body,
+        db,
+        allow_task_scoped=False,
+    )
+
+
+@router.post("/runner/tasks/{job_id}/fail")
+def fail_task_training_job(
+    job_id: str,
+    body: EmbeddingRunnerFailure,
+    db: Session = Depends(get_db),
+    token: str = Header(default="", alias="X-Embedding-Task-Token"),
+):
+    _require_task_runner_job(db, job_id, token)
+    return _record_training_failure(
+        job_id,
+        body,
+        db,
+        allow_task_scoped=True,
+    )

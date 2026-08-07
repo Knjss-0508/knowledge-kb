@@ -48,11 +48,14 @@
 ```text
 /api/v1/integration/standard-search
 /api/v1/integration/retrieval-events:batch
+/api/v1/embedding-model/runner/tasks/etj-*/{probe|claim|heartbeat|progress|complete|fail}
 ```
 
-不得修改 `zsk2.powerzhuan.cn` 的站点根目录、PHP 配置、重写规则、证书文件或
-其他接口。原 `http://111.230.109.227:8801` 入口暂时保留用于旧客户端兼容；
-新客户端应使用 `https://zsk2.powerzhuan.cn`。
+第三组路径只允许 `POST`，并且仍需通过任务创建时签发的单任务密钥鉴权；
+不得代理 `/api/v1/embedding-model` 下的管理页面、任务创建、参数配置或模型
+发布接口。不得修改 `zsk2.powerzhuan.cn` 的站点根目录、PHP 配置、重写规则、
+证书文件或其他接口。原 `http://111.230.109.227:8801` 入口暂时保留用于旧
+客户端兼容；新客户端应使用 `https://zsk2.powerzhuan.cn`。
 
 ## 3. 项目专属更新配置
 
@@ -87,6 +90,16 @@ docker compose -p knowledge-kb \
 ```
 
 `--no-deps` 是服务器日常更新的必要保护，确保不会重建或重启 PostgreSQL、Redis、Qwen Embedding 和迁移容器。
+
+启用任务级本机 GPU 训练接入时，只在项目 `.env` 中设置：
+
+```text
+EMBEDDING_TRAINING_PUBLIC_BASE_URL=https://zsk2.powerzhuan.cn
+```
+
+该值只用于创建 LoRA 任务时生成可复制的 HTTPS URL，不包含 `/app` 或
+`/api/v1`。任务密钥由后端逐任务随机生成并只保存哈希，不得在 `.env` 中
+预置、打印或提交任务密钥。
 
 首次启用答疑插件的服务器检索时，只在项目 `.env` 中新增一个与
 `INTEGRATION_API_KEY` 不同、至少 24 位的 `RETRIEVAL_API_KEY`，然后仍按上面的

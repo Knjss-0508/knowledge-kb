@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -269,6 +270,100 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
         self.assertEqual(analytics["rates"]["no_selection_rate"], 0.3333)
         self.assertEqual(analytics["latency"]["p50_ms"], 30.0)
         self.assertEqual(analytics["latency"]["p95_ms"], 50.0)
+
+    def test_analytics_keeps_only_latest_event_per_work_order(self):
+        items = [
+            self._payload(
+                "ticket-old",
+                conversation_id="work-order-1",
+                top_rerank_score=0.5,
+                selected=False,
+                selected_knowledge_id=None,
+                selected_candidate_rank=None,
+                candidates=[
+                    {
+                        "knowledge_id": "A-00001",
+                        "rank": 1,
+                        "final_score": 0.5,
+                        "selected": False,
+                    },
+                    {
+                        "knowledge_id": "A-00002",
+                        "rank": 2,
+                        "final_score": 0.4,
+                        "selected": False,
+                    },
+                ],
+            ),
+            self._payload(
+                "ticket-new",
+                conversation_id="work-order-1",
+            ),
+            self._payload(
+                "other-ticket",
+                conversation_id="work-order-2",
+                request_status="no_match",
+                candidate_count=0,
+                top_knowledge_id=None,
+                top_rerank_score=None,
+                selected=False,
+                selected_knowledge_id=None,
+                selected_candidate_rank=None,
+                candidates=[],
+            ),
+            self._payload(
+                "anonymous-low",
+                conversation_id="  ",
+                top_rerank_score=0.5,
+                selected=False,
+                selected_knowledge_id=None,
+                selected_candidate_rank=None,
+                candidates=[
+                    {
+                        "knowledge_id": "A-00001",
+                        "rank": 1,
+                        "final_score": 0.5,
+                        "selected": False,
+                    },
+                    {
+                        "knowledge_id": "A-00002",
+                        "rank": 2,
+                        "final_score": 0.4,
+                        "selected": False,
+                    },
+                ],
+            ),
+            self._payload(
+                "anonymous-accepted",
+                conversation_id=None,
+            ),
+        ]
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=items),
+            self.db,
+            None,
+        )
+        events = {
+            event.idempotency_key: event
+            for event in self.db.query(RetrievalQualityEvent).all()
+        }
+        events["ticket-old"].created_at = datetime(2026, 8, 7, 10, 0, 0)
+        events["ticket-new"].created_at = datetime(2026, 8, 7, 11, 0, 0)
+        events["ticket-old"].review_status = "confirmed"
+        events["ticket-old"].training_eligible = True
+        self.db.commit()
+
+        analytics = get_retrieval_analytics(self.db, None)
+
+        self.assertEqual(analytics["summary"]["total"], 4)
+        self.assertEqual(analytics["summary"]["accepted"], 2)
+        self.assertEqual(analytics["summary"]["low_score"], 1)
+        self.assertEqual(analytics["summary"]["no_candidates"], 1)
+        self.assertEqual(analytics["summary"]["reviewed"], 0)
+        self.assertEqual(analytics["summary"]["training_eligible"], 0)
+        risk_ids = {risk["id"] for risk in analytics["risks"]}
+        self.assertNotIn(events["ticket-old"].id, risk_ids)
+        self.assertIn(events["ticket-new"].id, risk_ids)
 
 
 if __name__ == "__main__":
