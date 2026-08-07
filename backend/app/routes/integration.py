@@ -324,6 +324,50 @@ def _metadata_value(candidate, key, default=None):
     return metadata.get(key, default)
 
 
+def _retrieval_candidate_origins(candidate) -> list[str | None]:
+    candidate_origins = _metadata_value(candidate, "candidate_origins", [])
+    if not isinstance(candidate_origins, list):
+        candidate_origins = []
+    return [
+        value if value in STANDARD_SEARCH_KNOWLEDGE_ORIGINS else None
+        for value in (
+            str(candidate_origin or "").strip()
+            for candidate_origin in candidate_origins
+        )
+    ]
+
+
+def _retrieval_ranked_candidate_entries(candidate) -> list[tuple[Any, str | None]]:
+    candidate_origins = _retrieval_candidate_origins(candidate)
+    candidate_ids = _metadata_value(candidate, "candidate_ids", [])
+    if not isinstance(candidate_ids, list):
+        candidate_ids = []
+    origin_by_id = {
+        str(knowledge_id or "").strip(): candidate_origins[index]
+        for index, knowledge_id in enumerate(candidate_ids)
+        if (
+            index < len(candidate_origins)
+            and candidate_origins[index] is not None
+            and str(knowledge_id or "").strip()
+        )
+    }
+    return [
+        (
+            item,
+            origin_by_id.get(item.knowledge_id)
+            or (
+                candidate_origins[source_index]
+                if source_index < len(candidate_origins)
+                else None
+            ),
+        )
+        for source_index, item in sorted(
+            enumerate(candidate.candidates),
+            key=lambda pair: pair[1].rank,
+        )
+    ]
+
+
 def _retrieval_candidate_snapshot(candidate) -> list[dict]:
     if candidate.candidates:
         return [
@@ -335,10 +379,12 @@ def _retrieval_candidate_snapshot(candidate) -> list[dict]:
                 "rerank_score": item.rerank_score,
                 "final_score": item.final_score,
                 "selected": item.selected,
+                "knowledge_origin": knowledge_origin,
             }
-            for item in sorted(candidate.candidates, key=lambda item: item.rank)
+            for item, knowledge_origin in _retrieval_ranked_candidate_entries(candidate)
         ]
 
+    candidate_origins = _retrieval_candidate_origins(candidate)
     candidate_ids = _metadata_value(candidate, "candidate_ids", [])
     if not isinstance(candidate_ids, list):
         candidate_ids = []
@@ -367,6 +413,11 @@ def _retrieval_candidate_snapshot(candidate) -> list[dict]:
                     normalized_id == selected_id
                     or (selected_rank is not None and index == int(selected_rank))
                 ),
+                "knowledge_origin": (
+                    candidate_origins[index - 1]
+                    if index - 1 < len(candidate_origins)
+                    else None
+                ),
             }
         )
     if not snapshot and candidate.top_knowledge_id:
@@ -379,9 +430,131 @@ def _retrieval_candidate_snapshot(candidate) -> list[dict]:
                 "rerank_score": candidate.top_rerank_score,
                 "final_score": candidate.top_rerank_score,
                 "selected": bool(candidate.selected),
+                "knowledge_origin": (
+                    candidate_origins[0] if candidate_origins else None
+                ),
             }
         )
     return snapshot
+
+
+def _retrieval_selected_pool_rank(
+    candidate,
+    selected_knowledge_id: str | None,
+    reported_rank: int | None,
+) -> int | None:
+    selected_id = str(selected_knowledge_id or "").strip()
+    if not selected_id:
+        return reported_rank
+
+    entries: list[tuple[str, str | None]] = []
+    if candidate.candidates:
+        entries = [
+            (item.knowledge_id, knowledge_origin)
+            for item, knowledge_origin in _retrieval_ranked_candidate_entries(candidate)
+        ]
+    else:
+        candidate_ids = _metadata_value(candidate, "candidate_ids", [])
+        if isinstance(candidate_ids, list):
+            candidate_origins = _retrieval_candidate_origins(candidate)
+            entries = [
+                (
+                    str(knowledge_id or "").strip(),
+                    candidate_origins[index]
+                    if index < len(candidate_origins)
+                    else None,
+                )
+                for index, knowledge_id in enumerate(candidate_ids)
+            ]
+
+    selected_index = next(
+        (
+            index
+            for index, (knowledge_id, _) in enumerate(entries)
+            if knowledge_id == selected_id
+        ),
+        None,
+    )
+    if selected_index is None:
+        return reported_rank
+    selected_origin = entries[selected_index][1]
+    if selected_origin not in STANDARD_SEARCH_KNOWLEDGE_ORIGINS:
+        return reported_rank
+    return sum(
+        1
+        for _, knowledge_origin in entries[: selected_index + 1]
+        if knowledge_origin == selected_origin
+    )
+
+
+def _retrieval_review_candidate_snapshot(event: RetrievalQualityEvent) -> list[dict]:
+    candidate_origins = (
+        (event.event_metadata or {}).get("candidate_origins", [])
+        if isinstance(event.event_metadata, dict)
+        else []
+    )
+    if not isinstance(candidate_origins, list):
+        candidate_origins = []
+
+    snapshot: list[dict] = []
+    for index, item in enumerate(event.candidate_snapshot or []):
+        if not isinstance(item, dict):
+            continue
+        candidate = dict(item)
+        origin = str(candidate.get("knowledge_origin") or "").strip()
+        if (
+            origin not in STANDARD_SEARCH_KNOWLEDGE_ORIGINS
+            and index < len(candidate_origins)
+        ):
+            origin = str(candidate_origins[index] or "").strip()
+        candidate["knowledge_origin"] = (
+            origin if origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS else None
+        )
+        snapshot.append(candidate)
+    return snapshot
+
+
+def _retrieval_event_effective_selection_status(
+    event: RetrievalQualityEvent,
+    snapshot: list[dict] | None = None,
+) -> str:
+    if event.selection_status != "alternative_selected":
+        return event.selection_status
+    selected_id = str(event.selected_knowledge_id or "").strip()
+    if not selected_id:
+        return event.selection_status
+    candidates = snapshot or _retrieval_review_candidate_snapshot(event)
+    selected_index = next(
+        (
+            index
+            for index, candidate in enumerate(candidates)
+            if str(candidate.get("knowledge_id") or "").strip() == selected_id
+        ),
+        None,
+    )
+    if selected_index is None:
+        return event.selection_status
+    selected_origin = candidates[selected_index].get("knowledge_origin")
+    if selected_origin not in STANDARD_SEARCH_KNOWLEDGE_ORIGINS:
+        return event.selection_status
+    pool_rank = sum(
+        1
+        for candidate in candidates[: selected_index + 1]
+        if candidate.get("knowledge_origin") == selected_origin
+    )
+    return "top_selected" if pool_rank == 1 else event.selection_status
+
+
+def _retrieval_event_effective_outcome(
+    event: RetrievalQualityEvent,
+    selection_status: str,
+) -> str:
+    if (
+        selection_status == "top_selected"
+        and event.outcome == "accepted_alternative"
+    ):
+        return "accepted"
+    return event.outcome
 
 
 def _retrieval_feedback_dimensions(candidate) -> dict:
@@ -394,6 +567,11 @@ def _retrieval_feedback_dimensions(candidate) -> dict:
         candidate.selected_candidate_rank
         or _metadata_value(candidate, "selected_candidate_rank")
         or (1 if candidate.selected else None)
+    )
+    selected_pool_rank = _retrieval_selected_pool_rank(
+        candidate,
+        selected_knowledge_id,
+        selected_candidate_rank,
     )
 
     if candidate.request_status in _RETRIEVAL_TECHNICAL_FAILURES:
@@ -415,7 +593,7 @@ def _retrieval_feedback_dimensions(candidate) -> dict:
                 "top_selected"
                 if (
                     selected_knowledge_id == candidate.top_knowledge_id
-                    or selected_candidate_rank == 1
+                    or selected_pool_rank == 1
                 )
                 else "alternative_selected"
             )
@@ -753,6 +931,34 @@ def get_retrieval_analytics(
         selection_counts.get("alternative_selected", 0)
     )
     summary["none_selected"] = int(selection_counts.get("none_selected", 0))
+    pool_top_corrections = [
+        event
+        for event in (
+            latest_events
+            .filter(
+                RetrievalQualityEvent.selection_status == "alternative_selected"
+            )
+            .all()
+        )
+        if _retrieval_event_effective_selection_status(event) == "top_selected"
+    ]
+    if pool_top_corrections:
+        correction_total = len(pool_top_corrections)
+        accepted_corrections = sum(
+            1
+            for event in pool_top_corrections
+            if event.outcome == "accepted_alternative"
+        )
+        summary["top_selected"] += correction_total
+        summary["alternative_selected"] = max(
+            0,
+            summary["alternative_selected"] - correction_total,
+        )
+        summary["accepted"] += accepted_corrections
+        summary["accepted_alternative"] = max(
+            0,
+            summary["accepted_alternative"] - accepted_corrections,
+        )
     summary["reviewed"] = (
         latest_events
         .filter(RetrievalQualityEvent.review_status == "confirmed")
@@ -842,6 +1048,47 @@ def get_retrieval_analytics(
         "p50_ms": percentile(latencies, 0.5),
         "p95_ms": percentile(latencies, 0.95),
     }
+
+    def risk_payload(event: RetrievalQualityEvent) -> dict[str, Any]:
+        candidate_snapshot = _retrieval_review_candidate_snapshot(event)
+        selection_status = _retrieval_event_effective_selection_status(
+            event,
+            candidate_snapshot,
+        )
+        return {
+            "id": event.id,
+            "source_system": event.source_system,
+            "query": event.query_text,
+            "candidate_count": event.candidate_count,
+            "top_knowledge_id": event.top_knowledge_id,
+            "top_rerank_score": event.top_rerank_score,
+            "score_threshold": event.score_threshold,
+            "selected": event.selected,
+            "outcome": _retrieval_event_effective_outcome(
+                event,
+                selection_status,
+            ),
+            "schema_version": event.schema_version,
+            "request_status": event.request_status,
+            "threshold_status": event.threshold_status,
+            "selection_status": selection_status,
+            "selected_knowledge_id": event.selected_knowledge_id,
+            "selected_candidate_rank": event.selected_candidate_rank,
+            "expected_knowledge_id": event.expected_knowledge_id,
+            "feedback_type": event.feedback_type,
+            "failure_reason": event.failure_reason,
+            "candidates": candidate_snapshot,
+            "embedding_model": event.embedding_model,
+            "reranker_model": event.reranker_model,
+            "prompt_version": event.prompt_version,
+            "retrieval_latency_ms": event.retrieval_latency_ms,
+            "rerank_latency_ms": event.rerank_latency_ms,
+            "total_latency_ms": event.total_latency_ms,
+            "training_eligible": event.training_eligible,
+            "review_status": event.review_status,
+            "created_at": event.created_at,
+        }
+
     return {
         "summary": summary,
         "rates": rates,
@@ -849,44 +1096,12 @@ def get_retrieval_analytics(
         "definitions": {
             "candidate_coverage_rate": "成功请求中至少返回一条候选知识的比例",
             "threshold_pass_rate": "有候选请求中最高分达到当次阈值的比例",
-            "top1_selection_rate": "有候选请求中最终采用第一名的比例",
-            "alternative_selection_rate": "有候选请求中最终采用第二名及以后候选的比例",
+            "top1_selection_rate": "有候选请求中最终采用所属候选池第一名的比例",
+            "alternative_selection_rate": "有候选请求中最终采用所属候选池第二至第五名的比例",
             "no_selection_rate": "有候选请求中最终没有采用任何候选的比例",
             "review_coverage_rate": "已由人工明确原因和正确目标的事件比例",
         },
-        "risks": [
-            {
-                "id": event.id,
-                "source_system": event.source_system,
-                "query": event.query_text,
-                "candidate_count": event.candidate_count,
-                "top_knowledge_id": event.top_knowledge_id,
-                "top_rerank_score": event.top_rerank_score,
-                "score_threshold": event.score_threshold,
-                "selected": event.selected,
-                "outcome": event.outcome,
-                "schema_version": event.schema_version,
-                "request_status": event.request_status,
-                "threshold_status": event.threshold_status,
-                "selection_status": event.selection_status,
-                "selected_knowledge_id": event.selected_knowledge_id,
-                "selected_candidate_rank": event.selected_candidate_rank,
-                "expected_knowledge_id": event.expected_knowledge_id,
-                "feedback_type": event.feedback_type,
-                "failure_reason": event.failure_reason,
-                "candidates": event.candidate_snapshot or [],
-                "embedding_model": event.embedding_model,
-                "reranker_model": event.reranker_model,
-                "prompt_version": event.prompt_version,
-                "retrieval_latency_ms": event.retrieval_latency_ms,
-                "rerank_latency_ms": event.rerank_latency_ms,
-                "total_latency_ms": event.total_latency_ms,
-                "training_eligible": event.training_eligible,
-                "review_status": event.review_status,
-                "created_at": event.created_at,
-            }
-            for event in risks
-        ],
+        "risks": [risk_payload(event) for event in risks],
     }
 
 
