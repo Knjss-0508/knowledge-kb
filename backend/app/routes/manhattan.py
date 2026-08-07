@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 from datetime import datetime
+from threading import Lock
 from urllib.parse import urljoin
 
 import httpx
@@ -13,6 +14,9 @@ from app.core.config import settings
 router = APIRouter(prefix="/manhattan", tags=["Manhattan options"])
 _runtime_cookie = ""
 _refresh_lock = asyncio.Lock()
+_cache_snapshot_lock = Lock()
+_cache_snapshot_signature: tuple[str, int, int] | None = None
+_cache_snapshot: dict | None = None
 _refresh_status = {
     "running": False,
     "stage": "idle",
@@ -98,17 +102,32 @@ def _json_or_auth_error(resp: httpx.Response):
 
 
 def _read_cache() -> dict:
-    if not os.path.exists(CACHE_FILE):
-        return {
-            "updated_at": None,
-            "applicable_categories": [],
-            "brands_by_category": {},
-            "models": [],
-            "options_by_business_type": _empty_options_by_business_type(),
-        }
-    with open(CACHE_FILE, "r", encoding="utf-8") as f:
-        cache = json.load(f)
-    return _ensure_options_by_business_type(cache)
+    global _cache_snapshot_signature, _cache_snapshot
+
+    cache_path = os.path.abspath(CACHE_FILE)
+    try:
+        stat = os.stat(cache_path)
+        signature = (cache_path, stat.st_mtime_ns, stat.st_size)
+    except FileNotFoundError:
+        signature = (cache_path, 0, 0)
+
+    with _cache_snapshot_lock:
+        if signature == _cache_snapshot_signature and _cache_snapshot is not None:
+            return _cache_snapshot
+        if signature[1] == 0:
+            cache = {
+                "updated_at": None,
+                "applicable_categories": [],
+                "brands_by_category": {},
+                "models": [],
+                "options_by_business_type": _empty_options_by_business_type(),
+            }
+        else:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cache = _ensure_options_by_business_type(json.load(f))
+        _cache_snapshot_signature = signature
+        _cache_snapshot = cache
+        return cache
 
 
 def cached_applicable_category_ids(business_type: str) -> set[str]:
@@ -142,11 +161,16 @@ def cached_applicable_category_keys(business_type: str) -> set[str]:
 
 
 def _write_cache(data: dict) -> None:
+    global _cache_snapshot_signature, _cache_snapshot
+
     os.makedirs(DATA_DIR, exist_ok=True)
     tmp_file = CACHE_FILE + ".tmp"
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_file, CACHE_FILE)
+    with _cache_snapshot_lock:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, CACHE_FILE)
+        _cache_snapshot_signature = None
+        _cache_snapshot = None
 
 
 def _extract_items(raw) -> list:
