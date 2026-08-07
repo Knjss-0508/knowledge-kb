@@ -26,7 +26,7 @@ function Import-RunnerEnvironment {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "缺少 Runner 配置文件：$Path。请先复制 .env.example 为 .env 并填写服务器地址和 Runner 密钥。"
+        throw "缺少 Runner 配置文件：$Path。请从工作台复制任务 URL 和任务密钥。"
     }
 
     foreach ($rawLine in Get-Content -LiteralPath $Path -Encoding UTF8) {
@@ -202,19 +202,25 @@ if ($Action -eq "smoke") {
     exit 0
 }
 
-$requiredNames = @(
-    "TRAINING_CONTROL_BASE_URL",
-    "TRAINING_RUNNER_TOKEN",
-    "TRAINING_RUNNER_ID"
-)
-foreach ($name in $requiredNames) {
-    $value = [Environment]::GetEnvironmentVariable($name)
-    if (-not $value) {
-        throw "Runner 配置缺少：$name"
-    }
+$HasTaskUrl = [bool]$env:TRAINING_JOB_URL
+$HasTaskToken = [bool]$env:TRAINING_JOB_TOKEN
+$HasLegacyUrl = [bool]$env:TRAINING_CONTROL_BASE_URL
+$HasLegacyToken = [bool]$env:TRAINING_RUNNER_TOKEN
+if ($HasTaskUrl -xor $HasTaskToken) {
+    throw "任务 URL 和任务密钥必须同时填写"
+}
+if (-not ($HasTaskUrl -and $HasTaskToken) -and -not ($HasLegacyUrl -and $HasLegacyToken)) {
+    throw "Runner 配置缺少任务 URL/任务密钥"
+}
+if (-not $env:TRAINING_RUNNER_ID) {
+    throw "Runner 配置缺少：TRAINING_RUNNER_ID"
 }
 
-Write-Host "启动宿主机 GPU Runner；本机不会启动任何知识库容器或业务服务。"
+if ($HasTaskUrl) {
+    Write-Host "启动指定 LoRA 任务；任务完成或失败后 Runner 会自动退出。"
+} else {
+    Write-Host "启动兼容模式 GPU Runner；本机不会启动任何知识库容器或业务服务。"
+}
 Write-Host "训练产物目录：$env:TRAINING_ARTIFACT_ROOT"
 & $VenvPython $RunnerPath
 exit $LASTEXITCODE
