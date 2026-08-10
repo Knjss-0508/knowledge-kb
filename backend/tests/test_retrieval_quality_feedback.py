@@ -2,11 +2,6 @@ import unittest
 from datetime import datetime
 from unittest.mock import patch
 
-from fastapi import HTTPException
-from pydantic import ValidationError
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from app.models.integration import RetrievalQualityEvent
 from app.routes.integration import (
     _retrieval_candidate_snapshot,
@@ -18,6 +13,10 @@ from app.schemas.integration import (
     RetrievalQualityEventBatch,
     RetrievalQualityEventPayload,
 )
+from fastapi import HTTPException
+from pydantic import ValidationError
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 
 class RetrievalQualityFeedbackTests(unittest.TestCase):
@@ -523,7 +522,44 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
         self.assertNotIn(events["ticket-old"].id, risk_ids)
         self.assertIn(events["ticket-new"].id, risk_ids)
 
-    def test_analytics_keeps_latest_event_per_work_order_and_source_pool(self):
+    def test_analytics_keeps_legacy_anonymous_events_separate(self):
+        items = [
+            self._payload(
+                "legacy-anonymous-empty",
+                conversation_id="202608100010",
+            ),
+            self._payload(
+                "legacy-anonymous-blank",
+                conversation_id="202608100011",
+            ),
+        ]
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=items),
+            self.db,
+            None,
+        )
+        events = {
+            event.idempotency_key: event
+            for event in self.db.query(RetrievalQualityEvent).all()
+        }
+        events["legacy-anonymous-empty"].conversation_id = None
+        events["legacy-anonymous-blank"].conversation_id = " "
+        self.db.commit()
+
+        analytics = get_retrieval_analytics(self.db, None)
+
+        self.assertEqual(analytics["summary"]["total"], 2)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 2)
+        self.assertEqual(analytics["pagination"]["total"], 2)
+        self.assertEqual(
+            {risk["id"] for risk in analytics["risks"]},
+            {
+                events["legacy-anonymous-empty"].id,
+                events["legacy-anonymous-blank"].id,
+            },
+        )
+
+    def test_analytics_keeps_latest_request_and_merges_source_pools(self):
         items = [
             self._payload(
                 "legacy-combined",
@@ -540,14 +576,72 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
             self._payload(
                 "standard-current",
                 conversation_id="202608100003",
-                request_id="request-standard",
-                metadata={"source_kind": "standard"},
+                request_id="request-current",
+                candidate_count=1,
+                selected=False,
+                selected_knowledge_id=None,
+                selected_candidate_rank=None,
+                metadata={
+                    "source_kind": "standard",
+                    "candidate_origins": ["headquarters_standard"],
+                },
+                candidates=[
+                    {
+                        "knowledge_id": "A-00001",
+                        "rank": 1,
+                        "title": "总部标准第一名",
+                        "final_score": 0.92,
+                        "selected": False,
+                    },
+                ],
+            ),
+            self._payload(
+                "reply-current-old",
+                conversation_id="202608100003",
+                request_id="request-current",
+                candidate_count=1,
+                top_knowledge_id="A-00002",
+                top_rerank_score=0.84,
+                selected=False,
+                selected_knowledge_id=None,
+                selected_candidate_rank=None,
+                metadata={
+                    "source_kind": "reply",
+                    "candidate_origins": ["business_accumulation"],
+                },
+                candidates=[
+                    {
+                        "knowledge_id": "A-00002",
+                        "rank": 1,
+                        "title": "已被后续反馈替换的业务沉淀",
+                        "final_score": 0.84,
+                        "selected": False,
+                    },
+                ],
             ),
             self._payload(
                 "reply-current",
                 conversation_id="202608100003",
                 request_id="request-current",
-                metadata={"source_kind": "reply"},
+                candidate_count=1,
+                top_knowledge_id="A-00003",
+                top_rerank_score=0.89,
+                selected=False,
+                selected_knowledge_id=None,
+                selected_candidate_rank=None,
+                metadata={
+                    "source_kind": "reply",
+                    "candidate_origins": ["business_accumulation"],
+                },
+                candidates=[
+                    {
+                        "knowledge_id": "A-00003",
+                        "rank": 1,
+                        "title": "业务沉淀第一名",
+                        "final_score": 0.89,
+                        "selected": False,
+                    },
+                ],
             ),
         ]
         submit_retrieval_quality_events(
@@ -570,31 +664,51 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
             0,
             0,
         )
+        events["reply-current-old"].created_at = datetime(
+            2026,
+            8,
+            7,
+            11,
+            0,
+            1,
+        )
         events["reply-current"].created_at = datetime(
             2026,
             8,
             7,
-            12,
+            11,
             0,
-            0,
+            2,
         )
         self.db.commit()
 
         analytics = get_retrieval_analytics(self.db, None)
 
-        self.assertEqual(analytics["summary"]["total"], 2)
+        self.assertEqual(analytics["summary"]["total"], 1)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 1)
+        self.assertEqual(analytics["pagination"]["total"], 1)
         risk_ids = {risk["id"] for risk in analytics["risks"]}
         self.assertNotIn(events["legacy-combined"].id, risk_ids)
         self.assertNotIn(events["reply-old"].id, risk_ids)
-        self.assertIn(events["standard-current"].id, risk_ids)
+        self.assertNotIn(events["standard-current"].id, risk_ids)
+        self.assertNotIn(events["reply-current-old"].id, risk_ids)
         self.assertIn(events["reply-current"].id, risk_ids)
+        self.assertEqual(analytics["risks"][0]["request_id"], "request-current")
+        self.assertEqual(analytics["risks"][0]["source_kind"], "combined")
+        self.assertEqual(analytics["risks"][0]["candidate_count"], 2)
         self.assertEqual(
-            {
-                risk["source_kind"]
-                for risk in analytics["risks"]
-                if risk["id"] in risk_ids
-            },
-            {"reply", "standard"},
+            [
+                candidate["knowledge_id"]
+                for candidate in analytics["risks"][0]["candidates"]
+            ],
+            ["A-00001", "A-00003"],
+        )
+        self.assertEqual(
+            [
+                candidate["knowledge_origin"]
+                for candidate in analytics["risks"][0]["candidates"]
+            ],
+            ["headquarters_standard", "business_accumulation"],
         )
 
     def test_feedback_requires_plugin_supplied_identity(self):
@@ -806,7 +920,7 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
             "IDEMPOTENCY_IDENTITY_CONFLICT",
         )
 
-    def test_analytics_paginates_after_latest_work_order_and_source_pool_collapse(
+    def test_analytics_paginates_after_latest_work_order_collapse(
         self,
     ):
         items = [
