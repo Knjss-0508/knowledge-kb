@@ -765,10 +765,14 @@ Content-Type: application/json
 知识检索阈值重新判定并保存 `threshold_status` 和 `outcome`，避免插件内置旧阈值
 污染召回分析。
 
-插件对推荐回复池和总部标准池分别写入事件时，`metadata.source_kind`
-必须分别为 `reply` 和 `standard`。分析、风险复核和训练导入会在每个工单内
-按候选池保留最新事件，避免一个池的后续反馈覆盖另一个池。新接口缺少该字段、
-传入 `combined` 或其他非法值时会拒绝；`combined` 仅用于保留历史数据库事件。
+`metadata.source_kind` 仍必须为 `reply` 或 `standard`，该字段仅用于来源审计
+和幂等身份校验，不再作为召回事件收归的分组条件。
+分析和风险复核先按 `conversation_id` 选出整个会话最后一个 `request_id`，
+再把该请求下最新的 `reply`、`standard` 底层事件合并为一个逻辑请求。
+合并后的候选快照通过 `candidate_origins` 分别保留并展示“总部标准 TOP5”
+和“业务沉淀 TOP5”，统计和分页都只计一次请求。训练导入只使用这个最终
+逻辑请求的代表事件。新接口缺少 `source_kind`、传入 `combined` 或其他非法
+值时会拒绝；`combined` 仅用于保留历史数据库事件和分析接口的合并展示。
 
 `outcome` 判定规则：
 
@@ -786,7 +790,8 @@ GET /integration/retrieval-analytics?page=1&page_size=20
 ```
 
 `page` 从 1 开始；`page_size` 支持 1 到 100。分页只作用于待澄清请求列表，
-汇总指标始终基于同一工单、同一候选池保留的最后一次请求计算。
+汇总指标始终基于每个 `conversation_id` 的最后一个 `request_id` 计算；
+同一最终请求的两个候选池不会拆成两条记录。
 
 该接口面向知识库内部运营人员，需要平台账号的 `knowledge:view` 权限，不使用 `X-Integration-Key`。
 

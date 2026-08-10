@@ -5,7 +5,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -18,16 +17,6 @@ from app.models.user import User
 from app.routes.auth import get_current_user, require_permission
 from app.routes.knowledge import _generate_knowledge_id, _normalize_content
 from app.routes.manhattan import _read_cache as _read_manhattan_cache
-from app.services.applicability import resolve_applicability_scope
-from app.services.embedding import EmbeddingServiceUnavailable
-from app.services.knowledge_dedup import (
-    DedupDecision,
-    _content_to_text,
-    check_duplicate,
-    ensure_search_embeddings,
-    save_embedding,
-    search_embeddings,
-)
 from app.schemas.integration import (
     CandidateReviewBatchSubmit,
     CandidateReviewBatchSubmitResponse,
@@ -60,13 +49,24 @@ from app.schemas.knowledge import (
     TagDimensionResponse,
     TagValueResponse,
 )
+from app.services.applicability import resolve_applicability_scope
 from app.services.candidate_review import (
     evaluate_review_status,
     normalize_human_review,
 )
+from app.services.embedding import EmbeddingServiceUnavailable
 from app.services.embedding_runtime import get_active_runtime_values
-from app.services.retrieval_quality import latest_retrieval_quality_event_ids
-
+from app.services.knowledge_dedup import (
+    DedupDecision,
+    _content_to_text,
+    check_duplicate,
+    ensure_search_embeddings,
+    save_embedding,
+    search_embeddings,
+)
+from app.services.retrieval_quality import (
+    latest_retrieval_quality_request_event_ids,
+)
 
 router = APIRouter(prefix="/integration", tags=["自动化接入"])
 logger = logging.getLogger(__name__)
@@ -526,47 +526,305 @@ def _retrieval_review_candidate_snapshot(event: RetrievalQualityEvent) -> list[d
     return snapshot
 
 
-def _retrieval_event_effective_selection_status(
+def _retrieval_event_sort_key(
     event: RetrievalQualityEvent,
-    snapshot: list[dict] | None = None,
-) -> str:
-    if event.selection_status != "alternative_selected":
-        return event.selection_status
-    selected_id = str(event.selected_knowledge_id or "").strip()
-    if not selected_id:
-        return event.selection_status
-    candidates = snapshot or _retrieval_review_candidate_snapshot(event)
+) -> tuple[bool, datetime | None, str]:
+    return (
+        event.created_at is not None,
+        event.created_at,
+        str(event.id or ""),
+    )
+
+
+def _retrieval_request_group_key(
+    event: RetrievalQualityEvent,
+) -> tuple[str, str, str]:
+    conversation_id = str(event.conversation_id or "").strip()
+    request_id = str(event.request_id or "").strip()
+    if conversation_id and request_id:
+        return ("request", conversation_id, request_id)
+    return ("event", str(event.id or ""), "")
+
+
+def _retrieval_request_event_groups(
+    events: list[RetrievalQualityEvent],
+) -> list[list[RetrievalQualityEvent]]:
+    grouped: dict[tuple[str, str, str], list[RetrievalQualityEvent]] = {}
+    for event in events:
+        grouped.setdefault(_retrieval_request_group_key(event), []).append(event)
+    return [
+        sorted(group, key=_retrieval_event_sort_key, reverse=True)
+        for group in grouped.values()
+    ]
+
+
+def _retrieval_candidate_score(candidate: dict) -> float | None:
+    for key in ("final_score", "rerank_score", "embedding_score"):
+        value = candidate.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
+def _retrieval_request_candidate_snapshot(
+    events: list[RetrievalQualityEvent],
+) -> list[dict]:
+    source_order = {
+        "standard": 0,
+        "reply": 1,
+        "combined": 2,
+    }
+    merged: list[dict] = []
+    seen_knowledge_ids: set[str] = set()
+    ordered_events = sorted(
+        events,
+        key=_retrieval_event_sort_key,
+        reverse=True,
+    )
+    ordered_events.sort(
+        key=lambda event: source_order.get(
+            str(event.source_kind or ""),
+            3,
+        )
+    )
+    for event in ordered_events:
+        fallback_origin = {
+            "standard": "headquarters_standard",
+            "reply": "business_accumulation",
+        }.get(str(event.source_kind or ""))
+        candidates = sorted(
+            _retrieval_review_candidate_snapshot(event),
+            key=lambda candidate: (
+                int(candidate.get("rank") or 0),
+                str(candidate.get("knowledge_id") or ""),
+            ),
+        )
+        for candidate in candidates:
+            normalized = dict(candidate)
+            if (
+                normalized.get("knowledge_origin")
+                not in STANDARD_SEARCH_KNOWLEDGE_ORIGINS
+            ):
+                normalized["knowledge_origin"] = fallback_origin
+            knowledge_id = str(normalized.get("knowledge_id") or "").strip()
+            if knowledge_id and knowledge_id in seen_knowledge_ids:
+                continue
+            if knowledge_id:
+                seen_knowledge_ids.add(knowledge_id)
+            merged.append(normalized)
+    return merged
+
+
+def _retrieval_request_payload(
+    events: list[RetrievalQualityEvent],
+) -> dict[str, Any]:
+    ordered_events = sorted(
+        events,
+        key=_retrieval_event_sort_key,
+        reverse=True,
+    )
+    representative = ordered_events[0]
+    state_event = next(
+        (
+            event
+            for event in ordered_events
+            if (
+                event.review_status != "unreviewed"
+                or event.expected_knowledge_id
+                or event.training_eligible
+            )
+        ),
+        representative,
+    )
+    selection_event = next(
+        (
+            event
+            for event in ordered_events
+            if (
+                event.selected_knowledge_id
+                or event.selected
+                or event.feedback_type != "none"
+            )
+        ),
+        representative,
+    )
+    selected_knowledge_id = str(
+        selection_event.selected_knowledge_id
+        or (
+            selection_event.top_knowledge_id
+            if selection_event.selected
+            else ""
+        )
+        or ""
+    ).strip() or None
+    candidates = _retrieval_request_candidate_snapshot(ordered_events)
     selected_index = next(
         (
             index
             for index, candidate in enumerate(candidates)
-            if str(candidate.get("knowledge_id") or "").strip() == selected_id
+            if str(candidate.get("knowledge_id") or "").strip()
+            == selected_knowledge_id
         ),
         None,
     )
-    if selected_index is None:
-        return event.selection_status
-    selected_origin = candidates[selected_index].get("knowledge_origin")
-    if selected_origin not in STANDARD_SEARCH_KNOWLEDGE_ORIGINS:
-        return event.selection_status
-    pool_rank = sum(
-        1
-        for candidate in candidates[: selected_index + 1]
-        if candidate.get("knowledge_origin") == selected_origin
+    selected_candidate_rank = selection_event.selected_candidate_rank
+    if selected_index is not None:
+        selected_origin = candidates[selected_index].get("knowledge_origin")
+        if selected_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS:
+            selected_candidate_rank = sum(
+                1
+                for candidate in candidates[: selected_index + 1]
+                if candidate.get("knowledge_origin") == selected_origin
+            )
+        else:
+            selected_candidate_rank = selected_index + 1
+
+    statuses = {
+        str(event.request_status or "")
+        for event in ordered_events
+    }
+    if candidates:
+        if "success" in statuses:
+            request_status = "success"
+        elif "fallback" in statuses:
+            request_status = "fallback"
+        else:
+            request_status = representative.request_status
+    elif "no_match" in statuses:
+        request_status = "no_match"
+    elif "success" in statuses:
+        request_status = "success"
+    elif "fallback" in statuses:
+        request_status = "fallback"
+    else:
+        request_status = representative.request_status
+
+    score_threshold = float(representative.score_threshold or 0)
+    scored_candidates = [
+        (candidate, _retrieval_candidate_score(candidate))
+        for candidate in candidates
+    ]
+    scored_candidates = [
+        (candidate, score)
+        for candidate, score in scored_candidates
+        if score is not None
+    ]
+    top_candidate = (
+        max(scored_candidates, key=lambda item: item[1])[0]
+        if scored_candidates
+        else (candidates[0] if candidates else None)
     )
-    return "top_selected" if pool_rank == 1 else event.selection_status
+    top_rerank_score = (
+        _retrieval_candidate_score(top_candidate)
+        if top_candidate
+        else None
+    )
+    if candidates:
+        threshold_status = (
+            "below"
+            if (
+                top_rerank_score is not None
+                and top_rerank_score < score_threshold
+            )
+            else "passed"
+        )
+        if selected_knowledge_id:
+            selection_status = (
+                "top_selected"
+                if selected_candidate_rank == 1
+                else "alternative_selected"
+            )
+        else:
+            selection_status = "none_selected"
+    else:
+        threshold_status = "not_applicable"
+        selection_status = "not_evaluated"
 
-
-def _retrieval_event_effective_outcome(
-    event: RetrievalQualityEvent,
-    selection_status: str,
-) -> str:
     if (
-        selection_status == "top_selected"
-        and event.outcome == "accepted_alternative"
+        not candidates
+        and statuses.intersection(_RETRIEVAL_TECHNICAL_FAILURES)
     ):
-        return "accepted"
-    return event.outcome
+        outcome = "technical_failure"
+    elif not candidates:
+        outcome = "no_candidates"
+    elif threshold_status == "below":
+        outcome = "low_score"
+    elif selection_status == "top_selected":
+        outcome = "accepted"
+    elif selection_status == "alternative_selected":
+        outcome = "accepted_alternative"
+    else:
+        outcome = "not_selected"
+
+    source_kinds = {
+        str(event.source_kind or "")
+        for event in ordered_events
+        if str(event.source_kind or "")
+    }
+    source_kind = (
+        next(iter(source_kinds))
+        if len(source_kinds) == 1
+        else "combined"
+    )
+
+    def latest_text(attribute: str) -> str:
+        return next(
+            (
+                str(getattr(event, attribute) or "")
+                for event in ordered_events
+                if str(getattr(event, attribute) or "")
+            ),
+            "",
+        )
+
+    def maximum_number(attribute: str) -> float | None:
+        values = [
+            float(value)
+            for event in ordered_events
+            if (value := getattr(event, attribute)) is not None
+        ]
+        return max(values) if values else None
+
+    return {
+        "id": representative.id,
+        "source_system": representative.source_system,
+        "conversation_id": representative.conversation_id,
+        "request_id": representative.request_id,
+        "source_kind": source_kind,
+        "query": representative.query_text,
+        "candidate_count": len(candidates),
+        "top_knowledge_id": (
+            top_candidate.get("knowledge_id")
+            if top_candidate
+            else None
+        ),
+        "top_rerank_score": top_rerank_score,
+        "score_threshold": score_threshold,
+        "selected": selection_status == "top_selected",
+        "outcome": outcome,
+        "schema_version": max(
+            int(event.schema_version or 1)
+            for event in ordered_events
+        ),
+        "request_status": request_status,
+        "threshold_status": threshold_status,
+        "selection_status": selection_status,
+        "selected_knowledge_id": selected_knowledge_id,
+        "selected_candidate_rank": selected_candidate_rank,
+        "expected_knowledge_id": state_event.expected_knowledge_id,
+        "feedback_type": state_event.feedback_type,
+        "failure_reason": state_event.failure_reason,
+        "candidates": candidates,
+        "embedding_model": latest_text("embedding_model"),
+        "reranker_model": latest_text("reranker_model"),
+        "prompt_version": latest_text("prompt_version"),
+        "retrieval_latency_ms": maximum_number("retrieval_latency_ms"),
+        "rerank_latency_ms": maximum_number("rerank_latency_ms"),
+        "total_latency_ms": maximum_number("total_latency_ms"),
+        "training_eligible": state_event.training_eligible,
+        "review_status": state_event.review_status,
+        "created_at": representative.created_at,
+    }
 
 
 def _retrieval_feedback_dimensions(candidate) -> dict:
@@ -1030,132 +1288,71 @@ def get_retrieval_analytics(
         "reviewed": 0,
         "training_eligible": 0,
     }
-    latest_events = db.query(RetrievalQualityEvent).filter(
-        RetrievalQualityEvent.id.in_(latest_retrieval_quality_event_ids())
-    )
-    for outcome, total in (
-        latest_events.with_entities(
-            RetrievalQualityEvent.outcome,
-            func.count(RetrievalQualityEvent.id),
-        )
-        .group_by(RetrievalQualityEvent.outcome)
-        .all()
-    ):
-        summary[outcome] = total
-
-    request_counts = dict(
-        latest_events.with_entities(
-            RetrievalQualityEvent.request_status,
-            func.count(RetrievalQualityEvent.id),
-        )
-        .group_by(RetrievalQualityEvent.request_status)
-        .all()
-    )
-    threshold_counts = dict(
-        latest_events.with_entities(
-            RetrievalQualityEvent.threshold_status,
-            func.count(RetrievalQualityEvent.id),
-        )
-        .group_by(RetrievalQualityEvent.threshold_status)
-        .all()
-    )
-    selection_counts = dict(
-        latest_events.with_entities(
-            RetrievalQualityEvent.selection_status,
-            func.count(RetrievalQualityEvent.id),
-        )
-        .group_by(RetrievalQualityEvent.selection_status)
-        .all()
-    )
-    summary["successful_requests"] = sum(
-        int(request_counts.get(key, 0))
-        for key in ("success", "no_match", "fallback")
-    )
-    summary["candidate_requests"] = (
-        latest_events
+    latest_request_events = (
+        db.query(RetrievalQualityEvent)
         .filter(
-            RetrievalQualityEvent.candidate_count > 0,
-            RetrievalQualityEvent.request_status.in_(["success", "fallback"]),
-        )
-        .count()
-    )
-    summary["candidate_queries"] = summary["candidate_requests"]
-    summary["threshold_passed"] = int(threshold_counts.get("passed", 0))
-    summary["threshold_below"] = int(threshold_counts.get("below", 0))
-    summary["top_selected"] = int(selection_counts.get("top_selected", 0))
-    summary["alternative_selected"] = int(
-        selection_counts.get("alternative_selected", 0)
-    )
-    summary["none_selected"] = int(selection_counts.get("none_selected", 0))
-    pool_top_corrections = [
-        event
-        for event in (
-            latest_events
-            .filter(
-                RetrievalQualityEvent.selection_status == "alternative_selected"
+            RetrievalQualityEvent.id.in_(
+                latest_retrieval_quality_request_event_ids()
             )
-            .all()
         )
-        if _retrieval_event_effective_selection_status(event) == "top_selected"
+        .all()
+    )
+    request_payloads = [
+        _retrieval_request_payload(events)
+        for events in _retrieval_request_event_groups(
+            latest_request_events
+        )
     ]
-    if pool_top_corrections:
-        correction_total = len(pool_top_corrections)
-        accepted_corrections = sum(
-            1
-            for event in pool_top_corrections
-            if event.outcome == "accepted_alternative"
-        )
-        summary["top_selected"] += correction_total
-        summary["alternative_selected"] = max(
-            0,
-            summary["alternative_selected"] - correction_total,
-        )
-        summary["accepted"] += accepted_corrections
-        summary["accepted_alternative"] = max(
-            0,
-            summary["accepted_alternative"] - accepted_corrections,
-        )
-    summary["reviewed"] = (
-        latest_events
-        .filter(RetrievalQualityEvent.review_status == "confirmed")
-        .count()
+    request_payloads.sort(
+        key=lambda item: (
+            item["created_at"] is not None,
+            item["created_at"],
+            str(item["id"] or ""),
+        ),
+        reverse=True,
     )
-    summary["training_eligible"] = (
-        latest_events
-        .filter(RetrievalQualityEvent.training_eligible.is_(True))
-        .count()
-    )
+    for item in request_payloads:
+        outcome = str(item["outcome"] or "")
+        if outcome in summary:
+            summary[outcome] += 1
+        if item["request_status"] in ("success", "no_match", "fallback"):
+            summary["successful_requests"] += 1
+        if (
+            item["candidate_count"] > 0
+            and item["request_status"] in ("success", "fallback")
+        ):
+            summary["candidate_requests"] += 1
+        if item["threshold_status"] == "passed":
+            summary["threshold_passed"] += 1
+        elif item["threshold_status"] == "below":
+            summary["threshold_below"] += 1
+        if item["selection_status"] == "top_selected":
+            summary["top_selected"] += 1
+        elif item["selection_status"] == "alternative_selected":
+            summary["alternative_selected"] += 1
+        elif item["selection_status"] == "none_selected":
+            summary["none_selected"] += 1
+        if item["review_status"] == "confirmed":
+            summary["reviewed"] += 1
+        if item["training_eligible"]:
+            summary["training_eligible"] += 1
+    summary["candidate_queries"] = summary["candidate_requests"]
+    summary["total"] = len(request_payloads)
 
-    risk_query = (
-        latest_events
-        .filter(
-            or_(
-                RetrievalQualityEvent.outcome.notin_(["accepted", "accepted_alternative"]),
-                RetrievalQualityEvent.review_status == "unreviewed",
-            )
+    risk_items = [
+        item
+        for item in request_payloads
+        if (
+            item["outcome"] not in ("accepted", "accepted_alternative")
+            or item["review_status"] == "unreviewed"
         )
-        .order_by(RetrievalQualityEvent.created_at.desc())
-    )
-    risk_total = risk_query.count()
+    ]
+    risk_total = len(risk_items)
     risk_total_pages = max(1, (risk_total + page_size - 1) // page_size)
     page = min(page, risk_total_pages)
-    risks = (
-        risk_query
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    summary["total"] = sum(
-        int(summary.get(key, 0))
-        for key in (
-            "accepted",
-            "accepted_alternative",
-            "low_score",
-            "no_candidates",
-            "not_selected",
-            "technical_failure",
-        )
-    )
+    risks = risk_items[
+        (page - 1) * page_size : page * page_size
+    ]
 
     def rate(numerator: int, denominator: int) -> float:
         return round(numerator / denominator, 4) if denominator else 0.0
@@ -1189,14 +1386,9 @@ def get_retrieval_analytics(
     }
 
     latencies = sorted(
-        float(value)
-        for (value,) in (
-            latest_events.with_entities(RetrievalQualityEvent.total_latency_ms)
-            .filter(RetrievalQualityEvent.total_latency_ms.is_not(None))
-            .order_by(RetrievalQualityEvent.created_at.desc())
-            .limit(5000)
-            .all()
-        )
+        float(item["total_latency_ms"])
+        for item in request_payloads[:5000]
+        if item["total_latency_ms"] is not None
     )
 
     def percentile(values: list[float], percentile_value: float) -> float | None:
@@ -1211,49 +1403,6 @@ def get_retrieval_analytics(
         "p50_ms": percentile(latencies, 0.5),
         "p95_ms": percentile(latencies, 0.95),
     }
-
-    def risk_payload(event: RetrievalQualityEvent) -> dict[str, Any]:
-        candidate_snapshot = _retrieval_review_candidate_snapshot(event)
-        selection_status = _retrieval_event_effective_selection_status(
-            event,
-            candidate_snapshot,
-        )
-        return {
-            "id": event.id,
-            "source_system": event.source_system,
-            "conversation_id": event.conversation_id,
-            "request_id": event.request_id,
-            "source_kind": event.source_kind,
-            "query": event.query_text,
-            "candidate_count": event.candidate_count,
-            "top_knowledge_id": event.top_knowledge_id,
-            "top_rerank_score": event.top_rerank_score,
-            "score_threshold": event.score_threshold,
-            "selected": event.selected,
-            "outcome": _retrieval_event_effective_outcome(
-                event,
-                selection_status,
-            ),
-            "schema_version": event.schema_version,
-            "request_status": event.request_status,
-            "threshold_status": event.threshold_status,
-            "selection_status": selection_status,
-            "selected_knowledge_id": event.selected_knowledge_id,
-            "selected_candidate_rank": event.selected_candidate_rank,
-            "expected_knowledge_id": event.expected_knowledge_id,
-            "feedback_type": event.feedback_type,
-            "failure_reason": event.failure_reason,
-            "candidates": candidate_snapshot,
-            "embedding_model": event.embedding_model,
-            "reranker_model": event.reranker_model,
-            "prompt_version": event.prompt_version,
-            "retrieval_latency_ms": event.retrieval_latency_ms,
-            "rerank_latency_ms": event.rerank_latency_ms,
-            "total_latency_ms": event.total_latency_ms,
-            "training_eligible": event.training_eligible,
-            "review_status": event.review_status,
-            "created_at": event.created_at,
-        }
 
     return {
         "summary": summary,
@@ -1273,7 +1422,7 @@ def get_retrieval_analytics(
             "total": risk_total,
             "total_pages": risk_total_pages,
         },
-        "risks": [risk_payload(event) for event in risks],
+        "risks": risks,
     }
 
 

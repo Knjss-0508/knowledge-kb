@@ -708,7 +708,7 @@
     </template>
 
     <template v-if="embedding.tab==='quality'">
-      <div class="integration-hint">本页只分析下游业务发起的知识召回请求，包括候选覆盖、排序采用和人工纠正；不会参与知识上传时的疑似重复判断。总部标准 TOP5 与业务沉淀 TOP5 分别计算名次。</div>
+      <div class="integration-hint">本页只分析下游业务发起的知识召回请求，包括候选覆盖、排序采用和人工纠正；不会参与知识上传时的疑似重复判断。同一会话 ID 只保留最终一次提问，该次提问的总部标准 TOP5 与业务沉淀 TOP5 合并为一个标注项，并分别展示、分别计算名次。</div>
       <div class="embedding-grid">
         <div class="embedding-card"><h3>候选覆盖率</h3><div class="embedding-kpi teal">{{formatPercent(analysis.rates.candidate_coverage_rate)}}</div><div class="metric-definition"><strong>请求口径：</strong>{{analysis.summary.candidate_requests}} 个有候选请求 / {{analysis.summary.successful_requests}} 个成功请求；每个请求只计 1 次。</div></div>
         <div class="embedding-card"><h3>阈值通过率</h3><div class="embedding-kpi">{{formatPercent(analysis.rates.threshold_pass_rate)}}</div><div class="metric-definition"><strong>定义：</strong>有候选请求中，最高分达到该次召回阈值的比例；不代表最终一定采用。</div></div>
