@@ -114,7 +114,11 @@ class KnowledgeOriginTests(unittest.TestCase):
             CandidateReviewUpdate.model_validate({"business_type": None})
 
         dual_origin_request = IntegrationStandardSearchRequest.model_validate(
-            {"normalizedQuestion": "屏幕漏光"}
+            {
+                "conversationId": "202608100001",
+                "requestId": "knowledge-origin-test-1",
+                "normalizedQuestion": "屏幕漏光",
+            }
         )
         self.assertIsNone(dual_origin_request.knowledge_origin)
         with self.assertRaises(ValidationError):
@@ -137,6 +141,8 @@ class KnowledgeOriginTests(unittest.TestCase):
         )
         request = IntegrationStandardSearchRequest.model_validate(
             {
+                "conversationId": "202608100001",
+                "requestId": "knowledge-origin-test-2",
                 "normalizedQuestion": "屏幕漏光",
                 "knowledgeOrigin": "headquarters_standard",
             }

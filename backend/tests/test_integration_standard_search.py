@@ -1,3 +1,4 @@
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,28 @@ from app.models.knowledge import KnowledgeStatus
 from app.routes.integration import search_standard_provider_knowledge
 from app.schemas.integration import IntegrationStandardSearchRequest
 from app.services.embedding import EmbeddingServiceUnavailable
+
+
+TEST_CONVERSATION_ID = "202608100001"
+TEST_REQUEST_ID = "server-contract-test-1"
+
+
+def _identity_payload(**overrides):
+    return {
+        "conversationId": TEST_CONVERSATION_ID,
+        "requestId": TEST_REQUEST_ID,
+        **overrides,
+    }
+
+
+def _call_search(body, db=None, **identity_overrides):
+    return search_standard_provider_knowledge(
+        body,
+        identity_overrides.get("conversation_id", TEST_CONVERSATION_ID),
+        identity_overrides.get("request_id", TEST_REQUEST_ID),
+        db or MagicMock(),
+        None,
+    )
 
 
 def _knowledge(
@@ -51,17 +74,17 @@ def _knowledge(
 class IntegrationStandardSearchTests(unittest.TestCase):
     def test_plugin_request_aliases_and_context_limits(self):
         request = IntegrationStandardSearchRequest.model_validate(
-            {
-                "normalizedQuestion": "  屏幕漏光怎么判断  ",
-                "knowledgeOrigin": "business_accumulation",
-                "businessType": "aggregated",
-                "productType": "手机",
-                "categoryId": "101",
-                "brand": "苹果",
-                "brandId": "1",
-                "model": "iPhone 17e",
-                "modelId": "17",
-                "orderInfo": {
+            _identity_payload(
+                normalizedQuestion="  屏幕漏光怎么判断  ",
+                knowledgeOrigin="business_accumulation",
+                businessType="aggregated",
+                productType="手机",
+                categoryId="101",
+                brand="苹果",
+                brandId="1",
+                model="iPhone 17e",
+                modelId="17",
+                orderInfo={
                     "category": "手机",
                     "categoryId": "101",
                     "brand": "苹果",
@@ -69,13 +92,15 @@ class IntegrationStandardSearchTests(unittest.TestCase):
                     "model": "iPhone 17e",
                     "modelId": "17",
                 },
-                "partTerms": [" 屏幕 ", ""],
-                "phenomenonTerms": ["漏光"],
-                "categoryIntent": ["外观问题"],
-                "limit": 8,
-            }
+                partTerms=[" 屏幕 ", ""],
+                phenomenonTerms=["漏光"],
+                categoryIntent=["外观问题"],
+                limit=8,
+            )
         )
 
+        self.assertEqual(request.conversation_id, TEST_CONVERSATION_ID)
+        self.assertEqual(request.request_id, TEST_REQUEST_ID)
         self.assertEqual(request.normalized_question, "屏幕漏光怎么判断")
         self.assertEqual(request.knowledge_origin, "business_accumulation")
         self.assertEqual(request.business_type, "aggregated")
@@ -87,25 +112,37 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         self.assertEqual(request.model_id, "17")
         self.assertEqual(request.order_info.brand, "苹果")
         request_without_origin = IntegrationStandardSearchRequest.model_validate(
-            {"normalizedQuestion": "屏幕漏光怎么判断"}
+            _identity_payload(normalizedQuestion="屏幕漏光怎么判断")
         )
         self.assertIsNone(request_without_origin.knowledge_origin)
 
         with self.assertRaises(ValidationError):
             IntegrationStandardSearchRequest.model_validate(
-                {
-                    "normalizedQuestion": "   ",
-                    "knowledgeOrigin": "business_accumulation",
-                }
+                _identity_payload(
+                    normalizedQuestion="   ",
+                    knowledgeOrigin="business_accumulation",
+                )
             )
         with self.assertRaises(ValidationError):
             IntegrationStandardSearchRequest.model_validate(
-                {
-                    "normalizedQuestion": "屏幕",
-                    "knowledgeOrigin": "business_accumulation",
-                    "partTerms": ["项目"] * 101,
-                }
+                _identity_payload(
+                    normalizedQuestion="屏幕",
+                    knowledgeOrigin="business_accumulation",
+                    partTerms=["项目"] * 101,
+                )
             )
+        for invalid_identity in (
+            _identity_payload(
+                conversationId="work-order-1",
+                normalizedQuestion="屏幕",
+            ),
+            _identity_payload(
+                requestId="包含空格的请求 ID",
+                normalizedQuestion="屏幕",
+            ),
+        ):
+            with self.assertRaises(ValidationError):
+                IntegrationStandardSearchRequest.model_validate(invalid_identity)
 
     @patch("app.routes.integration.search_embeddings")
     def test_returns_top_five_per_origin_in_plugin_compatible_shape(self, search):
@@ -122,16 +159,18 @@ class IntegrationStandardSearchTests(unittest.TestCase):
 
         search.side_effect = ranked_for_origin
         body = IntegrationStandardSearchRequest.model_validate(
-            {
-                "normalizedQuestion": "屏幕漏光",
-                "knowledgeOrigin": "business_accumulation",
-                "limit": 8,
-            }
+            _identity_payload(
+                normalizedQuestion="屏幕漏光",
+                knowledgeOrigin="business_accumulation",
+                limit=8,
+            )
         )
 
-        response = search_standard_provider_knowledge(body, MagicMock(), None)
+        response = _call_search(body)
         payload = response.model_dump(mode="json", by_alias=True)
 
+        self.assertEqual(payload["conversationId"], TEST_CONVERSATION_ID)
+        self.assertEqual(payload["requestId"], TEST_REQUEST_ID)
         self.assertEqual(search.call_count, 2)
         self.assertEqual(
             [
@@ -173,15 +212,15 @@ class IntegrationStandardSearchTests(unittest.TestCase):
     @patch("app.routes.integration.search_embeddings", return_value=[])
     def test_explicit_business_type_overrides_legacy_hints(self, search):
         body = IntegrationStandardSearchRequest.model_validate(
-            {
-                "normalizedQuestion": "聚合回收屏幕标准",
-                "knowledgeOrigin": "business_accumulation",
-                "businessType": "self_operated",
-                "productType": "聚合回收",
-            }
+            _identity_payload(
+                normalizedQuestion="聚合回收屏幕标准",
+                knowledgeOrigin="business_accumulation",
+                businessType="self_operated",
+                productType="聚合回收",
+            )
         )
 
-        search_standard_provider_knowledge(body, MagicMock(), None)
+        _call_search(body)
 
         self.assertEqual(search.call_count, 2)
         for call in search.call_args_list:
@@ -211,8 +250,10 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         for payload in requests:
             with self.subTest(payload=payload):
                 search.reset_mock()
-                body = IntegrationStandardSearchRequest.model_validate(payload)
-                search_standard_provider_knowledge(body, MagicMock(), None)
+                body = IntegrationStandardSearchRequest.model_validate(
+                    _identity_payload(**payload)
+                )
+                _call_search(body)
                 self.assertEqual(search.call_count, 2)
                 for call in search.call_args_list:
                     self.assertEqual(call.kwargs["business_type"], "aggregated")
@@ -250,13 +291,13 @@ class IntegrationStandardSearchTests(unittest.TestCase):
             ],
         ]
         body = IntegrationStandardSearchRequest.model_validate(
-            {
-                "normalizedQuestion": "屏幕漏光",
-                "knowledgeOrigin": "business_accumulation",
-            }
+            _identity_payload(
+                normalizedQuestion="屏幕漏光",
+                knowledgeOrigin="business_accumulation",
+            )
         )
 
-        response = search_standard_provider_knowledge(body, MagicMock(), None)
+        response = _call_search(body)
 
         self.assertEqual(
             [item.id for item in response.candidates],
@@ -269,13 +310,13 @@ class IntegrationStandardSearchTests(unittest.TestCase):
     )
     def test_no_match_returns_successful_empty_envelope(self, _search):
         body = IntegrationStandardSearchRequest.model_validate(
-            {
-                "normalizedQuestion": "不存在的知识",
-                "knowledgeOrigin": "business_accumulation",
-            }
+            _identity_payload(
+                normalizedQuestion="不存在的知识",
+                knowledgeOrigin="business_accumulation",
+            )
         )
 
-        response = search_standard_provider_knowledge(body, MagicMock(), None)
+        response = _call_search(body)
 
         self.assertEqual(response.status, "no_match")
         self.assertEqual(response.candidates, [])
@@ -296,13 +337,13 @@ class IntegrationStandardSearchTests(unittest.TestCase):
             [],
         ]
         body = IntegrationStandardSearchRequest.model_validate(
-            {
-                "normalizedQuestion": "屏幕漏光",
-                "limit": 2,
-            }
+            _identity_payload(
+                normalizedQuestion="屏幕漏光",
+                limit=2,
+            )
         )
 
-        response = search_standard_provider_knowledge(body, MagicMock(), None)
+        response = _call_search(body)
 
         self.assertEqual(response.status, "success")
         self.assertEqual(
@@ -320,17 +361,35 @@ class IntegrationStandardSearchTests(unittest.TestCase):
     )
     def test_embedding_unavailable_returns_503(self, _search):
         body = IntegrationStandardSearchRequest.model_validate(
-            {
-                "normalizedQuestion": "屏幕漏光",
-                "knowledgeOrigin": "business_accumulation",
-            }
+            _identity_payload(
+                normalizedQuestion="屏幕漏光",
+                knowledgeOrigin="business_accumulation",
+            )
         )
 
-        with self.assertRaises(HTTPException) as raised:
-            search_standard_provider_knowledge(body, MagicMock(), None)
+        response = _call_search(body)
+        payload = json.loads(response.body)
 
-        self.assertEqual(raised.exception.status_code, 503)
-        self.assertNotIn("model unavailable", str(raised.exception.detail))
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(payload["conversationId"], TEST_CONVERSATION_ID)
+        self.assertEqual(payload["requestId"], TEST_REQUEST_ID)
+        self.assertEqual(payload["code"], "EMBEDDING_SERVICE_UNAVAILABLE")
+        self.assertNotIn("model unavailable", payload["message"])
+
+    @patch("app.routes.integration.search_embeddings", return_value=[])
+    def test_rejects_header_and_body_identity_mismatch(self, search):
+        body = IntegrationStandardSearchRequest.model_validate(
+            _identity_payload(normalizedQuestion="屏幕漏光")
+        )
+
+        response = _call_search(body, conversation_id="202608100002")
+        payload = json.loads(response.body)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(payload["conversationId"], TEST_CONVERSATION_ID)
+        self.assertEqual(payload["requestId"], TEST_REQUEST_ID)
+        self.assertEqual(payload["code"], "REQUEST_IDENTITY_MISMATCH")
+        search.assert_not_called()
 
     def test_retrieval_key_is_required_and_not_interchangeable(self):
         original_integration = settings.INTEGRATION_API_KEY
@@ -416,28 +475,42 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         try:
             unauthorized = client.post(
                 "/api/v1/integration/standard-search",
-                json={"normalizedQuestion": "屏幕漏光", "limit": 8},
+                json=_identity_payload(
+                    normalizedQuestion="屏幕漏光",
+                    limit=8,
+                ),
             )
             self.assertEqual(unauthorized.status_code, 401)
 
             old_key_response = client.post(
                 "/api/v1/integration/standard-search",
-                headers={"X-Integration-Key": "test-integration-key"},
-                json={"normalizedQuestion": "屏幕漏光", "limit": 8},
+                headers={
+                    "X-Integration-Key": "test-integration-key",
+                    "X-Conversation-Id": TEST_CONVERSATION_ID,
+                    "X-Request-Id": TEST_REQUEST_ID,
+                },
+                json=_identity_payload(
+                    normalizedQuestion="屏幕漏光",
+                    limit=8,
+                ),
             )
             self.assertEqual(old_key_response.status_code, 401)
 
             response = client.post(
                 "/api/v1/integration/standard-search",
-                headers={"X-Integration-Key": "test-retrieval-key"},
-                json={
-                    "normalizedQuestion": "屏幕漏光",
-                    "knowledgeOrigin": "business_accumulation",
-                    "businessType": "aggregated",
-                    "productType": "手机",
-                    "model": "iPhone 17e",
-                    "limit": 8,
+                headers={
+                    "X-Integration-Key": "test-retrieval-key",
+                    "X-Conversation-Id": TEST_CONVERSATION_ID,
+                    "X-Request-Id": TEST_REQUEST_ID,
                 },
+                json=_identity_payload(
+                    normalizedQuestion="屏幕漏光",
+                    knowledgeOrigin="business_accumulation",
+                    businessType="aggregated",
+                    productType="手机",
+                    model="iPhone 17e",
+                    limit=8,
+                ),
             )
         finally:
             client.close()
@@ -446,6 +519,8 @@ class IntegrationStandardSearchTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
+        self.assertEqual(payload["conversationId"], TEST_CONVERSATION_ID)
+        self.assertEqual(payload["requestId"], TEST_REQUEST_ID)
         self.assertEqual(len(payload["candidates"]), 10)
         self.assertIn("retrievalMode", payload)
         self.assertIn("knowledgeVersion", payload)
@@ -494,10 +569,15 @@ class IntegrationStandardSearchTests(unittest.TestCase):
                     "idempotency_key": "qa-plugin:trace-1",
                     "source_system": "qa-recommendation-plugin",
                     "query": "屏幕漏光怎么判定",
+                    "conversation_id": TEST_CONVERSATION_ID,
+                    "request_id": TEST_REQUEST_ID,
                     "candidate_count": 0,
                     "score_threshold": 0.42,
                     "selected": False,
-                    "metadata": {"trace_id": "trace-1"},
+                    "metadata": {
+                        "trace_id": "trace-1",
+                        "source_kind": "reply",
+                    },
                 }
             ]
         }
@@ -517,6 +597,14 @@ class IntegrationStandardSearchTests(unittest.TestCase):
             self.assertEqual(feedback.status_code, 202)
             self.assertEqual(feedback.json()["recorded"], 1)
             self.assertEqual(feedback.json()["results"][0]["outcome"], "no_candidates")
+            self.assertEqual(
+                feedback.json()["results"][0]["conversation_id"],
+                TEST_CONVERSATION_ID,
+            )
+            self.assertEqual(
+                feedback.json()["results"][0]["request_id"],
+                TEST_REQUEST_ID,
+            )
             db.add.assert_called_once()
             db.commit.assert_called_once()
 

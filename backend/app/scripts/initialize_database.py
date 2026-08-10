@@ -218,11 +218,18 @@ def validate_schema() -> None:
         "ix_media_deletion_tasks_storage_backend",
         "ix_media_upload_staging_expires_at",
         "ix_media_upload_staging_username",
+        "ix_retrieval_quality_events_request_id",
+        "ix_retrieval_quality_events_source_kind",
+    }
+    required_columns = {
+        ("retrieval_quality_events", "request_id"),
+        ("retrieval_quality_events", "source_kind"),
     }
     required_non_nullable_columns = {
         ("knowledge_items", "business_type"),
         ("knowledge_items", "knowledge_origin"),
         ("knowledge_import_tasks", "retry_rows"),
+        ("retrieval_quality_events", "source_kind"),
     }
     required_categories = {
         "cat-qc-standard",
@@ -328,10 +335,12 @@ def validate_schema() -> None:
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
                   AND (table_name, column_name) IN (
-                    ('knowledge_items', 'business_type'),
-                    ('knowledge_items', 'knowledge_origin'),
-                    ('knowledge_import_tasks', 'retry_rows')
-                  )
+                     ('knowledge_items', 'business_type'),
+                     ('knowledge_items', 'knowledge_origin'),
+                     ('knowledge_import_tasks', 'retry_rows'),
+                     ('retrieval_quality_events', 'request_id'),
+                     ('retrieval_quality_events', 'source_kind')
+                   )
                 """
             )
         ).all()
@@ -339,6 +348,16 @@ def validate_schema() -> None:
             (table, column): is_nullable
             for table, column, is_nullable in column_rows
         }
+        missing_columns = [
+            f"{table}.{column}"
+            for table, column in sorted(required_columns)
+            if (table, column) not in column_nullability
+        ]
+        if missing_columns:
+            raise RuntimeError(
+                "Required database columns are missing: "
+                + ", ".join(missing_columns)
+            )
         missing_or_nullable = [
             f"{table}.{column}="
             f"{column_nullability.get((table, column), 'missing')}"

@@ -152,6 +152,9 @@ def import_retrieval_samples(db: Session, *, created_by: str) -> int:
                 "selection_status": event.selection_status,
                 "threshold_status": event.threshold_status,
                 "embedding_model": event.embedding_model,
+                "conversation_id": event.conversation_id,
+                "request_id": event.request_id,
+                "source_kind": event.source_kind,
             },
             created_by=created_by,
         ):

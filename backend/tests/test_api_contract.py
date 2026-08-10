@@ -298,6 +298,8 @@ class ApiContractTests(unittest.TestCase):
             parameter["name"] for parameter in operation["parameters"]
         }
         self.assertIn("X-Integration-Key", parameter_names)
+        self.assertIn("X-Conversation-Id", parameter_names)
+        self.assertIn("X-Request-Id", parameter_names)
 
         schemas = specification["components"]["schemas"]
         request_properties = schemas[
@@ -314,6 +316,10 @@ class ApiContractTests(unittest.TestCase):
         )
 
         self.assertIn("normalizedQuestion", request_properties)
+        self.assertIn("conversationId", request_properties)
+        self.assertIn("requestId", request_properties)
+        self.assertIn("conversationId", request_required)
+        self.assertIn("requestId", request_required)
         self.assertIn("knowledgeOrigin", request_properties)
         self.assertNotIn("knowledgeOrigin", request_required)
         self.assertIn("businessType", request_properties)
@@ -323,6 +329,16 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn("sourceRef", candidate_properties)
         self.assertIn("retrievalMode", response_properties)
         self.assertIn("knowledgeVersion", response_properties)
+        self.assertIn("conversationId", response_properties)
+        self.assertIn("requestId", response_properties)
+
+        feedback_schema = schemas["RetrievalQualityEventPayload"]
+        feedback_properties = feedback_schema["properties"]
+        feedback_required = set(feedback_schema.get("required", []))
+        self.assertIn("conversation_id", feedback_properties)
+        self.assertIn("request_id", feedback_properties)
+        self.assertIn("conversation_id", feedback_required)
+        self.assertIn("request_id", feedback_required)
 
     def test_openapi_no_longer_exposes_knowledge_layer(self):
         specification = json.dumps(app.openapi(), ensure_ascii=False)

@@ -57,6 +57,10 @@ Content-Type: application/json
 `INTEGRATION_API_KEY` 也不能替代它。内部运营页面使用的 `/knowledge/search`
 仍使用平台账号 Bearer 会话，不应将网页登录令牌配置到插件中。
 
+检索请求还必须同时携带插件读取的 `conversationId` 和插件生成的
+`requestId`，并在 `X-Conversation-Id`、`X-Request-Id` 请求头中重复传递
+完全相同的原值。服务器只负责校验、检索和原样回传，不会生成或改写这两个身份。
+
 ### 2.4 通用规则
 
 - 时间字段为 ISO 8601 格式。
@@ -507,6 +511,8 @@ GET /integration/ingestions/{ingestion_id}
 ```http
 POST /integration/standard-search
 X-Integration-Key: <RETRIEVAL_API_KEY>
+X-Conversation-Id: 202608100001
+X-Request-Id: qa-plugin-202608100001-1
 Content-Type: application/json
 ```
 
@@ -519,6 +525,8 @@ Content-Type: application/json
 
 ```json
 {
+  "conversationId": "202608100001",
+  "requestId": "qa-plugin-202608100001-1",
   "normalizedQuestion": "屏幕四周胶条破损怎么判定",
   "knowledgeOrigin": "headquarters_standard",
   "businessType": "self_operated",
@@ -539,6 +547,8 @@ Content-Type: application/json
 
 | 字段 | 必填 | 说明 |
 |---|---:|---|
+| `conversationId` | 是 | 插件从当前页面读取的原始纯数字工单 ID；必须与 `X-Conversation-Id` 完全一致 |
+| `requestId` | 是 | 插件生成的单次请求标识；必须与 `X-Request-Id` 完全一致 |
 | `normalizedQuestion` | 是 | 插件整理后的检索问题，不能为空 |
 | `knowledgeOrigin` | 否 | 兼容旧插件的来源字段；当前接口固定同时检索总部标准和业务沉淀 |
 | `businessType` | 否 | 业务类型硬过滤，只允许 `self_operated` 或 `aggregated`；新插件应明确传递 |
@@ -562,6 +572,8 @@ Content-Type: application/json
 
 ```json
 {
+  "conversationId": "202608100001",
+  "requestId": "qa-plugin-202608100001-1",
   "provider": "knowledge-kb",
   "status": "success",
   "retrievalMode": "semantic_pgvector",
@@ -586,6 +598,16 @@ Content-Type: application/json
   ]
 }
 ```
+
+服务器只校验并原样回传插件提交的 `conversationId` 和 `requestId`，不得生成、
+替换、截断或重新格式化这两个身份字段。Header 与正文任一字段不一致时返回
+HTTP 400。身份字段仅用于关联请求、响应、日志和反馈，不参与召回、过滤、排序或
+模型提示词。
+
+能够读取到完整请求身份的业务错误也会在响应最外层原样回传这两个字段。例如，
+Header 与正文不一致时返回 `REQUEST_IDENTITY_MISMATCH`，Embedding 服务不可用时
+返回 `EMBEDDING_SERVICE_UNAVAILABLE`。缺少字段或字段格式不合法的请求会在进入
+业务处理前由参数校验拒绝，因此不承诺回显不完整的身份。
 
 响应按“总部标准 TOP5、业务沉淀 TOP5”的组顺序合并，每组内部按相关性从高到低。
 每条候选都会返回实际所属的 `knowledgeOrigin` 和 `businessType`。知识正文会转换为纯文本返回；
@@ -688,16 +710,18 @@ Content-Type: application/json
 {
   "items": [
     {
-      "idempotency_key": "sha256:conversation-123:retrieval-1",
+      "idempotency_key": "qa-plugin:202608100001:retrieval-1",
       "source_system": "agent-runtime",
       "query": "手机黑屏无法开机应该怎么排查",
-      "conversation_id": "conversation-123",
+      "conversation_id": "202608100001",
+      "request_id": "qa-plugin-202608100001-1",
       "candidate_count": 5,
       "top_knowledge_id": "A-00001",
       "top_rerank_score": 0.91,
       "score_threshold": 0.75,
       "selected": true,
       "metadata": {
+        "source_kind": "reply",
         "retrieval_model": "Qwen/Qwen3-Embedding-0.6B",
         "reranker_model": "reserved",
         "latency_ms": 86
@@ -715,7 +739,9 @@ Content-Type: application/json
   "reused": 0,
   "results": [
     {
-      "idempotency_key": "sha256:conversation-123:retrieval-1",
+      "idempotency_key": "qa-plugin:202608100001:retrieval-1",
+      "conversation_id": "202608100001",
+      "request_id": "qa-plugin-202608100001-1",
       "status": "recorded",
       "outcome": "accepted",
       "event_id": "rqe-xxxxxxxxxxxx"
@@ -723,6 +749,19 @@ Content-Type: application/json
   ]
 }
 ```
+
+`conversation_id` 和 `request_id` 必须由插件提供。服务器不会生成或补填这两个
+字段；缺少、格式不合法或同一 `idempotency_key` 绑定到另一组身份时，反馈会被
+拒绝。历史数据库中的旧匿名记录会保留，但新接口不再接受匿名反馈。
+
+插件用户操作可将 `feedback_type` 设为 `helpful`、`unhelpful` 或 `corrected`；
+对应的 `failure_reason` 可使用 `user_unhelpful` 或 `user_correction`。这两个
+值只描述人工操作，不改变候选身份或召回排序。
+
+插件对推荐回复池和总部标准池分别写入事件时，`metadata.source_kind`
+必须分别为 `reply` 和 `standard`。分析、风险复核和训练导入会在每个工单内
+按候选池保留最新事件，避免一个池的后续反馈覆盖另一个池。新接口缺少该字段、
+传入 `combined` 或其他非法值时会拒绝；`combined` 仅用于保留历史数据库事件。
 
 `outcome` 判定规则：
 
@@ -787,8 +826,12 @@ curl -X GET "$KB_BASE_URL/api/v1/integration/taxonomy" \
 ```bash
 curl -X POST "$KB_BASE_URL/api/v1/integration/standard-search" \
   -H "X-Integration-Key: $KB_RETRIEVAL_KEY" \
+  -H "X-Conversation-Id: 202608100001" \
+  -H "X-Request-Id: qa-plugin-202608100001-1" \
   -H "Content-Type: application/json" \
   -d '{
+    "conversationId": "202608100001",
+    "requestId": "qa-plugin-202608100001-1",
     "normalizedQuestion": "手机黑屏无法开机应该怎么排查",
     "knowledgeOrigin": "headquarters_standard",
     "businessType": "self_operated",

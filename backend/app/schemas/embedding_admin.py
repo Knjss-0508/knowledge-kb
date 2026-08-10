@@ -149,6 +149,8 @@ class RetrievalQualityReview(BaseModel):
         "candidate_irrelevant",
         "answer_not_used",
         "technical_failure",
+        "user_correction",
+        "user_unhelpful",
         "unknown",
     ] = ""
     reason: str = Field("", max_length=2000)
