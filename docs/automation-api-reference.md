@@ -578,6 +578,7 @@ Content-Type: application/json
   "status": "success",
   "retrievalMode": "semantic_pgvector",
   "knowledgeVersion": "0.1.0",
+  "scoreThreshold": 0.42,
   "candidates": [
     {
       "id": "A-00001",
@@ -614,7 +615,9 @@ Header 与正文不一致时返回 `REQUEST_IDENTITY_MISMATCH`，Embedding 服�
 图片和视频地址不会下发，但其 `alt`、`caption`
 等可读说明会保留。无命中时返回 HTTP 200、`status: "no_match"` 和空
 `candidates`。某个知识来源不足 5 条时只返回实际命中数，不会用另一来源补位或
-复制结果；当前接口不会跨业务类型扩大检索。Embedding 服务不可用时返回 HTTP 503。
+复制结果；当前接口不会跨业务类型扩大检索。服务端会在适用类目、品牌和机型过滤后，
+使用当前激活的知识检索阈值过滤低分候选，并通过 `scoreThreshold` 返回本次生效值。
+Embedding 服务不可用时返回 HTTP 503。
 
 插件的 Provider 配置示例：
 
@@ -758,6 +761,10 @@ Content-Type: application/json
 对应的 `failure_reason` 可使用 `user_unhelpful` 或 `user_correction`。这两个
 值只描述人工操作，不改变候选身份或召回排序。
 
+请求中的 `score_threshold` 为兼容字段，不作为最终统计依据。服务器会以当前激活的
+知识检索阈值重新判定并保存 `threshold_status` 和 `outcome`，避免插件内置旧阈值
+污染召回分析。
+
 插件对推荐回复池和总部标准池分别写入事件时，`metadata.source_kind`
 必须分别为 `reply` 和 `standard`。分析、风险复核和训练导入会在每个工单内
 按候选池保留最新事件，避免一个池的后续反馈覆盖另一个池。新接口缺少该字段、
@@ -775,8 +782,11 @@ Content-Type: application/json
 ### 6.2 查看检索分析
 
 ```http
-GET /integration/retrieval-analytics
+GET /integration/retrieval-analytics?page=1&page_size=20
 ```
+
+`page` 从 1 开始；`page_size` 支持 1 到 100。分页只作用于待澄清请求列表，
+汇总指标始终基于同一工单、同一候选池保留的最后一次请求计算。
 
 该接口面向知识库内部运营人员，需要平台账号的 `knowledge:view` 权限，不使用 `X-Integration-Key`。
 

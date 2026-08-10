@@ -127,6 +127,69 @@ class EmbeddingAdminTests(unittest.TestCase):
         self.assertEqual(activated["status"], "active")
         self.assertEqual(activated["activated_by"], "admin")
 
+    def test_scoped_threshold_versions_do_not_overwrite_each_other(self):
+        base_values = EmbeddingRuntimeConfigValues().model_dump()
+        self.db.add(
+            EmbeddingRuntimeConfig(
+                id="erc-active",
+                version=1,
+                status="active",
+                config=base_values,
+                evaluation_metrics={},
+                change_reason="初始参数",
+                created_by="admin",
+                activated_by="admin",
+                activated_at=datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+
+        dedup_draft_values = dict(base_values)
+        dedup_draft_values["dedup_block_threshold"] = 0.95
+        dedup_draft_values["dedup_review_threshold"] = 0.85
+        dedup_draft_values["retrieval_score_threshold"] = 0.10
+        dedup_draft = create_embedding_config(
+            EmbeddingRuntimeConfigCreate(
+                config=EmbeddingRuntimeConfigValues(**dedup_draft_values),
+                change_reason="调整上传查重",
+                evaluation_metrics={"config_scope": "dedup_thresholds"},
+                activate=False,
+            ),
+            self.db,
+            self.user,
+        )
+        self.assertEqual(dedup_draft["config"]["retrieval_score_threshold"], 0.42)
+
+        retrieval_values = dict(base_values)
+        retrieval_values["retrieval_score_threshold"] = 0.55
+        retrieval_values["dedup_block_threshold"] = 0.70
+        retrieval_values["dedup_review_threshold"] = 0.60
+        retrieval_active = create_embedding_config(
+            EmbeddingRuntimeConfigCreate(
+                config=EmbeddingRuntimeConfigValues(**retrieval_values),
+                change_reason="收紧知识检索",
+                evaluation_metrics={"config_scope": "retrieval_thresholds"},
+                activate=True,
+            ),
+            self.db,
+            self.user,
+        )
+        self.assertEqual(retrieval_active["config"]["retrieval_score_threshold"], 0.55)
+        self.assertEqual(retrieval_active["config"]["dedup_block_threshold"], 0.96)
+        self.assertEqual(retrieval_active["config"]["dedup_review_threshold"], 0.88)
+
+        activated_dedup = activate_embedding_config(
+            dedup_draft["id"],
+            self.db,
+            self.user,
+        )
+        self.assertEqual(activated_dedup["config"]["dedup_block_threshold"], 0.95)
+        self.assertEqual(activated_dedup["config"]["dedup_review_threshold"], 0.85)
+        self.assertEqual(
+            activated_dedup["config"]["retrieval_score_threshold"],
+            0.55,
+        )
+
     def test_task_runner_public_base_url_requires_clean_https_origin(self):
         settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL = "https://kb.example.test/"
         self.assertEqual(

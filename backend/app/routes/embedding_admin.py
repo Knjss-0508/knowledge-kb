@@ -41,6 +41,7 @@ from app.schemas.embedding_admin import (
     EmbeddingRunnerHeartbeat,
     EmbeddingRunnerProgress,
     EmbeddingRuntimeConfigCreate,
+    EmbeddingRuntimeConfigValues,
     EmbeddingTrainingJobCreate,
     EmbeddingTrainingSampleCreate,
     EmbeddingTrainingSampleUpdate,
@@ -65,10 +66,38 @@ _MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{2,255}$")
 _TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 _ACTIVE_JOB_STATUSES = {"claimed", "running", "evaluating"}
 _TASK_RUNNER_PATH = "/api/v1/embedding-model/runner/tasks"
+_RUNTIME_CONFIG_SCOPE_KEYS = {
+    "dedup_thresholds": {
+        "dedup_block_threshold",
+        "dedup_review_threshold",
+    },
+    "retrieval_thresholds": {
+        "retrieval_score_threshold",
+    },
+}
 
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def _runtime_config_scope(evaluation_metrics: dict[str, Any] | None) -> str:
+    metrics = evaluation_metrics if isinstance(evaluation_metrics, dict) else {}
+    scope = str(metrics.get("config_scope") or "").strip()
+    return scope if scope in _RUNTIME_CONFIG_SCOPE_KEYS else ""
+
+
+def _merge_scoped_runtime_config(
+    active_values: dict[str, Any],
+    requested_values: dict[str, Any],
+    scope: str,
+) -> dict[str, Any]:
+    if scope not in _RUNTIME_CONFIG_SCOPE_KEYS:
+        return EmbeddingRuntimeConfigValues(**requested_values).model_dump()
+    merged = dict(active_values)
+    for key in _RUNTIME_CONFIG_SCOPE_KEYS[scope]:
+        merged[key] = requested_values[key]
+    return EmbeddingRuntimeConfigValues(**merged).model_dump()
 
 
 def _runner_token(
@@ -465,11 +494,18 @@ def create_embedding_config(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("embedding:manage")),
 ):
+    active_values = get_active_runtime_values(db)
+    config_scope = _runtime_config_scope(body.evaluation_metrics)
+    config_values = _merge_scoped_runtime_config(
+        active_values,
+        body.config.model_dump(),
+        config_scope,
+    )
     record = EmbeddingRuntimeConfig(
         id=f"erc-{uuid.uuid4().hex[:16]}",
         version=next_runtime_config_version(db),
         status="draft",
-        config=body.config.model_dump(),
+        config=config_values,
         evaluation_metrics=body.evaluation_metrics,
         change_reason=body.change_reason.strip(),
         created_by=current_user.username,
@@ -477,7 +513,6 @@ def create_embedding_config(
     db.add(record)
     activation_blocked = ""
     if body.activate:
-        active_values = get_active_runtime_values(db)
         structural_keys = {"search_chunk_size", "search_chunk_overlap"}
         structural_changed = any(
             active_values.get(key) != record.config.get(key)
@@ -514,6 +549,12 @@ def activate_embedding_config(
     if not record:
         raise HTTPException(404, "参数版本不存在")
     active_values = get_active_runtime_values(db)
+    config_scope = _runtime_config_scope(record.evaluation_metrics)
+    record.config = _merge_scoped_runtime_config(
+        active_values,
+        record.config or {},
+        config_scope,
+    )
     structural_changed = any(
         active_values.get(key) != (record.config or {}).get(key)
         for key in ("search_chunk_size", "search_chunk_overlap")

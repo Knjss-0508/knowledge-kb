@@ -208,6 +208,39 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         self.assertNotIn("private.png", first["text"])
         self.assertEqual(payload["status"], "success")
         self.assertEqual(payload["retrievalMode"], "semantic_pgvector")
+        self.assertEqual(payload["scoreThreshold"], 0.42)
+
+    @patch(
+        "app.routes.integration.get_active_runtime_values",
+        return_value={"retrieval_score_threshold": 0.90},
+    )
+    @patch("app.routes.integration.search_embeddings")
+    def test_active_retrieval_threshold_filters_each_origin(
+        self,
+        search,
+        _runtime_config,
+    ):
+        def ranked_for_origin(*_args, **kwargs):
+            origin = kwargs["knowledge_origin"]
+            start = 1 if origin == "headquarters_standard" else 101
+            return [
+                (_knowledge(start, knowledge_origin=origin), 0.95),
+                (_knowledge(start + 1, knowledge_origin=origin), 0.89),
+            ]
+
+        search.side_effect = ranked_for_origin
+        body = IntegrationStandardSearchRequest.model_validate(
+            _identity_payload(normalizedQuestion="屏幕漏光")
+        )
+
+        response = _call_search(body)
+        payload = response.model_dump(mode="json", by_alias=True)
+
+        self.assertEqual(payload["scoreThreshold"], 0.90)
+        self.assertEqual(
+            [item["id"] for item in payload["candidates"]],
+            ["A-00001", "A-00101"],
+        )
 
     @patch("app.routes.integration.search_embeddings", return_value=[])
     def test_explicit_business_type_overrides_legacy_hints(self, search):

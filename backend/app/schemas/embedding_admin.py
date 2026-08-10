@@ -11,6 +11,7 @@ class EmbeddingRuntimeConfigValues(BaseModel):
     dedup_min_containment_content_chars: int = Field(12, ge=1, le=1000)
     search_chunk_size: int = Field(800, ge=100, le=8000)
     search_chunk_overlap: int = Field(120, ge=0, le=4000)
+    retrieval_score_threshold: float = Field(0.42, ge=0, le=1)
     retrieval_default_top_k: int = Field(10, ge=1, le=100)
     training_min_verified_samples: int = Field(20, ge=1, le=1000000)
     training_trigger_new_samples: int = Field(100, ge=1, le=1000000)
