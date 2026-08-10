@@ -9,8 +9,8 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db
 from app.core.config import settings
+from app.core.database import get_db
 from app.core.integration_auth import require_integration_key, require_retrieval_key
 from app.models.integration import IntegrationIngestion, RetrievalQualityEvent
 from app.models.knowledge import Category, Knowledge, KnowledgeStatus, TagDimension
@@ -28,7 +28,6 @@ from app.services.knowledge_dedup import (
     save_embedding,
     search_embeddings,
 )
-from app.services.retrieval_quality import latest_retrieval_quality_event_ids
 from app.schemas.integration import (
     CandidateReviewBatchSubmit,
     CandidateReviewBatchSubmitResponse,
@@ -65,6 +64,8 @@ from app.services.candidate_review import (
     evaluate_review_status,
     normalize_human_review,
 )
+from app.services.embedding_runtime import get_active_runtime_values
+from app.services.retrieval_quality import latest_retrieval_quality_event_ids
 
 
 router = APIRouter(prefix="/integration", tags=["自动化接入"])
@@ -76,6 +77,15 @@ STANDARD_SEARCH_KNOWLEDGE_ORIGINS = (
     "headquarters_standard",
     "business_accumulation",
 )
+
+
+def _active_retrieval_score_threshold(db: Session) -> float:
+    runtime_config = get_active_runtime_values(db)
+    try:
+        score_threshold = float(runtime_config["retrieval_score_threshold"])
+    except (KeyError, TypeError, ValueError):
+        score_threshold = 0.42
+    return max(0.0, min(1.0, score_threshold))
 
 
 def _to_dedup_response(decision: DedupDecision) -> IntegrationDedupResponse:
@@ -719,6 +729,7 @@ def search_standard_provider_knowledge(
             },
         )
     top_k_per_origin = min(body.limit, STANDARD_SEARCH_MAX_RESULTS)
+    score_threshold = _active_retrieval_score_threshold(db)
     inferred_business_type = body.business_type
     if not inferred_business_type:
         inferred_business_type = (
@@ -797,7 +808,10 @@ def search_standard_provider_knowledge(
             [
                 (item, score)
                 for item, score in ranked_by_origin[knowledge_origin]
-                if item.status == KnowledgeStatus.PUBLISHED
+                if (
+                    item.status == KnowledgeStatus.PUBLISHED
+                    and float(score) >= score_threshold
+                )
             ][:top_k_per_origin]
         )
     candidates = [
@@ -811,6 +825,7 @@ def search_standard_provider_knowledge(
         status="success" if candidates else "no_match",
         retrieval_mode="semantic_pgvector",
         knowledge_version=settings.VERSION,
+        score_threshold=score_threshold,
         candidates=candidates,
     )
 
@@ -828,6 +843,7 @@ def submit_retrieval_quality_events(
     results: list[RetrievalQualityEventResult] = []
     recorded = reused = 0
     seen_events: dict[str, RetrievalQualityEvent] = {}
+    score_threshold = _active_retrieval_score_threshold(db)
 
     for candidate in body.items:
         candidate_source_kind = _retrieval_source_kind(candidate)
@@ -870,7 +886,10 @@ def submit_retrieval_quality_events(
             )
             continue
 
-        dimensions = _retrieval_feedback_dimensions(candidate)
+        evaluated_candidate = candidate.model_copy(
+            update={"score_threshold": score_threshold}
+        )
+        dimensions = _retrieval_feedback_dimensions(evaluated_candidate)
         outcome = dimensions["outcome"]
         candidate_snapshot = _retrieval_candidate_snapshot(candidate)
         latency_ms = _metadata_value(candidate, "latency_ms")
@@ -885,7 +904,7 @@ def submit_retrieval_quality_events(
             candidate_count=candidate.candidate_count,
             top_knowledge_id=candidate.top_knowledge_id,
             top_rerank_score=candidate.top_rerank_score,
-            score_threshold=candidate.score_threshold,
+            score_threshold=score_threshold,
             selected=candidate.selected,
             outcome=outcome,
             schema_version=max(
@@ -987,7 +1006,11 @@ def submit_retrieval_quality_events(
 def get_retrieval_analytics(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("knowledge:view")),
+    page: int = 1,
+    page_size: int = 20,
 ):
+    page = max(1, int(page or 1))
+    page_size = max(1, min(100, int(page_size or 20)))
     summary = {
         "total": 0,
         "accepted": 0,
@@ -997,6 +1020,7 @@ def get_retrieval_analytics(
         "not_selected": 0,
         "technical_failure": 0,
         "successful_requests": 0,
+        "candidate_requests": 0,
         "candidate_queries": 0,
         "threshold_passed": 0,
         "threshold_below": 0,
@@ -1047,10 +1071,15 @@ def get_retrieval_analytics(
         int(request_counts.get(key, 0))
         for key in ("success", "no_match", "fallback")
     )
-    summary["candidate_queries"] = sum(
-        int(threshold_counts.get(key, 0))
-        for key in ("passed", "below")
+    summary["candidate_requests"] = (
+        latest_events
+        .filter(
+            RetrievalQualityEvent.candidate_count > 0,
+            RetrievalQualityEvent.request_status.in_(["success", "fallback"]),
+        )
+        .count()
     )
+    summary["candidate_queries"] = summary["candidate_requests"]
     summary["threshold_passed"] = int(threshold_counts.get("passed", 0))
     summary["threshold_below"] = int(threshold_counts.get("below", 0))
     summary["top_selected"] = int(selection_counts.get("top_selected", 0))
@@ -1097,7 +1126,7 @@ def get_retrieval_analytics(
         .count()
     )
 
-    risks = (
+    risk_query = (
         latest_events
         .filter(
             or_(
@@ -1106,7 +1135,14 @@ def get_retrieval_analytics(
             )
         )
         .order_by(RetrievalQualityEvent.created_at.desc())
-        .limit(50)
+    )
+    risk_total = risk_query.count()
+    risk_total_pages = max(1, (risk_total + page_size - 1) // page_size)
+    page = min(page, risk_total_pages)
+    risks = (
+        risk_query
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
     )
     summary["total"] = sum(
@@ -1229,7 +1265,13 @@ def get_retrieval_analytics(
             "top1_selection_rate": "有候选请求中最终采用所属候选池第一名的比例",
             "alternative_selection_rate": "有候选请求中最终采用所属候选池第二至第五名的比例",
             "no_selection_rate": "有候选请求中最终没有采用任何候选的比例",
-            "review_coverage_rate": "已由人工明确原因和正确目标的事件比例",
+            "review_coverage_rate": "已由人工明确原因和正确目标的请求比例",
+        },
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": risk_total,
+            "total_pages": risk_total_pages,
         },
         "risks": [risk_payload(event) for event in risks],
     }

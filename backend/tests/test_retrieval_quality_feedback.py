@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -293,7 +294,7 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
             ),
             self._payload(
                 "low-score",
-                top_rerank_score=0.5,
+                top_rerank_score=0.4,
                 selected=False,
                 selected_knowledge_id=None,
                 selected_candidate_rank=None,
@@ -302,13 +303,13 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
                     {
                         "knowledge_id": "A-00001",
                         "rank": 1,
-                        "final_score": 0.5,
+                        "final_score": 0.4,
                         "selected": False,
                     },
                     {
                         "knowledge_id": "A-00002",
                         "rank": 2,
-                        "final_score": 0.4,
+                        "final_score": 0.3,
                         "selected": False,
                     },
                 ],
@@ -386,6 +387,8 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
         self.assertEqual(analytics["summary"]["technical_failure"], 1)
         self.assertEqual(analytics["summary"]["reviewed"], 1)
         self.assertEqual(analytics["summary"]["training_eligible"], 1)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 3)
+        self.assertEqual(analytics["summary"]["candidate_queries"], 3)
         self.assertEqual(analytics["rates"]["candidate_coverage_rate"], 0.75)
         self.assertEqual(analytics["rates"]["threshold_pass_rate"], 0.6667)
         self.assertEqual(analytics["rates"]["top1_selection_rate"], 0.3333)
@@ -406,12 +409,53 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
             ["headquarters_standard", "headquarters_standard"],
         )
 
+    @patch(
+        "app.routes.integration.get_active_runtime_values",
+        return_value={"retrieval_score_threshold": 0.75},
+    )
+    def test_batch_uses_server_retrieval_threshold_as_authoritative_value(
+        self,
+        _runtime_config,
+    ):
+        payload = self._payload(
+            "server-threshold",
+            candidate_count=1,
+            top_rerank_score=0.70,
+            score_threshold=0.10,
+            selected=False,
+            selected_knowledge_id=None,
+            selected_candidate_rank=None,
+            candidates=[
+                {
+                    "knowledge_id": "A-00001",
+                    "rank": 1,
+                    "final_score": 0.70,
+                    "selected": False,
+                }
+            ],
+        )
+
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=[payload]),
+            self.db,
+            None,
+        )
+        event = (
+            self.db.query(RetrievalQualityEvent)
+            .filter(RetrievalQualityEvent.idempotency_key == "server-threshold")
+            .one()
+        )
+
+        self.assertEqual(event.score_threshold, 0.75)
+        self.assertEqual(event.threshold_status, "below")
+        self.assertEqual(event.outcome, "low_score")
+
     def test_analytics_keeps_only_latest_event_per_work_order(self):
         items = [
             self._payload(
                 "ticket-old",
                 conversation_id="202608100001",
-                top_rerank_score=0.5,
+                top_rerank_score=0.4,
                 selected=False,
                 selected_knowledge_id=None,
                 selected_candidate_rank=None,
@@ -419,13 +463,13 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
                     {
                         "knowledge_id": "A-00001",
                         "rank": 1,
-                        "final_score": 0.5,
+                        "final_score": 0.4,
                         "selected": False,
                     },
                     {
                         "knowledge_id": "A-00002",
                         "rank": 2,
-                        "final_score": 0.4,
+                        "final_score": 0.3,
                         "selected": False,
                     },
                 ],
@@ -468,8 +512,13 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
         self.assertEqual(analytics["summary"]["accepted"], 1)
         self.assertEqual(analytics["summary"]["low_score"], 0)
         self.assertEqual(analytics["summary"]["no_candidates"], 1)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 1)
+        self.assertEqual(analytics["summary"]["candidate_queries"], 1)
         self.assertEqual(analytics["summary"]["reviewed"], 0)
         self.assertEqual(analytics["summary"]["training_eligible"], 0)
+        self.assertEqual(analytics["pagination"]["total"], 2)
+        self.assertEqual(analytics["pagination"]["page"], 1)
+        self.assertEqual(analytics["pagination"]["page_size"], 20)
         risk_ids = {risk["id"] for risk in analytics["risks"]}
         self.assertNotIn(events["ticket-old"].id, risk_ids)
         self.assertIn(events["ticket-new"].id, risk_ids)
@@ -756,6 +805,72 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
             raised.exception.detail["code"],
             "IDEMPOTENCY_IDENTITY_CONFLICT",
         )
+
+    def test_analytics_paginates_after_latest_work_order_and_source_pool_collapse(
+        self,
+    ):
+        items = [
+            self._payload(
+                f"page-{index:02d}",
+                conversation_id=f"900000000{index:03d}",
+            )
+            for index in range(22)
+        ]
+        items.extend(
+            [
+                self._payload(
+                    "ticket-old-page",
+                    conversation_id="999999999999",
+                    request_id="request-page-old",
+                    metadata={"source_kind": "reply"},
+                ),
+                self._payload(
+                    "ticket-new-page",
+                    conversation_id="999999999999",
+                    request_id="request-page-new",
+                    metadata={"source_kind": "reply"},
+                ),
+            ]
+        )
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=items),
+            self.db,
+            None,
+        )
+        events = {
+            event.idempotency_key: event
+            for event in self.db.query(RetrievalQualityEvent).all()
+        }
+        events["ticket-old-page"].created_at = datetime(2026, 8, 10, 10, 0, 0)
+        events["ticket-new-page"].created_at = datetime(2026, 8, 10, 11, 0, 0)
+        self.db.commit()
+
+        pages = [
+            get_retrieval_analytics(
+                self.db,
+                None,
+                page=page,
+                page_size=10,
+            )
+            for page in (1, 2, 3)
+        ]
+        risk_ids = {
+            item["id"]
+            for response in pages
+            for item in response["risks"]
+        }
+
+        self.assertEqual(pages[0]["summary"]["candidate_requests"], 23)
+        self.assertEqual(pages[0]["summary"]["candidate_queries"], 23)
+        self.assertEqual(pages[0]["pagination"]["total"], 23)
+        self.assertEqual(pages[0]["pagination"]["total_pages"], 3)
+        self.assertEqual(
+            [len(response["risks"]) for response in pages],
+            [10, 10, 3],
+        )
+        self.assertNotIn(events["ticket-old-page"].id, risk_ids)
+        self.assertIn(events["ticket-new-page"].id, risk_ids)
+        self.assertEqual(len(risk_ids), 23)
 
 
 if __name__ == "__main__":

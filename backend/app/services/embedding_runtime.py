@@ -18,6 +18,7 @@ def default_embedding_runtime_config() -> dict[str, Any]:
         "dedup_min_containment_content_chars": settings.DEDUP_MIN_CONTAINMENT_CONTENT_CHARS,
         "search_chunk_size": settings.SEARCH_CHUNK_SIZE,
         "search_chunk_overlap": settings.SEARCH_CHUNK_OVERLAP,
+        "retrieval_score_threshold": 0.42,
         "retrieval_default_top_k": 10,
         "training_min_verified_samples": 20,
         "training_trigger_new_samples": 100,

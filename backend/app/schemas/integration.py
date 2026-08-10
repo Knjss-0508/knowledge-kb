@@ -485,6 +485,7 @@ class IntegrationStandardSearchResponse(BaseModel):
     status: Literal["success", "no_match"]
     retrieval_mode: str = Field(alias="retrievalMode")
     knowledge_version: str = Field(alias="knowledgeVersion")
+    score_threshold: float = Field(alias="scoreThreshold", ge=0, le=1)
     candidates: list[IntegrationStandardSearchCandidate]
 
 
