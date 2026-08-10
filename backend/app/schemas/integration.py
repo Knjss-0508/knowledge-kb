@@ -354,6 +354,22 @@ class IntegrationStandardSearchRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
 
+    conversation_id: str = Field(
+        ...,
+        alias="conversationId",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[0-9]{1,64}$",
+        description="插件从当前页面读取的原始工单ID，服务器不得生成或改写。",
+    )
+    request_id: str = Field(
+        ...,
+        alias="requestId",
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9._:-]{1,80}$",
+        description="插件生成的单次请求标识，服务器必须原样回传。",
+    )
     normalized_question: str = Field(
         ...,
         alias="normalizedQuestion",
@@ -453,6 +469,18 @@ class IntegrationStandardSearchCandidate(BaseModel):
 class IntegrationStandardSearchResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    conversation_id: str = Field(
+        alias="conversationId",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[0-9]{1,64}$",
+    )
+    request_id: str = Field(
+        alias="requestId",
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9._:-]{1,80}$",
+    )
     provider: str
     status: Literal["success", "no_match"]
     retrieval_mode: str = Field(alias="retrievalMode")
@@ -474,7 +502,18 @@ class RetrievalQualityEventPayload(BaseModel):
     idempotency_key: str = Field(..., min_length=1, max_length=128)
     source_system: str = Field(..., min_length=1, max_length=64)
     query: str = Field(..., min_length=1, max_length=1000)
-    conversation_id: str | None = Field(None, max_length=128)
+    conversation_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[0-9]{1,64}$",
+    )
+    request_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9._:-]{1,80}$",
+    )
     schema_version: int = Field(1, ge=1, le=10)
     request_status: Literal[
         "success",
@@ -505,6 +544,8 @@ class RetrievalQualityEventPayload(BaseModel):
         "candidate_irrelevant",
         "answer_not_used",
         "technical_failure",
+        "user_correction",
+        "user_unhelpful",
         "unknown",
     ] = ""
     candidates: list[RetrievalQualityCandidatePayload] = Field(
@@ -517,13 +558,24 @@ class RetrievalQualityEventPayload(BaseModel):
     retrieval_latency_ms: float | None = Field(None, ge=0)
     rerank_latency_ms: float | None = Field(None, ge=0)
     total_latency_ms: float | None = Field(None, ge=0)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        validate_default=True,
+    )
 
-    @field_validator("conversation_id")
+    @field_validator("metadata")
     @classmethod
-    def normalize_conversation_id(cls, value: str | None) -> str | None:
-        normalized = (value or "").strip()
-        return normalized or None
+    def require_candidate_source_pool(cls, value: dict[str, Any]) -> dict[str, Any]:
+        source_kind = value.get("source_kind")
+        if not isinstance(source_kind, str):
+            raise ValueError("metadata.source_kind must be reply or standard")
+        normalized_source_kind = source_kind.strip().lower()
+        if normalized_source_kind not in {"reply", "standard"}:
+            raise ValueError("metadata.source_kind must be reply or standard")
+        return {
+            **value,
+            "source_kind": normalized_source_kind,
+        }
 
     @field_validator("top_rerank_score")
     @classmethod
@@ -551,6 +603,8 @@ class RetrievalQualityEventBatch(BaseModel):
 
 class RetrievalQualityEventResult(BaseModel):
     idempotency_key: str
+    conversation_id: str
+    request_id: str
     status: Literal["recorded", "reused"]
     outcome: Literal[
         "accepted",

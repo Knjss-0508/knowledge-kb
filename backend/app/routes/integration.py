@@ -3,8 +3,10 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -622,6 +624,20 @@ def _resolve_retrieval_outcome(candidate) -> str:
     return _retrieval_feedback_dimensions(candidate)["outcome"]
 
 
+def _retrieval_source_kind(candidate) -> str:
+    metadata = (
+        candidate.metadata
+        if isinstance(candidate.metadata, dict)
+        else {}
+    )
+    source_kind = str(metadata.get("source_kind") or "").strip().lower()
+    return (
+        source_kind
+        if source_kind in {"reply", "standard"}
+        else "combined"
+    )
+
+
 def _standard_search_strings(values, *, limit: int = 100) -> list[str]:
     result: list[str] = []
     for value in values or []:
@@ -672,9 +688,36 @@ def _to_standard_search_candidate(
 )
 def search_standard_provider_knowledge(
     body: IntegrationStandardSearchRequest,
+    x_conversation_id: str = Header(..., alias="X-Conversation-Id"),
+    x_request_id: str = Header(..., alias="X-Request-Id"),
     db: Session = Depends(get_db),
     _: None = Depends(require_retrieval_key),
 ):
+    if (
+        x_conversation_id != body.conversation_id
+        or x_request_id != body.request_id
+    ):
+        logger.warning(
+            "Standard search identity mismatch: "
+            "body_conversation_id=%s body_request_id=%s "
+            "header_conversation_id=%s header_request_id=%s",
+            body.conversation_id,
+            body.request_id,
+            x_conversation_id,
+            x_request_id,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "conversationId": body.conversation_id,
+                "requestId": body.request_id,
+                "code": "REQUEST_IDENTITY_MISMATCH",
+                "message": (
+                    "请求 Header 与正文中的 conversationId/requestId "
+                    "必须完全一致"
+                ),
+            },
+        )
     top_k_per_origin = min(body.limit, STANDARD_SEARCH_MAX_RESULTS)
     inferred_business_type = body.business_type
     if not inferred_business_type:
@@ -731,11 +774,22 @@ def search_standard_provider_knowledge(
             for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS
         }
     except EmbeddingServiceUnavailable as exc:
-        logger.warning("Embedding unavailable during standard provider search: %s", exc)
-        raise HTTPException(
+        logger.warning(
+            "Embedding unavailable during standard provider search: "
+            "conversation_id=%s request_id=%s error=%s",
+            body.conversation_id,
+            body.request_id,
+            exc,
+        )
+        return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Embedding 服务不可用，无法完成语义检索",
-        ) from exc
+            content={
+                "conversationId": body.conversation_id,
+                "requestId": body.request_id,
+                "code": "EMBEDDING_SERVICE_UNAVAILABLE",
+                "message": "Embedding 服务不可用，无法完成语义检索",
+            },
+        )
 
     published_ranked: list[tuple[Knowledge, float]] = []
     for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS:
@@ -751,6 +805,8 @@ def search_standard_provider_knowledge(
         for item, score in published_ranked
     ]
     return IntegrationStandardSearchResponse(
+        conversation_id=body.conversation_id,
+        request_id=body.request_id,
         provider="knowledge-kb",
         status="success" if candidates else "no_match",
         retrieval_mode="semantic_pgvector",
@@ -771,18 +827,42 @@ def submit_retrieval_quality_events(
 ):
     results: list[RetrievalQualityEventResult] = []
     recorded = reused = 0
+    seen_events: dict[str, RetrievalQualityEvent] = {}
 
     for candidate in body.items:
-        existing = (
-            db.query(RetrievalQualityEvent)
-            .filter(RetrievalQualityEvent.idempotency_key == candidate.idempotency_key)
-            .first()
-        )
+        candidate_source_kind = _retrieval_source_kind(candidate)
+        existing = seen_events.get(candidate.idempotency_key)
+        if existing is None:
+            existing = (
+                db.query(RetrievalQualityEvent)
+                .filter(
+                    RetrievalQualityEvent.idempotency_key
+                    == candidate.idempotency_key
+                )
+                .first()
+            )
         if existing:
+            if (
+                existing.conversation_id != candidate.conversation_id
+                or existing.request_id != candidate.request_id
+                or existing.source_kind != candidate_source_kind
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "IDEMPOTENCY_IDENTITY_CONFLICT",
+                        "message": (
+                            "同一 idempotency_key 不得关联不同的 "
+                            "conversation_id/request_id/source_kind"
+                        ),
+                    },
+                )
             reused += 1
             results.append(
                 RetrievalQualityEventResult(
                     idempotency_key=existing.idempotency_key,
+                    conversation_id=existing.conversation_id,
+                    request_id=existing.request_id,
                     status="reused",
                     outcome=existing.outcome,
                     event_id=existing.id,
@@ -799,6 +879,8 @@ def submit_retrieval_quality_events(
             idempotency_key=candidate.idempotency_key,
             source_system=candidate.source_system,
             conversation_id=candidate.conversation_id,
+            request_id=candidate.request_id,
+            source_kind=candidate_source_kind,
             query_text=candidate.query,
             candidate_count=candidate.candidate_count,
             top_knowledge_id=candidate.top_knowledge_id,
@@ -837,11 +919,56 @@ def submit_retrieval_quality_events(
             review_status="unreviewed",
             event_metadata=candidate.metadata,
         )
-        db.add(event)
+        try:
+            with db.begin_nested():
+                db.add(event)
+                db.flush()
+        except IntegrityError:
+            existing = (
+                db.query(RetrievalQualityEvent)
+                .filter(
+                    RetrievalQualityEvent.idempotency_key
+                    == candidate.idempotency_key
+                )
+                .first()
+            )
+            if existing is None:
+                raise
+            if (
+                existing.conversation_id != candidate.conversation_id
+                or existing.request_id != candidate.request_id
+                or existing.source_kind != candidate_source_kind
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "IDEMPOTENCY_IDENTITY_CONFLICT",
+                        "message": (
+                            "同一 idempotency_key 不得关联不同的 "
+                            "conversation_id/request_id/source_kind"
+                        ),
+                    },
+                )
+            seen_events[candidate.idempotency_key] = existing
+            reused += 1
+            results.append(
+                RetrievalQualityEventResult(
+                    idempotency_key=existing.idempotency_key,
+                    conversation_id=existing.conversation_id,
+                    request_id=existing.request_id,
+                    status="reused",
+                    outcome=existing.outcome,
+                    event_id=existing.id,
+                )
+            )
+            continue
+        seen_events[candidate.idempotency_key] = event
         recorded += 1
         results.append(
             RetrievalQualityEventResult(
                 idempotency_key=event.idempotency_key,
+                conversation_id=event.conversation_id,
+                request_id=event.request_id,
                 status="recorded",
                 outcome=outcome,
                 event_id=event.id,
@@ -1058,6 +1185,9 @@ def get_retrieval_analytics(
         return {
             "id": event.id,
             "source_system": event.source_system,
+            "conversation_id": event.conversation_id,
+            "request_id": event.request_id,
+            "source_kind": event.source_kind,
             "query": event.query_text,
             "candidate_count": event.candidate_count,
             "top_knowledge_id": event.top_knowledge_id,
