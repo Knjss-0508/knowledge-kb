@@ -693,6 +693,7 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
         self.assertNotIn(events["standard-current"].id, risk_ids)
         self.assertNotIn(events["reply-current-old"].id, risk_ids)
         self.assertIn(events["reply-current"].id, risk_ids)
+        self.assertEqual(analytics["risks"][0]["conversation_id"], "202608100003")
         self.assertEqual(analytics["risks"][0]["request_id"], "request-current")
         self.assertEqual(analytics["risks"][0]["source_kind"], "combined")
         self.assertEqual(analytics["risks"][0]["candidate_count"], 2)
