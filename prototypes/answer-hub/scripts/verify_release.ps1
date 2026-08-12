@@ -164,6 +164,20 @@ function Test-DeliveryPackage {
             throw "manifest.json does not confirm secret and business-data exclusion."
         }
 
+        $runtimeClusteringRules = Join-Path $packageRoot (
+            "src\answer_hub\quality_clustering_rules_10_categories.json"
+        )
+        if (-not (Test-Path -LiteralPath $runtimeClusteringRules -PathType Leaf)) {
+            throw "Delivery package is missing the runtime quality clustering rules."
+        }
+
+        $runtimeBusinessLines = Join-Path $packageRoot (
+            "src\answer_hub\business_lines.json"
+        )
+        if (-not (Test-Path -LiteralPath $runtimeBusinessLines -PathType Leaf)) {
+            throw "Delivery package is missing the recovery business hierarchy configuration."
+        }
+
         $checksumsPath = Join-Path $packageRoot "checksums.sha256"
         if (-not (Test-Path -LiteralPath $checksumsPath)) {
             throw "Delivery package is missing checksums.sha256."

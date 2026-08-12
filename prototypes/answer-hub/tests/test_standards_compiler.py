@@ -20,6 +20,10 @@ def _write_raw_standard(path: Path, sheet_name: str) -> None:
     workbook.save(path)
 
 
+def _excel_safe_name(value: str) -> str:
+    return value.replace("/", "、")
+
+
 def test_read_raw_standard_sheet_propagates_vertical_merged_category(tmp_path: Path) -> None:
     path = tmp_path / "phone.xlsx"
     sheet_name = "SJ-HSYJBZ-2026009【5.13以后】"
@@ -35,9 +39,10 @@ def test_read_raw_standard_sheet_propagates_vertical_merged_category(tmp_path: P
 def test_compile_standard_catalog_includes_all_products(tmp_path: Path) -> None:
     sources: dict[str, Path] = {}
     active_sheets: dict[str, tuple[str, ...]] = {}
-    for product_type in ("手机", "手表", "平板", "耳机"):
-        sheet_name = f"{product_type}现行标准"
-        source = tmp_path / f"{product_type}.xlsx"
+    for product_type in ("手机", "智能手表", "平板电脑", "耳机/耳麦"):
+        safe_name = _excel_safe_name(product_type)
+        sheet_name = f"{safe_name}现行标准"
+        source = tmp_path / f"{safe_name}.xlsx"
         _write_raw_standard(source, sheet_name)
         sources[product_type] = source
         active_sheets[product_type] = (sheet_name,)
@@ -53,9 +58,9 @@ def test_compile_standard_catalog_includes_all_products(tmp_path: Path) -> None:
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert {item["scope"] for item in payload["items"]} == {
         "手机-通用",
-        "手表-通用",
-        "平板-通用",
-        "耳机-通用",
+        "智能手表-通用",
+        "平板电脑-通用",
+        "耳机/耳麦-通用",
     }
     assert len(load_standard_catalog(output)) == 8
 
@@ -63,9 +68,10 @@ def test_compile_standard_catalog_includes_all_products(tmp_path: Path) -> None:
 def test_compile_structured_qc_sheet_uses_real_category_path(tmp_path: Path) -> None:
     sources: dict[str, Path] = {}
     active_sheets: dict[str, tuple[str, ...]] = {}
-    for product_type in ("手机", "手表", "平板", "耳机"):
-        sheet_name = f"{product_type}-5.13以后"
-        source = tmp_path / f"【{product_type}】.xlsx"
+    for product_type in ("手机", "智能手表", "平板电脑", "耳机/耳麦"):
+        safe_name = _excel_safe_name(product_type)
+        sheet_name = f"{safe_name}-5.13以后"
+        source = tmp_path / f"【{safe_name}】.xlsx"
         workbook = Workbook()
         home = workbook.active
         home.title = "首页"
@@ -145,9 +151,15 @@ def test_compile_structured_qc_sheet_uses_real_category_path(tmp_path: Path) -> 
 def test_compile_standard_catalog_supports_new_configured_products(tmp_path: Path) -> None:
     sources: dict[str, Path] = {}
     active_sheets: dict[str, tuple[str, ...]] = {}
-    for product_type in ("笔记本", "相机机身", "相机镜头"):
-        sheet_name = f"{product_type}现行标准"
-        source = tmp_path / f"{product_type}.xlsx"
+    for product_type in (
+        "笔记本",
+        "单电/微单机身",
+        "单反机身",
+        "相机镜头",
+    ):
+        safe_name = _excel_safe_name(product_type)
+        sheet_name = f"{safe_name}现行标准"
+        source = tmp_path / f"{safe_name}.xlsx"
         _write_raw_standard(source, sheet_name)
         sources[product_type] = source
         active_sheets[product_type] = (sheet_name,)
@@ -159,9 +171,30 @@ def test_compile_standard_catalog_supports_new_configured_products(tmp_path: Pat
         active_sheets=active_sheets,
     )
 
-    assert summary["total_items"] == 6
+    assert summary["total_items"] == 8
     assert {item.scope for item in load_standard_catalog(output)} == {
         "笔记本-通用",
-        "相机机身-通用",
+        "单电/微单机身-通用",
+        "单反机身-通用",
         "相机镜头-通用",
+    }
+
+
+def test_compile_standard_catalog_normalizes_clear_active_sheet_aliases(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "tablet.xlsx"
+    sheet_name = "平板旧配置工作表"
+    _write_raw_standard(source, sheet_name)
+
+    output = tmp_path / "tablet.json"
+    summary = compile_standard_catalog(
+        {"平板": source},
+        output,
+        active_sheets={"平板": (sheet_name,)},
+    )
+
+    assert summary["total_items"] == 2
+    assert {item.scope for item in load_standard_catalog(output)} == {
+        "平板电脑-通用",
     }

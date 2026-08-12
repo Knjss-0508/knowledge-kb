@@ -12,18 +12,26 @@ from answer_hub.mimo import (
 )
 from scripts.run_cluster_ab_test import (
     TEXT_ONLY_PROMPT_VERSION,
+    SchemeResult,
     _analyze_row,
     _cache_entry_is_current,
     _cache_entry_needs_refresh,
     _cluster_units,
     _fallback_units,
     _invalid_source_reason,
+    _local_multi_topic_rescue,
     _new_semantic_text,
+    _prediction,
     _run_new_scheme_direct_mimo,
+    _select_pairs,
+    _source_state,
 )
 from answer_hub.workflow import (
+    _direct_atomic_bucket_key,
+    _direct_cluster_hard_conflict_reason,
     _direct_reconcile_bucket_compatible,
     _direct_reconcile_has_hard_conflict,
+    _has_topic_merge_conflict,
 )
 
 
@@ -74,6 +82,203 @@ def test_new_semantic_text_uses_standardized_fields_not_evidence_narrative() -> 
     assert "这段证据文字不应进入向量文本" not in text
     assert "屏幕显示异常判定" in text
     assert "判断是否属于色斑" in text
+
+
+def test_multi_topic_prediction_uses_matching_atomic_cluster_before_override() -> None:
+    left = {
+        "conversation_type": "multi_topic",
+        "cluster_ids": ["C001", "C009"],
+    }
+    right = {
+        "conversation_type": "single_topic",
+        "cluster_ids": ["C009"],
+    }
+
+    assert _prediction(left, right, allow_multi_topic=True) == "同一主题"
+
+
+def test_multi_topic_prediction_splits_when_no_atomic_topic_matches() -> None:
+    left = {
+        "conversation_type": "multi_topic",
+        "cluster_ids": ["C001", "C009"],
+    }
+    right = {
+        "conversation_type": "single_topic",
+        "cluster_ids": ["C010"],
+    }
+
+    assert _prediction(left, right, allow_multi_topic=True) == "多主题需拆分"
+
+
+def test_prediction_never_merges_different_product_categories() -> None:
+    left = {
+        "conversation_type": "multi_topic",
+        "product_category": "笔记本",
+        "cluster_ids": ["C001", "LOCAL-MULTI-S001"],
+        "local_multi_topic_rescue": True,
+    }
+    right = {
+        "conversation_type": "single_topic",
+        "product_category": "耳机",
+        "cluster_ids": ["C001"],
+    }
+
+    assert _prediction(left, right, allow_multi_topic=True) == "不同主题"
+
+
+def test_prediction_prioritizes_local_multi_topic_rescue() -> None:
+    left = {
+        "conversation_type": "multi_topic",
+        "product_category": "笔记本",
+        "cluster_ids": ["C001", "LOCAL-MULTI-S001"],
+        "local_multi_topic_rescue": True,
+    }
+    right = {
+        "conversation_type": "single_topic",
+        "product_category": "笔记本",
+        "cluster_ids": ["C001"],
+    }
+
+    assert _prediction(left, right, allow_multi_topic=True) == "多主题需拆分"
+
+
+def test_source_state_rescues_model_label_followup_as_multi_topic() -> None:
+    row = {
+        "样本ID": "S038",
+        "核心问题": "底部标签被撕，需要核对具体型号",
+        "聊天内容": (
+            "底部的标签被他撕了\n"
+            "怎么看第几款\n"
+            "怎么核对\n"
+            "有没有什么问题\n"
+            "查官网是这一款\n"
+            "后壳标签人为去除的话要勾选后壳无序列号\n"
+            "显卡硬盘这些有问题吗\n"
+            "内存硬盘都是品牌的"
+        ),
+    }
+    scheme = SchemeResult(
+        units=[
+            {
+                "unit_id": "S038-01",
+                "sample_id": "S038",
+                "conversation_type": "single_topic",
+                "cluster_id": "C041",
+            }
+        ],
+        assignments={},
+        similarities={},
+    )
+
+    assert _local_multi_topic_rescue(row)
+    state = _source_state(scheme, [row], new_scheme=True)["S038"]
+
+    assert state["conversation_type"] == "multi_topic"
+    assert state["local_multi_topic_rescue"] is True
+    assert state["cluster_ids"] == ["C041", "LOCAL-MULTI-S038"]
+
+
+def test_local_rescue_detects_repair_components_with_separate_standards() -> None:
+    assert _local_multi_topic_rescue(
+        {
+            "核心问题": "主板有标签、屏幕有贴纸，不清楚怎么判定",
+            "聊天内容": (
+                "老师，看一下拆机图，主板有标签，屏幕有贴纸。这个怎么判定？\n"
+                "这个是屏幕的其他非原厂特征\n"
+                "贴纸的话我这边再确认下"
+            ),
+        }
+    )
+
+
+def test_local_rescue_detects_multiple_information_query_targets() -> None:
+    assert _local_multi_topic_rescue(
+        {
+            "核心问题": "需要确认BIOS锁状态、型号、硬盘内存品牌和指纹支持",
+            "聊天内容": (
+                "有没有bios锁\n"
+                "无锁吧\n"
+                "没锁的\n"
+                "型号是这个吗\n"
+                "RedmiBook 14 2025\n"
+                "硬盘内存品牌吗\n"
+                "内存和硬盘都是品牌认证的\n"
+                "这个机支持指纹吗\n"
+                "不支持"
+            ),
+        }
+    )
+
+
+def test_select_pairs_skips_cross_product_pairs() -> None:
+    rows = [
+        {"样本ID": "S001", "产品类型": "手机"},
+        {"样本ID": "S002", "产品类型": "笔记本"},
+        {"样本ID": "S003", "产品类型": "手机"},
+    ]
+    old_scheme = SchemeResult(
+        units=[
+            {
+                "unit_id": "S001-01",
+                "sample_id": "S001",
+                "cluster_id": "O001",
+                "conversation_type": "single_topic",
+            },
+            {
+                "unit_id": "S002-01",
+                "sample_id": "S002",
+                "cluster_id": "O002",
+                "conversation_type": "single_topic",
+            },
+            {
+                "unit_id": "S003-01",
+                "sample_id": "S003",
+                "cluster_id": "O003",
+                "conversation_type": "single_topic",
+            },
+        ],
+        assignments={},
+        similarities={},
+    )
+    new_scheme = SchemeResult(
+        units=[
+            {
+                "unit_id": "S001-01",
+                "sample_id": "S001",
+                "cluster_id": "N001",
+                "conversation_type": "single_topic",
+            },
+            {
+                "unit_id": "S002-01",
+                "sample_id": "S002",
+                "cluster_id": "N001",
+                "conversation_type": "single_topic",
+            },
+            {
+                "unit_id": "S003-01",
+                "sample_id": "S003",
+                "cluster_id": "N003",
+                "conversation_type": "single_topic",
+            },
+        ],
+        assignments={},
+        similarities={},
+    )
+
+    pairs = _select_pairs(rows, old_scheme, new_scheme, limit=10)
+
+    assert pairs == [
+        {
+            "left_id": "S001",
+            "right_id": "S003",
+            "old_prediction": "不同主题",
+            "new_prediction": "不同主题",
+            "old_similarity": 0.0,
+            "new_similarity": 0.0,
+            "stratum": "共同拆分",
+            "pair_id": "P001",
+        }
+    ]
 
 
 def test_failed_model_fallback_does_not_trust_problem_description() -> None:
@@ -162,6 +367,29 @@ def test_direct_reconcile_scope_level_is_not_a_hard_conflict() -> None:
     assert not _direct_reconcile_has_hard_conflict(generic, [apple])
 
 
+def test_direct_reconcile_never_merges_same_target_across_products() -> None:
+    phone = {
+        "产品类型": "手机",
+        "模型主题一级分类": "信息查询",
+        "问题意图": "信息查询",
+        "对象/部位": "电池",
+        "异常现象": "电池健康度读取异常",
+        "核心问题": "手机电池健康度如何查询",
+        "聊天内容": "手机电池健康度怎么查",
+    }
+    tablet = {
+        "产品类型": "平板",
+        "模型主题一级分类": "信息查询",
+        "问题意图": "信息查询",
+        "对象/部位": "电池",
+        "异常现象": "电池健康度读取异常",
+        "核心问题": "平板电池健康度如何查询",
+        "聊天内容": "平板电池健康度怎么查",
+    }
+
+    assert _direct_reconcile_has_hard_conflict(phone, [tablet])
+
+
 def test_direct_reconcile_rejects_two_explicit_platforms() -> None:
     ios = {
         "产品类型": "手机",
@@ -181,6 +409,238 @@ def test_direct_reconcile_rejects_two_explicit_platforms() -> None:
     }
 
     assert _direct_reconcile_has_hard_conflict(ios, [android])
+
+
+def test_phone_housing_damage_values_share_direct_mimo_candidate_bucket() -> None:
+    cracked = {
+        "unit_id": "CRACKED-U1",
+        "product_category": "手机",
+        "subject": "外壳",
+        "phenomenon": "碎裂",
+        "normalized_issue": "手机外壳碎裂如何判定",
+        "source_conversation": "手机外壳有碎裂怎么判",
+    }
+    paint_loss = {
+        "unit_id": "PAINT-U1",
+        "product_category": "手机",
+        "subject": "后壳",
+        "phenomenon": "掉漆",
+        "normalized_issue": "手机后壳掉漆如何判定",
+        "source_conversation": "手机后壳掉漆怎么判",
+    }
+
+    assert _direct_atomic_bucket_key(cracked) == _direct_atomic_bucket_key(
+        paint_loss
+    )
+
+
+def test_phone_housing_damage_values_are_not_blocked_by_direct_post_guard() -> None:
+    cracked = {
+        "_原子知识ID": "CRACKED-U1",
+        "数据ID": "CRACKED",
+        "产品类型": "手机",
+        "对象/部位": "外壳",
+        "异常现象": "碎裂",
+        "核心问题": "手机外壳碎裂如何判定",
+        "聊天内容": "手机外壳有碎裂怎么判",
+        "模型主题二级分类": "外壳碎裂",
+        "主标准路径": "手机外壳碎裂判定",
+    }
+    paint_loss = {
+        "_原子知识ID": "PAINT-U1",
+        "数据ID": "PAINT",
+        "产品类型": "手机",
+        "对象/部位": "后壳",
+        "异常现象": "掉漆",
+        "核心问题": "手机后壳掉漆如何判定",
+        "聊天内容": "手机后壳掉漆怎么判",
+        "模型主题二级分类": "后壳掉漆",
+        "主标准路径": "手机后壳掉漆判定",
+    }
+
+    assert _direct_cluster_hard_conflict_reason([cracked, paint_loss]) == ""
+    assert not _direct_reconcile_has_hard_conflict(paint_loss, [cracked])
+
+
+def test_stored_same_family_rule_bypasses_text_only_field_differences() -> None:
+    first = {
+        "_原子知识ID": "A-U1",
+        "数据ID": "A",
+        "产品类型": "笔记本",
+        "_聚类判定规则ID": "stored-a",
+        "_聚类标准族": "笔记本A面外观标准",
+        "_聚类合并策略": "same_standard_family",
+        "_聚类现象值": "划痕",
+        "模型主题二级分类": "A面划痕",
+        "对象/部位": "A面",
+        "主标准路径": "A面外观划痕判定",
+    }
+    second = {
+        "_原子知识ID": "B-U1",
+        "数据ID": "B",
+        "产品类型": "笔记本",
+        "_聚类判定规则ID": "stored-b",
+        "_聚类标准族": "笔记本A面外观标准",
+        "_聚类合并策略": "same_standard_family",
+        "_聚类现象值": "磨损",
+        "模型主题二级分类": "外壳磨损",
+        "对象/部位": "笔记本上盖",
+        "主标准路径": "上盖外观磨损判定",
+    }
+
+    assert _direct_cluster_hard_conflict_reason([first, second]) == ""
+    assert not _direct_reconcile_has_hard_conflict(second, [first])
+
+
+def test_phone_screen_display_values_are_forced_apart_by_direct_guards() -> None:
+    leakage = {
+        "_原子知识ID": "LEAKAGE-U1",
+        "数据ID": "LEAKAGE",
+        "产品类型": "手机",
+        "对象/部位": "屏幕",
+        "异常现象": "漏液",
+        "核心问题": "手机屏幕漏液如何判定",
+        "聊天内容": "手机屏幕漏液怎么判",
+        "模型主题二级分类": "屏幕漏液",
+        "主标准路径": "手机屏幕漏液判定",
+    }
+    dead_pixel = {
+        "_原子知识ID": "PIXEL-U1",
+        "数据ID": "PIXEL",
+        "产品类型": "手机",
+        "对象/部位": "显示屏",
+        "异常现象": "坏点",
+        "核心问题": "手机屏幕坏点如何判定",
+        "聊天内容": "手机屏幕坏点怎么判",
+        "模型主题二级分类": "屏幕坏点",
+        "主标准路径": "手机屏幕坏点判定",
+    }
+
+    assert "现象值不同，必须拆分" in _direct_cluster_hard_conflict_reason(
+        [leakage, dead_pixel]
+    )
+    assert _direct_reconcile_has_hard_conflict(dead_pixel, [leakage])
+
+
+def test_direct_reconcile_separates_information_query_targets() -> None:
+    battery = {
+        "产品类型": "平板",
+        "模型主题一级分类": "信息查询",
+        "问题意图": "信息查询",
+        "对象/部位": "电池",
+        "异常现象": "工具无法读取电池健康度",
+        "核心问题": "平板电池健康度读取异常如何处理",
+        "判定目标": "确认电池健康状态",
+        "聊天内容": "验机工具读不出电池健康度怎么处理",
+    }
+    version = {
+        "产品类型": "平板",
+        "模型主题一级分类": "基本情况",
+        "问题意图": "信息查询",
+        "对象/部位": "设备版本",
+        "异常现象": "查询国行或港澳台版本",
+        "核心问题": "平板设备版本如何查询",
+        "判定目标": "确认设备版本",
+        "聊天内容": "怎么看设备是国行还是港澳台版本",
+    }
+
+    assert _direct_reconcile_has_hard_conflict(battery, [version])
+
+
+def test_direct_reconcile_separates_serial_read_failure_from_mismatch() -> None:
+    read_failure = {
+        "产品类型": "手机",
+        "模型主题一级分类": "信息查询",
+        "问题意图": "信息查询",
+        "对象/部位": "序列号",
+        "异常现象": "验机工具查询失败，序列号乱码",
+        "核心问题": "序列号查询失败怎么处理",
+        "聊天内容": "工具读取序列号乱码怎么办",
+    }
+    mismatch = {
+        "产品类型": "手机",
+        "模型主题一级分类": "拆修问题",
+        "问题意图": "标准判定",
+        "对象/部位": "后壳",
+        "异常现象": "后壳序列号与系统序列号不一致",
+        "核心问题": "如何判定后壳是否更换",
+        "聊天内容": "后壳序列号和系统里的对不上怎么判",
+    }
+
+    assert _direct_reconcile_has_hard_conflict(read_failure, [mismatch])
+
+
+def test_direct_reconcile_separates_detection_method_from_result() -> None:
+    method = {
+        "产品类型": "手机",
+        "模型主题一级分类": "拆修问题",
+        "问题意图": "检测核验",
+        "对象/部位": "屏幕",
+        "异常现象": "白光检测方法和观察角度",
+        "核心问题": "白光检测怎么操作",
+        "判定目标": "确认检测方法是否正确",
+        "聊天内容": "白光检测应该怎么照，从哪个角度看",
+    }
+    result = {
+        "产品类型": "手机",
+        "模型主题一级分类": "拆修问题",
+        "问题意图": "检测核验",
+        "对象/部位": "屏幕",
+        "异常现象": "白光检测下颜色异常",
+        "核心问题": "白光检测结果异常如何判定",
+        "判定目标": "确认屏幕是否存在拆修问题",
+        "聊天内容": "白光下屏幕颜色异常，这个结果怎么判",
+    }
+
+    assert _direct_reconcile_has_hard_conflict(method, [result])
+
+
+def test_judgment_rules_also_protect_optional_semantic_clustering() -> None:
+    cracked = {
+        "产品类型": "手机",
+        "对象/部位": "外壳",
+        "异常现象": "碎裂",
+        "核心问题": "手机外壳碎裂如何判定",
+        "聊天内容": "手机外壳有碎裂怎么判",
+        "模型主题一级分类": "外观问题",
+        "模型主题二级分类": "外壳碎裂",
+        "问题意图": "标准判定",
+        "解题方式": "对照外壳标准判定",
+        "主标准路径": "手机外壳碎裂判定",
+    }
+    paint_loss = {
+        "产品类型": "手机",
+        "对象/部位": "后壳",
+        "异常现象": "掉漆",
+        "核心问题": "手机后壳掉漆如何判定",
+        "聊天内容": "手机后壳掉漆怎么判",
+        "模型主题一级分类": "外观问题",
+        "模型主题二级分类": "后壳掉漆",
+        "问题意图": "标准判定",
+        "解题方式": "对照后壳标准判定",
+        "主标准路径": "手机后壳掉漆判定",
+    }
+    leakage = {
+        "产品类型": "手机",
+        "对象/部位": "屏幕",
+        "异常现象": "漏液",
+        "核心问题": "手机屏幕漏液如何判定",
+        "聊天内容": "手机屏幕漏液怎么判",
+        "模型主题一级分类": "显示问题",
+        "模型主题二级分类": "屏幕显示异常",
+        "问题意图": "标准判定",
+        "解题方式": "对照屏幕标准判定",
+        "主标准路径": "手机屏幕显示判定",
+    }
+    dead_pixel = {
+        **leakage,
+        "异常现象": "坏点",
+        "核心问题": "手机屏幕坏点如何判定",
+        "聊天内容": "手机屏幕坏点怎么判",
+    }
+
+    assert not _has_topic_merge_conflict(cracked, paint_loss)
+    assert _has_topic_merge_conflict(leakage, dead_pixel)
 
 
 def test_business_rules_keep_different_product_categories_separate() -> None:
@@ -244,6 +704,82 @@ def test_valid_case_is_not_excluded_when_conclusion_requires_review() -> None:
     )
 
     assert reason == ""
+
+
+def test_source_without_effective_user_question_is_excluded() -> None:
+    reason = _invalid_source_reason(
+        {
+            "核心问题": "",
+            "判定结论": "",
+            "判定依据": "",
+            "聊天内容": (
+                "问题类型：质检问题 转人工原因：回答内容无法理解\n"
+                "已加载全部\n"
+                "[图片 × 1]\n"
+                "1"
+            ),
+        }
+    )
+
+    assert reason == "核心问题和聊天内容均未提取到有效用户问题，无法形成可聚类主题"
+
+
+def test_source_keeps_clear_core_problem_even_when_dialogue_is_short() -> None:
+    reason = _invalid_source_reason(
+        {
+            "核心问题": "胶条破损凹陷怎么判？",
+            "判定结论": "",
+            "判定依据": "",
+            "聊天内容": "已加载全部",
+        }
+    )
+
+    assert reason == ""
+
+
+def test_source_keeps_clear_dialogue_question_when_core_problem_is_empty() -> None:
+    reason = _invalid_source_reason(
+        {
+            "核心问题": "",
+            "判定结论": "",
+            "判定依据": "",
+            "聊天内容": "26/07/15 11:00:39 他前后摄像全坏，旁边拍照快捷键怎么判断",
+        }
+    )
+
+    assert reason == ""
+
+
+def test_source_keeps_problem_description_from_ticket_metadata() -> None:
+    reason = _invalid_source_reason(
+        {
+            "核心问题": "",
+            "判定结论": "",
+            "判定依据": "",
+            "聊天内容": (
+                "问题类型：质检问题 问题描述：颜色不一致没对应选项怎么选？ "
+                "转人工原因：更信任人工\n预览\n[图片 × 1]"
+            ),
+        }
+    )
+
+    assert reason == ""
+
+
+def test_source_excludes_vague_image_review_without_concrete_issue() -> None:
+    reason = _invalid_source_reason(
+        {
+            "核心问题": "回收师对一台iPhone 17的图片状况是否符合平台回收标准存在疑问，希望获得后台答疑人员的专业确认。",
+            "判定结论": "设备图片所示状况正常，符合平台回收标准。",
+            "判定依据": "回收师提供图片用于评估，答疑人员查看图片后回复正常。",
+            "聊天内容": (
+                "问题类型：质检问题 问题描述：转人工 转人工原因：该问题没有相关知识\n"
+                "预览\n老师麻烦看一下这个正常吧\n正常的\n好的老师\n[图片 × 1]"
+            ),
+        }
+    )
+
+    assert reason == "核心问题和聊天内容均未提取到有效用户问题，无法形成可聚类主题"
 
 
 def test_business_rules_keep_platform_specific_standards_separate() -> None:

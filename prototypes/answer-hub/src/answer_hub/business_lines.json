@@ -1,0 +1,22 @@
+{
+  "version": "2026-08-04",
+  "default_code": "self_operated",
+  "business_lines": [
+    {
+      "code": "self_operated",
+      "name": "自营回收",
+      "aliases": ["自营"],
+      "active": true,
+      "product_categories_configured": true,
+      "cz_category_path": "自营回收"
+    },
+    {
+      "code": "aggregate",
+      "name": "聚合回收",
+      "aliases": ["聚合"],
+      "active": true,
+      "product_categories_configured": false,
+      "cz_category_path": "聚合回收"
+    }
+  ]
+}

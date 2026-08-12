@@ -6,8 +6,18 @@
       "active_sheets": ["当前生效标准"]
     },
     {
-      "product_type": "平板",
+      "product_type": "平板电脑",
       "source": "D:/standards/平板质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "智能手表",
+      "source": "D:/standards/智能手表质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "耳机/耳麦",
+      "source": "D:/standards/耳机耳麦质检标准.xlsx",
       "active_sheets": ["当前生效标准"]
     },
     {
@@ -16,28 +26,28 @@
       "active_sheets": ["当前生效标准"]
     },
     {
-      "product_type": "相机机身",
-      "source": "D:/standards/相机机身质检标准.xlsx",
+      "product_type": "游戏机",
+      "source": "D:/standards/游戏机质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "游戏卡带",
+      "source": "D:/standards/游戏卡带质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "单电/微单机身",
+      "source": "D:/standards/单电微单机身质检标准.xlsx",
+      "active_sheets": ["当前生效标准"]
+    },
+    {
+      "product_type": "单反机身",
+      "source": "D:/standards/单反机身质检标准.xlsx",
       "active_sheets": ["当前生效标准"]
     },
     {
       "product_type": "相机镜头",
       "source": "D:/standards/相机镜头质检标准.xlsx",
-      "active_sheets": ["当前生效标准"]
-    },
-    {
-      "product_type": "耳机",
-      "source": "D:/standards/耳机质检标准.xlsx",
-      "active_sheets": ["当前生效标准"]
-    },
-    {
-      "product_type": "手表",
-      "source": "D:/standards/手表质检标准.xlsx",
-      "active_sheets": ["当前生效标准"]
-    },
-    {
-      "product_type": "游戏机",
-      "source": "D:/standards/游戏机质检标准.xlsx",
       "active_sheets": ["当前生效标准"]
     },
     {

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
+import hashlib
 import json
 import os
 import re
@@ -12,6 +13,22 @@ import re
 UNKNOWN_PRODUCT_NAME = "待确认"
 UNKNOWN_PRODUCT_CODE = "pending"
 DEFAULT_PRODUCT_TAXONOMY_PATH = Path(__file__).with_name("product_categories.json")
+REQUIRED_PRODUCT_CATEGORIES = (
+    ("phone", "手机"),
+    ("tablet", "平板电脑"),
+    ("watch", "智能手表"),
+    ("headphones", "耳机/耳麦"),
+    ("laptop", "笔记本"),
+    ("game_console", "游戏机"),
+    ("game_cartridge", "游戏卡带"),
+    ("mirrorless_camera_body", "单电/微单机身"),
+    ("dslr_camera_body", "单反机身"),
+    ("camera_lens", "相机镜头"),
+    ("stylus", "手写笔"),
+    ("learning_device", "学习机"),
+)
+AMBIGUOUS_CAMERA_VALUES = frozenset({"相机", "相机机身", "camera_body"})
+AMBIGUOUS_PRODUCT_VALUES = frozenset({"电脑"})
 
 
 @dataclass(frozen=True)
@@ -35,12 +52,20 @@ def product_taxonomy_path(path: str | Path | None = None) -> Path:
     return Path(configured) if configured else DEFAULT_PRODUCT_TAXONOMY_PATH
 
 
-@lru_cache(maxsize=8)
-def _load_product_categories(path_text: str) -> tuple[ProductCategory, ...]:
+@lru_cache(maxsize=16)
+def _resolved_product_taxonomy_path(path_text: str) -> str:
+    return str(Path(path_text).resolve())
+
+
+@lru_cache(maxsize=16)
+def _load_product_categories(
+    path_text: str,
+    content_text: str,
+) -> tuple[ProductCategory, ...]:
     path = Path(path_text)
     if not path.is_file():
         raise FileNotFoundError(f"产品品类配置不存在：{path}")
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(content_text)
     rows = payload.get("categories") if isinstance(payload, dict) else payload
     if not isinstance(rows, list):
         raise ValueError("产品品类配置必须包含 categories 数组")
@@ -76,7 +101,60 @@ def _load_product_categories(path_text: str) -> tuple[ProductCategory, ...]:
         seen_names.add(name)
     if not categories:
         raise ValueError("产品品类配置不能为空")
+    active_contract = tuple(
+        (category.code, category.name)
+        for category in categories
+        if category.active
+    )
+    if active_contract != REQUIRED_PRODUCT_CATEGORIES:
+        raise ValueError(
+            "产品品类配置必须保持固定12项及稳定编码："
+            + "、".join(name for _code, name in REQUIRED_PRODUCT_CATEGORIES)
+        )
+    ambiguous_aliases = sorted(
+        {
+            value
+            for category in categories
+            if category.active
+            for value in category.aliases
+            if value.casefold() in AMBIGUOUS_CAMERA_VALUES
+        }
+    )
+    if ambiguous_aliases:
+        raise ValueError(
+            "产品品类配置不得包含模糊相机别名："
+            + "、".join(ambiguous_aliases)
+        )
+    ambiguous_product_aliases = sorted(
+        {
+            value
+            for category in categories
+            if category.active
+            for value in category.aliases
+            if value.casefold() in AMBIGUOUS_PRODUCT_VALUES
+        }
+    )
+    if ambiguous_product_aliases:
+        raise ValueError(
+            "产品品类配置不得包含模糊设备别名："
+            + "、".join(ambiguous_product_aliases)
+        )
     return tuple(categories)
+
+
+@lru_cache(maxsize=1)
+def _load_default_product_categories() -> tuple[ProductCategory, ...]:
+    resolved = Path(
+        _resolved_product_taxonomy_path(
+            str(DEFAULT_PRODUCT_TAXONOMY_PATH)
+        )
+    )
+    if not resolved.is_file():
+        raise FileNotFoundError(f"产品品类配置不存在：{resolved}")
+    return _load_product_categories(
+        str(resolved),
+        resolved.read_text(encoding="utf-8"),
+    )
 
 
 def load_product_categories(
@@ -84,8 +162,44 @@ def load_product_categories(
     *,
     active_only: bool = True,
 ) -> tuple[ProductCategory, ...]:
-    categories = _load_product_categories(str(product_taxonomy_path(path).resolve()))
+    configured = _text(path) or _text(
+        os.getenv("ANSWER_HUB_PRODUCT_TAXONOMY_PATH")
+    )
+    if not configured:
+        categories = _load_default_product_categories()
+        return (
+            tuple(category for category in categories if category.active)
+            if active_only
+            else categories
+        )
+    resolved = Path(
+        _resolved_product_taxonomy_path(str(Path(configured)))
+    )
+    if not resolved.is_file():
+        raise FileNotFoundError(f"产品品类配置不存在：{resolved}")
+    content_text = resolved.read_text(encoding="utf-8")
+    categories = _load_product_categories(
+        str(resolved),
+        content_text,
+    )
     return tuple(category for category in categories if category.active) if active_only else categories
+
+
+def product_taxonomy_metadata(
+    path: str | Path | None = None,
+) -> dict[str, Any]:
+    resolved = Path(
+        _resolved_product_taxonomy_path(str(product_taxonomy_path(path)))
+    )
+    raw = resolved.read_bytes()
+    payload = json.loads(raw.decode("utf-8"))
+    return {
+        "loaded": True,
+        "path": str(resolved),
+        "version": _text(payload.get("version")) if isinstance(payload, dict) else "",
+        "digest": hashlib.sha256(raw).hexdigest(),
+        "product_categories": list(configured_product_names(resolved)),
+    }
 
 
 def configured_product_names(path: str | Path | None = None) -> tuple[str, ...]:
@@ -178,14 +292,4 @@ def normalize_product_scope(
     default_suffix: str = "通用",
 ) -> str:
     category = resolve_product_category(product_type, path)
-    if category is None:
-        return f"{UNKNOWN_PRODUCT_NAME}-{default_suffix}"
-    scope_text = _text(scope)
-    if scope_text:
-        parts = re.split(r"[-—–]", scope_text, maxsplit=1)
-        if len(parts) == 2 and resolve_product_category(parts[0], path) == category:
-            suffix = _text(parts[1]) or default_suffix
-            return f"{category.name}-{suffix}"
-        if scope_text in {"通用", "苹果", "安卓", "Windows", "macOS", "HarmonyOS"}:
-            return f"{category.name}-{scope_text}"
-    return f"{category.name}-{default_suffix}"
+    return category.name if category else UNKNOWN_PRODUCT_NAME

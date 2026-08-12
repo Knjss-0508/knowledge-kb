@@ -5,26 +5,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 from pathlib import Path
-import re
 from typing import Any
 
+from answer_hub.knowledge_value import (
+    KNOWLEDGE_VALUE_EVIDENCE_GUARD_VERSION,
+    has_explicit_reusable_knowledge,
+)
 from answer_hub.mimo import (
     MimoClient,
     MimoError,
     TOPIC_STAGE_PROMPT_VERSION,
 )
-
-SINGLE_CASE_KNOWLEDGE_GUARD_VERSION = "single-case-knowledge-guard-v1"
-GENERIC_RULE_VALUES = {
-    "",
-    "待确认",
-    "未知",
-    "无",
-    "无明确阈值",
-    "无明确标准",
-    "不适用",
-}
-
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -93,6 +84,32 @@ def _theme_payload(cluster_id: str, units: list[dict[str, Any]]) -> dict[str, An
             [_text(unit.get("evidence_summary"), 800) for unit in units],
             limit=6,
         ),
+        "upstream_judgment_conclusions": _unique(
+            [
+                unit.get("source_judgment_conclusion")
+                or unit.get("human_judgment_conclusion")
+                or unit.get("judgment_conclusion")
+                for unit in units
+            ],
+            limit=8,
+        ),
+        "historical_replies": _unique(
+            [
+                unit.get("historical_actual_reply")
+                or unit.get("historical_reply")
+                or unit.get("source_historical_reply")
+                for unit in units
+            ],
+            limit=6,
+        ),
+        "conversation_evidence": _unique(
+            [
+                unit.get("source_conversation")
+                or unit.get("conversation_evidence")
+                for unit in units
+            ],
+            limit=6,
+        ),
         "upstream_requires_review": any(
             bool(unit.get("requires_review"))
             for unit in units
@@ -127,52 +144,33 @@ def _theme_hash(theme: dict[str, Any]) -> str:
 
 
 def _has_explicit_reusable_rule(theme: dict[str, Any]) -> bool:
-    fields = [
-        *theme.get("normalized_issues", []),
-        *theme.get("judgment_targets", []),
-        *theme.get("resolution_modes", []),
-        *theme.get("standard_paths", []),
-        *theme.get("thresholds_or_exceptions", []),
-        *theme.get("evidence_summaries", []),
-    ]
-    text = "\n".join(str(value or "").strip() for value in fields)
-    threshold_values = {
-        str(value or "").strip()
-        for value in theme.get("thresholds_or_exceptions", [])
-    }
-    if any(value not in GENERIC_RULE_VALUES for value in threshold_values):
-        return True
-    if re.search(
-        r"\d+(?:\.\d+)?\s*(?:mm|毫米|cm|厘米|%|次|个|GB|TB|分钟|小时|天)",
-        text,
-        flags=re.IGNORECASE,
-    ):
-        return True
-    if re.search(
-        r"(以.+为准|优先采用|优先按|先.+再|依次|步骤|进入.+页面|"
-        r"读取.+信息|核对.+信息|检查.+后|检测.+后|大于|小于|"
-        r"不超过|不少于|至少|必须|不得)",
-        text,
-    ):
-        return True
-    return False
+    return has_explicit_reusable_knowledge(
+        source_values=[
+            *theme.get("upstream_judgment_conclusions", []),
+            *theme.get("resolution_modes", []),
+            *theme.get("thresholds_or_exceptions", []),
+            *theme.get("evidence_summaries", []),
+            *theme.get("historical_replies", []),
+            *theme.get("conversation_evidence", []),
+        ],
+        threshold_values=theme.get("thresholds_or_exceptions", []),
+    )
 
 
-def _apply_single_case_knowledge_guard(
+def _apply_knowledge_value_evidence_guard(
     theme: dict[str, Any],
     prediction: dict[str, Any],
 ) -> dict[str, Any]:
     guarded = dict(prediction)
     if (
-        int(theme.get("member_count") or 0) != 1
-        or guarded.get("knowledge_value") != "值得沉淀"
+        guarded.get("knowledge_value") != "值得沉淀"
         or _has_explicit_reusable_rule(theme)
     ):
         guarded["knowledge_value_guard_applied"] = False
         return guarded
     guard_reason = (
-        "单案例主题未提供明确数值阈值、通用优先级规则或可执行操作步骤；"
-        "当前仅能形成个案结论，按规则强制标记为不值得沉淀。"
+        "当前主题来源未提供明确数值阈值、通用规则、适用边界或可执行步骤；"
+        "案例数量不作为知识转写的放行依据，按证据规则强制标记为不值得沉淀。"
     )
     guarded.update(
         {
@@ -186,8 +184,7 @@ def _apply_single_case_knowledge_guard(
                 if part
             ),
             "reusable_knowledge": (
-                "当前只有单个案例结论，缺少可复用的阈值、边界、"
-                "通用处理规则或操作步骤。"
+                "当前来源证据缺少可复用的阈值、边界、通用处理规则或操作步骤。"
             ),
             "needs_human_review": True,
             "knowledge_value_guard_applied": True,
@@ -243,7 +240,7 @@ def _build_output(
         entry = cache.get(theme["theme_id"], {})
         raw_prediction = entry.get("prediction", {})
         prediction = (
-            _apply_single_case_knowledge_guard(theme, raw_prediction)
+            _apply_knowledge_value_evidence_guard(theme, raw_prediction)
             if entry.get("status") == "ok"
             else raw_prediction
         )
@@ -297,9 +294,9 @@ def _build_output(
             ),
             "prompt_version": TOPIC_STAGE_PROMPT_VERSION,
             "knowledge_value_guard_version": (
-                SINGLE_CASE_KNOWLEDGE_GUARD_VERSION
+                KNOWLEDGE_VALUE_EVIDENCE_GUARD_VERSION
             ),
-            "single_case_guard_applied_count": sum(
+            "knowledge_value_evidence_guard_applied_count": sum(
                 bool(
                     theme.get("prediction", {}).get(
                         "knowledge_value_guard_applied"

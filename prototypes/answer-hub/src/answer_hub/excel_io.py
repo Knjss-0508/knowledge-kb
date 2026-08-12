@@ -32,7 +32,9 @@ def write_rows_to_workbook(
                 value = row.get(column_name, "")
                 if isinstance(value, list):
                     value = "\n".join(str(item) for item in value if item not in (None, ""))
-                worksheet.cell(row=row_index, column=col_index, value=value)
+                cell = worksheet.cell(row=row_index, column=col_index, value=value)
+                if column_name.endswith("工单ID"):
+                    cell.number_format = "@"
 
         worksheet.freeze_panes = "A2"
         worksheet.auto_filter.ref = worksheet.dimensions
@@ -67,4 +69,3 @@ def read_workbook_rows(path: str | Path, sheet_name: str | None = None) -> tuple
         if any(value not in (None, "") for value in record.values()):
             records.append(record)
     return columns, records
-

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from datetime import datetime
 import hashlib
 import json
@@ -12,9 +13,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_ROOT = PROJECT_ROOT / "outputs"
-PACKAGE_NAME = "聚类标注工具_回家版_20260723"
-PACKAGE_ROOT = OUTPUT_ROOT / PACKAGE_NAME
-ARCHIVE_PATH = OUTPUT_ROOT / f"{PACKAGE_NAME}.zip"
+DEFAULT_PACKAGE_NAME = "聚类标注工具_回家版_20260723"
 SOURCE_DATA = (
     PROJECT_ROOT
     / "outputs"
@@ -262,7 +261,7 @@ def _copy_runtime(target: Path) -> None:
     )
 
 
-def _copy_database(target: Path) -> None:
+def _copy_database(target: Path, source_database: Path) -> None:
     destination = (
         target
         / "outputs"
@@ -270,10 +269,10 @@ def _copy_database(target: Path) -> None:
         / "cluster_annotations.db"
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if not SOURCE_DATABASE.is_file():
+    if not source_database.is_file():
         destination.touch()
         return
-    with sqlite3.connect(SOURCE_DATABASE) as source:
+    with sqlite3.connect(source_database) as source:
         with sqlite3.connect(destination) as output:
             source.backup(output)
 
@@ -304,9 +303,19 @@ def _write_archive(source_root: Path, archive_path: Path) -> None:
                 )
 
 
-def build() -> dict[str, object]:
-    if not SOURCE_DATA.is_file():
-        raise FileNotFoundError(f"找不到聚类数据：{SOURCE_DATA}")
+def build(
+    *,
+    source_data: Path = SOURCE_DATA,
+    source_database: Path = SOURCE_DATABASE,
+    package_name: str = DEFAULT_PACKAGE_NAME,
+) -> dict[str, object]:
+    source_data = source_data.resolve()
+    source_database = source_database.resolve()
+    package_root = OUTPUT_ROOT / package_name
+    archive_path = OUTPUT_ROOT / f"{package_name}.zip"
+
+    if not source_data.is_file():
+        raise FileNotFoundError(f"找不到聚类数据：{source_data}")
     if not PYTHON_HOME.is_dir():
         raise FileNotFoundError(f"找不到 Python 运行环境：{PYTHON_HOME}")
     if not VENV_SITE_PACKAGES.is_dir():
@@ -314,57 +323,57 @@ def build() -> dict[str, object]:
             f"找不到项目依赖目录：{VENV_SITE_PACKAGES}"
         )
 
-    _ensure_safe_target(PACKAGE_ROOT)
-    _ensure_safe_target(ARCHIVE_PATH)
-    if PACKAGE_ROOT.exists():
-        shutil.rmtree(PACKAGE_ROOT)
-    PACKAGE_ROOT.mkdir(parents=True)
+    _ensure_safe_target(package_root)
+    _ensure_safe_target(archive_path)
+    if package_root.exists():
+        shutil.rmtree(package_root)
+    package_root.mkdir(parents=True)
 
-    _copy_runtime(PACKAGE_ROOT)
+    _copy_runtime(package_root)
     _copy_tree(
         PROJECT_ROOT / "src" / "answer_hub",
-        PACKAGE_ROOT / "src" / "answer_hub",
+        package_root / "src" / "answer_hub",
     )
     data_target = (
-        PACKAGE_ROOT
+        package_root
         / "outputs"
         / "cluster-full-current-379"
         / "cluster_titles.json"
     )
     data_target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(SOURCE_DATA, data_target)
-    _copy_database(PACKAGE_ROOT)
+    shutil.copy2(source_data, data_target)
+    _copy_database(package_root, source_database)
 
-    (PACKAGE_ROOT / "annotation_app.py").write_text(
+    (package_root / "annotation_app.py").write_text(
         ANNOTATION_APP,
         encoding="utf-8",
     )
-    (PACKAGE_ROOT / "backup_annotations.py").write_text(
+    (package_root / "backup_annotations.py").write_text(
         BACKUP_SCRIPT,
         encoding="utf-8",
     )
-    (PACKAGE_ROOT / "启动聚类标注工具.cmd").write_text(
+    (package_root / "启动聚类标注工具.cmd").write_text(
         START_COMMAND,
         encoding="utf-8-sig",
     )
-    (PACKAGE_ROOT / "备份标注结果.cmd").write_text(
+    (package_root / "备份标注结果.cmd").write_text(
         BACKUP_COMMAND,
         encoding="utf-8-sig",
     )
-    (PACKAGE_ROOT / "使用说明.txt").write_text(
+    (package_root / "使用说明.txt").write_text(
         README,
         encoding="utf-8-sig",
     )
-    config_root = PACKAGE_ROOT / ".streamlit"
+    config_root = package_root / ".streamlit"
     config_root.mkdir(parents=True, exist_ok=True)
     (config_root / "config.toml").write_text(
         STREAMLIT_CONFIG,
         encoding="utf-8",
     )
 
-    payload = json.loads(SOURCE_DATA.read_text(encoding="utf-8"))
+    payload = json.loads(source_data.read_text(encoding="utf-8"))
     version_info = {
-        "package_name": PACKAGE_NAME,
+        "package_name": package_name,
         "built_at": datetime.now().astimezone().isoformat(
             timespec="seconds"
         ),
@@ -372,39 +381,39 @@ def build() -> dict[str, object]:
         "streamlit_version": "1.59.2",
         "cluster_count": len(payload.get("clusters") or []),
         "atomic_unit_count": len(payload.get("atomic_units") or []),
-        "source_data": str(SOURCE_DATA.relative_to(PROJECT_ROOT)),
-        "source_data_sha256": _sha256(SOURCE_DATA),
-        "annotation_database_included": SOURCE_DATABASE.is_file(),
+        "source_data": str(source_data),
+        "source_data_sha256": _sha256(source_data),
+        "annotation_database_included": source_database.is_file(),
     }
-    (PACKAGE_ROOT / "版本信息.json").write_text(
+    (package_root / "版本信息.json").write_text(
         json.dumps(version_info, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
-    _write_archive(PACKAGE_ROOT, ARCHIVE_PATH)
-    archive_sha256 = _sha256(ARCHIVE_PATH)
-    checksum_path = OUTPUT_ROOT / f"{PACKAGE_NAME}_SHA256.txt"
+    _write_archive(package_root, archive_path)
+    archive_sha256 = _sha256(archive_path)
+    checksum_path = OUTPUT_ROOT / f"{package_name}_SHA256.txt"
     checksum_path.write_text(
-        f"{archive_sha256}  {ARCHIVE_PATH.name}\n",
+        f"{archive_sha256}  {archive_path.name}\n",
         encoding="utf-8",
     )
 
     return {
         **version_info,
-        "package_directory": str(PACKAGE_ROOT),
+        "package_directory": str(package_root),
         "package_size_mb": round(
             sum(
                 path.stat().st_size
-                for path in PACKAGE_ROOT.rglob("*")
+                for path in package_root.rglob("*")
                 if path.is_file()
             )
             / 1024
             / 1024,
             2,
         ),
-        "archive_path": str(ARCHIVE_PATH),
+        "archive_path": str(archive_path),
         "archive_size_mb": round(
-            ARCHIVE_PATH.stat().st_size / 1024 / 1024,
+            archive_path.stat().st_size / 1024 / 1024,
             2,
         ),
         "archive_sha256": archive_sha256,
@@ -413,7 +422,30 @@ def build() -> dict[str, object]:
 
 
 def main() -> int:
-    result = build()
+    parser = argparse.ArgumentParser(description="打包完整聚类标注工具。")
+    parser.add_argument(
+        "--source-data",
+        type=Path,
+        default=SOURCE_DATA,
+        help="cluster_titles.json 路径。",
+    )
+    parser.add_argument(
+        "--source-database",
+        type=Path,
+        default=SOURCE_DATABASE,
+        help="可选的 cluster_annotations.db 路径；不存在时会创建空库。",
+    )
+    parser.add_argument(
+        "--package-name",
+        default=DEFAULT_PACKAGE_NAME,
+        help="输出到 outputs/ 下的工具目录和 ZIP 名称。",
+    )
+    args = parser.parse_args()
+    result = build(
+        source_data=args.source_data,
+        source_database=args.source_database,
+        package_name=args.package_name,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

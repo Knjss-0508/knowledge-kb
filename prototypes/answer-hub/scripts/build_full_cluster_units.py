@@ -150,6 +150,12 @@ def _build_units_and_exclusions(
                 "device_model": row.get("机型", ""),
                 "source_core_problem": row.get("核心问题", ""),
                 "source_conversation": row.get("聊天内容", ""),
+                "source_judgment_conclusion": row.get("判定结论", ""),
+                "historical_actual_reply": (
+                    row.get("历史实际回复")
+                    or row.get("参考话术")
+                    or ""
+                ),
                 "image_links": row.get("图片链接", ""),
                 "video_links": row.get("视频链接", ""),
                 "conversation_type": candidate.get(

@@ -43,7 +43,7 @@ class RedactionRiskError(ValueError):
 
 @dataclass(frozen=True)
 class OperationsPolicy:
-    max_seconds_per_100_rows: float = 3600.0
+    max_seconds_per_100_rows: float = 900.0
     max_failure_rate: float = 0.05
     max_fallback_rate: float = 0.20
     max_run_cost: float = 50.0
@@ -54,7 +54,7 @@ class OperationsPolicy:
         return cls(
             max_seconds_per_100_rows=_env_float(
                 "ANSWER_HUB_SLA_SECONDS_PER_100_ROWS",
-                3600.0,
+                900.0,
                 minimum=60.0,
             ),
             max_failure_rate=_env_float(

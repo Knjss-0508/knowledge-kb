@@ -3,14 +3,16 @@ from __future__ import annotations
 """Authenticated CZ knowledge-base integration with bounded retries."""
 
 from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 import hashlib
 import json
 import os
+import re
 import time
 
 from .auto_review import (
@@ -21,6 +23,13 @@ from .auto_review import (
     WORTHY_VALUES,
     select_candidates_for_submission,
 )
+from .business_taxonomy import (
+    AGGREGATE_BUSINESS_LINE_CODE,
+    SELF_OPERATED_BUSINESS_LINE_CODE,
+    business_line_from_record,
+    cz_applicable_category_path,
+)
+from .knowledge_categories import category_lookup_names
 from .mimo import load_dotenv
 from .product_taxonomy import infer_product_category, resolve_product_category
 
@@ -28,7 +37,23 @@ from .product_taxonomy import infer_product_category, resolve_product_category
 TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
 PASS_DECISIONS = {"通过", "修改后通过"}
 PROCESSING_PLUGIN_NAME = "answer-hub-topic-transcription"
-PROCESSING_PLUGIN_VERSION = "2026-07-22"
+PROCESSING_PLUGIN_VERSION = "2026-08-06-evidence-facts-v1"
+CZ_KNOWLEDGE_ORIGIN = "business_accumulation"
+CZ_BUSINESS_TYPE_BY_ANSWER_HUB_CODE = {
+    SELF_OPERATED_BUSINESS_LINE_CODE: "self_operated",
+    AGGREGATE_BUSINESS_LINE_CODE: "aggregated",
+}
+UNFINISHED_TRANSCRIPTION_MARKERS = (
+    "未生成知识草稿",
+    "未进入知识转写",
+    "未完成知识转写",
+    "完成转写后才能提交",
+    "需要补充完整知识内容后再送审",
+    "需要补充完整、可追溯的知识内容后再送审",
+    "已阻止通用模板作为知识草稿",
+    "转写正文只有通用模板",
+    "主题未进入知识转写",
+)
 
 
 def _text(value: Any) -> str:
@@ -46,11 +71,372 @@ def _split_values(value: Any) -> list[str]:
     return list(dict.fromkeys(item.strip() for item in text.splitlines() if item.strip()))
 
 
+def _candidate_raw_case_image_urls(
+    candidate: dict[str, Any],
+) -> list[str]:
+    return _candidate_https_urls(
+        candidate.get("图例") or candidate.get("主题图片链接"),
+        limit=4,
+    )
+
+
+def _candidate_https_urls(value: Any, *, limit: int) -> list[str]:
+    value = _text(value)
+    urls: list[str] = []
+    for line in value.splitlines():
+        url = line.strip()
+        if not _candidate_is_safe_https_url(url):
+            continue
+        if url not in urls:
+            urls.append(url)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+def _candidate_is_safe_https_url(url: str) -> bool:
+    if len(url) > 2048:
+        return False
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or hostname == "localhost"
+        or hostname.endswith(".localhost")
+    ):
+        return False
+    try:
+        address = ip_address(hostname)
+    except ValueError:
+        return True
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_unspecified
+        or address.is_multicast
+    )
+
+
+def _candidate_unsafe_media_urls(value: Any) -> list[str]:
+    return [
+        url
+        for line in _text(value).splitlines()
+        if (url := line.strip()) and not _candidate_is_safe_https_url(url)
+    ]
+
+
+def _candidate_raw_case_video_urls(
+    candidate: dict[str, Any],
+) -> list[str]:
+    return _candidate_https_urls(
+        candidate.get("主题视频链接") or candidate.get("视频链接"),
+        limit=2,
+    )
+
+
+def _candidate_traced_case_image_urls(
+    candidate: dict[str, Any],
+) -> set[str]:
+    valid_pairs = _candidate_fact_source_pairs(candidate)
+    valid_image_traces = _candidate_package_image_traces(
+        candidate
+    )
+    pattern = re.compile(
+        r"\[(?P<fact_id>F\d+)\]\s*"
+        r"来源记录=(?P<source_id>[^|\n]+)\s*\|\s*"
+        r"图片=(?P<url>https://\S+)"
+    )
+    return {
+        match.group("url").strip()
+        for match in pattern.finditer(
+            _text(candidate.get("主题图例来源"))
+        )
+        if (
+            match.group("fact_id").strip(),
+            match.group("source_id").strip(),
+        )
+        in valid_pairs
+        and (
+            match.group("fact_id").strip(),
+            match.group("source_id").strip(),
+            match.group("url").strip(),
+        )
+        in valid_image_traces
+    }
+
+
+def _candidate_traced_case_video_urls(
+    candidate: dict[str, Any],
+) -> set[str]:
+    valid_pairs = _candidate_fact_source_pairs(candidate)
+    valid_video_traces = _candidate_package_video_traces(candidate)
+    pattern = re.compile(
+        r"\[(?P<fact_id>F\d+)\]\s*"
+        r"来源记录=(?P<source_id>[^|\n]+)\s*\|\s*"
+        r"视频=(?P<url>https://\S+)"
+    )
+    return {
+        match.group("url").strip()
+        for match in pattern.finditer(
+            _text(candidate.get("主题视频来源"))
+        )
+        if (
+            match.group("fact_id").strip(),
+            match.group("source_id").strip(),
+        )
+        in valid_pairs
+        and (
+            match.group("fact_id").strip(),
+            match.group("source_id").strip(),
+            match.group("url").strip(),
+        )
+        in valid_video_traces
+    }
+
+
+def _candidate_fact_source_pairs(
+    candidate: dict[str, Any],
+) -> set[tuple[str, str]]:
+    topic_source_ids = set(
+        _split_values(candidate.get("主题来源记录ID"))
+    )
+    reference_pairs: set[tuple[str, str]] = set()
+    reference_pattern = re.compile(
+        r"\[(?P<fact_id>F\d+)\]\s*"
+        r"(?:代表|来源)记录=(?P<source_id>[^|\n]+)"
+    )
+    for match in reference_pattern.finditer(
+        _text(candidate.get("主题事实引用"))
+    ):
+        reference_pairs.add(
+            (
+                match.group("fact_id").strip(),
+                match.group("source_id").strip(),
+            )
+        )
+
+    package_pairs: set[tuple[str, str]] = set()
+    raw_package = _text(candidate.get("主题事实证据包"))
+    if raw_package:
+        try:
+            package = json.loads(raw_package)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            package = {}
+        for fact in package.get("representative_facts") or []:
+            fact_id = _text(fact.get("fact_id"))
+            source_id = _text(fact.get("source_record_id"))
+            if fact_id and source_id:
+                package_pairs.add((fact_id, source_id))
+        for source_fact_ref in package.get("source_fact_refs") or []:
+            match = reference_pattern.search(_text(source_fact_ref))
+            if match:
+                package_pairs.add(
+                    (
+                        match.group("fact_id").strip(),
+                        match.group("source_id").strip(),
+                    )
+                )
+    return {
+        pair
+        for pair in reference_pairs & package_pairs
+        if pair[1] in topic_source_ids
+    }
+
+
+def _candidate_package_image_traces(
+    candidate: dict[str, Any],
+) -> set[tuple[str, str, str]]:
+    raw_package = _text(candidate.get("主题事实证据包"))
+    if not raw_package:
+        return set()
+    try:
+        package = json.loads(raw_package)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return set()
+    return {
+        (fact_id, source_id, _text(image_url))
+        for fact in package.get("representative_facts") or []
+        if (fact_id := _text(fact.get("fact_id")))
+        and (source_id := _text(fact.get("source_record_id")))
+        for image_url in fact.get("image_urls") or []
+        if _text(image_url)
+    }
+
+
+def _candidate_package_video_traces(
+    candidate: dict[str, Any],
+) -> set[tuple[str, str, str]]:
+    raw_package = _text(candidate.get("主题事实证据包"))
+    if not raw_package:
+        return set()
+    try:
+        package = json.loads(raw_package)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return set()
+    return {
+        (fact_id, source_id, _text(video_url))
+        for fact in package.get("representative_facts") or []
+        if (fact_id := _text(fact.get("fact_id")))
+        and (source_id := _text(fact.get("source_record_id")))
+        for video_url in fact.get("video_urls") or []
+        if _text(video_url)
+    }
+
+
+def _candidate_case_image_urls(candidate: dict[str, Any]) -> list[str]:
+    traced_urls = _candidate_traced_case_image_urls(candidate)
+    return [
+        url
+        for url in _candidate_raw_case_image_urls(candidate)
+        if url in traced_urls
+    ]
+
+
+def _candidate_untraced_case_image_urls(
+    candidate: dict[str, Any],
+) -> list[str]:
+    traced_urls = _candidate_traced_case_image_urls(candidate)
+    return [
+        url
+        for url in _candidate_raw_case_image_urls(candidate)
+        if url not in traced_urls
+    ]
+
+
+def _candidate_case_video_urls(candidate: dict[str, Any]) -> list[str]:
+    traced_urls = _candidate_traced_case_video_urls(candidate)
+    return [
+        url
+        for url in _candidate_raw_case_video_urls(candidate)
+        if url in traced_urls
+    ]
+
+
+def _candidate_untraced_case_video_urls(
+    candidate: dict[str, Any],
+) -> list[str]:
+    traced_urls = _candidate_traced_case_video_urls(candidate)
+    return [
+        url
+        for url in _candidate_raw_case_video_urls(candidate)
+        if url not in traced_urls
+    ]
+
+
+def _candidate_content_blocks(candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    title = _text(candidate.get("主标题")) or "知识候选"
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "value": _text(candidate.get("知识内容")),
+        }
+    ]
+    for index, url in enumerate(
+        _candidate_case_image_urls(candidate),
+        start=1,
+    ):
+        blocks.append(
+            {
+                "type": "image",
+                "external_url": url,
+                "alt": f"{title}案例图{index}",
+                "caption": "来源案例图",
+            }
+        )
+    for index, url in enumerate(
+        _candidate_case_video_urls(candidate),
+        start=1,
+    ):
+        blocks.append(
+            {
+                "type": "video",
+                "external_url": url,
+                "alt": f"{title}案例视频{index}",
+                "caption": "来源案例视频（仅供人工播放）",
+            }
+        )
+    return blocks
+
+
+def _candidate_evidence_excerpt(candidate: dict[str, Any]) -> str | None:
+    sections = []
+    for title, field in (
+        ("主题证据摘要", "主题证据摘要"),
+        ("主题事实引用", "主题事实引用"),
+    ):
+        value = _text(candidate.get(field))
+        if value:
+            sections.append(f"【{title}】\n{value}")
+    for title, value in (
+        (
+            "主题图例来源",
+            _candidate_validated_media_trace(candidate, media_type="image"),
+        ),
+        (
+            "主题视频来源",
+            _candidate_validated_media_trace(candidate, media_type="video"),
+        ),
+    ):
+        if value:
+            sections.append(f"【{title}】\n{value}")
+    excerpt = "\n\n".join(sections)[:4000]
+    return excerpt or None
+
+
+def _candidate_validated_media_trace(
+    candidate: dict[str, Any],
+    *,
+    media_type: str,
+) -> str:
+    if media_type == "image":
+        field = "主题图例来源"
+        label = "图片"
+        valid_triples = _candidate_package_image_traces(candidate)
+    else:
+        field = "主题视频来源"
+        label = "视频"
+        valid_triples = _candidate_package_video_traces(candidate)
+    valid_pairs = _candidate_fact_source_pairs(candidate)
+    pattern = re.compile(
+        rf"\[(?P<fact_id>F\d+)\]\s*"
+        rf"来源记录=(?P<source_id>[^|\n]+)\s*\|\s*"
+        rf"{label}=(?P<url>https://\S+)"
+    )
+    lines: list[str] = []
+    for match in pattern.finditer(_text(candidate.get(field))):
+        fact_id = match.group("fact_id").strip()
+        source_id = match.group("source_id").strip()
+        url = match.group("url").strip()
+        if (
+            (fact_id, source_id) in valid_pairs
+            and (fact_id, source_id, url) in valid_triples
+            and _candidate_is_safe_https_url(url)
+        ):
+            lines.append(
+                f"[{fact_id}] 来源记录={source_id} | {label}={url}"
+            )
+    return "\n".join(dict.fromkeys(lines))
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return max(0.0, min(float(value), 1.0))
     except (TypeError, ValueError):
         return default
+
+
+def _has_unfinished_transcription_placeholder(candidate: dict[str, Any]) -> bool:
+    combined = "\n".join(
+        _text(candidate.get(field))
+        for field in ("知识内容", "校验备注", "模型初标原因", "自动审核原因")
+    )
+    return any(marker in combined for marker in UNFINISHED_TRANSCRIPTION_MARKERS)
 
 
 def _product_type(candidate: dict[str, Any]) -> str:
@@ -66,6 +452,36 @@ def _product_type(candidate: dict[str, Any]) -> str:
         )
     )
     return inferred.name if inferred else ""
+
+
+def _candidate_category_id(
+    category_mapping: dict[str, str],
+    product_type: str,
+    knowledge_category: str,
+) -> str:
+    del product_type
+    for category_name in category_lookup_names(knowledge_category):
+        category_id = category_mapping.get(category_name)
+        if category_id:
+            return category_id
+    return ""
+
+
+def _candidate_applicable_categories(
+    candidate: dict[str, Any],
+    product_type: str,
+) -> list[str]:
+    explicit_ids = _split_values(candidate.get("CZ适用类目ID"))
+    return explicit_ids or ([product_type] if product_type else [])
+
+
+def _candidate_specific_applicability(value: Any) -> list[str]:
+    ignored = {"", "通用", "不限", "全部", "所有", "待确认", "未知"}
+    return [
+        item
+        for item in _split_values(value)
+        if item not in ignored
+    ]
 
 
 def _stable_hash(*values: Any) -> str:
@@ -320,6 +736,34 @@ class CzIntegrationAdapter:
             errors.append("缺少主标题。")
         if not _text(candidate.get("知识内容")):
             errors.append("缺少知识内容。")
+        if _has_unfinished_transcription_placeholder(candidate):
+            errors.append("未完成知识转写，禁止送审。请先补充可上线知识正文并完成内容质量初标。")
+        if (
+            require_eligible
+            and _candidate_untraced_case_image_urls(candidate)
+        ):
+            errors.append(
+                "案例图缺少来源事实引用，禁止送审。"
+                "请补充事实ID、来源记录ID和图片对应关系。"
+            )
+        if (
+            require_eligible
+            and _candidate_untraced_case_video_urls(candidate)
+        ):
+            errors.append(
+                "案例视频缺少来源事实引用，禁止送审。"
+                "请补充事实ID、来源记录ID和视频对应关系。"
+            )
+        unsafe_media_urls = [
+            *_candidate_unsafe_media_urls(
+                candidate.get("图例") or candidate.get("主题图片链接")
+            ),
+            *_candidate_unsafe_media_urls(
+                candidate.get("主题视频链接") or candidate.get("视频链接")
+            ),
+        ]
+        if require_eligible and unsafe_media_urls:
+            errors.append("案例媒体包含不安全或不受支持的链接，禁止送审。")
         if require_eligible and _text(candidate.get("关联标准项")):
             errors.append("已有标准关联，必须留在标准关联搁置流程，禁止直接送审。")
         if require_eligible and (
@@ -342,10 +786,10 @@ class CzIntegrationAdapter:
         for candidate in candidates:
             product_type = _product_type(candidate)
             knowledge_category = _text(candidate.get("知识分类"))
-            category_id = (
-                category_mapping.get(product_type)
-                or category_mapping.get(knowledge_category)
-                or ""
+            category_id = _candidate_category_id(
+                category_mapping,
+                product_type,
+                knowledge_category,
             )
             topic_id = _text(candidate.get("主题ID")) or _text(candidate.get("主标题"))
             idempotency_key = (
@@ -375,8 +819,6 @@ class CzIntegrationAdapter:
             )
             if not scene_tags:
                 scene_tags = _split_values(candidate.get("检索关键词"))
-            scope = _text(candidate.get("适用范围"))
-            scope_parts = [part.strip() for part in scope.split("-") if part.strip()]
             confidence = _safe_float(
                 candidate.get("主题置信度") or candidate.get("模型初标置信度"),
                 0.5,
@@ -386,6 +828,16 @@ class CzIntegrationAdapter:
             knowledge_value = _text(candidate.get("是否值得沉淀"))
             standard_reference = _text(candidate.get("关联标准项"))
             auto_review_status = _text(candidate.get("自动审核状态"))
+            business_line = business_line_from_record(candidate)
+            business_type = CZ_BUSINESS_TYPE_BY_ANSWER_HUB_CODE.get(
+                business_line.code if business_line else ""
+            )
+            if not business_type:
+                raise ValueError("回收业务层级无法映射到 CZ business_type。")
+            applicable_category_path = cz_applicable_category_path(
+                business_line.name if business_line else "",
+                product_type,
+            )
             eligible = (
                 (
                     knowledge_value.lower() in WORTHY_VALUES
@@ -448,6 +900,11 @@ class CzIntegrationAdapter:
                                     if auto_review_status
                                     else ""
                                 ),
+                                (
+                                    f"CZ适用类目路径：{applicable_category_path}"
+                                    if applicable_category_path
+                                    else ""
+                                ),
                                 _text(candidate.get("自动审核原因")),
                                 (
                                     f"模型沉淀价值：{_text(candidate.get('模型初标是否值得沉淀'))}"
@@ -461,6 +918,22 @@ class CzIntegrationAdapter:
                                     if standard_reference
                                     else ""
                                 ),
+                                (
+                                    "案例图缺少来源事实引用，已从CZ富文本图片块中移除，"
+                                    "等待人工补充对应关系。"
+                                if _candidate_untraced_case_image_urls(
+                                    candidate
+                                )
+                                else ""
+                            ),
+                            (
+                                "案例视频缺少来源事实引用，已从CZ富文本视频块中移除，"
+                                "等待人工补充对应关系。"
+                                if _candidate_untraced_case_video_urls(
+                                    candidate
+                                )
+                                else ""
+                            ),
                             )
                             if value
                         ],
@@ -554,25 +1027,24 @@ class CzIntegrationAdapter:
                         "title": _text(candidate.get("主标题")),
                         "subtitles": subtitles,
                         "content": {
-                            "blocks": [
-                                {
-                                    "type": "text",
-                                    "value": _text(candidate.get("知识内容")),
-                                }
-                            ]
+                            "blocks": _candidate_content_blocks(candidate)
                         },
+                        "knowledge_origin": CZ_KNOWLEDGE_ORIGIN,
+                        "business_type": business_type,
                         "recommended_reply": _text(candidate.get("推荐回复")) or None,
                         "category_id": category_id,
                         "scene_tags": scene_tags,
-                        "applicable_categories": [product_type] if product_type else [],
-                        "applicable_brands": (
-                            [scope_parts[1]]
-                            if len(scope_parts) > 1 and scope_parts[1] != "通用"
-                            else []
+                        "applicable_categories": _candidate_applicable_categories(
+                            candidate,
+                            product_type,
                         ),
-                        "applicable_models": [],
-                        "evidence_excerpt": _text(candidate.get("主题证据摘要"))[:4000]
-                        or None,
+                        "applicable_brands": _candidate_specific_applicability(
+                            candidate.get("适用品牌")
+                        ),
+                        "applicable_models": _candidate_specific_applicability(
+                            candidate.get("适用机型")
+                        ),
+                        "evidence_excerpt": _candidate_evidence_excerpt(candidate),
                     },
                 }
             )
@@ -630,6 +1102,20 @@ class CzIntegrationAdapter:
         }
         valid_items: list[dict[str, Any]] = []
         for candidate in candidates:
+            if _has_unfinished_transcription_placeholder(candidate):
+                totals["rejected"] += 1
+                totals["results"].append(
+                    {
+                        "event_id": (
+                            _text(candidate.get("主题ID"))
+                            or _text(candidate.get("主标题"))
+                        ),
+                        "status": "rejected",
+                        "error_code": "TRANSCRIPTION_NOT_READY",
+                        "error_message": "未完成知识转写，不进入 CZ 候选价值复核。",
+                    }
+                )
+                continue
             try:
                 valid_items.extend(
                     self.build_batch_payload(

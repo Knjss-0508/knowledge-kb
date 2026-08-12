@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 from io import BytesIO
 import json
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, call, patch
 from urllib.error import HTTPError
@@ -11,6 +13,48 @@ from answer_hub.cz_integration import (
     CzIntegrationConfig,
     select_submittable_candidates,
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _cz_required_schema_fields(class_name: str) -> set[str]:
+    schema_path = (
+        PROJECT_ROOT
+        / "cz-knowledge-kb"
+        / "knowledge-kb-master"
+        / "backend"
+        / "app"
+        / "schemas"
+        / "integration.py"
+    )
+    module = ast.parse(schema_path.read_text(encoding="utf-8"))
+    schema_class = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and node.name == class_name
+    )
+    required: set[str] = set()
+    for statement in schema_class.body:
+        if not isinstance(statement, ast.AnnAssign):
+            continue
+        if not isinstance(statement.target, ast.Name):
+            continue
+        value = statement.value
+        if value is None:
+            required.add(statement.target.id)
+            continue
+        if not isinstance(value, ast.Call):
+            continue
+        if not isinstance(value.func, ast.Name) or value.func.id != "Field":
+            continue
+        if (
+            value.args
+            and isinstance(value.args[0], ast.Constant)
+            and value.args[0].value is Ellipsis
+        ):
+            required.add(statement.target.id)
+    return required
 
 
 class _JsonResponse:
@@ -33,9 +77,11 @@ def _candidate(index: int = 1, product_type: str = "手机") -> dict:
         "主标题": f"候选知识{index}",
         "副标题": "副标题A；副标题B",
         "知识内容": f"这是第{index}条知识内容。",
-        "知识分类": "检测方法",
+        "知识分类": "质检流程",
         "产品类型": product_type,
-        "适用范围": f"{product_type}-通用",
+        "适用范围": product_type,
+        "适用品牌": "",
+        "适用机型": "",
         "推荐回复": f"您好，请按第{index}条流程处理。",
         "是否值得沉淀": "是",
         "是否可用": "是",
@@ -75,21 +121,49 @@ class CzIntegrationTests(unittest.TestCase):
 
     def test_unmapped_category_blocks_local_payload(self) -> None:
         adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
-        candidate = {"主题ID": "TOP-001", "主标题": "机型查询流程", "知识内容": "查询步骤", "知识分类": "检测方法"}
+        candidate = {"主题ID": "TOP-001", "主标题": "机型查询流程", "知识内容": "查询步骤", "知识分类": "售后服务"}
 
         with self.assertRaisesRegex(ValueError, "未映射 category_id"):
             adapter.build_batch_payload([candidate], {})
+
+    def test_category_id_never_falls_back_to_product_type(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+
+        with self.assertRaisesRegex(ValueError, "未映射 category_id"):
+            adapter.build_batch_payload(
+                [{**_candidate(), "知识分类": "售后服务"}],
+                {"手机": "cat-phone"},
+            )
+
+    def test_uncertain_category_uses_case_analysis_fallback_when_cz_lacks_uncertain(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+
+        payload = adapter.build_batch_payload(
+            [{**_candidate(product_type="手机"), "知识分类": "不确定"}],
+            {"案例解析": "cat-case-analysis"},
+        )[0]
+
+        self.assertEqual(payload["knowledge"]["category_id"], "cat-case-analysis")
+        self.assertEqual(payload["knowledge"]["applicable_categories"], ["手机"])
 
     def test_candidate_payload_includes_recommended_reply_and_review_evidence(self) -> None:
         adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
 
         payload = adapter.build_batch_payload(
             [{**_candidate(), "如何修改": "精简步骤", "问题反馈": "措辞偏长"}],
-            {"手机": "cat-phone"},
+            {"质检流程": "cat-process"},
         )[0]
 
         self.assertEqual(payload["knowledge"]["recommended_reply"], "您好，请按第1条流程处理。")
-        self.assertEqual(payload["knowledge"]["category_id"], "cat-phone")
+        self.assertEqual(payload["knowledge"]["category_id"], "cat-process")
+        self.assertEqual(
+            payload["knowledge"]["knowledge_origin"],
+            "business_accumulation",
+        )
+        self.assertEqual(
+            payload["knowledge"]["business_type"],
+            "self_operated",
+        )
         self.assertEqual(payload["knowledge"]["applicable_categories"], ["手机"])
         self.assertEqual(payload["knowledge"]["scene_tags"], ["查询", "屏幕", "显示异常"])
         self.assertTrue(payload["selection"]["eligible"])
@@ -99,11 +173,308 @@ class CzIntegrationTests(unittest.TestCase):
             payload["processing"]["plugin_name"],
             "answer-hub-topic-transcription",
         )
-        self.assertEqual(payload["processing"]["plugin_version"], "2026-07-22")
+        self.assertEqual(
+            payload["processing"]["plugin_version"],
+            "2026-08-06-evidence-facts-v1",
+        )
         self.assertNotIn("skill_name", payload["processing"])
         self.assertNotIn("skill_version", payload["processing"])
         self.assertNotIn("layer", payload["knowledge"])
         self.assertNotIn("applicable_business_types", payload["knowledge"])
+
+    def test_candidate_payload_satisfies_local_cz_required_contract(self) -> None:
+        adapter = CzIntegrationAdapter(
+            CzIntegrationConfig("https://kb.example", "test-key")
+        )
+        payload = adapter.build_batch_payload(
+            [_candidate()],
+            {"质检流程": "cat-process"},
+        )[0]
+
+        self.assertEqual(
+            _cz_required_schema_fields("IntegrationCandidate") - payload.keys(),
+            set(),
+        )
+        self.assertEqual(
+            _cz_required_schema_fields("IntegrationKnowledgePayload")
+            - payload["knowledge"].keys(),
+            set(),
+        )
+
+    def test_candidate_payload_attaches_matching_case_images_and_fact_trace(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+
+        payload = adapter.build_batch_payload(
+            [
+                {
+                    **_candidate(),
+                    "图例": (
+                        "https://cdn.example.com/case-a.jpg\n"
+                        "https://cdn.example.com/case-b.png"
+                    ),
+                    "主题来源记录ID": "R-001\nR-002",
+                    "主题事实引用": (
+                        "[F01] 代表记录=R-001\n"
+                        "[F02] 来源记录=R-002"
+                    ),
+                    "主题事实证据包": json.dumps(
+                        {
+                            "representative_facts": [
+                                {
+                                    "fact_id": "F01",
+                                    "source_record_id": "R-001",
+                                    "image_urls": [
+                                        "https://cdn.example.com/case-a.jpg"
+                                    ],
+                                },
+                                {
+                                    "fact_id": "F02",
+                                    "source_record_id": "R-002",
+                                    "image_urls": [
+                                        "https://cdn.example.com/case-b.png"
+                                    ],
+                                },
+                            ],
+                            "source_fact_refs": [
+                                "[F01] 来源记录=R-001",
+                                "[F02] 来源记录=R-002",
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "主题图例来源": (
+                        "[F01] 来源记录=R-001 | 图片=https://cdn.example.com/case-a.jpg\n"
+                        "[F02] 来源记录=R-002 | 图片=https://cdn.example.com/case-b.png"
+                    ),
+                    "主题证据摘要": (
+                        "[F01] 人工核心问题：屏幕异常如何判断 | "
+                        "人工判定结论：案例A属于显示异常"
+                    ),
+                }
+            ],
+            {"质检流程": "cat-process"},
+        )[0]
+
+        blocks = payload["knowledge"]["content"]["blocks"]
+        self.assertEqual(blocks[0], {"type": "text", "value": "这是第1条知识内容。"})
+        self.assertEqual(
+            [block["external_url"] for block in blocks[1:]],
+            [
+                "https://cdn.example.com/case-a.jpg",
+                "https://cdn.example.com/case-b.png",
+            ],
+        )
+        self.assertTrue(all(block["type"] == "image" for block in blocks[1:]))
+        self.assertIn("主题事实引用", payload["knowledge"]["evidence_excerpt"])
+        self.assertIn("R-001", payload["knowledge"]["evidence_excerpt"])
+        self.assertIn("case-a.jpg", payload["knowledge"]["evidence_excerpt"])
+
+    def test_candidate_payload_attaches_traced_case_video_for_manual_review(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+
+        payload = adapter.build_batch_payload(
+            [
+                {
+                    **_candidate(),
+                    "图例": "https://cdn.example.com/case-a.jpg",
+                    "主题视频链接": "https://cdn.example.com/case-a.mp4",
+                    "主题事实引用": "[F01] 代表记录=R-001",
+                    "主题事实证据包": json.dumps(
+                        {
+                            "representative_facts": [
+                                {
+                                    "fact_id": "F01",
+                                    "source_record_id": "R-001",
+                                    "image_urls": [
+                                        "https://cdn.example.com/case-a.jpg"
+                                    ],
+                                    "video_urls": [
+                                        "https://cdn.example.com/case-a.mp4"
+                                    ],
+                                }
+                            ],
+                            "source_fact_refs": ["[F01] 来源记录=R-001"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "主题图例来源": (
+                        "[F01] 来源记录=R-001 | "
+                        "图片=https://cdn.example.com/case-a.jpg"
+                    ),
+                    "主题视频来源": (
+                        "[F01] 来源记录=R-001 | "
+                        "视频=https://cdn.example.com/case-a.mp4"
+                    ),
+                }
+            ],
+            {"质检流程": "cat-process"},
+        )[0]
+
+        blocks = payload["knowledge"]["content"]["blocks"]
+        self.assertEqual(
+            [block["type"] for block in blocks],
+            ["text", "image", "video"],
+        )
+        self.assertEqual(
+            blocks[-1]["external_url"],
+            "https://cdn.example.com/case-a.mp4",
+        )
+        self.assertEqual(blocks[-1]["caption"], "来源案例视频（仅供人工播放）")
+
+    def test_candidate_submission_rejects_private_case_media_urls(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+        private_url = "https://127.0.0.1/internal-case.mp4"
+        candidate = {
+            **_candidate(),
+            "主题视频链接": private_url,
+            "主题事实引用": "[F01] 代表记录=R-001",
+            "主题事实证据包": json.dumps(
+                {
+                    "representative_facts": [
+                        {
+                            "fact_id": "F01",
+                            "source_record_id": "R-001",
+                            "video_urls": [private_url],
+                        }
+                    ],
+                    "source_fact_refs": ["[F01] 来源记录=R-001"],
+                },
+                ensure_ascii=False,
+            ),
+            "主题视频来源": f"[F01] 来源记录=R-001 | 视频={private_url}",
+        }
+
+        with self.assertRaisesRegex(ValueError, "不安全"):
+            adapter.build_batch_payload(
+                [candidate],
+                {"质检流程": "cat-process"},
+            )
+
+    def test_candidate_submission_rejects_case_image_without_fact_trace(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+        candidate = {
+            **_candidate(),
+            "图例": "https://cdn.example.com/untraced.jpg",
+            "主题图例来源": "",
+        }
+
+        with self.assertRaisesRegex(ValueError, "案例图缺少来源事实"):
+            adapter.build_batch_payload(
+                [candidate],
+                {"质检流程": "cat-process"},
+            )
+
+        queued = adapter.build_batch_payload(
+            [candidate],
+            {"质检流程": "cat-process"},
+            require_eligible=False,
+        )[0]
+        self.assertEqual(
+            queued["knowledge"]["content"]["blocks"],
+            [{"type": "text", "value": "这是第1条知识内容。"}],
+        )
+
+    def test_candidate_submission_rejects_forged_case_image_fact_trace(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+        candidate = {
+            **_candidate(),
+            "图例": "https://cdn.example.com/forged.jpg",
+            "主题事实引用": "[F01] 代表记录=R-001",
+            "主题事实证据包": json.dumps(
+                {
+                    "representative_facts": [
+                        {
+                            "fact_id": "F01",
+                            "source_record_id": "R-001",
+                            "image_urls": [
+                                "https://cdn.example.com/real.jpg"
+                            ],
+                        }
+                    ],
+                    "source_fact_refs": [
+                        "[F01] 来源记录=R-001"
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            "主题图例来源": (
+                "[F99] 来源记录=R-001 | "
+                "图片=https://cdn.example.com/forged.jpg"
+            ),
+        }
+
+        with self.assertRaisesRegex(ValueError, "案例图缺少来源事实"):
+            adapter.build_batch_payload(
+                [candidate],
+                {"质检流程": "cat-process"},
+            )
+
+        queued = adapter.build_batch_payload(
+            [candidate],
+            {"质检流程": "cat-process"},
+            require_eligible=False,
+        )[0]
+        evidence_excerpt = queued["knowledge"]["evidence_excerpt"] or ""
+        self.assertNotIn("F99", evidence_excerpt)
+        self.assertNotIn("forged.jpg", evidence_excerpt)
+
+    def test_candidate_payload_reserves_cz_business_hierarchy_mapping(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+
+        payload = adapter.build_batch_payload(
+            [
+                {
+                    **_candidate(),
+                    "回收业务层级": "聚合回收",
+                    "CZ适用类目ID": "cz-aggregate-phone",
+                }
+            ],
+            {"质检流程": "cat-process"},
+        )[0]
+
+        self.assertEqual(
+            payload["knowledge"]["applicable_categories"],
+            ["cz-aggregate-phone"],
+        )
+        self.assertEqual(
+            payload["knowledge"]["knowledge_origin"],
+            "business_accumulation",
+        )
+        self.assertEqual(
+            payload["knowledge"]["business_type"],
+            "aggregated",
+        )
+        self.assertIn(
+            "CZ适用类目路径：聚合回收/手机",
+            payload["selection"]["reasons"],
+        )
+
+    def test_scope_suffix_is_ignored_and_specific_fields_map_separately(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+        candidate = {
+            **_candidate(),
+            "适用范围": "手机-iOS",
+            "适用品牌": "苹果",
+            "适用机型": "iPhone 15 Pro",
+        }
+
+        payload = adapter.build_batch_payload(
+            [candidate],
+            {"质检流程": "cat-process"},
+        )[0]
+
+        self.assertEqual(
+            payload["knowledge"]["applicable_categories"],
+            ["手机"],
+        )
+        self.assertEqual(
+            payload["knowledge"]["applicable_brands"],
+            ["苹果"],
+        )
+        self.assertEqual(
+            payload["knowledge"]["applicable_models"],
+            ["iPhone 15 Pro"],
+        )
 
     def test_candidate_payload_carries_model_and_human_review_metadata(self) -> None:
         adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
@@ -124,7 +495,7 @@ class CzIntegrationTests(unittest.TestCase):
                     "是否进入训练集": "是",
                 }
             ],
-            {"手机": "cat-phone"},
+            {"质检流程": "cat-process"},
         )[0]
 
         self.assertEqual(payload["model_review"]["knowledge_value"], "worthy")
@@ -139,7 +510,7 @@ class CzIntegrationTests(unittest.TestCase):
 
         payload = adapter.build_batch_payload(
             [{**_candidate(), "关联标准项": "STD-OLD-001"}],
-            {"手机": "cat-phone"},
+            {"质检流程": "cat-process"},
             require_eligible=False,
         )[0]
 
@@ -152,7 +523,7 @@ class CzIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "已有标准关联"):
             adapter.build_batch_payload(
                 [{**_candidate(), "关联标准项": "STD-OLD-001"}],
-                {"手机": "cat-phone"},
+                {"质检流程": "cat-process"},
             )
 
     def test_select_submittable_candidates_maps_simple_teammate_review(self) -> None:
@@ -182,15 +553,38 @@ class CzIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "尚未标注为值得沉淀"):
             adapter.build_batch_payload(
                 [{**_candidate(), "是否值得沉淀": ""}],
-                {"手机": "cat-phone"},
+                {"质检流程": "cat-process"},
             )
+
+    def test_build_payload_rejects_unfinished_transcription_placeholders(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+
+        for require_eligible in (True, False):
+            with self.subTest(require_eligible=require_eligible):
+                with self.assertRaisesRegex(ValueError, "未完成知识转写"):
+                    adapter.build_batch_payload(
+                        [
+                            {
+                                **_candidate(),
+                                "知识内容": (
+                                    "该主题未形成包含具体事实、条件和处理结论的知识正文，"
+                                    "已阻止通用模板作为知识草稿进入初标。请在候选价值复核中确认主题价值；"
+                                    "如改判为值得沉淀，需要补充完整、可追溯的知识内容后再送审。"
+                                ),
+                                "是否值得沉淀": "是",
+                                "是否可用": "是",
+                            }
+                        ],
+                        {"质检流程": "cat-process"},
+                        require_eligible=require_eligible,
+                    )
 
     def test_review_queue_payload_allows_pending_human_annotation(self) -> None:
         adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
 
         payload = adapter.build_batch_payload(
             [{**_candidate(), "是否值得沉淀": "", "是否可用": "", "审核结论": ""}],
-            {"手机": "cat-phone"},
+            {"质检流程": "cat-process"},
             require_eligible=False,
         )[0]
 
@@ -198,12 +592,37 @@ class CzIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["human_review"]["knowledge_value"], "pending")
         self.assertEqual(payload["human_review"]["usability"], "pending")
 
+    def test_review_queue_sync_rejects_unfinished_transcription_without_remote_call(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+        adapter._request_json = Mock()
+
+        result = adapter.sync_review_candidates(
+            [
+                {
+                    **_candidate(),
+                    "知识内容": "主题未进入知识转写。",
+                    "是否值得沉淀": "",
+                    "是否可用": "",
+                    "审核结论": "",
+                }
+            ],
+            {"质检流程": "cat-process"},
+        )
+
+        self.assertEqual(result["queued"], 0)
+        self.assertEqual(result["ready"], 0)
+        self.assertEqual(result["rejected"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["results"][0]["status"], "rejected")
+        self.assertEqual(result["results"][0]["error_code"], "TRANSCRIPTION_NOT_READY")
+        adapter._request_json.assert_not_called()
+
     def test_candidate_idempotency_is_stable_when_reviewers_edit_content(self) -> None:
         adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
 
         first = adapter.build_batch_payload(
             [_candidate()],
-            {"手机": "cat-phone"},
+            {"质检流程": "cat-process"},
         )[0]
         second = adapter.build_batch_payload(
             [
@@ -214,7 +633,7 @@ class CzIntegrationTests(unittest.TestCase):
                     "如何修改": "已完成修改",
                 }
             ],
-            {"手机": "cat-phone"},
+            {"质检流程": "cat-process"},
         )[0]
 
         self.assertEqual(first["idempotency_key"], second["idempotency_key"])
@@ -284,7 +703,7 @@ class CzIntegrationTests(unittest.TestCase):
 
         result = adapter.submit_candidates(
             [_candidate(index) for index in range(1, 206)],
-            {"手机": "cat-phone"},
+            {"质检流程": "cat-process"},
         )
 
         self.assertEqual(request_sizes, [100, 100, 5])
@@ -314,7 +733,7 @@ class CzIntegrationTests(unittest.TestCase):
 
         result = adapter.sync_review_candidates(
             [_candidate(index) for index in range(1, 206)],
-            {"手机": "cat-phone"},
+            {"质检流程": "cat-process"},
         )
 
         self.assertEqual(request_sizes, [100, 100, 5])
@@ -348,10 +767,10 @@ class CzIntegrationTests(unittest.TestCase):
         result = adapter.sync_review_candidates(
             [
                 _candidate(1),
-                _candidate(2, product_type="未知品类"),
+                {**_candidate(2), "知识分类": "售后服务"},
                 _candidate(3),
             ],
-            {"手机": "cat-phone"},
+            {"质检流程": "cat-process"},
         )
 
         self.assertEqual(request_event_ids, [["TOP-001", "TOP-003"]])
@@ -384,7 +803,7 @@ class CzIntegrationTests(unittest.TestCase):
 
         result = adapter.sync_review_candidates(
             [_candidate(1), _candidate(2), _candidate(3)],
-            {"手机": "cat-phone"},
+            {"质检流程": "cat-process"},
         )
 
         self.assertEqual(result["ready"], 2)

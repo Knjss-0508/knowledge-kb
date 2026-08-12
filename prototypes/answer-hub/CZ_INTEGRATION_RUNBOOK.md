@@ -1,6 +1,6 @@
 # CZ、本地工作台与第二部分批量链路运行手册
 
-更新日期：2026-07-24
+更新日期：2026-08-06
 
 ## 1. 当前生产链路
 
@@ -9,8 +9,8 @@
 → Answer Hub Automation API / 无人值守队列
 → 完整会话、历史实际回复和案例图进入无标准引用工作流
 → 原子问题拆分与 1～N 主题聚类
-→ 标注主题问题分类和是否值得沉淀
-→ 仅对值得沉淀主题生成10项候选知识
+→ 标注主题问题分类（质检标准、质检流程、案例解析、课外常识、不确定）和是否值得沉淀
+→ 仅对值得沉淀主题生成12项候选知识
 → 模型初标转写内容质量
 → POST /api/v1/integration/knowledge-review-candidates:batch
 → 答疑中台“候选价值复核”
@@ -21,14 +21,40 @@
 
 本链路不读取、不检索、不引用质检标准。旧标准关联代码仍保留，但不作为当前批量入口。
 
-10项候选字段为：
+12项候选字段为：
 
 ```text
 知识ID、主标题、副标题、知识内容、图例、推荐回复、
-知识分类、关联标准项、适用范围、关键词
+知识分类、关联标准项、适用范围、适用品牌、适用机型、关键词
 ```
 
 `关联标准项`字段始终保留。当前无标准流程不主动生成标准关联；新候选默认为空，已有标准关联和来源版本保留，并进入“标准关联搁置”队列。
+
+`适用范围`只能填写固定产品品类，例如`手机`、`笔记本`、`平板电脑`，不得带任何后缀。
+来源事实明确限制品牌或具体机型时，分别填写`适用品牌`、`适用机型`；没有来源时
+保持为空。CZ同步时分别映射到`applicable_categories`、`applicable_brands`和
+`applicable_models`。
+
+固定品类共12项：手机、平板电脑、智能手表、耳机/耳麦、笔记本、游戏机、游戏卡带、
+单电/微单机身、单反机身、相机镜头、手写笔、学习机。旧`相机机身`无法自动判断所属
+新类别，必须进入人工确认。
+
+主题知识转写会先建立来源事实证据包：
+
+- 每条事实包含事实ID、来源记录ID、人工核心问题、人工判定结论、聊天、
+  历史实际回复和案例图；
+- 不再固定读取前5条，而是优先选择边界、不同判定结论、完整上下文和带图事实；
+- `主题事实引用`和`主题图例来源`用于审计图片与来源案例的对应关系；
+- 正文和推荐回复中的每条实质陈述都必须由同一来源事实或已命中真实标准支持；
+  无来源的阈值、对象、操作、原因、范围或判定会写入`主题无来源内容`并强制标记为
+  “需修改”，模型初审不能覆盖该门禁；
+- `图例`只从当前主题的代表性来源事实中选择，不允许跨主题或跨案例借图。
+
+同步CZ候选价值复核时，知识正文使用富文本`blocks`：第一块为正文，随后为对应案例图
+的`image/external_url`块和来源案例视频的`video/external_url`块；事实引用、图例来源和
+视频来源同时写入`evidence_excerpt`。图片和视频都只是来源证据，不能脱离聊天和人工
+确认字段单独形成判定结论；视频仅供人工播放核验，不参与自动判定。送审前还会核验媒体
+追踪中的事实ID与来源记录ID确实属于当前候选，伪造或错配追踪按无来源媒体处理。
 
 ## 2. Qwen3批量导入拦截规则
 
@@ -57,16 +83,19 @@ CZ 使用 `Qwen/Qwen3-Embedding-0.6B` 对“主标题 + 知识正文”查重：
 根目录工作台`.env`：
 
 ```dotenv
-KB_BASE_URL=http://127.0.0.1:8000
+KB_BASE_URL=http://127.0.0.1:8801
 KB_INTEGRATION_KEY=
 KB_TIMEOUT_SECONDS=30
 KB_MAX_RETRIES=3
 KB_RETRY_BACKOFF_SECONDS=0.5
 
 MIMO_API_KEY=
-MIMO_BASE_URL=
-MIMO_MODEL=
+MIMO_BASE_URL=https://api.xiaomimimo.com/v1
+MIMO_MODEL=mimo-v2.5
+MIMO_MEDIA_MODEL=mimo-v2.5
 MIMO_TIMEOUT_SECONDS=60
+MIMO_INPUT_COST_PER_MILLION_TOKENS=0.14
+MIMO_OUTPUT_COST_PER_MILLION_TOKENS=0.28
 ```
 
 CZ目录`.env`：
@@ -75,8 +104,8 @@ CZ目录`.env`：
 INTEGRATION_API_KEY=
 
 MIMO_API_KEY=
-MIMO_BASE_URL=
-MIMO_MODEL=
+MIMO_BASE_URL=https://api.xiaomimimo.com/v1
+MIMO_MODEL=mimo-v2.5
 MIMO_TIMEOUT_SECONDS=60
 
 THIRD_PART_SOURCE_DIR=
@@ -122,7 +151,9 @@ Copy-Item .\cz-knowledge-kb\knowledge-kb-master\.env.example `
 .\scripts\start_local_cz.ps1
 ```
 
-基础`docker-compose.yml`已经包含PostgreSQL、Redis、CZ后端前端和Qwen3 Embedding。
+启动脚本会组合加载基础`docker-compose.yml`、本地数据库
+`docker-compose.local.yml`和对应CPU/GPU的Qwen3 Embedding覆盖文件。
+本机宿主端口使用`8801`，容器内后端仍监听`8000`。
 
 ### 4.3 GPU启动
 
@@ -133,8 +164,8 @@ Copy-Item .\cz-knowledge-kb\knowledge-kb-master\.env.example `
 ### 4.4 健康检查
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health
-Invoke-RestMethod http://127.0.0.1:8000/ready
+Invoke-RestMethod http://127.0.0.1:8801/health
+Invoke-RestMethod http://127.0.0.1:8801/ready
 ```
 
 `/ready`必须同时确认数据库和Qwen3 Embedding可用。Embedding不可用时批量导入应返回`DEDUP_UNAVAILABLE`，不能跳过查重。
@@ -234,7 +265,8 @@ docker compose config --quiet
 ## 8. 常见问题
 
 - `401/403`：检查两侧集成密钥是否一致。
-- `MiMo未配置`：会回退规则草稿并进入重点复核。
+- `MiMo未配置`：无人值守流程默认停止并等待人工确认；只有显式允许继续后才回退
+  规则草稿，且必须进入人工优先审核。
 - `DEDUP_UNAVAILABLE`：Qwen3 Embedding未就绪，保持原幂等键稍后重试。
 - `DUPLICATE_BLOCKED`：明确重复，停止送审并查看命中知识。
 - `CATEGORY_NOT_FOUND`：重新选择CZ当前分类。
