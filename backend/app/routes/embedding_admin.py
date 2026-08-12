@@ -118,12 +118,13 @@ def _task_runner_url(job_id: str) -> str:
     base_url = settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL.strip().rstrip("/")
     path = f"{_TASK_RUNNER_PATH}/{job_id}"
     if not base_url:
-        raise HTTPException(503, "尚未配置训练任务 HTTPS 公网地址")
+        raise HTTPException(503, "尚未配置训练任务访问根地址")
     parsed = urlparse(base_url)
-    if parsed.scheme.lower() != "https":
-        raise HTTPException(503, "训练任务公网地址必须使用 HTTPS")
+    scheme = parsed.scheme.lower()
     if not parsed.netloc or not parsed.hostname:
-        raise HTTPException(503, "训练任务公网地址格式无效")
+        raise HTTPException(503, "训练任务访问根地址格式无效")
+    if scheme not in {"http", "https"}:
+        raise HTTPException(503, "训练任务访问根地址必须使用 HTTP(S)")
     if (
         parsed.username
         or parsed.password
@@ -132,7 +133,7 @@ def _task_runner_url(job_id: str) -> str:
         or parsed.query
         or parsed.fragment
     ):
-        raise HTTPException(503, "训练任务公网地址只能填写 HTTPS 根地址")
+        raise HTTPException(503, "训练任务访问地址只能填写根地址")
     return f"{base_url}{path}"
 
 

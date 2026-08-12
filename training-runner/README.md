@@ -2,7 +2,8 @@
 
 本机仅作为 GPU 算力节点，不运行知识库前端、后端、PostgreSQL、Redis、
 Embedding 服务或本项目 Docker 容器。知识库完整服务运行在服务器，
-Runner 只通过出站 HTTPS 请求领取指定训练任务、回传进度和结果。
+Runner 只通过出站请求领取指定训练任务、回传进度和结果。任务 URL 必须是新部署
+对外入口提供的 HTTP(S) 完整任务地址。
 
 ## 目录边界
 
@@ -28,7 +29,7 @@ ms-swift 与 bitsandbytes。它不会执行 Docker Compose，也不会启动项�
 
 在工作台“训练与版本”中创建 LoRA 任务后，会显示一次性可复制的：
 
-- `TRAINING_JOB_URL`：精确绑定该任务的完整 HTTPS 地址
+- `TRAINING_JOB_URL`：精确绑定该任务的完整访问地址
 - `TRAINING_JOB_TOKEN`：只允许领取和更新该任务的短期密钥
 
 将两项粘贴到桌面“知识库模型训练控制台”，点击“保存并开始此任务”。

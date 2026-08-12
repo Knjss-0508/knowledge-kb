@@ -25,11 +25,16 @@ $script:ActionProcess = $null
 $script:ActionName = ""
 $script:ActionStdout = ""
 $script:ActionStderr = ""
+$script:ActionStartedAt = $null
 $script:RunnerProcess = $null
 $script:RunnerStdout = ""
 $script:RunnerStderr = ""
+$script:RunnerStartedAt = $null
 $script:ServerProbeState = "unknown"
 $script:FooterMessage = "控制台已就绪"
+$script:OperationFeedbackState = "idle"
+$script:OperationFeedbackMessage = "等待操作。环境检查首次加载 ms-swift 时可能需要 2–4 分钟。"
+$script:RefreshErrorMessage = ""
 
 [xml]$Xaml = @'
 <Window
@@ -172,6 +177,7 @@ $script:FooterMessage = "控制台已就绪"
               <Button x:Name="QuickCheckButton" Content="环境检查" Style="{StaticResource SecondaryButton}"/>
               <Button x:Name="QuickProbeButton" Content="检测任务连接" Style="{StaticResource SecondaryButton}"/>
             </WrapPanel>
+            <TextBlock x:Name="QuickFeedbackText" Text="等待操作。环境检查首次加载 ms-swift 时可能需要 2–4 分钟。" Margin="0,2,0,0" Foreground="#667085" FontSize="11" TextWrapping="Wrap"/>
           </StackPanel>
         </Border>
 
@@ -183,7 +189,7 @@ $script:FooterMessage = "控制台已就绪"
               <TextBlock Text="任务 URL 和密钥由工作台在创建任务时生成。密钥只保存到本机 training-runner\.env，不显示在日志中。" Margin="0,5,0,14" Foreground="#667085" FontSize="11" TextWrapping="Wrap"/>
 
               <TextBlock Text="任务接入 URL" FontWeight="SemiBold" Foreground="#475467"/>
-              <TextBox x:Name="ServerUrlInput" Margin="0,5,0,11" ToolTip="粘贴工作台生成的完整 HTTPS 任务 URL"/>
+              <TextBox x:Name="ServerUrlInput" Margin="0,5,0,11" ToolTip="粘贴工作台生成的完整 HTTP(S) 任务 URL"/>
 
               <TextBlock Text="Runner 标识" FontWeight="SemiBold" Foreground="#475467"/>
               <TextBox x:Name="RunnerIdInput" Margin="0,5,0,11"/>
@@ -214,6 +220,9 @@ $script:FooterMessage = "控制台已就绪"
                 <Button x:Name="StopButton" Content="停止当前训练" Style="{StaticResource DangerButton}"/>
                 <Button x:Name="OpenArtifactsButton" Content="打开训练产物" Style="{StaticResource SecondaryButton}"/>
               </WrapPanel>
+              <Border Margin="0,4,0,0" Padding="10,8" Background="#F7F9FC" BorderBrush="#E4E7EC" BorderThickness="1" CornerRadius="5">
+                <TextBlock x:Name="OperationFeedbackText" Text="等待操作。环境检查首次加载 ms-swift 时可能需要 2–4 分钟。" Foreground="#667085" FontSize="11" TextWrapping="Wrap"/>
+              </Border>
             </StackPanel>
           </Border>
 
@@ -284,7 +293,8 @@ $ControlNames = @(
     "RuntimeRootInput", "SaveConfigButton", "InstallButton", "CheckButton",
     "SmokeButton", "ProbeButton", "StartButton", "StopButton",
     "QuickStartButton", "QuickStopButton", "QuickCheckButton",
-    "QuickProbeButton", "OpenArtifactsButton", "GpuSummaryText", "CurrentActionText",
+    "QuickProbeButton", "OpenArtifactsButton", "QuickFeedbackText",
+    "OperationFeedbackText", "GpuSummaryText", "CurrentActionText",
     "ActionProgress", "LogBox", "FooterText"
 )
 $Controls = @{}
@@ -298,6 +308,117 @@ $StateColors = @{
     bad = "#D92D20"
     idle = "#98A2B3"
     busy = "#456FE8"
+}
+
+$ActionDefinitions = @{
+    install = @{
+        label = "安装训练环境"
+        running = "正在安装训练环境；首次安装需要下载依赖，可能耗时较长"
+        button = "安装中…"
+        success = "训练环境安装完成"
+    }
+    check = @{
+        label = "环境检查"
+        running = "正在检查 CUDA、4-bit NF4 与 ms-swift；首次加载通常需要 2–4 分钟"
+        button = "检查中…"
+        success = "环境检查通过"
+    }
+    smoke = @{
+        label = "1 Step 实训"
+        running = "正在执行 1 Step 真实 QLoRA；期间会占用本机 GPU"
+        button = "实训中…"
+        success = "1 Step 实训完成"
+    }
+    probe = @{
+        label = "任务连接检测"
+        running = "正在验证任务 URL、密钥与服务器连接"
+        button = "检测中…"
+        success = "任务连接检测通过"
+    }
+}
+
+function Get-ActionDefinition {
+    param([string]$Action)
+    if ($ActionDefinitions.ContainsKey($Action)) {
+        return $ActionDefinitions[$Action]
+    }
+    return @{
+        label = $Action
+        running = "正在执行：$Action"
+        button = "执行中…"
+        success = "操作完成：$Action"
+    }
+}
+
+function Format-Elapsed {
+    param([DateTime]$StartedAt)
+    if ($StartedAt -eq [DateTime]::MinValue) {
+        return "00:00"
+    }
+    $Elapsed = [DateTime]::Now - $StartedAt
+    $Hours = [Math]::Floor($Elapsed.TotalHours)
+    if ($Hours -gt 0) {
+        return "{0}:{1:00}:{2:00}" -f $Hours, $Elapsed.Minutes, $Elapsed.Seconds
+    }
+    return "{0:00}:{1:00}" -f [Math]::Floor($Elapsed.TotalMinutes), $Elapsed.Seconds
+}
+
+function Set-OperationFeedback {
+    param(
+        [ValidateSet("good", "warn", "bad", "idle", "busy")]
+        [string]$State,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+    $script:OperationFeedbackState = $State
+    $script:OperationFeedbackMessage = $Message
+    $Color = switch ($State) {
+        "good" { "#027A48" }
+        "warn" { "#B54708" }
+        "bad" { "#B42318" }
+        "busy" { "#175CD3" }
+        default { "#667085" }
+    }
+    $Brush = New-Object Windows.Media.SolidColorBrush (
+        [Windows.Media.ColorConverter]::ConvertFromString($Color)
+    )
+    foreach ($TextControl in @(
+        $Controls.QuickFeedbackText,
+        $Controls.OperationFeedbackText
+    )) {
+        if ($TextControl) {
+            $TextControl.Text = $Message
+            $TextControl.Foreground = $Brush
+        }
+    }
+}
+
+function Set-ActionButtonContent {
+    param(
+        [string]$Action = "",
+        [bool]$Running = $false
+    )
+    $Controls.InstallButton.Content = "安装环境"
+    $Controls.CheckButton.Content = "环境检查"
+    $Controls.QuickCheckButton.Content = "环境检查"
+    $Controls.SmokeButton.Content = "1 Step 实训"
+    $Controls.ProbeButton.Content = "检测任务连接"
+    $Controls.QuickProbeButton.Content = "检测任务连接"
+    if (-not $Running) {
+        return
+    }
+    $ButtonText = [string](Get-ActionDefinition $Action).button
+    switch ($Action) {
+        "install" { $Controls.InstallButton.Content = $ButtonText }
+        "check" {
+            $Controls.CheckButton.Content = $ButtonText
+            $Controls.QuickCheckButton.Content = $ButtonText
+        }
+        "smoke" { $Controls.SmokeButton.Content = $ButtonText }
+        "probe" {
+            $Controls.ProbeButton.Content = $ButtonText
+            $Controls.QuickProbeButton.Content = $ButtonText
+        }
+    }
 }
 
 function Set-Indicator {
@@ -369,7 +490,6 @@ function Test-ConfigComplete {
     $ValidUrl = (
         [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$Uri) -and
         $Uri.Scheme -in @("http", "https") -and
-        ($Uri.Scheme -eq "https" -or $Uri.IsLoopback) -and
         -not $Uri.UserInfo -and
         -not $Uri.Query -and
         -not $Uri.Fragment -and
@@ -400,9 +520,6 @@ function Save-RunnerConfig {
             $TaskUri.AbsolutePath -notmatch "^/api/v1/embedding-model/runner/tasks/etj-[A-Za-z0-9._-]+/?$"
         ) {
             throw "请粘贴工作台生成的完整 LoRA 任务接入 URL"
-        }
-        if ($TaskUri.Scheme -ne "https" -and -not $TaskUri.IsLoopback) {
-            throw "公网任务接入 URL 必须使用 HTTPS"
         }
         if ($RunnerId -and $RunnerId -notmatch "^[A-Za-z0-9._-]+$") {
             throw "Runner 标识只允许字母、数字、点、横线和下划线"
@@ -575,51 +692,66 @@ function Start-HostProcess {
 function Start-HostAction {
     param([Parameter(Mandatory = $true)][string]$Action)
     if ($script:ActionProcess -and -not $script:ActionProcess.HasExited) {
-        Show-Message "已有操作正在执行，请等待当前操作结束。"
+        $CurrentDefinition = Get-ActionDefinition $script:ActionName
+        $Message = "$($CurrentDefinition.label)正在执行，请等待当前操作结束。"
+        Set-OperationFeedback "warn" $Message
+        Show-Message $Message
         return
     }
     if ($Action -eq "probe") {
         if (-not (Save-RunnerConfig -Silent)) {
+            Set-OperationFeedback "warn" "任务连接检测未开始：请先填写有效的任务 URL 和密钥。"
             return
         }
         if (-not (Test-ConfigComplete)) {
+            Set-OperationFeedback "warn" "任务连接检测未开始：任务 URL、密钥或 Runner 标识不完整。"
             Show-Message "请先粘贴完整的任务 URL、任务密钥，并填写 Runner 标识。" "任务信息不完整" ([Windows.MessageBoxImage]::Warning)
             return
         }
     }
+    $Definition = Get-ActionDefinition $Action
     try {
         $Started = Start-HostProcess -Action $Action -LogPrefix "console-action"
         $script:ActionProcess = $Started.process
         $script:ActionStdout = $Started.stdout
         $script:ActionStderr = $Started.stderr
         $script:ActionName = $Action
-        $script:FooterMessage = "正在执行：$Action"
+        $script:ActionStartedAt = [DateTime]::Now
+        $script:FooterMessage = "$($Definition.label)已启动"
+        Set-OperationFeedback "busy" "$($Definition.running)。已用时 00:00。"
     } catch {
+        Set-OperationFeedback "bad" "$($Definition.label)未能启动：$($_.Exception.Message)"
         Show-Message $_.Exception.Message "无法启动操作" ([Windows.MessageBoxImage]::Error)
     }
 }
 
 function Start-Runner {
     if (Get-RunnerPid) {
+        Set-OperationFeedback "warn" "当前 LoRA 任务已经在运行。"
         Show-Message "当前 LoRA 任务已经在运行。"
         return
     }
     if (-not (Save-RunnerConfig -Silent)) {
+        Set-OperationFeedback "warn" "训练任务未开始：请先检查并保存任务接入信息。"
         return
     }
     if (-not (Test-ConfigComplete)) {
+        Set-OperationFeedback "warn" "训练任务未开始：任务 URL、密钥或 Runner 标识不完整。"
         Show-Message "请先粘贴完整的任务 URL、任务密钥，并填写 Runner 标识。" "任务信息不完整" ([Windows.MessageBoxImage]::Warning)
         return
     }
     if (-not (Test-EnvironmentReady)) {
+        Set-OperationFeedback "warn" "训练任务未开始：独立训练环境尚未就绪。"
         Show-Message "训练环境尚未安装，请先点击“安装环境”。" "环境未就绪" ([Windows.MessageBoxImage]::Warning)
         return
     }
     try {
+        Set-OperationFeedback "busy" "正在启动本机 Runner 并领取指定 LoRA 任务。"
         $Started = Start-HostProcess -Action "run" -LogPrefix "runner"
         $script:RunnerProcess = $Started.process
         $script:RunnerStdout = $Started.stdout
         $script:RunnerStderr = $Started.stderr
+        $script:RunnerStartedAt = [DateTime]::Now
         [IO.File]::WriteAllText(
             (Runner-PidFile),
             [string]$Started.process.Id,
@@ -627,6 +759,7 @@ function Start-Runner {
         )
         $script:FooterMessage = "LoRA 任务已启动，正在领取指定任务"
     } catch {
+        Set-OperationFeedback "bad" "Runner 启动失败：$($_.Exception.Message)"
         Show-Message $_.Exception.Message "Runner 启动失败" ([Windows.MessageBoxImage]::Error)
     }
 }
@@ -634,6 +767,7 @@ function Start-Runner {
 function Stop-Runner {
     $RunnerPid = Get-RunnerPid
     if (-not $RunnerPid) {
+        Set-OperationFeedback "idle" "Runner 当前没有运行。"
         Show-Message "Runner 当前没有运行。"
         return
     }
@@ -650,18 +784,186 @@ function Stop-Runner {
     Stop-ProcessTree -RootPid $RunnerPid
     Remove-Item -LiteralPath (Runner-PidFile) -Force -ErrorAction SilentlyContinue
     $script:RunnerProcess = $null
+    $script:RunnerStartedAt = $null
     $script:FooterMessage = "当前训练已停止"
+    Set-OperationFeedback "good" "当前训练已停止。"
+}
+
+function Get-LogEncoding {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $Utf8 = [Text.UTF8Encoding]::new($false, $true)
+    $Stream = $null
+    try {
+        $Stream = [IO.File]::Open(
+            $Path,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::ReadWrite
+        )
+        $Length = [Math]::Min(4096, [int]$Stream.Length)
+        if ($Length -le 0) {
+            return [Text.UTF8Encoding]::new($false)
+        }
+        $Buffer = [byte[]]::new($Length)
+        [void]$Stream.Read($Buffer, 0, $Length)
+        try {
+            [void]$Utf8.GetString($Buffer)
+            return [Text.UTF8Encoding]::new($false)
+        } catch {
+            $CodePage = [Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage
+            return [Text.Encoding]::GetEncoding($CodePage)
+        }
+    } finally {
+        if ($Stream) {
+            $Stream.Dispose()
+        }
+    }
+}
+
+function Read-LogTailLines {
+    param(
+        [string]$Path,
+        [int]$LineCount = 160
+    )
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return @()
+    }
+    $Stream = $null
+    try {
+        $Encoding = Get-LogEncoding -Path $Path
+        $Stream = [IO.File]::Open(
+            $Path,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::ReadWrite
+        )
+        $MaxBytes = 262144
+        $Start = [Math]::Max(0, $Stream.Length - $MaxBytes)
+        [void]$Stream.Seek($Start, [IO.SeekOrigin]::Begin)
+        $Buffer = [byte[]]::new([int]($Stream.Length - $Start))
+        $Read = $Stream.Read($Buffer, 0, $Buffer.Length)
+        $Text = $Encoding.GetString($Buffer, 0, $Read)
+        if ($Start -gt 0) {
+            $FirstLineBreak = $Text.IndexOf("`n")
+            if ($FirstLineBreak -ge 0) {
+                $Text = $Text.Substring($FirstLineBreak + 1)
+            }
+        }
+        return @(
+            $Text -split "\r?\n" |
+                Select-Object -Last $LineCount
+        )
+    } catch {
+        return @("[日志读取失败] $($_.Exception.Message)")
+    } finally {
+        if ($Stream) {
+            $Stream.Dispose()
+        }
+    }
 }
 
 function Log-Tail {
     param([string]$Path, [string]$Title)
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    $Lines = @(Read-LogTailLines -Path $Path)
+    if ($Lines.Count -eq 0) {
         return @()
     }
     return @(
         "===== $Title ====="
-        Get-Content -LiteralPath $Path -Tail 160 -ErrorAction SilentlyContinue
+        $Lines
     )
+}
+
+function Get-LogFailureSummary {
+    param(
+        [string]$StdoutPath,
+        [string]$StderrPath
+    )
+    $Lines = @()
+    $Lines += Read-LogTailLines -Path $StdoutPath -LineCount 40
+    $Lines += Read-LogTailLines -Path $StderrPath -LineCount 40
+    $Useful = @(
+        $Lines |
+            Where-Object {
+                $_ -and
+                $_.Trim() -and
+                $_ -notmatch "(?i)(token|secret|password|key)\s*="
+            } |
+            Select-Object -Last 8
+    )
+    return ($Useful -join "`r`n")
+}
+
+function Complete-HostAction {
+    $Process = $script:ActionProcess
+    $Action = $script:ActionName
+    $Definition = Get-ActionDefinition $Action
+    $Process.WaitForExit()
+    $ExitCode = $Process.ExitCode
+    $Duration = Format-Elapsed $script:ActionStartedAt
+    if ($Action -eq "probe") {
+        $script:ServerProbeState = if ($ExitCode -eq 0) { "good" } else { "bad" }
+    }
+    $FailureSummary = if ($ExitCode -eq 0) {
+        ""
+    } else {
+        Get-LogFailureSummary `
+            -StdoutPath $script:ActionStdout `
+            -StderrPath $script:ActionStderr
+    }
+    $script:ActionProcess = $null
+    $script:ActionName = ""
+    $script:ActionStartedAt = $null
+    if ($ExitCode -eq 0) {
+        $Message = "$($Definition.success)，用时 $Duration。"
+        $script:FooterMessage = $Message
+        Set-OperationFeedback "good" $Message
+        Update-LogView
+        return
+    }
+    $Message = "$($Definition.label)失败，退出码 $ExitCode，用时 $Duration。"
+    $script:FooterMessage = $Message
+    Set-OperationFeedback "bad" "$Message 请查看右侧错误日志。"
+    Update-LogView
+    $DialogMessage = if ($FailureSummary) {
+        "$Message`r`n`r`n最近错误：`r`n$FailureSummary"
+    } else {
+        "$Message`r`n`r`n未捕获到更多错误输出，请查看右侧运行日志。"
+    }
+    Show-Message $DialogMessage "$($Definition.label)失败" ([Windows.MessageBoxImage]::Error)
+}
+
+function Complete-RunnerProcess {
+    $script:RunnerProcess.WaitForExit()
+    $ExitCode = $script:RunnerProcess.ExitCode
+    $Duration = Format-Elapsed $script:RunnerStartedAt
+    $FailureSummary = if ($ExitCode -eq 0) {
+        ""
+    } else {
+        Get-LogFailureSummary `
+            -StdoutPath $script:RunnerStdout `
+            -StderrPath $script:RunnerStderr
+    }
+    Remove-Item -LiteralPath (Runner-PidFile) -Force -ErrorAction SilentlyContinue
+    $script:RunnerProcess = $null
+    $script:RunnerStartedAt = $null
+    if ($ExitCode -eq 0) {
+        $Message = "当前 LoRA 任务已结束，Runner 已退出，用时 $Duration。"
+        $script:FooterMessage = $Message
+        Set-OperationFeedback "good" $Message
+        Update-LogView
+        return
+    }
+    $Message = "当前 LoRA 任务执行失败，退出码 $ExitCode，用时 $Duration。"
+    $script:FooterMessage = $Message
+    Set-OperationFeedback "bad" "$Message 请查看右侧错误日志。"
+    Update-LogView
+    $DialogMessage = if ($FailureSummary) {
+        "$Message`r`n`r`n最近错误：`r`n$FailureSummary"
+    } else {
+        "$Message`r`n`r`n未捕获到更多错误输出，请查看右侧运行日志。"
+    }
+    Show-Message $DialogMessage "训练任务失败" ([Windows.MessageBoxImage]::Error)
 }
 
 function Update-LogView {
@@ -687,14 +989,16 @@ function Update-LogView {
 
 function Update-ConsoleState {
     if ($script:RunnerProcess -and $script:RunnerProcess.HasExited) {
-        $RunnerExitCode = $script:RunnerProcess.ExitCode
-        Remove-Item -LiteralPath (Runner-PidFile) -Force -ErrorAction SilentlyContinue
-        $script:FooterMessage = if ($RunnerExitCode -eq 0) {
-            "当前 LoRA 任务已结束，Runner 已退出"
+        Complete-RunnerProcess
+    }
+
+    $ActionRunning = $false
+    if ($script:ActionProcess) {
+        if ($script:ActionProcess.HasExited) {
+            Complete-HostAction
         } else {
-            "当前 LoRA 任务执行失败，退出码 $RunnerExitCode"
+            $ActionRunning = $true
         }
-        $script:RunnerProcess = $null
     }
 
     $ConfigComplete = Test-ConfigComplete
@@ -705,7 +1009,10 @@ function Update-ConsoleState {
     }
 
     $EnvironmentReady = Test-EnvironmentReady
-    if ($EnvironmentReady) {
+    if ($ActionRunning -and $script:ActionName -in @("install", "check", "smoke")) {
+        $Definition = Get-ActionDefinition $script:ActionName
+        Set-Indicator $Controls.EnvironmentDot $Controls.EnvironmentStatus "busy" "$($Definition.label)正在执行"
+    } elseif ($EnvironmentReady) {
         Set-Indicator $Controls.EnvironmentDot $Controls.EnvironmentStatus "good" "Python、CUDA 与 ms-swift 已安装"
     } else {
         Set-Indicator $Controls.EnvironmentDot $Controls.EnvironmentStatus "warn" "尚未安装独立训练环境"
@@ -718,10 +1025,14 @@ function Update-ConsoleState {
         Set-Indicator $Controls.RunnerDot $Controls.RunnerStatus "idle" "当前没有训练任务"
     }
 
-    switch ($script:ServerProbeState) {
-        "good" { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "good" "任务 URL 和密钥可用" }
-        "bad" { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "bad" "任务连接失败，请查看日志" }
-        default { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "idle" "尚未检测任务连接" }
+    if ($ActionRunning -and $script:ActionName -eq "probe") {
+        Set-Indicator $Controls.ServerDot $Controls.ServerStatus "busy" "正在检测任务连接"
+    } else {
+        switch ($script:ServerProbeState) {
+            "good" { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "good" "任务 URL 和密钥可用" }
+            "bad" { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "bad" "任务连接失败，请查看日志" }
+            default { Set-Indicator $Controls.ServerDot $Controls.ServerStatus "idle" "尚未检测任务连接" }
+        }
     }
 
     $Gpu = Get-GpuSnapshot
@@ -734,37 +1045,36 @@ function Update-ConsoleState {
         $Controls.GpuSummaryText.Text = "未检测到 NVIDIA GPU 或 nvidia-smi 不可用"
     }
 
-    $ActionRunning = (
-        $script:ActionProcess -and
-        -not $script:ActionProcess.HasExited
-    )
     if ($ActionRunning) {
-        $Controls.CurrentActionText.Text = "正在执行：$($script:ActionName)"
+        $Definition = Get-ActionDefinition $script:ActionName
+        $Elapsed = Format-Elapsed $script:ActionStartedAt
+        $Controls.CurrentActionText.Text = "$($Definition.label) · 已用时 $Elapsed"
         $Controls.ActionProgress.IsIndeterminate = $true
-    } else {
-        if ($script:ActionProcess) {
-            $ExitCode = $script:ActionProcess.ExitCode
-            if ($script:ActionName -eq "probe") {
-                $script:ServerProbeState = if ($ExitCode -eq 0) { "good" } else { "bad" }
-            }
-            $script:FooterMessage = if ($ExitCode -eq 0) {
-                "操作完成：$($script:ActionName)"
-            } else {
-                "操作失败：$($script:ActionName)，退出码 $ExitCode"
-            }
-            $script:ActionProcess = $null
-            $script:ActionName = ""
-        }
-        $Controls.CurrentActionText.Text = if ($RunnerPid) {
-            "正在执行指定 LoRA 任务"
+        $script:FooterMessage = "$($Definition.label)正在执行 · 已用时 $Elapsed"
+        Set-OperationFeedback "busy" "$($Definition.running)。已用时 $Elapsed。右侧日志会持续刷新。"
+    } elseif ($RunnerPid) {
+        $Controls.CurrentActionText.Text = if ($script:RunnerStartedAt) {
+            $Elapsed = Format-Elapsed $script:RunnerStartedAt
+            "正在执行指定 LoRA 任务 · 已用时 $Elapsed"
         } else {
-            "空闲"
+            "正在执行指定 LoRA 任务"
         }
+        $Controls.ActionProgress.IsIndeterminate = $true
+        if ($script:RunnerStartedAt) {
+            Set-OperationFeedback "busy" "LoRA 任务正在运行，已用时 $Elapsed。右侧日志会持续刷新。"
+        }
+    } else {
+        $Controls.CurrentActionText.Text = "空闲"
         $Controls.ActionProgress.IsIndeterminate = $false
         $Controls.ActionProgress.Value = 0
+        Set-OperationFeedback `
+            -State $script:OperationFeedbackState `
+            -Message $script:OperationFeedbackMessage
     }
 
+    Set-ActionButtonContent -Action $script:ActionName -Running $ActionRunning
     $Controls.FooterText.Text = $script:FooterMessage
+    $Controls.SaveConfigButton.IsEnabled = -not $ActionRunning -and -not $RunnerPid
     $Controls.InstallButton.IsEnabled = -not $ActionRunning -and -not $RunnerPid
     $Controls.CheckButton.IsEnabled = -not $ActionRunning -and -not $RunnerPid
     $Controls.SmokeButton.IsEnabled = -not $ActionRunning -and -not $RunnerPid
@@ -776,6 +1086,58 @@ function Update-ConsoleState {
     $Controls.QuickCheckButton.IsEnabled = $Controls.CheckButton.IsEnabled
     $Controls.QuickProbeButton.IsEnabled = $Controls.ProbeButton.IsEnabled
     Update-LogView
+}
+
+function Report-RefreshFailure {
+    param([Parameter(Mandatory = $true)][Exception]$Exception)
+    $Message = "界面状态刷新失败：$($Exception.Message)"
+    $script:RefreshErrorMessage = $Message
+    $script:FooterMessage = $Message
+    Set-OperationFeedback "bad" "$Message。后台操作可能仍在运行，请查看右侧日志。"
+    $Controls.FooterText.Text = $script:FooterMessage
+    $Controls.CurrentActionText.Text = "状态刷新异常"
+    $Controls.ActionProgress.IsIndeterminate = $false
+}
+
+function Invoke-ConsoleRefresh {
+    try {
+        Update-ConsoleState
+        $script:RefreshErrorMessage = ""
+        return $true
+    } catch {
+        Report-RefreshFailure -Exception $_.Exception
+        return $false
+    }
+}
+
+function Invoke-UiCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Title,
+        [Parameter(Mandatory = $true)][scriptblock]$Command
+    )
+    try {
+        & $Command
+    } catch {
+        $Message = $_.Exception.Message
+        $script:FooterMessage = "$Title失败：$Message"
+        Set-OperationFeedback "bad" "$Title失败：$Message"
+        Show-Message $Message "$Title失败" ([Windows.MessageBoxImage]::Error)
+    } finally {
+        if (-not (Invoke-ConsoleRefresh) -and $script:RefreshErrorMessage) {
+            Show-Message `
+                $script:RefreshErrorMessage `
+                "界面刷新失败" `
+                ([Windows.MessageBoxImage]::Error)
+        }
+    }
+}
+
+function Open-TrainingArtifacts {
+    $Path = Join-Path (Current-RuntimeRoot) "artifacts"
+    New-Item -ItemType Directory -Force -Path $Path | Out-Null
+    Start-Process -FilePath "explorer.exe" -ArgumentList @($Path) -ErrorAction Stop
+    $script:FooterMessage = "已打开训练产物目录"
+    Set-OperationFeedback "good" "已打开训练产物目录：$Path"
 }
 
 $Existing = Read-RunnerConfig
@@ -798,53 +1160,79 @@ $Controls.RuntimeRootInput.Text = if ($Existing["TRAINING_RUNTIME_ROOT"]) {
 }
 
 $Controls.SaveConfigButton.Add_Click({
-    [void](Save-RunnerConfig)
-    Update-ConsoleState
-})
-$Controls.InstallButton.Add_Click({ Start-HostAction "install" })
-$Controls.CheckButton.Add_Click({ Start-HostAction "check" })
-$Controls.SmokeButton.Add_Click({
-    $Choice = [Windows.MessageBox]::Show(
-        $Window,
-        "将执行 1 Step 真实 QLoRA，并占用本机 GPU。是否继续？",
-        "确认实训",
-        [Windows.MessageBoxButton]::YesNo,
-        [Windows.MessageBoxImage]::Question
-    )
-    if ($Choice -eq [Windows.MessageBoxResult]::Yes) {
-        Start-HostAction "smoke"
+    Invoke-UiCommand "保存任务信息" {
+        if (Save-RunnerConfig) {
+            Set-OperationFeedback "good" "任务 URL、密钥与 Runner 信息已保存到本机。"
+        }
     }
 })
-$Controls.ProbeButton.Add_Click({ Start-HostAction "probe" })
-$Controls.StartButton.Add_Click({ Start-Runner })
+$Controls.InstallButton.Add_Click({
+    Invoke-UiCommand "安装训练环境" { Start-HostAction "install" }
+})
+$Controls.CheckButton.Add_Click({
+    Invoke-UiCommand "环境检查" { Start-HostAction "check" }
+})
+$Controls.SmokeButton.Add_Click({
+    Invoke-UiCommand "1 Step 实训" {
+        $Choice = [Windows.MessageBox]::Show(
+            $Window,
+            "将执行 1 Step 真实 QLoRA，并占用本机 GPU。是否继续？",
+            "确认实训",
+            [Windows.MessageBoxButton]::YesNo,
+            [Windows.MessageBoxImage]::Question
+        )
+        if ($Choice -eq [Windows.MessageBoxResult]::Yes) {
+            Start-HostAction "smoke"
+        } else {
+            Set-OperationFeedback "idle" "已取消 1 Step 实训。"
+        }
+    }
+})
+$Controls.ProbeButton.Add_Click({
+    Invoke-UiCommand "任务连接检测" { Start-HostAction "probe" }
+})
+$Controls.StartButton.Add_Click({
+    Invoke-UiCommand "启动训练任务" { Start-Runner }
+})
 $Controls.TokenInput.Add_KeyDown({
     if ($_.Key -eq [Windows.Input.Key]::Enter) {
-        Start-Runner
+        Invoke-UiCommand "启动训练任务" { Start-Runner }
     }
 })
-$Controls.StopButton.Add_Click({ Stop-Runner })
-$Controls.QuickProbeButton.Add_Click({ Start-HostAction "probe" })
-$Controls.QuickStartButton.Add_Click({ Start-Runner })
-$Controls.QuickStopButton.Add_Click({ Stop-Runner })
-$Controls.QuickCheckButton.Add_Click({ Start-HostAction "check" })
+$Controls.StopButton.Add_Click({
+    Invoke-UiCommand "停止训练任务" { Stop-Runner }
+})
+$Controls.QuickProbeButton.Add_Click({
+    Invoke-UiCommand "任务连接检测" { Start-HostAction "probe" }
+})
+$Controls.QuickStartButton.Add_Click({
+    Invoke-UiCommand "启动训练任务" { Start-Runner }
+})
+$Controls.QuickStopButton.Add_Click({
+    Invoke-UiCommand "停止训练任务" { Stop-Runner }
+})
+$Controls.QuickCheckButton.Add_Click({
+    Invoke-UiCommand "环境检查" { Start-HostAction "check" }
+})
 $Controls.OpenArtifactsButton.Add_Click({
-    $Path = Join-Path (Current-RuntimeRoot) "artifacts"
-    New-Item -ItemType Directory -Force -Path $Path | Out-Null
-    Start-Process -FilePath "explorer.exe" -ArgumentList "`"$Path`""
+    Invoke-UiCommand "打开训练产物" { Open-TrainingArtifacts }
 })
 
 $Timer = New-Object Windows.Threading.DispatcherTimer
 $Timer.Interval = [TimeSpan]::FromSeconds(1.5)
-$Timer.Add_Tick({ Update-ConsoleState })
+$Timer.Add_Tick({ [void](Invoke-ConsoleRefresh) })
 $Timer.Start()
 
 $Window.Add_Closed({
     $Timer.Stop()
 })
 
-Update-ConsoleState
+[void](Invoke-ConsoleRefresh)
 if ($ValidateOnly) {
     $Timer.Stop()
+    if ($script:RefreshErrorMessage) {
+        throw $script:RefreshErrorMessage
+    }
     Write-Output "Runner console validation passed"
     exit 0
 }

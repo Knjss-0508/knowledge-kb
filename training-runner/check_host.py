@@ -14,10 +14,16 @@ def package_version(name: str) -> str:
         return ""
 
 
+def report(message: str) -> None:
+    print(f"[环境检查] {message}", flush=True)
+
+
 def main() -> None:
+    report("正在加载 PyTorch 与 bitsandbytes，首次启动可能稍慢...")
     import bitsandbytes as bnb
     import torch
 
+    report("正在验证 NVIDIA CUDA 与 4-bit NF4...")
     if not torch.cuda.is_available():
         raise RuntimeError("PyTorch 未识别到 CUDA GPU")
 
@@ -31,7 +37,12 @@ def main() -> None:
     restored = bnb.functional.dequantize_4bit(quantized, state)
     if restored.shape != probe.shape:
         raise RuntimeError("bitsandbytes NF4 校验结果尺寸异常")
+    report(
+        "CUDA 与 NF4 验证通过："
+        f"{torch.cuda.get_device_name(0)}，CUDA {torch.version.cuda or '未知'}"
+    )
 
+    report("正在确认 ms-swift 命令与安装位置...")
     swift_cli = shutil.which("swift")
     if not swift_cli:
         candidate = (
@@ -43,7 +54,9 @@ def main() -> None:
     if not swift_cli:
         raise RuntimeError("未找到 ms-swift CLI")
 
+    report("正在加载 ms-swift；首次检查通常需要 2–4 分钟，请耐心等待...")
     from swift.pipelines import sft_main  # noqa: F401
+    report("ms-swift 加载完成。")
 
     payload = {
         "status": "ready",
@@ -59,7 +72,7 @@ def main() -> None:
         "sentence_transformers": package_version("sentence-transformers"),
         "nf4_probe": "passed",
     }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # 生产服务器部署边界与安全更新说明
 
-> 最后只读核验：2026-08-05
+> 最后只读核验：2026-08-12
 > 目的：明确本项目在共享服务器上的部署范围。后续任何运维操作只能作用于本文件列出的项目资源，不能影响服务器上的其他网站、服务、数据或容器。
 
 ## 1. 已确认的项目范围
@@ -35,15 +35,11 @@
 
 公网访问必须经项目专属 Nginx/宝塔站点反向代理进入。不得把 `8000`、PostgreSQL 或 Redis 直接暴露到公网。
 
-答疑插件的加密调用经用户于 2026-08-06 确认后，允许复用
-`zsk2.powerzhuan.cn` 的受信任 HTTPS 证书，但权限边界仅限新增以下文件：
-
-```text
-/www/server/panel/vhost/nginx/extension/zsk2.powerzhuan.cn/knowledge-kb-integration.conf
-```
-
-该文件必须来自仓库
-`deploy/nginx/knowledge-kb-integration.conf`，且只允许代理：
+知识库当前通过新部署入口 `qa-kb.10.47.193.5.nip.io` 提供页面和 API。
+该域名解析到 `10.47.193.5`，但不能仅根据 DNS 结果判断访问范围；
+需要外部接入的客户端统一使用该入口，访问范围由网关和接口鉴权控制。
+项目 Nginx 站点中的受限 API 代理规则必须与仓库
+`deploy/nginx/knowledge-kb-integration.conf` 保持一致，且只允许代理：
 
 ```text
 /api/v1/integration/standard-search
@@ -53,9 +49,10 @@
 
 第三组路径只允许 `POST`，并且仍需通过任务创建时签发的单任务密钥鉴权；
 不得代理 `/api/v1/embedding-model` 下的管理页面、任务创建、参数配置或模型
-发布接口。不得修改 `zsk2.powerzhuan.cn` 的站点根目录、PHP 配置、重写规则、
-证书文件或其他接口。原 `http://111.230.109.227:8801` 入口暂时保留用于旧
-客户端兼容；新客户端应使用 `https://zsk2.powerzhuan.cn`。
+发布接口。不得修改 `qa-kb.10.47.193.5.nip.io` 的站点根目录、重写规则或
+其他接口。页面入口统一使用
+`http://qa-kb.10.47.193.5.nip.io/app`，API 根地址统一使用
+`http://qa-kb.10.47.193.5.nip.io/api/v1`；旧公网入口不再作为客户端配置。
 
 ## 3. 项目专属更新配置
 
@@ -94,12 +91,13 @@ docker compose -p knowledge-kb \
 启用任务级本机 GPU 训练接入时，只在项目 `.env` 中设置：
 
 ```text
-EMBEDDING_TRAINING_PUBLIC_BASE_URL=https://zsk2.powerzhuan.cn
+EMBEDDING_TRAINING_PUBLIC_BASE_URL=http://qa-kb.10.47.193.5.nip.io
 ```
 
-该值只用于创建 LoRA 任务时生成可复制的 HTTPS URL，不包含 `/app` 或
-`/api/v1`。任务密钥由后端逐任务随机生成并只保存哈希，不得在 `.env` 中
-预置、打印或提交任务密钥。
+该值只用于创建 LoRA 任务时生成可复制的 URL，不包含 `/app` 或 `/api/v1`。
+后端和本地 Runner 按 HTTP(S) 格式及精确任务路径校验，不再根据 DNS 解析结果
+拒绝外部入口；任务密钥由后端逐任务随机生成并只保存哈希，不得在 `.env` 中
+预置、打印或提交任务密钥。若网关提供 HTTPS，生产环境优先使用 HTTPS。
 
 首次启用答疑插件的服务器检索时，只在项目 `.env` 中新增一个与
 `INTEGRATION_API_KEY` 不同、至少 24 位的 `RETRIEVAL_API_KEY`，然后仍按上面的

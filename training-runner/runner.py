@@ -8,7 +8,6 @@ import platform
 import queue
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import threading
@@ -52,11 +51,6 @@ def validate_task_access_url(value: str) -> str:
         or not parsed.hostname
     ):
         raise RuntimeError("TRAINING_JOB_URL must be an absolute HTTP(S) URL")
-    if (
-        parsed.scheme != "https"
-        and parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
-    ):
-        raise RuntimeError("TRAINING_JOB_URL must use HTTPS outside localhost")
     if (
         parsed.username
         or parsed.password

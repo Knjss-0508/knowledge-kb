@@ -190,15 +190,23 @@ class EmbeddingAdminTests(unittest.TestCase):
             0.55,
         )
 
-    def test_task_runner_public_base_url_requires_clean_https_origin(self):
+    def test_task_runner_base_url_accepts_external_http_or_https(self):
         settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL = "https://kb.example.test/"
         self.assertEqual(
             _task_runner_url("etj-test"),
             "https://kb.example.test/api/v1/embedding-model/runner/tasks/etj-test",
         )
+        settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL = (
+            "http://qa-kb.10.47.193.5.nip.io"
+        )
+        self.assertEqual(
+            _task_runner_url("etj-test"),
+            "http://qa-kb.10.47.193.5.nip.io"
+            "/api/v1/embedding-model/runner/tasks/etj-test",
+        )
 
         for invalid_url in (
-            "http://kb.example.test",
+            "ftp://kb.example.test",
             "https://kb.example.test/app",
             "https://kb.example.test/api/v1",
             "https://kb.example.test/path",
