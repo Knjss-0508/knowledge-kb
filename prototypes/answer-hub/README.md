@@ -1,5 +1,18 @@
 # Answer Hub Workflow
 
+> **当前状态（2026-08-12）**：项目只保留“第二部分脱敏会话 → Answer Hub → CZ 候选价值复核 → 人工终审”的主链路。百晓生/曼哈顿转人工会话分析已移出本项目；系统不会自动发布知识。
+
+## 常用入口（Windows）
+
+| 文件 | 用途 |
+| --- | --- |
+| `启动自动化看板.cmd` | 启动本地 Streamlit 准确性验证工作台，地址为 `http://localhost:8501`。 |
+| `全流程测试上传.cmd` | 对选定的已脱敏工作簿执行本地全流程测试，不会直接发布知识。 |
+| `启动本地CZ.cmd` | 启动本地 CZ、PostgreSQL、Redis 与 Qwen3 查重服务。 |
+| `启动Dify平台.cmd` | 需要 Dify 编排时启动 Dify；日常本地验证不需要运行它。 |
+| `发布前验收并打包.cmd` | 执行发布前验收并构建交付包；需要完整 CZ 测试环境。 |
+| `上传负责部分到GitHub.cmd` | 开发交付工具：只创建 `prototypes/answer-hub/` 的分支和 PR，不直接修改 `master`。 |
+
 ## 主题级工作流（当前）
 
 当前按固定12品类配置处理手机、平板电脑、智能手表、耳机/耳麦、笔记本、游戏机、游戏卡带、单电/微单机身、单反机身、相机镜头、手写笔和学习机；单条高质量原子问题也可以形成待审核主题。`适用范围`只能输出这12个正式名称，品牌和机型使用独立字段：
@@ -324,11 +337,10 @@ Set-Location "C:\Users\admin\Desktop\答疑中台知识库"
 
 1. `运行监管`：查看生产接口、自动化队列和本地验证的持久化运行记录，识别疑似卡住阶段，并记录负责人、处理状态和反馈历史。
 2. `自动化看板`：上传脱敏会话，验证输入清洗、语义标注、主题聚类、价值分类、选择性知识转写和内容质量初标；当前默认不读取标准目录。
-3. `转人工分析`：执行百晓生与曼哈顿转人工数据分析。
-4. `聚类验证`：对边界样本执行聚类判断并收集人工反馈。
-5. `完整聚类标注`：完成聚类单元的人工标注与验收。
-6. `生成主题候选`：手动运行原有主题候选流程，便于调参与单步验证。
-7. `审核与反馈`：验证 `topic_review_queue.xlsx` 的模型结果，下载审核底稿、值得沉淀主题的12项候选和训练反馈样本。
+3. `聚类验证`：对边界样本执行聚类判断并收集人工反馈。
+4. `完整聚类标注`：完成聚类单元的人工标注与验收。
+5. `生成主题候选`：手动运行原有主题候选流程，便于调参与单步验证。
+6. `审核与反馈`：验证 `topic_review_queue.xlsx` 的模型结果，下载审核底稿、值得沉淀主题的12项候选和训练反馈样本。
 
 没有聊天内容且没有可用现场图片的记录只进入 `evidence_gap_rows`，不会独立生成主题候选。若电脑无法访问 PyPI，请使用公司镜像或由管理员提供 `streamlit` 的离线 wheel 安装包。
 
@@ -399,14 +411,6 @@ python -m answer_hub.web
 ```
 
 Open `http://127.0.0.1:8765`. The page accepts the second-part workbook, calls MiMo only on the local server, previews the candidate queue and downloads the review workbook. The API key is never exposed to the browser.
-
-## 百晓生转人工分析
-
-Streamlit 工作台新增“转人工分析”，支持曼哈顿与百晓生数据导入、工单关联、
-周度分层抽样、召回与工具能力分析、低置信度人工复核和八张工作表的周报导出。
-诊断标签统一写入“备注”，不单独增加标签列。
-
-详细配置、接口勘探和命令行用法见 `TRANSFER_ANALYSIS.md`。
 
 If PyPI is unavailable and Flask cannot be installed, run the bundled Codex Python instead. The web entrypoint automatically falls back to a standard-library local server:
 

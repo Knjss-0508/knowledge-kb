@@ -101,7 +101,6 @@ $rootFiles = @(
     "OPERATIONS_RUNBOOK.md",
     "USER_OPERATIONS_GUIDE.md",
     "ACCEPTANCE_CHECKLIST.md",
-    "TRANSFER_ANALYSIS.md",
     "streamlit_app.py",
     "start_streamlit.ps1"
 )

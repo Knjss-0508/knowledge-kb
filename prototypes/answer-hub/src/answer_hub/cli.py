@@ -21,14 +21,6 @@ from .topic_label_model import (
     predict_topic_labels_from_json,
     train_topic_label_model,
 )
-from .transfer_analysis import (
-    TransferAnalysisStore,
-    build_weekly_report,
-    collect_with_endpoint_profile,
-    discover_network_requests,
-    import_source_file,
-    run_weekly_analysis,
-)
 from .workflow import (
     evaluate_review_workbook,
     finalize_topic_review_workbook,
@@ -367,93 +359,6 @@ def build_parser() -> argparse.ArgumentParser:
     predict_topic_label.add_argument("--source", required=True)
     predict_topic_label.add_argument("--output", required=True)
 
-    transfer_discover = subparsers.add_parser(
-        "transfer-discover",
-        help="Open a logged-in browser and record sanitized JSON/XHR endpoint shapes",
-    )
-    transfer_discover.add_argument(
-        "--system",
-        required=True,
-        choices=["manhattan", "baixiaosheng"],
-    )
-    transfer_discover.add_argument("--login-url", required=True)
-    transfer_discover.add_argument("--output", required=True)
-    transfer_discover.add_argument(
-        "--profile-dir",
-        default="",
-        help="Persistent browser profile directory",
-    )
-    transfer_discover.add_argument("--timeout-seconds", type=int, default=900)
-
-    transfer_collect = subparsers.add_parser(
-        "transfer-collect",
-        help="Import transfer data or collect it through a configured endpoint profile",
-    )
-    transfer_collect.add_argument(
-        "--system",
-        required=True,
-        choices=["manhattan", "baixiaosheng"],
-    )
-    source_group = transfer_collect.add_mutually_exclusive_group(required=True)
-    source_group.add_argument("--source-file", help="Excel, CSV or JSON source file")
-    source_group.add_argument(
-        "--endpoint-profile",
-        help="Configured Playwright endpoint profile JSON",
-    )
-    transfer_collect.add_argument("--start", default="")
-    transfer_collect.add_argument("--end", default="")
-    transfer_collect.add_argument(
-        "--work-order-id",
-        action="append",
-        default=[],
-        help="Work order to collect from Baixiaosheng; repeat as needed",
-    )
-    transfer_collect.add_argument(
-        "--transfer-id",
-        action="append",
-        default=[],
-        help="Manhattan transfer detail ID; repeat as needed",
-    )
-    transfer_collect.add_argument(
-        "--show-browser",
-        action="store_true",
-        help="Show Chrome during API collection",
-    )
-    transfer_collect.add_argument(
-        "--db",
-        default="data/transfer_analysis.db",
-    )
-
-    transfer_analyze = subparsers.add_parser(
-        "transfer-analyze",
-        help="Sample, link, label and export one week of transfer-to-human sessions",
-    )
-    transfer_analyze.add_argument("--week-start", required=True, help="Monday in YYYY-MM-DD")
-    transfer_analyze.add_argument("--standards", required=True)
-    transfer_analyze.add_argument(
-        "--output-dir",
-        default="outputs/transfer-analysis",
-    )
-    transfer_analyze.add_argument("--sample-size", type=int, default=350)
-    transfer_analyze.add_argument("--rule-only", action="store_true")
-    transfer_analyze.add_argument("--manhattan-profile", default="")
-    transfer_analyze.add_argument("--baixiaosheng-profile", default="")
-    transfer_analyze.add_argument(
-        "--db",
-        default="data/transfer_analysis.db",
-    )
-
-    transfer_report = subparsers.add_parser(
-        "transfer-report",
-        help="Regenerate a weekly report from saved annotations and reviews",
-    )
-    transfer_report.add_argument("--week-start", required=True)
-    transfer_report.add_argument("--output", required=True)
-    transfer_report.add_argument(
-        "--db",
-        default="data/transfer_analysis.db",
-    )
-
     return parser
 
 
@@ -689,74 +594,6 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 1 if summary["failed_count"] else 0
-
-    if args.command == "transfer-discover":
-        profile_dir = (
-            Path(args.profile_dir)
-            if args.profile_dir
-            else Path("data") / "browser_profiles" / args.system
-        )
-        summary = discover_network_requests(
-            args.system,
-            args.login_url,
-            Path(args.output),
-            profile_dir,
-            timeout_seconds=args.timeout_seconds,
-        )
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
-        return 0
-
-    if args.command == "transfer-collect":
-        store = TransferAnalysisStore(Path(args.db))
-        if args.source_file:
-            summary = import_source_file(
-                Path(args.source_file),
-                args.system,
-                store,
-            )
-        else:
-            summary = collect_with_endpoint_profile(
-                Path(args.endpoint_profile),
-                store,
-                start_date=args.start,
-                end_date=args.end,
-                work_order_ids=args.work_order_id,
-                transfer_ids=args.transfer_id,
-                headless=not args.show_browser,
-            )
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
-        return 0
-
-    if args.command == "transfer-analyze":
-        store = TransferAnalysisStore(Path(args.db))
-        summary = run_weekly_analysis(
-            store,
-            args.week_start,
-            Path(args.standards),
-            Path(args.output_dir),
-            sample_size=args.sample_size,
-            use_mimo=not args.rule_only,
-            manhattan_profile=(
-                Path(args.manhattan_profile) if args.manhattan_profile else None
-            ),
-            baixiaosheng_profile=(
-                Path(args.baixiaosheng_profile)
-                if args.baixiaosheng_profile
-                else None
-            ),
-        )
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
-        return 0
-
-    if args.command == "transfer-report":
-        store = TransferAnalysisStore(Path(args.db))
-        summary = build_weekly_report(
-            store,
-            args.week_start,
-            Path(args.output),
-        )
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
-        return 0
 
     parser.error("Unknown command")
     return 1
