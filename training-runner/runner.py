@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import platform
@@ -24,6 +25,17 @@ SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 TASK_ACCESS_PATH = re.compile(
     r"^/api/v1/embedding-model/runner/tasks/etj-[A-Za-z0-9._-]+$"
 )
+PRIVATE_HOST_NETWORKS = tuple(
+    ipaddress.ip_network(value)
+    for value in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "127.0.0.0/8",
+        "fc00::/7",
+        "::1/128",
+    )
+)
 RUNNER_DIRECTORY = Path(__file__).resolve().parent
 EVALUATOR_PATH = RUNNER_DIRECTORY / "evaluate_model.py"
 
@@ -43,6 +55,30 @@ def required_env(name: str) -> str:
     return value
 
 
+def is_private_host(hostname: str) -> bool:
+    normalized = hostname.strip().rstrip(".").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        addresses = {ipaddress.ip_address(normalized)}
+    except ValueError:
+        try:
+            addresses = {
+                ipaddress.ip_address(item[4][0])
+                for item in socket.getaddrinfo(
+                    normalized,
+                    None,
+                    type=socket.SOCK_STREAM,
+                )
+            }
+        except (OSError, ValueError):
+            return False
+    return bool(addresses) and all(
+        any(address in network for network in PRIVATE_HOST_NETWORKS)
+        for address in addresses
+    )
+
+
 def validate_task_access_url(value: str) -> str:
     normalized = value.strip().rstrip("/")
     parsed = urlparse(normalized)
@@ -54,9 +90,11 @@ def validate_task_access_url(value: str) -> str:
         raise RuntimeError("TRAINING_JOB_URL must be an absolute HTTP(S) URL")
     if (
         parsed.scheme != "https"
-        and parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        and not is_private_host(parsed.hostname)
     ):
-        raise RuntimeError("TRAINING_JOB_URL must use HTTPS outside localhost")
+        raise RuntimeError(
+            "TRAINING_JOB_URL must use HTTPS outside private networks"
+        )
     if (
         parsed.username
         or parsed.password

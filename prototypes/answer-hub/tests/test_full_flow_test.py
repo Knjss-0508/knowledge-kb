@@ -69,7 +69,7 @@ def test_full_flow_test_refuses_remote_cz_target(tmp_path: Path) -> None:
     source = tmp_path / "sample.xlsx"
     source.write_bytes(b"xlsx")
     environment = _configured_environment(tmp_path)
-    environment["KB_BASE_URL"] = "http://111.230.109.227:8801"
+    environment["KB_BASE_URL"] = "http://qa-kb.10.47.193.5.nip.io"
 
     with pytest.raises(FullFlowTestError, match="仅允许连接本机 CZ"):
         run_full_flow_test(

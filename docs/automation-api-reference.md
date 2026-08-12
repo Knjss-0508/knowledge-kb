@@ -31,11 +31,13 @@ flowchart LR
 http://127.0.0.1:8000/api/v1
 ```
 
-生产环境请替换为内网域名或反向代理地址，例如：
+当前内网生产地址：
 
 ```text
-https://knowledge.example.internal/api/v1
+http://qa-kb.10.47.193.5.nip.io/api/v1
 ```
+
+该域名解析到私网地址 `10.47.193.5`，仅允许在受控内网使用。
 
 ### 2.2 上游自动入库鉴权
 
@@ -626,7 +628,7 @@ Embedding 服务不可用时返回 HTTP 503。
   {
     "id": "knowledge-kb",
     "enabled": true,
-    "searchUrl": "https://zsk2.powerzhuan.cn/api/v1/integration/standard-search",
+    "searchUrl": "http://qa-kb.10.47.193.5.nip.io/api/v1/integration/standard-search",
     "apiKeyEnv": "KNOWLEDGE_KB_RETRIEVAL_KEY",
     "authHeader": "X-Integration-Key",
     "authScheme": "",

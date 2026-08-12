@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import re
 import secrets
+import socket
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -66,6 +68,17 @@ _MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{2,255}$")
 _TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 _ACTIVE_JOB_STATUSES = {"claimed", "running", "evaluating"}
 _TASK_RUNNER_PATH = "/api/v1/embedding-model/runner/tasks"
+_PRIVATE_RUNNER_NETWORKS = tuple(
+    ipaddress.ip_network(value)
+    for value in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "127.0.0.0/8",
+        "fc00::/7",
+        "::1/128",
+    )
+)
 _RUNTIME_CONFIG_SCOPE_KEYS = {
     "dedup_thresholds": {
         "dedup_block_threshold",
@@ -114,16 +127,43 @@ def _task_token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _is_private_runner_host(hostname: str) -> bool:
+    normalized = hostname.strip().rstrip(".").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        addresses = {ipaddress.ip_address(normalized)}
+    except ValueError:
+        try:
+            addresses = {
+                ipaddress.ip_address(item[4][0])
+                for item in socket.getaddrinfo(
+                    normalized,
+                    None,
+                    type=socket.SOCK_STREAM,
+                )
+            }
+        except (OSError, ValueError):
+            return False
+    return bool(addresses) and all(
+        any(address in network for network in _PRIVATE_RUNNER_NETWORKS)
+        for address in addresses
+    )
+
+
 def _task_runner_url(job_id: str) -> str:
     base_url = settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL.strip().rstrip("/")
     path = f"{_TASK_RUNNER_PATH}/{job_id}"
     if not base_url:
-        raise HTTPException(503, "尚未配置训练任务 HTTPS 公网地址")
+        raise HTTPException(503, "尚未配置训练任务访问根地址")
     parsed = urlparse(base_url)
-    if parsed.scheme.lower() != "https":
-        raise HTTPException(503, "训练任务公网地址必须使用 HTTPS")
+    scheme = parsed.scheme.lower()
     if not parsed.netloc or not parsed.hostname:
-        raise HTTPException(503, "训练任务公网地址格式无效")
+        raise HTTPException(503, "训练任务访问根地址格式无效")
+    if scheme not in {"http", "https"}:
+        raise HTTPException(503, "训练任务访问根地址必须使用 HTTP(S)")
+    if scheme == "http" and not _is_private_runner_host(parsed.hostname):
+        raise HTTPException(503, "公网训练任务地址必须使用 HTTPS")
     if (
         parsed.username
         or parsed.password
@@ -132,7 +172,7 @@ def _task_runner_url(job_id: str) -> str:
         or parsed.query
         or parsed.fragment
     ):
-        raise HTTPException(503, "训练任务公网地址只能填写 HTTPS 根地址")
+        raise HTTPException(503, "训练任务访问地址只能填写根地址")
     return f"{base_url}{path}"
 
 
