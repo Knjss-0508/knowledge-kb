@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+from copy import copy
 from datetime import datetime
 from difflib import unified_diff
 from html import escape
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import re
 import sys
 import tempfile
 from typing import Any, Callable
+from zipfile import BadZipFile
 
 import streamlit as st
 from openpyxl import Workbook, load_workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.utils.exceptions import InvalidFileException
 
 
 ROOT = Path(__file__).resolve().parent
@@ -26,6 +31,8 @@ from answer_hub.workflow import (  # noqa: E402
     KNOWLEDGE_REVIEW_EXTENSION_COLUMNS,
     REVIEW_DECISIONS,
     TOPIC_CANDIDATE_COLUMNS,
+    TOPIC_HUMAN_VALIDATION_COLUMNS,
+    TOPIC_MODEL_INITIAL_REVIEW_COLUMNS,
     TOPIC_REVIEW_COLUMNS,
     build_case_knowledge_rows,
     cluster_validation_from_workbook,
@@ -39,15 +46,20 @@ from answer_hub.standards_compiler import (  # noqa: E402
     load_standard_source_manifest,
 )
 from answer_hub.product_taxonomy import configured_product_names  # noqa: E402
+from answer_hub.knowledge_categories import (  # noqa: E402
+    SUPPORTED_KNOWLEDGE_CATEGORIES,
+)
 from answer_hub.auto_review import (  # noqa: E402
     AutoReviewPolicy,
     evaluate_auto_review_validation,
+    evaluate_topic_label_validation,
     partition_auto_review_candidates,
     teammate_validation_decision,
 )
 from answer_hub.cz_integration import select_submittable_candidates  # noqa: E402
 from answer_hub.embedding import EmbeddingClient  # noqa: E402
 from answer_hub.images import split_image_urls  # noqa: E402
+from answer_hub.mimo import load_dotenv  # noqa: E402
 from answer_hub.automation import (  # noqa: E402
     AUTOMATION_STAGES,
     list_automation_runs,
@@ -55,6 +67,17 @@ from answer_hub.automation import (  # noqa: E402
     run_automation_pipeline,
 )
 from answer_hub.operations import build_operations_snapshot  # noqa: E402
+from answer_hub.run_history import (  # noqa: E402
+    list_automation_run_records,
+    sanitize_run_text,
+)
+from answer_hub.run_feedback import (  # noqa: E402
+    RUN_FEEDBACK_CAUSE_LABELS,
+    RUN_FEEDBACK_STATUS_LABELS,
+    RunFeedbackStore,
+    RunFeedbackStoreError,
+    default_run_feedback,
+)
 from answer_hub.transfer_analysis.ui import render_transfer_analysis  # noqa: E402
 from answer_hub.cluster_annotation_ui import render_cluster_annotation  # noqa: E402
 
@@ -74,6 +97,50 @@ def _shared_embedding_client() -> EmbeddingClient | None:
 ACTIVE_STANDARD_CATALOG = ROOT / "data" / "compiled_standards" / "active_standards.json"
 STANDARD_SOURCE_MANIFEST = ROOT / "config" / "standard_sources.json"
 PRODUCT_OPTIONS = ["全部", *configured_product_names()]
+
+
+def _configured_project_path(
+    environment_name: str,
+    default_path: Path,
+) -> Path:
+    configured = os.getenv(environment_name, "").strip()
+    if not configured:
+        return default_path
+    path = Path(configured)
+    return path if path.is_absolute() else ROOT / path
+
+
+def _automation_paths() -> tuple[Path, Path, Path]:
+    load_dotenv()
+    automation_root = _configured_project_path(
+        "ANSWER_HUB_AUTOMATION_OUTPUT",
+        ROOT / "outputs" / "automation-runs",
+    )
+    queue_root = _configured_project_path(
+        "ANSWER_HUB_AUTOMATION_QUEUE",
+        ROOT / "data" / "automation-queue",
+    )
+    feedback_path = _configured_project_path(
+        "ANSWER_HUB_RUN_FEEDBACK_PATH",
+        queue_root / "run_feedback.db",
+    )
+    return automation_root, queue_root, feedback_path
+
+
+def _automation_stale_after_seconds() -> int:
+    load_dotenv()
+    try:
+        return max(
+            60,
+            int(
+                os.getenv(
+                    "ANSWER_HUB_AUTOMATION_STALE_AFTER_SECONDS",
+                    "7200",
+                )
+            ),
+        )
+    except ValueError:
+        return 7_200
 
 
 def _latest_existing_knowledge_path() -> Path | None:
@@ -750,9 +817,20 @@ def _load_topic_workbook(
     topic_rows = read_sheet("topic_review_queue")
     expected = TOPIC_CANDIDATE_COLUMNS + TOPIC_REVIEW_COLUMNS
     if topic_rows:
-        missing = [field for field in expected if field not in topic_rows[0]]
+        optional_fields = set(
+            TOPIC_HUMAN_VALIDATION_COLUMNS
+            + TOPIC_MODEL_INITIAL_REVIEW_COLUMNS
+        )
+        missing = [
+            field
+            for field in expected
+            if field not in topic_rows[0] and field not in optional_fields
+        ]
         if missing:
             raise ValueError(f"主题复核工作簿缺少字段：{', '.join(missing)}")
+        for row in topic_rows:
+            for field in optional_fields:
+                row.setdefault(field, "")
     return (
         topic_rows,
         read_sheet("topic_source_mapping"),
@@ -770,9 +848,34 @@ def _update_topic_workbook(workbook_bytes: bytes, changes: dict[int, dict[str, s
         for cell in worksheet[1]
         if cell.value is not None and str(cell.value).strip()
     }
+    missing_headers = [
+        field
+        for updates in changes.values()
+        for field in updates
+        if field not in header_map
+    ]
+    for field in dict.fromkeys(missing_headers):
+        column = worksheet.max_column + 1
+        header_cell = worksheet.cell(row=1, column=column, value=field)
+        if column > 1:
+            previous_cell = worksheet.cell(row=1, column=column - 1)
+            header_cell._style = copy(previous_cell._style)
+            header_cell.font = copy(previous_cell.font)
+            header_cell.fill = copy(previous_cell.fill)
+            header_cell.border = copy(previous_cell.border)
+            header_cell.alignment = copy(previous_cell.alignment)
+            header_cell.number_format = previous_cell.number_format
+            previous_letter = get_column_letter(column - 1)
+            current_letter = get_column_letter(column)
+            worksheet.column_dimensions[current_letter].width = (
+                worksheet.column_dimensions[previous_letter].width
+            )
+        header_map[field] = column
     for row_index, updates in changes.items():
         for field, value in updates.items():
             worksheet.cell(row=row_index, column=header_map[field], value=value)
+    if worksheet.auto_filter.ref:
+        worksheet.auto_filter.ref = worksheet.dimensions
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()
@@ -1161,7 +1264,10 @@ def _render_cluster_media_evidence(row: dict[str, Any], prefix: str) -> None:
                     width=220,
                 )
             except Exception as exc:
-                st.caption(f"图片加载失败：{exc}")
+                st.caption(
+                    "图片加载失败："
+                    + sanitize_run_text(exc)
+                )
         else:
             st.caption("没有可展示的图片链接。")
 
@@ -1172,7 +1278,10 @@ def _render_cluster_media_evidence(row: dict[str, Any], prefix: str) -> None:
                 try:
                     st.video(video_url)
                 except Exception as exc:
-                    st.caption(f"视频加载失败：{exc}")
+                    st.caption(
+                        "视频加载失败："
+                        + sanitize_run_text(exc)
+                    )
 
         if image_summary:
             st.markdown("**图片证据摘要**")
@@ -1190,6 +1299,7 @@ def _reset_editor(row: dict[str, Any]) -> None:
     for field in [
         *KNOWLEDGE_MASTER_COLUMNS,
         *KNOWLEDGE_REVIEW_EXTENSION_COLUMNS,
+        *TOPIC_HUMAN_VALIDATION_COLUMNS,
         *TOPIC_REVIEW_COLUMNS,
     ]:
         st.session_state[f"topic_{field}"] = _text(row.get(field))
@@ -1198,6 +1308,9 @@ def _reset_editor(row: dict[str, Any]) -> None:
     st.session_state["topic_关键词"] = _text(row.get("关键词") or row.get("检索关键词"))
     st.session_state["topic_是否值得沉淀"] = (
         _text(row.get("是否值得沉淀")) or "未标注"
+    )
+    st.session_state["topic_人工主题问题分类"] = (
+        _text(row.get("人工主题问题分类")) or "未标注"
     )
 
 
@@ -1282,6 +1395,7 @@ def _automation_stage_status(status: str) -> tuple[str, str]:
         "running": ("执行中", "blue"),
         "completed": ("已完成", "green"),
         "failed": ("失败", "red"),
+        "interrupted": ("已中断", "orange"),
     }.get(status, (status or "未知", "gray"))
 
 
@@ -1308,6 +1422,16 @@ def _automation_metrics_text(metrics: dict[str, Any]) -> str:
         "model_total_tokens": "Token",
         "model_estimated_cost": "估算成本",
         "redaction_warning_findings": "脱敏提醒",
+        "ai_result_parsed_rows": "ai_result已解析",
+        "ai_result_conflict_rows": "ai_result冲突",
+        "atomic_extraction_completed": "原子提取已完成",
+        "atomic_extraction_total": "原子提取总数",
+        "atomic_extraction_batches_completed": "原子批次已完成",
+        "atomic_extraction_batches_total": "原子批次总数",
+        "atomic_extraction_failed": "原子提取失败",
+        "direct_cluster_batches_completed": "聚类批次已完成",
+        "direct_cluster_batches_total": "聚类批次总数",
+        "direct_cluster_failed": "聚类失败",
     }
     parts = [
         f"{labels[key]} {value}"
@@ -1328,7 +1452,21 @@ def _automation_datetime(value: Any) -> datetime | None:
 
 
 def _render_automation_stages(manifest: dict[str, Any]) -> None:
-    stages = manifest.get("stages") or []
+    stages = list(manifest.get("stages") or [])
+    if any(
+        _text(stage.get("id"))
+        in {
+            "topic_cluster",
+            "topic_enrichment",
+            "knowledge_transcription",
+        }
+        for stage in stages
+    ):
+        stages = [
+            stage
+            for stage in stages
+            if _text(stage.get("id")) != "topic_build"
+        ]
     for start in range(0, len(stages), 3):
         columns = st.columns(3, gap="large")
         for column, stage in zip(columns, stages[start : start + 3]):
@@ -1341,6 +1479,17 @@ def _render_automation_stages(manifest: dict[str, Any]) -> None:
                     metrics_text = _automation_metrics_text(stage.get("metrics") or {})
                     if metrics_text:
                         st.caption(metrics_text)
+                    timing_parts = []
+                    if stage.get("started_at"):
+                        timing_parts.append(
+                            f"开始 {_text(stage.get('started_at'))}"
+                        )
+                    if stage.get("duration_seconds") is not None:
+                        timing_parts.append(
+                            f"耗时 {float(stage.get('duration_seconds') or 0):.1f} 秒"
+                        )
+                    if timing_parts:
+                        st.caption(" · ".join(timing_parts))
 
 
 def _automation_artifact_path(
@@ -1364,6 +1513,7 @@ def _render_automation_artifacts(manifest: dict[str, Any]) -> None:
     artifact_specs = [
         ("topic_review", "下载主题审核队列", "topic_review_queue.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
         ("candidate_knowledge", "下载组员标注表", "candidate_knowledge.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        ("cz_candidate_sync", "下载CZ候选同步结果", "cz_candidate_sync.json", "application/json"),
         ("summary", "下载运行摘要", "summary.json", "application/json"),
     ]
     available = [
@@ -1377,11 +1527,866 @@ def _render_automation_artifacts(manifest: dict[str, Any]) -> None:
     for column, (_artifact_key, label, file_name, mime, path) in zip(columns, available):
         column.download_button(
             label,
-            data=path.read_bytes(),
+            data=path.read_bytes,
             file_name=file_name,
             mime=mime,
+            on_click="ignore",
             width="stretch",
         )
+
+
+def _automation_alert_messages(manifest: dict[str, Any]) -> list[str]:
+    messages: list[str] = []
+    error = sanitize_run_text(manifest.get("error"))
+    if _text(manifest.get("status")) == "needs_confirmation" and error:
+        messages.append(error)
+    for alert in manifest.get("alerts") or []:
+        text = sanitize_run_text(alert)
+        if text and text not in messages:
+            messages.append(text)
+    return messages
+
+
+def _render_automation_alerts(manifest: dict[str, Any]) -> None:
+    messages = _automation_alert_messages(manifest)
+    if not messages:
+        return
+    status = _text(manifest.get("status"))
+    if status == "needs_confirmation":
+        st.warning(messages[0], icon=":material/warning:")
+        if len(messages) > 1:
+            with st.expander(
+                "查看预警详情",
+                expanded=True,
+                icon=":material/info:",
+            ):
+                for message in messages[1:]:
+                    st.write(f"- {message}")
+        return
+    st.warning("本次运行有告警：" + "；".join(messages[:3]), icon=":material/warning:")
+
+
+def _rerun_with_rule_fallback(
+    automation_root: Path,
+    pending: dict[str, Any],
+) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="answer-hub-automation-confirmed-") as temporary_dir:
+        temporary_root = Path(temporary_dir)
+        source_path = temporary_root / Path(_text(pending.get("source_name")) or "source.xlsx").name
+        source_path.write_bytes(pending.get("source_bytes") or b"")
+        return run_automation_pipeline(
+            source_path=source_path,
+            standards_path=None,
+            output_root=automation_root,
+            product_type="" if pending.get("product_label") == "全部" else _text(pending.get("product_label")),
+            use_mimo=bool(pending.get("use_mimo")),
+            clustering_mode=_text(pending.get("clustering_mode")) or "direct_mimo",
+            semantic_threshold=float(pending.get("semantic_threshold") or 0.84),
+            cluster_review_floor=float(pending.get("cluster_review_floor") or 0.75),
+            cluster_auto_merge_threshold=float(pending.get("cluster_auto_merge_threshold") or 0.92),
+            cluster_review_limit=int(pending.get("cluster_review_limit") or 100),
+            embedding_client=_shared_embedding_client(),
+            continue_on_mimo_unavailable=True,
+        )
+
+
+def _automation_record_status_color(status: str) -> str:
+    return {
+        "pending": "gray",
+        "processing": "blue",
+        "running": "blue",
+        "completed": "green",
+        "review_pending": "orange",
+        "needs_confirmation": "orange",
+        "failed": "red",
+    }.get(status, "gray")
+
+
+def _automation_health_color(health_status: str) -> str:
+    return {
+        "active": "blue",
+        "healthy": "green",
+        "completed": "green",
+        "review_pending": "orange",
+        "attention": "orange",
+        "stalled": "red",
+        "failed": "red",
+    }.get(health_status, "gray")
+
+
+def _automation_summary_count(
+    summary: dict[str, Any],
+    *keys: str,
+) -> int:
+    for key in keys:
+        try:
+            return int(summary.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _automation_failure_detail_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for stage, label, key in (
+        ("原子问题提取", "原子提取失败", "atomic_extraction_failure_reasons"),
+        ("主题聚类", "聚类失败", "direct_cluster_failure_reasons"),
+    ):
+        for item in summary.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            reason = sanitize_run_text(item.get("reason"))
+            if not reason:
+                continue
+            rows.append(
+                {
+                    "阶段": stage,
+                    "类型": label,
+                    "次数": item.get("count", 0),
+                    "样例记录": "、".join(
+                        _text(value) for value in item.get("sample_ids") or []
+                    ),
+                    "具体原因": reason,
+                }
+            )
+    last_error = sanitize_run_text(summary.get("direct_cluster_last_error"))
+    if last_error and not any(row["具体原因"] == last_error for row in rows):
+        rows.append(
+            {
+                "阶段": "主题聚类",
+                "类型": "最近一次失败",
+                "次数": 1,
+                "样例记录": "",
+                "具体原因": last_error,
+            }
+        )
+    return rows
+
+
+def _automation_record_table_row(
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    summary = record.get("summary") or {}
+    current_stage = record.get("current_stage") or {}
+    cz_sync = record.get("cz_sync") or {}
+    feedback = record.get("feedback") or default_run_feedback(
+        _text(record.get("record_id"))
+    )
+    error = _text(record.get("error"))
+    return {
+        "记录 ID": _text(record.get("record_id")),
+        "来源": _text(record.get("source_label")),
+        "提交时间": _automation_datetime(record.get("created_at")),
+        "更新时间": _automation_datetime(record.get("updated_at")),
+        "状态": _text(record.get("status_label")),
+        "健康状态": _text(record.get("health_label")),
+        "当前阶段": _text(current_stage.get("label")),
+        "处理状态": _text(feedback.get("status_label")),
+        "负责人": _text(feedback.get("owner")),
+        "文件": _text(record.get("source_name")),
+        "可处理记录": _automation_summary_count(
+            summary,
+            "eligible_rows",
+            "source_total_rows",
+            "source_rows",
+        ),
+        "主题候选": _automation_summary_count(summary, "topic_rows"),
+        "待聚类复核": _automation_summary_count(
+            summary,
+            "pending_cluster_rows",
+        ),
+        "CZ排队": _automation_summary_count(cz_sync, "queued"),
+        "CZ可送审": _automation_summary_count(cz_sync, "ready"),
+        "CZ失败": _automation_summary_count(cz_sync, "failed"),
+        "最新反馈": _text(feedback.get("note"))[:160],
+        "错误": error[:160],
+    }
+
+
+def _render_run_feedback_panel(
+    record: dict[str, Any],
+    feedback_store: RunFeedbackStore | None,
+) -> None:
+    record_id = _text(record.get("record_id"))
+    feedback = record.get("feedback") or default_run_feedback(record_id)
+    status_options = list(RUN_FEEDBACK_STATUS_LABELS)
+    cause_options = list(RUN_FEEDBACK_CAUSE_LABELS)
+    current_status = _text(feedback.get("status"))
+    current_cause = _text(feedback.get("cause_type"))
+    if current_status not in status_options:
+        current_status = "unhandled"
+    if current_cause not in cause_options:
+        current_cause = "other"
+
+    with st.container(border=True):
+        st.markdown("##### 处理反馈")
+        st.caption(
+            "用于记录运行异常由谁处理、处理到哪一步以及最终结论；"
+            "不会修改候选知识或自动发布状态。"
+        )
+        if feedback_store is None:
+            st.warning(
+                "监管反馈存储当前不可用，本次只能查看运行状态，"
+                "不能保存负责人或处理反馈。",
+                icon=":material/database_off:",
+            )
+            return
+        with st.form(f"automation_feedback_{record_id}", border=False):
+            status_column, owner_column, cause_column = st.columns(
+                [0.8, 1, 1.2],
+                gap="large",
+            )
+            with status_column:
+                feedback_status = st.selectbox(
+                    "处理状态",
+                    status_options,
+                    index=status_options.index(current_status),
+                    format_func=lambda value: RUN_FEEDBACK_STATUS_LABELS[value],
+                    key=f"automation_feedback_status_{record_id}",
+                )
+            with owner_column:
+                feedback_owner = st.text_input(
+                    "负责人",
+                    value=_text(feedback.get("owner")),
+                    key=f"automation_feedback_owner_{record_id}",
+                )
+            with cause_column:
+                feedback_cause = st.selectbox(
+                    "原因分类",
+                    cause_options,
+                    index=cause_options.index(current_cause),
+                    format_func=lambda value: RUN_FEEDBACK_CAUSE_LABELS[value],
+                    key=f"automation_feedback_cause_{record_id}",
+                )
+            feedback_note = st.text_area(
+                "处理反馈",
+                value=_text(feedback.get("note")),
+                height=100,
+                key=f"automation_feedback_note_{record_id}",
+                placeholder="例如：已确认卡在主题聚类，准备从检查点恢复。",
+            )
+            feedback_actor = st.text_input(
+                "记录人",
+                value=_text(feedback.get("actor")),
+                key=f"automation_feedback_actor_{record_id}",
+            )
+            submitted = st.form_submit_button(
+                "保存处理反馈",
+                type="primary",
+                icon=":material/save:",
+                width="stretch",
+            )
+        if submitted:
+            saved = feedback_store.update(
+                record_id,
+                status=feedback_status,
+                owner=feedback_owner,
+                cause_type=feedback_cause,
+                note=feedback_note,
+                actor=feedback_actor,
+            )
+            record["feedback"] = saved
+            st.success("处理反馈已保存。", icon=":material/check_circle:")
+            st.rerun()
+
+        history = list(feedback.get("history") or [])
+        if history:
+            with st.expander(
+                f"反馈历史（{len(history)}）",
+                icon=":material/history:",
+            ):
+                st.dataframe(
+                    [
+                        {
+                            "更新时间": _automation_datetime(
+                                item.get("updated_at")
+                            ),
+                            "状态": item.get("status_label", ""),
+                            "负责人": item.get("owner", ""),
+                            "原因": RUN_FEEDBACK_CAUSE_LABELS.get(
+                                _text(item.get("cause_type")),
+                                _text(item.get("cause_type")),
+                            ),
+                            "反馈": item.get("note", ""),
+                            "记录人": item.get("actor", ""),
+                        }
+                        for item in reversed(history)
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "更新时间": st.column_config.DatetimeColumn(
+                            "更新时间",
+                            format="YYYY-MM-DD HH:mm:ss",
+                        ),
+                    },
+                )
+
+
+def _render_automation_record_detail(
+    record: dict[str, Any],
+    feedback_store: RunFeedbackStore | None,
+) -> None:
+    status = _text(record.get("effective_status"))
+    summary = record.get("summary") or {}
+    cz_sync = record.get("cz_sync") or {}
+    current_stage = record.get("current_stage") or {}
+    error = _text(record.get("error"))
+    manifest = record.get("manifest") or {}
+    health_status = _text(record.get("health_status"))
+
+    with st.container(border=True):
+        with st.container(horizontal=True, vertical_alignment="center"):
+            st.badge(
+                _text(record.get("status_label")) or "未知",
+                color=_automation_record_status_color(status),
+            )
+            st.badge(
+                _text(record.get("health_label")) or "未知",
+                color=_automation_health_color(health_status),
+            )
+            st.markdown(
+                f"#### {_text(record.get('source_name')) or '未命名运行'}"
+            )
+        st.caption(
+            f"记录ID：{_text(record.get('record_id')) or '-'}　"
+            f"运行ID：{_text(record.get('run_id')) or '-'}　"
+            f"来源：{_text(record.get('source_label')) or '-'}　"
+            f"更新时间：{_text(record.get('updated_at')) or '-'}"
+        )
+
+        with st.container(horizontal=True):
+            st.metric(
+                "可处理记录",
+                _automation_summary_count(
+                    summary,
+                    "eligible_rows",
+                    "source_total_rows",
+                    "source_rows",
+                ),
+                border=True,
+            )
+            st.metric(
+                "主题候选",
+                _automation_summary_count(summary, "topic_rows"),
+                border=True,
+            )
+            st.metric(
+                "待聚类复核",
+                _automation_summary_count(
+                    summary,
+                    "pending_cluster_rows",
+                ),
+                border=True,
+            )
+            st.metric(
+                "CZ排队",
+                _automation_summary_count(cz_sync, "queued"),
+                border=True,
+            )
+            st.metric(
+                "CZ失败",
+                _automation_summary_count(cz_sync, "failed"),
+                border=True,
+            )
+
+        ai_result_rows = _automation_summary_count(summary, "ai_result_rows")
+        ai_result_parsed_rows = _automation_summary_count(
+            summary,
+            "ai_result_parsed_rows",
+        )
+        ai_result_conflict_rows = _automation_summary_count(
+            summary,
+            "ai_result_conflict_rows",
+        )
+        if ai_result_rows or ai_result_conflict_rows:
+            st.info(
+                f"ai_result：读取 {ai_result_rows} 条，成功解析 {ai_result_parsed_rows} 条，"
+                f"字段冲突 {ai_result_conflict_rows} 条。"
+                "冲突字段只保留原结构化值，并自动进入人工优先复核。",
+                icon=":material/data_object:",
+            )
+
+        failure_detail_rows = _automation_failure_detail_rows(summary)
+        if failure_detail_rows:
+            with st.expander(
+                f"模型失败具体原因（{len(failure_detail_rows)} 类）",
+                expanded=True,
+                icon=":material/bug_report:",
+            ):
+                st.dataframe(
+                    failure_detail_rows,
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "具体原因": st.column_config.TextColumn(
+                            "具体原因",
+                            width="large",
+                        ),
+                        "样例记录": st.column_config.TextColumn(
+                            "样例记录",
+                            width="medium",
+                        ),
+                    },
+                )
+
+        if record.get("is_stale"):
+            stale_hours = float(record.get("stale_seconds") or 0) / 3600
+            st.warning(
+                f"该运行已 {stale_hours:.1f} 小时没有更新，系统判定为疑似卡住。"
+                "请确认进程、队列锁和当前阶段后再决定恢复或重试。",
+                icon=":material/timer_off:",
+            )
+        if error:
+            failed_stage = next(
+                (
+                    stage
+                    for stage in record.get("stages") or []
+                    if _text(stage.get("status")) == "failed"
+                ),
+                current_stage,
+            )
+            failed_label = _text(failed_stage.get("label")) or "未知阶段"
+            st.error(
+                f"失败阶段：{failed_label}\n\n{error}",
+                icon=":material/error:",
+            )
+        elif status in {"pending", "running"} and current_stage:
+            st.info(
+                f"当前阶段：{_text(current_stage.get('label'))}。"
+                f"{_text(current_stage.get('detail'))}",
+                icon=":material/schedule:",
+            )
+
+        if record.get("stages"):
+            st.markdown("##### 阶段记录")
+            _render_automation_stages(
+                {"stages": record.get("stages") or []}
+            )
+
+        _render_run_feedback_panel(record, feedback_store)
+
+        attempt_runs = record.get("attempt_runs") or []
+        if attempt_runs and (
+            len(attempt_runs) > 1
+            or not _text(record.get("run_id"))
+        ):
+            with st.expander(
+                f"线上任务尝试记录（{len(attempt_runs)}）",
+                icon=":material/replay:",
+            ):
+                st.dataframe(
+                    [
+                        {
+                            "运行ID": attempt.get("run_id", ""),
+                            "状态": attempt.get(
+                                "status_label",
+                                attempt.get("status", ""),
+                            ),
+                            "创建时间": _automation_datetime(
+                                attempt.get("created_at")
+                            ),
+                            "更新时间": _automation_datetime(
+                                attempt.get("updated_at")
+                            ),
+                            "最后阶段": (
+                                attempt.get("current_stage") or {}
+                            ).get("label", ""),
+                            "错误": attempt.get("error", ""),
+                        }
+                        for attempt in attempt_runs
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "创建时间": st.column_config.DatetimeColumn(
+                            "创建时间",
+                            format="YYYY-MM-DD HH:mm:ss",
+                        ),
+                        "更新时间": st.column_config.DatetimeColumn(
+                            "更新时间",
+                            format="YYYY-MM-DD HH:mm:ss",
+                        ),
+                    },
+                )
+
+        retry_history = record.get("retry_history") or []
+        if retry_history:
+            with st.expander(
+                f"重试历史（{len(retry_history)}）",
+                icon=":material/history:",
+            ):
+                st.dataframe(
+                    [
+                        {
+                            "尝试次数": item.get("attempt", ""),
+                            "失败时间": _automation_datetime(
+                                item.get("failed_at")
+                            ),
+                            "失败阶段": item.get("failed_stage", ""),
+                            "错误": item.get("error", ""),
+                        }
+                        for item in retry_history
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                )
+
+        if cz_sync:
+            with st.expander(
+                "CZ候选同步核查",
+                icon=":material/sync:",
+            ):
+                with st.container(horizontal=True):
+                    st.metric(
+                        "排队",
+                        _automation_summary_count(cz_sync, "queued"),
+                        border=True,
+                    )
+                    st.metric(
+                        "可送审",
+                        _automation_summary_count(cz_sync, "ready"),
+                        border=True,
+                    )
+                    st.metric(
+                        "已拒绝",
+                        _automation_summary_count(cz_sync, "rejected"),
+                        border=True,
+                    )
+                    st.metric(
+                        "幂等复用",
+                        _automation_summary_count(cz_sync, "reused"),
+                        border=True,
+                    )
+                    st.metric(
+                        "失败",
+                        _automation_summary_count(cz_sync, "failed"),
+                        border=True,
+                    )
+                if cz_sync.get("skipped"):
+                    st.info(
+                        _text(cz_sync.get("reason"))
+                        or "本次运行跳过CZ候选同步。",
+                        icon=":material/info:",
+                    )
+                sync_results = [
+                    result
+                    for result in cz_sync.get("results") or []
+                    if isinstance(result, dict)
+                ]
+                if sync_results:
+                    st.dataframe(
+                        [
+                            {
+                                "序号": index,
+                                "候选ID": _text(
+                                    result.get("ingestion_id")
+                                    or result.get("candidate_id")
+                                    or result.get("knowledge_id")
+                                    or result.get("event_id")
+                                ),
+                                "状态": _text(
+                                    result.get("status")
+                                    or result.get("result")
+                                ),
+                                "错误码": _text(
+                                    result.get("error_code")
+                                    or result.get("code")
+                                ),
+                                "说明": _text(
+                                    result.get("error")
+                                    or result.get("error_message")
+                                    or result.get("message")
+                                    or result.get("detail")
+                                ),
+                            }
+                            for index, result in enumerate(
+                                sync_results,
+                                start=1,
+                            )
+                        ],
+                        hide_index=True,
+                        width="stretch",
+                    )
+
+        if manifest:
+            _render_automation_alerts(manifest)
+            artifact_panel = st.expander(
+                "下载运行产物",
+                icon=":material/download:",
+                on_change="rerun",
+            )
+            if artifact_panel.open:
+                with artifact_panel:
+                    _render_automation_artifacts(manifest)
+        if record.get("run_dir"):
+            st.caption(f"运行目录：{_text(record.get('run_dir'))}")
+
+
+@st.fragment(run_every="15s")
+def _render_automation_run_monitor(
+    automation_root: Path,
+    queue_root: Path,
+    feedback_path: Path,
+    stale_after_seconds: int,
+) -> None:
+    feedback_store: RunFeedbackStore | None = RunFeedbackStore(feedback_path)
+    records = list_automation_run_records(
+        automation_root,
+        queue_root,
+        limit=200,
+        stale_after_seconds=stale_after_seconds,
+    )
+    record_ids = [
+        _text(record.get("record_id"))
+        for record in records
+    ]
+    try:
+        feedback_by_record = feedback_store.get_many(record_ids)
+    except RunFeedbackStoreError as exc:
+        st.error(
+            f"监管反馈存储不可用：{exc}",
+            icon=":material/database_off:",
+        )
+        feedback_store = None
+        feedback_by_record = {}
+    for record in records:
+        record_id = _text(record.get("record_id"))
+        record["feedback"] = (
+            feedback_by_record.get(record_id)
+            or default_run_feedback(record_id)
+        )
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.markdown("### 线上运行记录")
+        st.button(
+            "立即刷新",
+            icon=":material/refresh:",
+            key="automation_monitor_refresh",
+        )
+    st.caption(
+        "每15秒自动读取线上接口、自动化队列和本地验证的持久化记录；"
+        "关闭浏览器或重启 Streamlit 后记录仍会保留。"
+    )
+
+    running_count = sum(
+        record.get("effective_status") in {"pending", "running"}
+        for record in records
+    )
+    failed_count = sum(
+        record.get("effective_status") == "failed"
+        for record in records
+    )
+    review_count = sum(
+        record.get("effective_status") == "review_pending"
+        for record in records
+    )
+    cz_failed_count = sum(
+        _automation_summary_count(record.get("cz_sync") or {}, "failed")
+        for record in records
+    )
+    stalled_count = sum(record.get("is_stale") is True for record in records)
+    unresolved_count = sum(
+        record.get("health_status") in {"stalled", "failed", "attention"}
+        and _text((record.get("feedback") or {}).get("status"))
+        not in {"resolved", "ignored"}
+        for record in records
+    )
+    with st.container(horizontal=True):
+        st.metric("记录总数", len(records), border=True)
+        st.metric("排队/运行中", running_count, border=True)
+        st.metric("疑似卡住", stalled_count, border=True)
+        st.metric("未闭环异常", unresolved_count, border=True)
+        st.metric("待人工审核", review_count, border=True)
+        st.metric("运行失败", failed_count, border=True)
+        st.metric("CZ同步失败", cz_failed_count, border=True)
+
+    if not records:
+        st.info(
+            "暂时没有线上或本地自动化运行记录。",
+            icon=":material/info:",
+        )
+        return
+
+    source_labels = list(
+        dict.fromkeys(
+            _text(record.get("source_label"))
+            for record in records
+            if _text(record.get("source_label"))
+        )
+    )
+    status_labels = list(
+        dict.fromkeys(
+            _text(record.get("status_label"))
+            for record in records
+            if _text(record.get("status_label"))
+        )
+    )
+    health_labels = list(
+        dict.fromkeys(
+            _text(record.get("health_label"))
+            for record in records
+            if _text(record.get("health_label"))
+        )
+    )
+    filter_left, filter_middle, filter_health, filter_right = st.columns(
+        [0.8, 0.8, 0.8, 1.4],
+        gap="large",
+    )
+    with filter_left:
+        source_filter = st.selectbox(
+            "运行来源",
+            ["全部来源", *source_labels],
+            key="automation_monitor_source",
+        )
+    with filter_middle:
+        status_filter = st.selectbox(
+            "运行状态",
+            ["全部状态", *status_labels],
+            key="automation_monitor_status",
+        )
+    with filter_health:
+        health_filter = st.selectbox(
+            "健康状态",
+            ["全部健康状态", *health_labels],
+            key="automation_monitor_health",
+        )
+    with filter_right:
+        search_text = st.text_input(
+            "搜索记录",
+            key="automation_monitor_search",
+            placeholder="输入文件名、记录ID、运行ID或错误关键词",
+        )
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        feedback_status_filter = st.selectbox(
+            "筛选处理状态",
+            ["全部处理状态", *RUN_FEEDBACK_STATUS_LABELS],
+            format_func=lambda value: (
+                value
+                if value == "全部处理状态"
+                else RUN_FEEDBACK_STATUS_LABELS[value]
+            ),
+            key="automation_monitor_feedback_status",
+        )
+        error_only = st.toggle(
+            "只看异常运行",
+            key="automation_monitor_error_only",
+        )
+
+    query = _text(search_text).casefold()
+    filtered_records = []
+    for record in records:
+        if (
+            source_filter != "全部来源"
+            and record.get("source_label") != source_filter
+        ):
+            continue
+        if (
+            status_filter != "全部状态"
+            and record.get("status_label") != status_filter
+        ):
+            continue
+        if (
+            health_filter != "全部健康状态"
+            and record.get("health_label") != health_filter
+        ):
+            continue
+        if (
+            feedback_status_filter != "全部处理状态"
+            and _text((record.get("feedback") or {}).get("status"))
+            != feedback_status_filter
+        ):
+            continue
+        if error_only and not (
+            _text(record.get("error"))
+            or record.get("health_status")
+            in {"stalled", "failed", "attention"}
+            or _automation_summary_count(
+                record.get("cz_sync") or {},
+                "failed",
+            )
+        ):
+            continue
+        searchable = " ".join(
+            _text(record.get(field))
+            for field in (
+                "record_id",
+                "job_id",
+                "run_id",
+                "source_name",
+                "error",
+            )
+        ).casefold()
+        feedback = record.get("feedback") or {}
+        searchable += " " + " ".join(
+            _text(feedback.get(field))
+            for field in ("owner", "cause_type", "note", "actor")
+        ).casefold()
+        if query and query not in searchable:
+            continue
+        filtered_records.append(record)
+
+    st.caption(
+        f"当前显示 {len(filtered_records)} / {len(records)} 条记录。"
+    )
+    if not filtered_records:
+        st.warning(
+            "没有符合当前筛选条件的运行记录。",
+            icon=":material/filter_list:",
+        )
+        return
+
+    st.dataframe(
+        [
+            _automation_record_table_row(record)
+            for record in filtered_records
+        ],
+        hide_index=True,
+        height=360,
+        width="stretch",
+        column_config={
+            "记录 ID": st.column_config.TextColumn(
+                "记录 ID",
+                pinned=True,
+            ),
+            "提交时间": st.column_config.DatetimeColumn(
+                "提交时间",
+                format="YYYY-MM-DD HH:mm:ss",
+            ),
+            "更新时间": st.column_config.DatetimeColumn(
+                "更新时间",
+                format="YYYY-MM-DD HH:mm:ss",
+            ),
+        },
+    )
+
+    record_ids = [
+        _text(record.get("record_id"))
+        for record in filtered_records
+        if _text(record.get("record_id"))
+    ]
+    selected_record_id = st.selectbox(
+        "查看运行详情",
+        record_ids,
+        format_func=lambda value: next(
+            (
+                f"{value} · {record.get('source_name', '')} · "
+                f"{record.get('status_label', '')}"
+                for record in filtered_records
+                if record.get("record_id") == value
+            ),
+            value,
+        ),
+        key="automation_monitor_selected_record",
+    )
+    selected_record = next(
+        (
+            record
+            for record in filtered_records
+            if record.get("record_id") == selected_record_id
+        ),
+        filtered_records[0],
+    )
+    _render_automation_record_detail(selected_record, feedback_store)
 
 
 def _render_automation() -> None:
@@ -1389,15 +2394,34 @@ def _render_automation() -> None:
         "自动化看板（准确性验证）",
         "验证清洗、语义标注、主题聚类、价值分类、选择性知识转写和内容质量初标的准确性。",
     )
-    automation_root = ROOT / "outputs" / "automation-runs"
+    automation_root, queue_root, feedback_path = _automation_paths()
+    automation_view = st.segmented_control(
+        "自动化视图",
+        ["运行记录", "手动验证"],
+        default="运行记录",
+        key="automation_view",
+        label_visibility="collapsed",
+        persist_state="session",
+    )
+    if automation_view == "运行记录":
+        _render_automation_run_monitor(
+            automation_root,
+            queue_root,
+            feedback_path,
+            _automation_stale_after_seconds(),
+        )
+        return
+
     history = list_automation_runs(automation_root, limit=30)
     completed_runs = sum(run.get("status") == "review_pending" for run in history)
+    confirmation_runs = sum(run.get("status") == "needs_confirmation" for run in history)
     failed_runs = sum(run.get("status") == "failed" for run in history)
     latest_topics = int((history[0].get("summary") or {}).get("topic_rows", 0)) if history else 0
     operations = build_operations_snapshot(history)
     with st.container(horizontal=True):
         st.metric("自动化运行", len(history), border=True)
         st.metric("进入待审核", completed_runs, border=True)
+        st.metric("等待确认", confirmation_runs, border=True)
         st.metric("运行失败", failed_runs, border=True)
         st.metric("最近主题候选", latest_topics, border=True)
         st.metric("成功率", f"{operations['success_rate']:.1%}", border=True)
@@ -1531,14 +2555,27 @@ def _render_automation() -> None:
             "启动自动化运行",
             type="primary",
             icon=":material/play_arrow:",
-            disabled=not source_file,
             width="stretch",
         )
 
-    if submitted and source_file:
+    if submitted and source_file is None:
+        st.warning("请先上传脱敏会话 Excel，再启动自动化运行。", icon=":material/upload_file:")
+    elif submitted and source_file is not None:
+        source_bytes = source_file.getvalue()
+        st.session_state.automation_pending_confirmation = {
+            "source_name": source_file.name,
+            "source_bytes": source_bytes,
+            "product_label": product_label,
+            "use_mimo": use_mimo,
+            "clustering_mode": clustering_mode,
+            "semantic_threshold": semantic_threshold,
+            "cluster_review_floor": cluster_review_floor,
+            "cluster_auto_merge_threshold": cluster_auto_merge_threshold,
+            "cluster_review_limit": cluster_review_limit,
+        }
         progress = st.progress(0.0, text="准备启动自动化流程")
         status_box = st.status("自动化流程运行中", expanded=True)
-        seen_events: set[tuple[str, str, str]] = set()
+        seen_events: set[tuple[str, str, str, str]] = set()
 
         def on_progress(manifest: dict[str, Any]) -> None:
             stages = manifest.get("stages") or []
@@ -1553,18 +2590,29 @@ def _render_automation() -> None:
                 stages[-1] if stages else {},
             )
             ratio = min(1.0, completed / max(1, len(stages)))
+            metrics_text = _automation_metrics_text(active.get("metrics") or {})
+            progress_text = (
+                f"{active.get('label', '处理中')} · {active.get('detail', '')}"
+            )
+            if metrics_text:
+                progress_text = f"{progress_text} · {metrics_text}"
             progress.progress(
                 ratio,
-                text=f"{active.get('label', '处理中')} · {active.get('detail', '')}",
+                text=progress_text,
             )
             event = (
                 _text(active.get("id")),
                 _text(active.get("status")),
                 _text(active.get("detail")),
+                metrics_text,
             )
             if event not in seen_events:
                 status_label, _color = _automation_stage_status(event[1])
-                status_box.write(f"**{active.get('label', '流程')}** · {status_label}：{event[2]}")
+                status_box.write(
+                    f"**{active.get('label', '流程')}** · {status_label}："
+                    f"{event[2]}"
+                    f"{f' · {metrics_text}' if metrics_text else ''}"
+                )
                 seen_events.add(event)
             if failed:
                 progress.progress(ratio, text="自动化流程执行失败")
@@ -1572,7 +2620,7 @@ def _render_automation() -> None:
         with tempfile.TemporaryDirectory(prefix="answer-hub-automation-") as temporary_dir:
             temporary_root = Path(temporary_dir)
             source_path = temporary_root / Path(source_file.name).name
-            source_path.write_bytes(source_file.getvalue())
+            source_path.write_bytes(source_bytes)
             manifest = run_automation_pipeline(
                 source_path=source_path,
                 standards_path=None,
@@ -1589,6 +2637,7 @@ def _render_automation() -> None:
             )
         st.session_state.automation_manifest = manifest
         if manifest.get("status") == "review_pending":
+            st.session_state.pop("automation_pending_confirmation", None)
             progress.progress(1.0, text="自动化流程完成，已进入人工审核队列")
             status_box.update(label="自动化流程已完成", state="complete", expanded=False)
             topic_review_path = _automation_artifact_path(manifest, "topic_review")
@@ -1600,13 +2649,47 @@ def _render_automation() -> None:
                 "验证流程已完成，可切换到“审核与反馈”检查结果。"
                 "正式流程将在答疑中台“候选价值复核”中处理送审。"
             )
+        elif manifest.get("status") == "needs_confirmation":
+            progress.progress(1.0, text="MiMo API 不可用，等待人工确认")
+            status_box.update(label="等待人工确认", state="error", expanded=True)
         else:
+            st.session_state.pop("automation_pending_confirmation", None)
             status_box.update(label="自动化流程执行失败", state="error", expanded=True)
-            st.error(f"运行失败：{_text(manifest.get('error')) or '请查看阶段记录'}")
+            st.error(
+                "运行失败："
+                + (
+                    sanitize_run_text(manifest.get("error"))
+                    or "请查看阶段记录"
+                )
+            )
         history = list_automation_runs(automation_root, limit=30)
 
     current_manifest = st.session_state.get("automation_manifest")
     if current_manifest:
+        _render_automation_alerts(current_manifest)
+        if _text(current_manifest.get("status")) == "needs_confirmation":
+            pending_confirmation = st.session_state.get("automation_pending_confirmation")
+            if pending_confirmation:
+                if st.button(
+                    "确认规则兜底继续生成",
+                    type="primary",
+                    icon=":material/play_arrow:",
+                    width="stretch",
+                ):
+                    with st.spinner("已确认继续，正在用规则兜底生成待人工审核结果。"):
+                        confirmed_manifest = _rerun_with_rule_fallback(
+                            automation_root,
+                            pending_confirmation,
+                        )
+                    st.session_state.automation_manifest = confirmed_manifest
+                    if confirmed_manifest.get("status") != "needs_confirmation":
+                        st.session_state.pop("automation_pending_confirmation", None)
+                    st.rerun()
+            else:
+                st.info(
+                    "当前会话没有保留原始上传文件。请修复 MiMo 配置后重新上传，或重新上传后选择规则兜底。",
+                    icon=":material/info:",
+                )
         st.markdown("<div class='section-label'>本次运行链路</div>", unsafe_allow_html=True)
         _render_automation_stages(current_manifest)
         summary = current_manifest.get("summary") or {}
@@ -1642,7 +2725,8 @@ def _render_automation() -> None:
                     "规则降级": (run.get("summary") or {}).get("topic_signal_fallback_rows", 0),
                     "估算成本": (run.get("summary") or {}).get("model_estimated_cost", 0),
                     "运行次数": run.get("attempt_count", 1),
-                    "错误": run.get("error", ""),
+                    "告警": "；".join(_automation_alert_messages(run)),
+                    "错误": sanitize_run_text(run.get("error")),
                 }
                 for run in history
             ],
@@ -1662,7 +2746,8 @@ def _render_automation() -> None:
                     [run.get("run_id", "") for run in failed_history],
                     format_func=lambda value: next(
                         (
-                            f"{value} · {run.get('source_name', '')} · {run.get('error', '')[:80]}"
+                            f"{value} · {run.get('source_name', '')} · "
+                            f"{sanitize_run_text(run.get('error'))[:80]}"
                             for run in failed_history
                             if run.get("run_id") == value
                         ),
@@ -1687,10 +2772,31 @@ def _render_automation() -> None:
                     if resumed.get("status") == "review_pending":
                         st.success("失败运行已从检查点恢复并完成。")
                     else:
-                        st.error(f"恢复后仍失败：{_text(resumed.get('error'))}")
+                        st.error(
+                            "恢复后仍失败："
+                            + sanitize_run_text(resumed.get("error"))
+                        )
                     st.rerun()
     else:
         st.caption("尚无自动化运行记录。")
+
+
+def _render_operations_monitor() -> None:
+    _page_heading(
+        "Answer Hub 运行监管",
+        "持续查看生产运行健康状态、精确阶段、异常处理负责人和反馈闭环。",
+    )
+    automation_root, queue_root, feedback_path = _automation_paths()
+    st.info(
+        "本页面只监管和记录处理反馈，不会修改候选知识、绕过人工审核或自动发布。",
+        icon=":material/security:",
+    )
+    _render_automation_run_monitor(
+        automation_root,
+        queue_root,
+        feedback_path,
+        _automation_stale_after_seconds(),
+    )
 
 
 def _run_generation(
@@ -1863,7 +2969,10 @@ def _render_cluster_validation() -> None:
                         )
                     except Exception as exc:
                         progress_bar.empty()
-                        st.error(f"聚类验证生成失败：{exc}")
+                        st.error(
+                            "聚类验证生成失败："
+                            + sanitize_run_text(exc)
+                        )
                         return
                 progress_bar.progress(100, text="聚类验证任务生成完成")
                 st.session_state.cluster_validation_rows = rows
@@ -1892,7 +3001,10 @@ def _render_cluster_validation() -> None:
                 try:
                     imported_rows = _load_cluster_validation_workbook(review_file.getvalue())
                 except Exception as exc:
-                    st.error(f"载入聚类验证工作簿失败：{exc}")
+                    st.error(
+                        "载入聚类验证工作簿失败："
+                        + sanitize_run_text(exc)
+                    )
                     return
                 if not imported_rows:
                     st.warning("工作簿中没有可标注的验证样本。")
@@ -2410,7 +3522,10 @@ def _render_generation() -> None:
                     cluster_review_limit,
                 )
             except Exception as exc:
-                st.error(f"主题候选生成失败：{exc}")
+                st.error(
+                    "主题候选生成失败："
+                    + sanitize_run_text(exc)
+                )
                 return
         st.session_state.generated_topic_workbook = workbook_bytes
         st.session_state.generated_topic_summary = summary
@@ -2429,8 +3544,12 @@ def _render_generation() -> None:
         metrics[4].metric("字段/品类排除", summary.get("excluded_rows", 0))
         effective_mode = summary.get("clustering_effective_mode", "")
         requested_mode = summary.get("clustering_requested_mode", "")
-        clustering_model = summary.get("clustering_model", "")
-        clustering_error = summary.get("clustering_error", "")
+        clustering_model = escape(
+            _text(summary.get("clustering_model"))
+        )
+        clustering_error = escape(
+            sanitize_run_text(summary.get("clustering_error"))
+        )
         if requested_mode == "direct_mimo" and effective_mode == "direct_mimo":
             st.markdown(
                 (
@@ -2539,8 +3658,18 @@ def _render_review() -> None:
     if st.session_state.get("topic_review_file_token") != file_token:
         try:
             rows, mapping_rows, evidence_gap_rows, pending_cluster_rows, model_draft_rows = _load_topic_workbook(workbook_bytes)
-        except ValueError as exc:
-            st.error(str(exc))
+        except (
+            BadZipFile,
+            InvalidFileException,
+            KeyError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            st.error(
+                "无法读取主题复核工作簿："
+                + sanitize_run_text(exc)
+            )
             return
         st.session_state.topic_review_file_token = file_token
         st.session_state.topic_review_rows = rows
@@ -2575,6 +3704,7 @@ def _render_review() -> None:
         auto_policy,
     )
     validation_report = evaluate_auto_review_validation(rows, auto_policy)
+    topic_label_report = evaluate_topic_label_validation(rows)
 
     st.markdown("<div class='section-label'>筛选与自动审核概览</div>", unsafe_allow_html=True)
     filter_keyword, filter_decision, filter_focus = st.columns([1.65, 1, 0.72])
@@ -2652,6 +3782,72 @@ def _render_review() -> None:
             hide_index=True,
             width="stretch",
         )
+
+    with st.container(border=True):
+        st.markdown("#### 主题标注准确率")
+        with st.container(horizontal=True):
+            st.metric(
+                "问题分类准确率",
+                (
+                    f"{topic_label_report['stage_accuracy']:.1%}"
+                    if topic_label_report["stage_accuracy"] is not None
+                    else "-"
+                ),
+                border=True,
+            )
+            st.metric(
+                "沉淀价值准确率",
+                (
+                    f"{topic_label_report['value_accuracy']:.1%}"
+                    if topic_label_report["value_accuracy"] is not None
+                    else "-"
+                ),
+                border=True,
+            )
+            st.metric(
+                "两项同时正确",
+                (
+                    f"{topic_label_report['joint_accuracy']:.1%}"
+                    if topic_label_report["joint_accuracy"] is not None
+                    else "-"
+                ),
+                border=True,
+            )
+            st.metric(
+                "分类已标注",
+                topic_label_report["stage_validated_rows"],
+                border=True,
+            )
+            st.metric(
+                "沉淀价值已标注",
+                topic_label_report["value_validated_rows"],
+                border=True,
+            )
+            st.metric(
+                "误标为值得沉淀",
+                topic_label_report["false_worthy"],
+                border=True,
+            )
+        if (
+            topic_label_report["stage_confusion"]
+            or topic_label_report["value_confusion"]
+        ):
+            with st.expander("查看分类混淆统计", expanded=False):
+                confusion_left, confusion_right = st.columns(2)
+                with confusion_left:
+                    st.markdown("**问题分类**")
+                    st.dataframe(
+                        topic_label_report["stage_confusion"],
+                        hide_index=True,
+                        width="stretch",
+                    )
+                with confusion_right:
+                    st.markdown("**沉淀价值**")
+                    st.dataframe(
+                        topic_label_report["value_confusion"],
+                        hide_index=True,
+                        width="stretch",
+                    )
 
     with st.container(border=True):
         st.markdown("#### 模型自动审核验证")
@@ -2735,25 +3931,39 @@ def _render_review() -> None:
             hide_index=True,
             height=220,
         )
-    with st.expander(f"待聚合记录（{len(pending_cluster_rows)}）", expanded=False):
+    with st.expander(
+        f"聚类待复核 / 待聚合记录（{len(pending_cluster_rows)}）",
+        expanded=False,
+    ):
         st.dataframe(
             [
                 {
                     "数据ID": _text(row.get("数据ID")),
                     "工单ID": _text(row.get("工单ID")),
                     "核心问题": _text(row.get("核心问题")),
+                    "待处理状态": _text(row.get("待聚合状态")),
+                    "聚类准入置信度": row.get("聚类准入置信度"),
                     "主题特征": " / ".join(
                         _text(row.get(field))
                         for field in ("问题意图", "对象/部位", "异常现象", "解题方式")
                         if _text(row.get(field))
                     ),
-                    "待聚合原因": _text(row.get("待聚合原因")),
+                    "待处理原因": _text(
+                        row.get("聚类准入原因")
+                        or row.get("待聚合原因")
+                    ),
                 }
                 for row in pending_cluster_rows
             ],
             width="stretch",
             hide_index=True,
             height=220,
+            column_config={
+                "聚类准入置信度": st.column_config.NumberColumn(
+                    "聚类准入置信度",
+                    format="%.2f",
+                )
+            },
         )
 
     st.markdown("<div class='section-label'>主题审核工作区</div>", unsafe_allow_html=True)
@@ -2786,8 +3996,9 @@ def _render_review() -> None:
                     "主题": _text(row.get("主标题")),
                     "样本": _text(row.get("主题样本数")),
                     "证据": _text(row.get("主题证据等级")),
+                    "问题分类": _text(row.get("主题问题分类")) or "待判断",
                     "模型初标": _text(row.get("模型初标结论")) or "待初标",
-                    "沉淀价值": _text(row.get("模型初标是否值得沉淀")) or "待判断",
+                    "沉淀价值": _text(row.get("主题沉淀价值")) or "待判断",
                     "组员验证": teammate_validation_decision(row) or "待验证",
                     "自动审核": _text(row.get("自动审核状态")) or "待判断",
                 }
@@ -2811,6 +4022,36 @@ def _render_review() -> None:
             f"模型初标：{_text(row.get('模型初标结论')) or '待初标'} · "
             f"组员验证：{teammate_validation_decision(row) or '待验证'}"
         )
+
+        with st.container(border=True):
+            with st.container(horizontal=True):
+                st.metric(
+                    "模型问题分类",
+                    _text(row.get("主题问题分类")) or "-",
+                    border=True,
+                )
+                st.metric(
+                    "模型沉淀价值",
+                    _text(row.get("主题沉淀价值")) or "-",
+                    border=True,
+                )
+                st.metric(
+                    "分类置信度",
+                    _text(row.get("主题分类置信度")) or "-",
+                    border=True,
+                )
+                st.metric(
+                    "人工问题分类",
+                    _text(row.get("人工主题问题分类")) or "待标注",
+                    border=True,
+                )
+            classification_reason = _text(row.get("主题分类原因"))
+            value_reason = _text(row.get("主题价值原因"))
+            if classification_reason or value_reason:
+                st.caption(
+                    f"分类依据：{classification_reason or '-'}；"
+                    f"沉淀价值依据：{value_reason or '-'}"
+                )
 
         workbench_tab, evidence_tab = st.tabs(["审核工作区", "案例证据"])
         with workbench_tab:
@@ -2918,7 +4159,7 @@ def _render_review() -> None:
             with edit_column:
                 editor_tab, feedback_tab = st.tabs(["候选内容", "组员验证"])
                 with editor_tab:
-                    st.caption("右侧内容是无标准引用的10项候选知识草稿；保存后会直接写入复核工作簿。")
+                    st.caption("右侧内容是无标准引用的12项候选知识草稿；保存后会直接写入复核工作簿。")
                     with st.form("topic_content_edit_form"):
                         st.markdown("<div class='section-label'>基础信息</div>", unsafe_allow_html=True)
                         st.text_input("知识ID", key="topic_知识ID", disabled=True)
@@ -2972,11 +4213,16 @@ def _render_review() -> None:
                             **updates,
                         }
                         st.session_state.topic_review_changes = changes
-                        st.success(f"已保存主题 {_text(row.get('主题ID'))} 的10项候选草稿。")
+                        st.success(f"已保存主题 {_text(row.get('主题ID'))} 的12项候选草稿。")
 
                 with feedback_tab:
-                    st.caption("组员填写：是否值得沉淀、是否可用、如何修改、问题反馈。不值得沉淀的纯个案知识不会进入批量送审。")
+                    st.caption("组员填写：人工问题分类、是否值得沉淀、是否可用、如何修改、问题反馈。不值得沉淀的纯个案知识不会进入批量送审。")
                     with st.form("topic_review_form"):
+                        st.selectbox(
+                            "人工问题分类",
+                            ["未标注", *SUPPORTED_KNOWLEDGE_CATEGORIES],
+                            key="topic_人工主题问题分类",
+                        )
                         value_left, value_right = st.columns(2)
                         with value_left:
                             st.segmented_control(
@@ -3023,6 +4269,11 @@ def _render_review() -> None:
                                 for field in ("是否值得沉淀", "是否可用", "如何修改", "问题反馈")
                             }
                         )
+                        updates["人工主题问题分类"] = _text(
+                            st.session_state.get("topic_人工主题问题分类")
+                        )
+                        if updates["人工主题问题分类"] == "未标注":
+                            updates["人工主题问题分类"] = ""
                         if updates["是否值得沉淀"] == "未标注":
                             updates["是否值得沉淀"] = ""
                         if not updates["审核时间"] and updates["审核结论"]:
@@ -3112,7 +4363,10 @@ def _render_review() -> None:
                                     width=180,
                                 )
                             except Exception as exc:
-                                st.caption(f"图片加载失败：{exc}")
+                                st.caption(
+                                    "图片加载失败："
+                                    + sanitize_run_text(exc)
+                                )
             else:
                 st.info("当前工作簿没有携带原始聊天内容；可以查看上方证据摘要或重新生成主题工作簿。")
             st.markdown("<div class='section-label'>来源记录</div>", unsafe_allow_html=True)
@@ -3152,7 +4406,7 @@ def _render_review() -> None:
         width="stretch",
     )
     downloads[1].download_button(
-        "下载10项候选",
+        "下载12项候选",
         data=_rows_to_xlsx_bytes(
             "候选知识",
             CASE_KNOWLEDGE_COLUMNS,
@@ -3203,6 +4457,7 @@ st.markdown(
 page = st.segmented_control(
     "工作区",
     [
+        "运行监管",
         "自动化看板",
         "转人工分析",
         "聚类验证",
@@ -3210,12 +4465,14 @@ page = st.segmented_control(
         "生成主题候选",
         "审核与反馈",
     ],
-    default="自动化看板",
+    default="运行监管",
     key="workspace_page",
     label_visibility="collapsed",
     persist_state="session",
 )
-if page == "自动化看板":
+if page == "运行监管":
+    _render_operations_monitor()
+elif page == "自动化看板":
     _render_automation()
 elif page == "转人工分析":
     render_transfer_analysis()

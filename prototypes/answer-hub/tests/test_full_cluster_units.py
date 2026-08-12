@@ -15,6 +15,8 @@ def test_build_units_preserves_source_and_fusion_fields() -> None:
             "机型": "测试机型",
             "核心问题": "屏幕异常如何判定",
             "聊天内容": "屏幕有一条亮线",
+            "判定结论": "该亮线属于显示异常",
+            "历史实际回复": "该情形按显示异常处理。",
             "图片链接": "image",
             "视频链接": "",
             "产品类型": "手机",
@@ -66,6 +68,8 @@ def test_build_units_preserves_source_and_fusion_fields() -> None:
     assert units[0]["source_record_key"] == "R1"
     assert units[0]["normalized_issue"].startswith("手机")
     assert "显示异常判定" in units[0]["semantic_text"]
+    assert units[0]["source_judgment_conclusion"] == "该亮线属于显示异常"
+    assert units[0]["historical_actual_reply"] == "该情形按显示异常处理。"
 
 
 def test_build_units_excludes_missing_conversation_with_irrelevant_media() -> None:

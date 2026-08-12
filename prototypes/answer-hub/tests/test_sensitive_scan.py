@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from scripts.scan_sensitive_files import scan
 
 
@@ -72,6 +74,30 @@ def test_unrelated_log_is_still_rejected_for_local_runtime(
     ]
 
 
+@pytest.mark.parametrize(
+    "directory_name",
+    (
+        ".pytest-case4",
+        ".pytest_tmp_case4",
+        ".test-tmp-case4",
+        ".tmp",
+        ".tmp-tests",
+    ),
+)
+def test_local_test_runtime_directories_are_ignored_only_for_local_runtime(
+    tmp_path: Path,
+    directory_name: str,
+) -> None:
+    runtime_db = tmp_path / directory_name / "nested" / "audit.db"
+    runtime_db.parent.mkdir(parents=True)
+    runtime_db.write_bytes(b"test-runtime")
+
+    assert scan(tmp_path, ignore_local_runtime=True) == []
+    assert scan(tmp_path, ignore_local_runtime=False) == [
+        f"forbidden artifact: {runtime_db.relative_to(tmp_path)}"
+    ]
+
+
 def test_github_publish_script_excludes_local_dify_runtime() -> None:
     script = (
         PROJECT_ROOT / "scripts" / "publish_answer_hub_to_github.ps1"
@@ -83,6 +109,14 @@ def test_github_publish_script_excludes_local_dify_runtime() -> None:
     assert '"codex_test_*.patch"' in script
     assert '"update_pr12_with_cz_interfaces.ps1"' in script
     assert '"更新PR12合并CZ接口.cmd"' in script
+    for runtime_directory_pattern in (
+        '".pytest-*"',
+        '".pytest_*"',
+        '".test-tmp-*"',
+        '".tmp"',
+        '".tmp-*"',
+    ):
+        assert runtime_directory_pattern in script
     for forbidden_pattern in (
         '"*.db"',
         '"*.log"',

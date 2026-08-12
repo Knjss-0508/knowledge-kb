@@ -17,6 +17,16 @@ from answer_hub.operations import (
 )
 
 
+def test_operations_policy_uses_online_clustering_runtime_sla_by_default(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("ANSWER_HUB_SLA_SECONDS_PER_100_ROWS", raising=False)
+
+    policy = OperationsPolicy.from_env()
+
+    assert policy.max_seconds_per_100_rows == 900.0
+
+
 def test_redaction_scan_blocks_sensitive_values_without_echoing_them() -> None:
     rows = [
         {

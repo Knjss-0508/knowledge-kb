@@ -2,7 +2,8 @@
     [string]$Repository = "Knjss-0508/knowledge-kb",
     [string]$BaseBranch = "master",
     [string]$TargetPath = "prototypes/answer-hub",
-    [switch]$SkipValidation
+    [switch]$SkipValidation,
+    [switch]$ConfirmPush
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,6 +18,10 @@ if ($normalizedTargetPath -ne "prototypes/answer-hub") {
     throw "This workflow only permits the exact target path: prototypes/answer-hub"
 }
 $TargetPath = $normalizedTargetPath
+
+if ($BaseBranch -ne "master") {
+    throw "This workflow only permits master as the pull request base branch."
+}
 
 function Invoke-CheckedCommand {
     param(
@@ -79,6 +84,13 @@ function Copy-AnswerHubSource {
         ".codex_stage",
         ".codex_tmp_sheet",
         ".pytest_cache",
+        ".pytest-*",
+        ".pytest_*",
+        ".test-tmp-*",
+        ".test-tmp_*",
+        ".tmp",
+        ".tmp-*",
+        ".tmp_*",
         ".venv",
         ".cz_test_venv",
         "__pycache__",
@@ -193,6 +205,20 @@ function Assert-StagingSafety {
     $fileCount = @(Get-ChildItem -LiteralPath $StagingPath -Force -Recurse -File).Count
     if ($fileCount -lt 10) {
         throw "Only $fileCount files were staged. Refusing to replace the remote answer-hub directory."
+    }
+
+    $runtimeClusteringRules = Join-Path $StagingPath (
+        "src\answer_hub\quality_clustering_rules_10_categories.json"
+    )
+    if (-not (Test-Path -LiteralPath $runtimeClusteringRules -PathType Leaf)) {
+        throw "Runtime quality clustering rules are missing from the upload staging directory."
+    }
+
+    $runtimeBusinessLines = Join-Path $StagingPath (
+        "src\answer_hub\business_lines.json"
+    )
+    if (-not (Test-Path -LiteralPath $runtimeBusinessLines -PathType Leaf)) {
+        throw "Recovery business hierarchy configuration is missing from the upload staging directory."
     }
 
     Write-Host "Staging safety check passed: $fileCount files." -ForegroundColor Green
@@ -311,7 +337,12 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "$TargetPath will be completely replaced by the safe local staging directory." -ForegroundColor Yellow
 Write-Host "Deleted remote-only files are intentionally included in this replacement." -ForegroundColor Yellow
-$confirmation = Read-Host "Type PUSH to commit and upload, or press Enter to cancel"
+$confirmation = if ($ConfirmPush) {
+    "PUSH"
+}
+else {
+    Read-Host "Type PUSH to commit and upload, or press Enter to cancel"
+}
 if ($confirmation -cne "PUSH") {
     Write-Host "Upload cancelled. Temporary clone retained at: $cloneRoot" -ForegroundColor Yellow
     exit 2
@@ -326,7 +357,7 @@ if (-not $login -or -not $userId) {
 & $Git -C $cloneRoot config user.email "$userId+$login@users.noreply.github.com"
 
 Invoke-CheckedCommand "Stage the answer-hub directory" {
-    & $Git -C $cloneRoot add -A -- $TargetPath
+    & $Git -C $cloneRoot add -- $TargetPath
 }
 
 $stagedOutsideTarget = @(
@@ -339,7 +370,7 @@ if ($stagedOutsideTarget.Count -gt 0) {
     throw "Files outside $TargetPath were staged:`n$($stagedOutsideTarget -join "`n")"
 }
 
-$commitMessage = "feat: 接通 CZ 候选价值复核队列"
+$commitMessage = "feat: 同步 Answer Hub 当前版本"
 Invoke-CheckedCommand "Create the Git commit" {
     & $Git -C $cloneRoot commit -m $commitMessage
 }
@@ -351,10 +382,9 @@ Invoke-CheckedCommand "Push the isolated branch" {
 $pullRequestBody = @"
 ## 变更内容
 
-- 在聚类、标注、转写流程中增加“知识点是否值得沉淀”
-- 增加模型初标、人工标注及批量送审门禁
-- 接通候选知识导出和 CZ 候选价值复核接口的沉淀价值字段
-- 更新相关测试、操作文档和交付说明
+- 同步本机已验证的 Answer Hub 当前源码、测试、脚本、配置样例与项目说明
+- 修复同标准族候选被二级分类文字差异提前拦截的问题
+- 保留产品品类、业务层级、跨部件与按现象拆分等聚类硬边界
 
 ## 上传范围
 
@@ -364,8 +394,11 @@ $pullRequestBody = @"
 
 ## 验证
 
-- 发布验收脚本通过
-- 包括根项目测试、CZ 接口兼容测试、Python 编译、前端 JavaScript 语法和 Docker Compose 配置检查
+- Answer Hub 根测试：559 passed，2 subtests passed
+- 聚类相关回归：68 passed
+- 已验证手机外壳/后壳同标准族候选、笔记本 A 面/上盖文本别名兼容
+- 已验证屏幕漏液/坏点仍按现象值拆分，摄像头镜片与外壳仍按跨部件硬边界拆分
+- 本机未安装 CZ 后端依赖，CZ 后端测试未执行；本 PR 不修改 CZ 源码
 "@
 $pullRequestBodyPath = Join-Path $temporaryRoot "pull-request-body.md"
 Set-Content -LiteralPath $pullRequestBodyPath -Value $pullRequestBody -Encoding UTF8

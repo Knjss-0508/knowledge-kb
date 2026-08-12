@@ -37,7 +37,11 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-answer_hub = ["product_categories.json"]
+answer_hub = [
+  "business_lines.json",
+  "product_categories.json",
+  "quality_clustering_rules_10_categories.json",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

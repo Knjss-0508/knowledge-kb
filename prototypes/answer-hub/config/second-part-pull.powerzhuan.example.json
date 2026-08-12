@@ -1,0 +1,145 @@
+{
+  "name": "powerzhuan-qa",
+  "url": "https://qa.powerzhuan.cn/api/records",
+  "method": "GET",
+  "headers": {
+    "Authorization": "Bearer ${SECOND_PART_API_TOKEN}"
+  },
+  "params": {
+    "from": "${SECOND_PART_QUERY_FROM_DATE}",
+    "to": "${SECOND_PART_QUERY_TO_DATE}"
+  },
+  "batch_size": 1000,
+  "limit_param": "limit",
+  "timeout_seconds": 30,
+  "response": {
+    "items_path": "records"
+  },
+  "field_map": {
+    "序号": [
+      "序号",
+      "sequence"
+    ],
+    "上传者": [
+      "上传者",
+      "uploader",
+      "uploaded_by"
+    ],
+    "分析时间": [
+      "分析时间",
+      "analyze_time",
+      "analyzed_at",
+      "created_at"
+    ],
+    "工单ID": [
+      "工单ID",
+      "record.工单ID",
+      "work_order_id",
+      "record.work_order_id",
+      "ticket_id",
+      "record.ticket_id"
+    ],
+    "回收单号": [
+      "回收单号",
+      "recycle_order_id",
+      "order_no"
+    ],
+    "聊天内容": [
+      "聊天内容",
+      "record.聊天内容",
+      "conversation",
+      "record.conversation",
+      "chat_content",
+      "record.chat_content"
+    ],
+    "图片链接": [
+      "图片链接",
+      "image_urls",
+      "chat_images"
+    ],
+    "视频链接": [
+      "视频链接",
+      "video_urls",
+      "chat_videos"
+    ],
+    "核心问题": [
+      "核心问题",
+      "record.核心问题",
+      "core_problem",
+      "record.core_problem",
+      "legacy_core_problem",
+      "record.legacy_core_problem"
+    ],
+    "判定结论": [
+      "判定结论",
+      "record.判定结论",
+      "judgment",
+      "record.judgment",
+      "legacy_judgment",
+      "record.legacy_judgment"
+    ],
+    "判定依据": [
+      "判定依据",
+      "judgment_basis",
+      "legacy_basis"
+    ],
+    "回收业务层级": [
+      "回收业务层级",
+      "business_line"
+    ],
+    "回收业务层级编码": [
+      "回收业务层级编码",
+      "business_line_code"
+    ],
+    "产品类型": [
+      "产品类型",
+      "record.产品类型",
+      "product_type",
+      "record.product_type",
+      "category"
+    ],
+    "产品类型编码": [
+      "产品类型编码",
+      "product_type_code"
+    ],
+    "一级分类": [
+      "一级分类",
+      "category_l1",
+      "legacy_category_l1"
+    ],
+    "二级分类": [
+      "二级分类",
+      "category_l2",
+      "legacy_category_l2"
+    ],
+    "参考话术": [
+      "参考话术",
+      "reference_reply"
+    ],
+    "历史实际回复": [
+      "历史实际回复",
+      "record.历史实际回复",
+      "actual_reply",
+      "record.actual_reply"
+    ],
+    "ai_result": [
+      "ai_result",
+      "record.ai_result",
+      "aiResult",
+      "record.aiResult"
+    ]
+  },
+  "defaults": {
+    "上传者": "PowerZhuan QA 接口"
+  },
+  "required_fields": [
+    "工单ID",
+    "聊天内容",
+    "产品类型"
+  ],
+  "workflow": {
+    "use_mimo": true,
+    "clustering_mode": "direct_mimo",
+    "sync_to_cz_review": true
+  }
+}

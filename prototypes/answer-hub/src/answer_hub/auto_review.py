@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 import os
 
+from .knowledge_categories import UNCERTAIN_CATEGORY, normalize_knowledge_category
 from .product_taxonomy import infer_product_category, resolve_product_category
 
 from .mimo import load_dotenv
@@ -128,6 +129,16 @@ def assess_auto_review_candidate(
         reasons.append("主题分类未由正式模型成功完成")
     if _text(candidate.get("主题分类提供方")).lower() != "mimo":
         reasons.append("主题分类不是 MiMo 正式结果")
+    topic_stage = normalize_knowledge_category(
+        candidate.get("主题问题分类"),
+        default="",
+    )
+    if not topic_stage:
+        reasons.append("主题问题分类没有有效结果")
+    elif topic_stage == UNCERTAIN_CATEGORY:
+        reasons.append("主题问题分类仍为不确定")
+    if _text(candidate.get("主题沉淀价值")) != "值得沉淀":
+        reasons.append("主题未标注为值得沉淀")
     if _safe_float(candidate.get("主题分类置信度")) < policy.min_confidence:
         reasons.append(f"主题分类置信度低于 {policy.min_confidence:.2f}")
     if _text(candidate.get("主题分类重点复核")) == "是":
@@ -250,6 +261,164 @@ def teammate_validation_decision(candidate: dict[str, Any]) -> str:
     if usable in UNUSABLE_VALUES:
         return "驳回"
     return _text(candidate.get("审核结论"))
+
+
+def _normalized_knowledge_value(
+    value: Any,
+    *,
+    allow_pending: bool = False,
+) -> str:
+    text = _text(value).lower()
+    if text in WORTHY_VALUES:
+        return "值得沉淀"
+    if text in UNWORTHY_VALUES:
+        return "不值得沉淀"
+    if allow_pending and text == "待确认":
+        return "待确认"
+    return ""
+
+
+def evaluate_topic_label_validation(
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compare model topic labels with teammate annotations."""
+    stage_validated = stage_correct = 0
+    value_validated = value_correct = 0
+    joint_validated = joint_correct = 0
+    true_worthy = false_worthy = false_unworthy = 0
+    stage_confusion: dict[tuple[str, str], int] = {}
+    value_confusion: dict[tuple[str, str], int] = {}
+    by_product: dict[str, dict[str, int]] = {}
+
+    for candidate in candidates:
+        model_stage = normalize_knowledge_category(
+            candidate.get("主题问题分类"),
+            default="",
+        )
+        human_stage = normalize_knowledge_category(
+            candidate.get("人工主题问题分类"),
+            default="",
+        )
+        model_value = _normalized_knowledge_value(
+            candidate.get("主题沉淀价值"),
+            allow_pending=True,
+        )
+        human_value = _normalized_knowledge_value(
+            candidate.get("是否值得沉淀"),
+        )
+        product = by_product.setdefault(
+            candidate_product_type(candidate),
+            {
+                "stage_validated": 0,
+                "stage_correct": 0,
+                "value_validated": 0,
+                "value_correct": 0,
+            },
+        )
+
+        if human_stage:
+            predicted_stage = model_stage or "未标注"
+            stage_validated += 1
+            product["stage_validated"] += 1
+            stage_confusion[(human_stage, predicted_stage)] = (
+                stage_confusion.get((human_stage, predicted_stage), 0) + 1
+            )
+            if predicted_stage == human_stage:
+                stage_correct += 1
+                product["stage_correct"] += 1
+
+        if human_value:
+            predicted_value = model_value or "未标注"
+            value_validated += 1
+            product["value_validated"] += 1
+            value_confusion[(human_value, predicted_value)] = (
+                value_confusion.get((human_value, predicted_value), 0) + 1
+            )
+            if predicted_value == human_value:
+                value_correct += 1
+                product["value_correct"] += 1
+            if predicted_value == "值得沉淀" and human_value == "值得沉淀":
+                true_worthy += 1
+            elif predicted_value == "值得沉淀":
+                false_worthy += 1
+            elif human_value == "值得沉淀":
+                false_unworthy += 1
+
+        if human_stage and human_value:
+            joint_validated += 1
+            if model_stage == human_stage and model_value == human_value:
+                joint_correct += 1
+
+    return {
+        "total_rows": len(candidates),
+        "stage_validated_rows": stage_validated,
+        "stage_correct_rows": stage_correct,
+        "stage_accuracy": (
+            stage_correct / stage_validated
+            if stage_validated
+            else None
+        ),
+        "stage_confusion": [
+            {
+                "人工分类": human,
+                "模型分类": model,
+                "数量": count,
+            }
+            for (human, model), count in sorted(stage_confusion.items())
+        ],
+        "value_validated_rows": value_validated,
+        "value_correct_rows": value_correct,
+        "value_accuracy": (
+            value_correct / value_validated
+            if value_validated
+            else None
+        ),
+        "value_confusion": [
+            {
+                "人工沉淀价值": human,
+                "模型沉淀价值": model,
+                "数量": count,
+            }
+            for (human, model), count in sorted(value_confusion.items())
+        ],
+        "worthy_precision": (
+            true_worthy / (true_worthy + false_worthy)
+            if true_worthy + false_worthy
+            else None
+        ),
+        "worthy_recall": (
+            true_worthy / (true_worthy + false_unworthy)
+            if true_worthy + false_unworthy
+            else None
+        ),
+        "false_worthy": false_worthy,
+        "false_unworthy": false_unworthy,
+        "joint_validated_rows": joint_validated,
+        "joint_correct_rows": joint_correct,
+        "joint_accuracy": (
+            joint_correct / joint_validated
+            if joint_validated
+            else None
+        ),
+        "by_product": [
+            {
+                "产品类型": product_type,
+                **values,
+                "stage_accuracy": (
+                    values["stage_correct"] / values["stage_validated"]
+                    if values["stage_validated"]
+                    else None
+                ),
+                "value_accuracy": (
+                    values["value_correct"] / values["value_validated"]
+                    if values["value_validated"]
+                    else None
+                ),
+            }
+            for product_type, values in sorted(by_product.items())
+            if values["stage_validated"] or values["value_validated"]
+        ],
+    }
 
 
 def evaluate_auto_review_validation(

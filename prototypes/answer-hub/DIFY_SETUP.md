@@ -28,6 +28,10 @@ ANSWER_HUB_AUTOMATION_CLUSTERING_MODE=direct_mimo
 ANSWER_HUB_AUTOMATION_SYNC_TO_CZ_REVIEW=false
 ANSWER_HUB_AUTOMATION_SUBMIT_TO_CZ=false
 
+MIMO_BASE_URL=https://api.xiaomimimo.com/v1
+MIMO_MODEL=mimo-v2.5
+MIMO_MEDIA_MODEL=mimo-v2.5
+
 AUTO_REVIEW_ENABLED=false
 AUTO_REVIEW_VALIDATED_MODEL=已完成验收的模型名称
 AUTO_REVIEW_VALIDATED_PROMPT_VERSION=已完成验收的Prompt版本
@@ -112,6 +116,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -> completed：输出 summary 和 artifact_urls
   -> failed：输出 error，并提供 retryAnswerHubJob
 ```
+
+如果第二部分原生输出的是已脱敏 JSON，而不是 Excel 文件，开始节点改为
+`source_system`、`idempotency_key`、`items` 和 `options`，并调用新导入的
+`pushSecondPartRecords`。后续仍复用同一轮询、失败重试和人工候选价值复核流程。
+请求样例见 `examples\answer_hub_second_part_push.example.json`；每批最多 100 条，
+每条必须标记 `redaction_status=redacted`。
 
 建议开始节点变量：
 

@@ -5,6 +5,7 @@ from answer_hub.auto_review import (
     apply_auto_review_annotation,
     assess_auto_review_candidate,
     evaluate_auto_review_validation,
+    evaluate_topic_label_validation,
     partition_auto_review_candidates,
     select_candidates_for_submission,
 )
@@ -28,6 +29,8 @@ def _model_pass(**overrides):
         "是否重点复核": "否",
         "主题分类状态": "topic_stage_classified_model",
         "主题分类提供方": "mimo",
+        "主题问题分类": "质检标准",
+        "主题沉淀价值": "值得沉淀",
         "主题分类置信度": 0.93,
         "主题分类重点复核": "否",
         "模型初标标准一致性": "一致",
@@ -115,6 +118,30 @@ def test_auto_review_requires_successful_high_confidence_topic_classification() 
     }
 
 
+def test_auto_review_requires_decisive_worthy_topic_labels() -> None:
+    approved, exceptions = partition_auto_review_candidates(
+        [
+            _model_pass(
+                主题ID="TOP-UNWORTHY",
+                主题沉淀价值="不值得沉淀",
+            ),
+            _model_pass(
+                主题ID="TOP-UNCERTAIN",
+                主题问题分类="不确定",
+            ),
+        ],
+        _policy(enabled=True),
+    )
+
+    assert approved == []
+    reasons_by_id = {
+        row["主题ID"]: row["自动审核原因"]
+        for row in exceptions
+    }
+    assert "主题未标注为值得沉淀" in reasons_by_id["TOP-UNWORTHY"]
+    assert "主题问题分类仍为不确定" in reasons_by_id["TOP-UNCERTAIN"]
+
+
 def test_validation_treats_teammate_modification_as_not_ready_for_auto_release() -> None:
     report = evaluate_auto_review_validation(
         [
@@ -134,6 +161,62 @@ def test_validation_treats_teammate_modification_as_not_ready_for_auto_release()
     assert report["false_pass"] == 1
     assert report["accuracy"] == 0.5
     assert not report["gate_ready"]
+
+
+def test_topic_label_validation_scores_stage_and_knowledge_value_separately() -> None:
+    report = evaluate_topic_label_validation(
+        [
+            _model_pass(
+                主题ID="TOP-001",
+                主题问题分类="质检标准",
+                主题沉淀价值="值得沉淀",
+                人工主题问题分类="质检标准",
+                是否值得沉淀="是",
+            ),
+            _model_pass(
+                主题ID="TOP-002",
+                主题问题分类="质检流程",
+                主题沉淀价值="值得沉淀",
+                人工主题问题分类="质检标准",
+                是否值得沉淀="否",
+            ),
+            _model_pass(
+                主题ID="TOP-003",
+                主题问题分类="案例解析",
+                主题沉淀价值="不值得沉淀",
+                人工主题问题分类="案例解析",
+                是否值得沉淀="否",
+            ),
+            _model_pass(
+                主题ID="TOP-004",
+                主题问题分类="不确定",
+                主题沉淀价值="待确认",
+                人工主题问题分类="",
+                是否值得沉淀="是",
+            ),
+        ]
+    )
+
+    assert report["stage_validated_rows"] == 3
+    assert report["stage_correct_rows"] == 2
+    assert report["stage_accuracy"] == 2 / 3
+    assert {
+        "人工分类": "质检标准",
+        "模型分类": "质检流程",
+        "数量": 1,
+    } in report["stage_confusion"]
+
+    assert report["value_validated_rows"] == 4
+    assert report["value_correct_rows"] == 2
+    assert report["value_accuracy"] == 0.5
+    assert report["worthy_precision"] == 0.5
+    assert report["worthy_recall"] == 0.5
+    assert report["false_worthy"] == 1
+    assert report["false_unworthy"] == 1
+
+    assert report["joint_validated_rows"] == 3
+    assert report["joint_correct_rows"] == 2
+    assert report["joint_accuracy"] == 2 / 3
 
 
 def test_production_mode_uses_model_while_validation_mode_uses_teammate_label() -> None:

@@ -92,7 +92,7 @@ Content-Type: application/json
 POST /integration/second-part/records:batch
 ```
 
-用途：第二部分把已脱敏记录批量送入CZ，由CZ调用当前第三部分工作流完成原子问题拆分、主题聚合和10项候选改写。
+用途：第二部分把已脱敏记录批量送入CZ，由CZ调用当前第三部分工作流完成原子问题拆分、主题聚合和12项候选改写。
 
 规则：
 

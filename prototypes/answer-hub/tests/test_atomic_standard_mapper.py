@@ -179,7 +179,7 @@ def test_human_legacy_category_correction_maps_to_official_category() -> None:
             "REPAIR",
             "前摄像头焊接异常",
             "拆修及浸液情况",
-            "Xray检测结果",
+            "摄像头拆修痕迹",
         ),
     ]
     unit = _unit(

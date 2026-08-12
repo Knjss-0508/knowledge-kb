@@ -69,6 +69,14 @@ def _looks_multi_topic(row: dict[str, Any]) -> bool:
     return any(marker in text for marker in MULTI_TOPIC_MARKERS)
 
 
+def _topic_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        _text(row.get("产品类型")) or "待确认",
+        _text(row.get("一级分类")) or "待确认",
+        _text(row.get("二级分类")) or "待确认",
+    )
+
+
 def _allocate_quotas(counts: Counter[str], sample_size: int) -> dict[str, int]:
     products = sorted(counts)
     if sample_size <= 0:
@@ -105,6 +113,65 @@ def _allocate_quotas(counts: Counter[str], sample_size: int) -> dict[str, int]:
     return quotas
 
 
+def _select_group_aware_rows(
+    members: list[tuple[int, dict[str, Any]]],
+    quota: int,
+) -> list[tuple[int, dict[str, Any]]]:
+    if quota <= 0:
+        return []
+
+    grouped: dict[tuple[str, str, str], list[tuple[int, dict[str, Any]]]] = defaultdict(list)
+    for source_row, row in members:
+        grouped[_topic_key(row)].append((source_row, row))
+
+    for bucket in grouped.values():
+        bucket.sort(key=lambda item: (_stable_rank(item[1]), item[0]))
+
+    ordered_groups = sorted(
+        grouped.items(),
+        key=lambda item: (-len(item[1]), item[0]),
+    )
+    selected: list[tuple[int, dict[str, Any]]] = []
+    used_keys: set[tuple[str, str, str]] = set()
+
+    def add_from_group(key: tuple[str, str, str], take: int) -> None:
+        bucket = grouped[key]
+        for item in bucket:
+            if item in selected:
+                continue
+            selected.append(item)
+            if len(selected) >= quota or take <= 1:
+                break
+            take -= 1
+
+    # 先尽量让高密度主题组形成成对样本。
+    for key, bucket in ordered_groups:
+        if len(selected) >= quota:
+            break
+        if len(bucket) < 2:
+            continue
+        add_from_group(key, 2)
+        used_keys.add(key)
+
+    # 再补充未覆盖的主题组，保证抽样仍然稳定且尽量多样。
+    for key, bucket in ordered_groups:
+        if len(selected) >= quota:
+            break
+        if key in used_keys:
+            continue
+        add_from_group(key, 1)
+        used_keys.add(key)
+
+    # 仍有名额时，从已选主题组继续补齐。
+    if len(selected) < quota:
+        for key, bucket in ordered_groups:
+            if len(selected) >= quota:
+                break
+            add_from_group(key, 1)
+
+    return selected[:quota]
+
+
 def build_sample(
     rows: list[dict[str, Any]],
     sample_size: int = 60,
@@ -133,11 +200,8 @@ def build_sample(
     quotas = _allocate_quotas(counts, sample_size)
     selected: list[tuple[int, dict[str, Any]]] = []
     for product in sorted(grouped):
-        members = sorted(
-            grouped[product],
-            key=lambda item: (_stable_rank(item[1]), item[0]),
-        )
-        selected.extend(members[: quotas[product]])
+        members = grouped[product]
+        selected.extend(_select_group_aware_rows(members, quotas[product]))
 
     selected.sort(key=lambda item: (_text(item[1].get("产品类型")), _stable_rank(item[1])))
     samples: list[dict[str, Any]] = []

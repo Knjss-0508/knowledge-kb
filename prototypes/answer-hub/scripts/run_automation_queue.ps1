@@ -44,6 +44,50 @@ $staleAfterSeconds = if ($env:ANSWER_HUB_AUTOMATION_STALE_AFTER_SECONDS) {
 } else {
     "7200"
 }
+$secondPartPullProfile = $env:SECOND_PART_PULL_PROFILE
+$secondPartPullState = if ($env:SECOND_PART_PULL_STATE) {
+    $env:SECOND_PART_PULL_STATE
+} else {
+    Join-Path $ProjectRoot "data\second-part-pull\state.json"
+}
+$secondPartPullMaxPages = if ($env:SECOND_PART_PULL_MAX_PAGES) {
+    $env:SECOND_PART_PULL_MAX_PAGES
+} else {
+    "10"
+}
+$secondPartQueryFromDate = $env:SECOND_PART_QUERY_FROM_DATE
+$secondPartQueryToDate = $env:SECOND_PART_QUERY_TO_DATE
+$legacySecondPartQueryDate = $env:SECOND_PART_QUERY_DATE
+if ($secondPartQueryFromDate -or $secondPartQueryToDate) {
+    if (-not $secondPartQueryFromDate -or -not $secondPartQueryToDate) {
+        throw (
+            "SECOND_PART_QUERY_FROM_DATE and " +
+            "SECOND_PART_QUERY_TO_DATE must be set together."
+        )
+    }
+} elseif ($legacySecondPartQueryDate) {
+    $secondPartQueryFromDate = $legacySecondPartQueryDate
+    $secondPartQueryToDate = $legacySecondPartQueryDate
+} else {
+    $secondPartQueryWindowDays = 1
+    if ($env:SECOND_PART_QUERY_WINDOW_DAYS) {
+        try {
+            $secondPartQueryWindowDays = [int]$env:SECOND_PART_QUERY_WINDOW_DAYS
+        } catch {
+            throw "SECOND_PART_QUERY_WINDOW_DAYS must be a positive integer."
+        }
+    }
+    if ($secondPartQueryWindowDays -lt 1) {
+        throw "SECOND_PART_QUERY_WINDOW_DAYS must be at least 1."
+    }
+    $lastCompleteDate = (Get-Date).Date.AddDays(-1)
+    $secondPartQueryFromDate = $lastCompleteDate.AddDays(
+        1 - $secondPartQueryWindowDays
+    ).ToString("yyyy-MM-dd")
+    $secondPartQueryToDate = $lastCompleteDate.ToString("yyyy-MM-dd")
+}
+$env:SECOND_PART_QUERY_FROM_DATE = $secondPartQueryFromDate
+$env:SECOND_PART_QUERY_TO_DATE = $secondPartQueryToDate
 $useMimo = $env:ANSWER_HUB_AUTOMATION_USE_MIMO -match "^(1|true|yes|on)$"
 $syncToCzReviewValue = if ($env:ANSWER_HUB_AUTOMATION_SYNC_TO_CZ_REVIEW) {
     $env:ANSWER_HUB_AUTOMATION_SYNC_TO_CZ_REVIEW
@@ -96,5 +140,30 @@ $logDir = Join-Path $ProjectRoot "outputs\automation-logs"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $logPath = Join-Path $logDir ("queue-" + (Get-Date -Format "yyyyMMdd") + ".log")
 
+$pullExitCode = 0
+if ($secondPartPullProfile) {
+    $pullArguments = @(
+        "-m",
+        "answer_hub.cli",
+        "second-part-pull",
+        "--profile",
+        $secondPartPullProfile,
+        "--queue-dir",
+        $queueDir,
+        "--output-dir",
+        $outputDir,
+        "--state-file",
+        $secondPartPullState,
+        "--max-pages",
+        $secondPartPullMaxPages
+    )
+    & $python @pullArguments *>> $logPath
+    $pullExitCode = $LASTEXITCODE
+}
+
 & $python @arguments *>> $logPath
-exit $LASTEXITCODE
+$queueExitCode = $LASTEXITCODE
+if ($queueExitCode -ne 0) {
+    exit $queueExitCode
+}
+exit $pullExitCode

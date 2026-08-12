@@ -39,11 +39,21 @@ TEXT_SUFFIXES = {
     ".css",
     ".txt",
 }
+LOCAL_RUNTIME_ROOT_DIR_PATTERNS = (
+    re.compile(r"^\.pytest[-_].+$", flags=re.IGNORECASE),
+    re.compile(r"^\.test-tmp(?:[-_].+)?$", flags=re.IGNORECASE),
+    re.compile(r"^\.tmp(?:[-_].+)?$", flags=re.IGNORECASE),
+)
 
 
 def _is_local_runtime_path(relative_parts: tuple[str, ...]) -> bool:
     if not relative_parts:
         return False
+    if any(
+        pattern.fullmatch(relative_parts[0])
+        for pattern in LOCAL_RUNTIME_ROOT_DIR_PATTERNS
+    ):
+        return True
     if relative_parts[0] in {"data", "backups"}:
         return True
     if (

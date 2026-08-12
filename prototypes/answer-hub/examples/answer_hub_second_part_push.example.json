@@ -1,0 +1,25 @@
+{
+  "source_system": "second-part",
+  "idempotency_key": "second-part-demo-20260810-001",
+  "options": {
+    "use_mimo": true,
+    "clustering_mode": "direct_mimo",
+    "sync_to_cz_review": true,
+    "continue_on_mimo_unavailable": false
+  },
+  "items": [
+    {
+      "event_id": "qa-example-phone-001",
+      "redaction_status": "redacted",
+      "record": {
+        "工单ID": "WO-REDACTED-001",
+        "聊天内容": "手机无法充电，需要确认基础排查方法。",
+        "图片链接": "",
+        "产品类型": "手机",
+        "核心问题": "手机无法充电如何排查",
+        "判定结论": "待人工确认",
+        "历史实际回复": "请先检查充电器、线材和接口，再根据现场结果继续处理。"
+      }
+    }
+  ]
+}

@@ -29,19 +29,19 @@ DEFAULT_ACTIVE_SHEETS = {
         "SJ-HSYJBZ-2026009【5.13以后】",
         "“标准补丁”答疑",
     ),
-    "手表": ("ZNSB-HSYJBZ-2026005【5.13以后】",),
-    "平板": (
+    "智能手表": ("ZNSB-HSYJBZ-2026005【5.13以后】",),
+    "平板电脑": (
         "PB-HSYJBZ-2026006【5.13以后】",
         "“标准补丁”答疑",
     ),
-    "耳机": ("RJ-HSYJBZ-2026004【5.13以后】",),
+    "耳机/耳麦": ("RJ-HSYJBZ-2026004【5.13以后】",),
 }
 
 DEFAULT_SOURCE_FILENAMES = {
     "手机": "【手机】-质检标准(新回收报告) -陈朝伟专用.xlsx",
-    "手表": "【手表】-质检标准（新回收报告）陈朝伟副本.xlsx",
-    "平板": "【平板】.xlsx",
-    "耳机": "【耳机】-质检标准（新回收报告） 陈朝伟副本.xlsx",
+    "智能手表": "【手表】-质检标准（新回收报告）陈朝伟副本.xlsx",
+    "平板电脑": "【平板】.xlsx",
+    "耳机/耳麦": "【耳机】-质检标准（新回收报告） 陈朝伟副本.xlsx",
 }
 
 HEADER_WORDS = {
@@ -615,6 +615,20 @@ def compile_standard_catalog(
     existing_knowledge_path: str | Path | None = None,
 ) -> dict[str, Any]:
     selected_sheets = DEFAULT_ACTIVE_SHEETS if active_sheets is None else active_sheets
+    normalized_selected_sheets: dict[str, tuple[str, ...]] = {}
+    for source_product_type, sheet_names in selected_sheets.items():
+        category = resolve_product_category(source_product_type)
+        if category is None:
+            raise ValueError(
+                f"生效工作表的产品类型未在品类配置中定义：{source_product_type}"
+            )
+        normalized_selected_sheets[category.name] = tuple(
+            dict.fromkeys(
+                _clean(sheet_name, 120)
+                for sheet_name in sheet_names
+                if _clean(sheet_name, 120)
+            )
+        )
     all_items: list[StandardCatalogItem] = []
     source_summary: list[dict[str, Any]] = []
     normalized_sources: dict[str, Path] = {}
@@ -629,7 +643,7 @@ def compile_standard_catalog(
     for product_type, source in normalized_sources.items():
         if not source.is_file():
             raise FileNotFoundError(f"{product_type}质检标准不存在：{source}")
-        sheet_names = tuple(selected_sheets.get(product_type, ()))
+        sheet_names = normalized_selected_sheets.get(product_type, ())
         if not sheet_names:
             raise ValueError(
                 f"{product_type}未配置生效工作表；请在标准源清单中提供 active_sheets"

@@ -1,7 +1,9 @@
 param(
     [ValidateSet("cpu", "gpu")]
     [string]$Embedding = "cpu",
-    [switch]$NoBuild
+    [switch]$NoBuild,
+    [ValidateRange(1, 65535)]
+    [int]$BackendPort = 8801
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,25 +18,43 @@ if (-not (Test-Path -LiteralPath $envPath)) {
     throw "Missing $envPath. Copy .env.example to .env and configure INTEGRATION_API_KEY."
 }
 
-$composeArgs = @("compose", "-f", "docker-compose.yml")
+$composeArgs = @(
+    "compose",
+    "-f", "docker-compose.yml",
+    "-f", "docker-compose.local.yml"
+)
 if ($Embedding -eq "gpu") {
     $composeArgs += @("-f", "docker-compose.embedding-gpu.yml")
+} else {
+    $composeArgs += @("-f", "docker-compose.embedding-cpu.yml")
 }
-$composeArgs += @("up", "-d")
+$upArgs = $composeArgs + @("up", "-d")
 if (-not $NoBuild) {
-    $composeArgs += "--build"
+    $upArgs += "--build"
 }
 
-Push-Location $czRoot
+$backendPortWasSet = Test-Path Env:BACKEND_PORT
+$previousBackendPort = $env:BACKEND_PORT
 try {
-    & docker @composeArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "CZ local services failed to start. Exit code: $LASTEXITCODE"
+    $env:BACKEND_PORT = [string]$BackendPort
+    Push-Location $czRoot
+    try {
+        & docker @upArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "CZ local services failed to start. Exit code: $LASTEXITCODE"
+        }
+        $psArgs = $composeArgs + "ps"
+        & docker @psArgs
+        Write-Host ""
+        Write-Host "CZ started: http://127.0.0.1:$BackendPort"
+        Write-Host "Qwen3 Embedding is running as the mandatory deduplication service."
+    } finally {
+        Pop-Location
     }
-    & docker compose ps
-    Write-Host ""
-    Write-Host "CZ started: http://127.0.0.1:8000"
-    Write-Host "Qwen3 Embedding is running as the mandatory deduplication service."
 } finally {
-    Pop-Location
+    if ($backendPortWasSet) {
+        $env:BACKEND_PORT = $previousBackendPort
+    } else {
+        Remove-Item Env:BACKEND_PORT -ErrorAction SilentlyContinue
+    }
 }

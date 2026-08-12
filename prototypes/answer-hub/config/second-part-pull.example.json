@@ -1,0 +1,61 @@
+{
+  "name": "second-part",
+  "url": "https://replace-with-second-part.internal/api/v1/records",
+  "method": "GET",
+  "headers": {
+    "Authorization": "Bearer ${SECOND_PART_API_TOKEN}"
+  },
+  "params": {
+    "redaction_status": "redacted"
+  },
+  "batch_size": 100,
+  "cursor_param": "cursor",
+  "limit_param": "limit",
+  "timeout_seconds": 30,
+  "response": {
+    "items_path": "data.items",
+    "next_cursor_path": "data.next_cursor",
+    "has_more_path": "data.has_more"
+  },
+  "field_map": {
+    "序号": "sequence",
+    "上传者": "uploader",
+    "分析时间": "analyzed_at",
+    "工单ID": [
+      "work_order_id",
+      "ticket_id"
+    ],
+    "回收单号": "recycle_order_id",
+    "聊天内容": "conversation",
+    "图片链接": "image_urls",
+    "视频链接": "video_urls",
+    "核心问题": "legacy_core_problem",
+    "判定结论": "legacy_judgment",
+    "判定依据": "legacy_basis",
+    "产品类型": "product_type",
+    "产品类型编码": "product_type_code",
+    "一级分类": "legacy_category_l1",
+    "二级分类": "legacy_category_l2",
+    "参考话术": "reference_reply",
+    "历史实际回复": "actual_reply",
+    "ai_result": [
+      "ai_result",
+      "record.ai_result",
+      "aiResult",
+      "record.aiResult"
+    ]
+  },
+  "defaults": {
+    "上传者": "第二部分接口"
+  },
+  "required_fields": [
+    "工单ID",
+    "聊天内容",
+    "产品类型"
+  ],
+  "workflow": {
+    "use_mimo": true,
+    "clustering_mode": "direct_mimo",
+    "sync_to_cz_review": true
+  }
+}

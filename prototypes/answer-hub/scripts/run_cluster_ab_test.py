@@ -352,16 +352,232 @@ def _units_hard_compatible(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return True
 
 
+def _cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    return str(value).strip()
+
+
+def _remove_source_noise(text: Any) -> str:
+    normalized = _cell_text(text)
+    if not normalized:
+        return ""
+    normalized = re.sub(r"\[[^\]]*(?:图片|视频|语音|文件)[^\]]*\]", " ", normalized)
+    normalized = re.sub(
+        r"\d{2}/\d{2}/\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?(?::\d{2})?",
+        " ",
+        normalized,
+    )
+    normalized = re.sub(
+        r"问题类型[:：][^\n\r]*?问题描述[:：]",
+        " ",
+        normalized,
+    )
+    normalized = re.sub(r"问题类型[:：]\s*质检问题", " ", normalized)
+    normalized = re.sub(r"转人工原因[:：][^\n\r]*", " ", normalized)
+    normalized = re.sub(
+        r"已加载全部|加载全部|预览|图片\s*[×xX]\s*\d+|视频\s*[×xX]\s*\d+",
+        " ",
+        normalized,
+    )
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _has_effective_user_question(text: Any) -> bool:
+    cleaned = _remove_source_noise(text)
+    if not cleaned:
+        return False
+    compact = re.sub(r"\s+", "", cleaned)
+    if compact in {"1", "ok", "OK", "好的", "好", "嗯", "是", "否"}:
+        return False
+    missing_markers = (
+        "无法提取真实具体问题",
+        "未提供一线回收师与后台答疑人员的聊天记录原文",
+        "仅包含工单元数据",
+        "缺失历史咨询会话记录",
+        "无法形成主题",
+    )
+    if any(marker in compact for marker in missing_markers):
+        return False
+    question_markers = (
+        "怎么判",
+        "怎么判断",
+        "如何判",
+        "如何判断",
+        "判什么",
+        "算什么",
+        "怎么选",
+        "如何选",
+        "选什么",
+        "是否",
+        "能不能",
+        "可不可以",
+        "可以吗",
+        "怎么办",
+        "如何处理",
+        "不确定",
+        "怎么看",
+        "要不要",
+        "咋选",
+        "对吗",
+        "还是",
+        "正常吗",
+        "查不到",
+        "查不出来",
+        "希望获得",
+        "希望确认",
+        "希望后台",
+        "需要获得",
+        "需要后台",
+        "需要确认",
+        "发起咨询",
+        "咨询后台",
+        "向后台咨询",
+        "存在疑问",
+        "有疑问",
+        "产生疑问",
+        "无法确定",
+        "无法明确",
+        "无法准确",
+        "不清楚",
+        "寻求后台",
+        "请求后台",
+        "获得明确",
+        "提供专业",
+        "提供型号",
+        "提供标准",
+        "质检判定",
+        "判定标准",
+        "判定依据",
+        "操作指导",
+        "定级",
+        "定性",
+    )
+    if any(marker in compact for marker in question_markers):
+        return True
+    subject_markers = (
+        "屏幕",
+        "胶条",
+        "外壳",
+        "摄像",
+        "相机",
+        "面容",
+        "指纹",
+        "充电",
+        "电池",
+        "主板",
+        "后盖",
+        "边框",
+        "按键",
+        "扬声器",
+        "听筒",
+        "麦克风",
+        "镜头",
+        "滤镜",
+        "散热",
+        "转轴",
+        "接口",
+    )
+    issue_markers = (
+        "异常",
+        "损坏",
+        "坏",
+        "破损",
+        "凹陷",
+        "划痕",
+        "发红",
+        "偏色",
+        "亮线",
+        "黑斑",
+        "无画面",
+        "打不开",
+        "不能用",
+        "失灵",
+        "松动",
+        "进水",
+        "漏液",
+        "折痕",
+        "卡住",
+    )
+    return any(marker in compact for marker in subject_markers) and any(
+        marker in compact for marker in issue_markers
+    )
+
+
+def _is_vague_image_review(text: Any) -> bool:
+    cleaned = _remove_source_noise(text)
+    if not cleaned:
+        return False
+    compact = re.sub(r"\s+", "", cleaned)
+    vague_markers = (
+        "图片状况",
+        "看一下这个",
+        "看下这个",
+        "帮我看一下这个",
+        "麻烦看一下这个",
+        "这个正常吧",
+        "是否符合平台回收标准",
+        "专业确认",
+        "用于评估",
+    )
+    if not any(marker in compact for marker in vague_markers):
+        return False
+    concrete_markers = (
+        "屏幕",
+        "胶条",
+        "外壳",
+        "摄像",
+        "相机",
+        "面容",
+        "指纹",
+        "充电",
+        "电池",
+        "主板",
+        "后盖",
+        "边框",
+        "按键",
+        "扬声器",
+        "听筒",
+        "麦克风",
+        "镜头",
+        "滤镜",
+        "散热",
+        "转轴",
+        "接口",
+        "异常",
+        "损坏",
+        "破损",
+        "凹陷",
+        "划痕",
+        "发红",
+        "偏色",
+        "亮线",
+        "黑斑",
+        "无画面",
+        "打不开",
+        "不能用",
+        "失灵",
+        "松动",
+        "进水",
+        "漏液",
+        "折痕",
+        "卡住",
+    )
+    return not any(marker in compact for marker in concrete_markers)
+
+
 def _invalid_source_reason(row: dict[str, Any]) -> str:
-    core_problem = str(row.get("核心问题", "")).strip()
-    conclusion = str(row.get("判定结论", "")).strip()
-    basis = str(row.get("判定依据", "")).strip()
+    core_problem = _cell_text(row.get("核心问题", ""))
+    conclusion = _cell_text(row.get("判定结论", ""))
+    basis = _cell_text(row.get("判定依据", ""))
     evidence = "\n".join(
         (
             core_problem,
             conclusion,
             basis,
-            str(row.get("上游媒体分析摘要", "")).strip(),
+            _cell_text(row.get("上游媒体分析摘要", "")),
         )
     )
     missing_dialogue = (
@@ -382,6 +598,14 @@ def _invalid_source_reason(row: dict[str, Any]) -> str:
     )
     if missing_dialogue and no_judgment:
         return "缺少有效咨询会话和具体问题，只有工单元数据，无法形成主题"
+    if _is_vague_image_review(core_problem) and _is_vague_image_review(
+        row.get("聊天内容", "")
+    ):
+        return "核心问题和聊天内容均未提取到有效用户问题，无法形成可聚类主题"
+    if not _has_effective_user_question(core_problem) and not _has_effective_user_question(
+        row.get("聊天内容", "")
+    ):
+        return "核心问题和聊天内容均未提取到有效用户问题，无法形成可聚类主题"
     return ""
 
 
@@ -555,6 +779,13 @@ def _run_new_scheme(
                     "待确认",
                 ),
                 "evidence_summary": topic.get("evidence_summary", ""),
+                "source_judgment_conclusion": row.get("判定结论", ""),
+                "historical_actual_reply": (
+                    row.get("历史实际回复")
+                    or row.get("参考话术")
+                    or ""
+                ),
+                "source_conversation": row.get("聊天内容", ""),
                 "reason": candidate.get("reason", ""),
                 "confidence": topic.get("confidence", ""),
                 "requires_review": topic.get("requires_review", False),
@@ -654,6 +885,14 @@ def _run_new_scheme_direct_mimo(
                     member.get("_原子阈值例外") or ""
                 ),
                 "evidence_summary": str(member.get("语义标注依据") or ""),
+                "source_judgment_conclusion": str(
+                    member.get("判定结论") or ""
+                ),
+                "historical_actual_reply": str(
+                    member.get("历史实际回复")
+                    or member.get("参考话术")
+                    or ""
+                ),
                 "source_conversation": str(member.get("聊天内容") or ""),
                 "cluster_id": cluster_id,
             }
@@ -734,12 +973,115 @@ def _source_state(
         sample_id = row["样本ID"]
         units = grouped_units[sample_id]
         conversation_type = units[0].get("conversation_type", "single_topic")
+        local_multi_topic_rescue = (
+            new_scheme
+            and conversation_type == "single_topic"
+            and _local_multi_topic_rescue(row)
+        )
+        cluster_ids = [unit["cluster_id"] for unit in units]
+        if local_multi_topic_rescue:
+            conversation_type = "multi_topic"
+            cluster_ids.append(f"LOCAL-MULTI-{sample_id}")
         states[sample_id] = {
             "conversation_type": conversation_type if new_scheme else "single_topic",
-            "cluster_ids": [unit["cluster_id"] for unit in units],
+            "product_category": str(row.get("产品类型") or "").strip(),
+            "cluster_ids": cluster_ids,
             "unit_ids": [unit["unit_id"] for unit in units],
+            "local_multi_topic_rescue": local_multi_topic_rescue,
         }
     return states
+
+
+def _local_multi_topic_rescue(row: dict[str, Any]) -> bool:
+    text = f"{row.get('核心问题', '')}\n{row.get('聊天内容', '')}"
+    repair_component_terms = (
+        "主板",
+        "屏幕",
+        "电池",
+        "后壳",
+        "摄像头",
+        "排线",
+        "底部",
+        "白色贴纸",
+    )
+    repair_signal_terms = (
+        "非原厂",
+        "第三方",
+        "贴纸",
+        "标签",
+        "维修痕迹",
+        "维修特征",
+        "拆机图",
+        "样式不符",
+    )
+    repair_component_hits = sum(
+        1 for term in repair_component_terms if term in text
+    )
+    repair_signal_hits = sum(1 for term in repair_signal_terms if term in text)
+    answer_splits_by_component = any(
+        term in text
+        for term in (
+            "屏幕-",
+            "电池-",
+            "后壳-",
+            "主板-",
+            "其它零部件",
+            "其他零部件",
+        )
+    )
+    if (
+        repair_component_hits >= 2
+        and repair_signal_hits >= 1
+        and ("怎么判" in text or "怎么判定" in text or answer_splits_by_component)
+    ):
+        return True
+
+    info_query_groups = (
+        ("bios锁", "BIOS锁", "无锁", "没锁"),
+        ("型号", "年款", "机型"),
+        ("硬盘", "内存", "品牌认证"),
+        ("指纹", "支持指纹"),
+    )
+    info_query_hits = sum(
+        1 for group in info_query_groups if any(term in text for term in group)
+    )
+    if info_query_hits >= 3 and any(
+        term in text for term in ("是的", "不支持", "品牌认证", "没锁")
+    ):
+        return True
+
+    model_or_label_terms = (
+        "怎么看第几款",
+        "怎么核对",
+        "哪一款",
+        "小型号",
+        "序列号",
+        "标签",
+        "型号",
+    )
+    independent_component_terms = (
+        "显卡硬盘",
+        "内存硬盘",
+        "显卡",
+        "硬盘",
+        "内存",
+        "这些有问题",
+        "有什么问题",
+        "有啥问题",
+    )
+    has_model_or_label_topic = any(term in text for term in model_or_label_terms)
+    has_independent_component_topic = any(
+        term in text for term in independent_component_terms
+    )
+    has_separate_followup = any(
+        term in text
+        for term in ("有没有什么问题", "这些有问题吗", "有问题吗", "有啥问题")
+    )
+    return (
+        has_model_or_label_topic
+        and has_independent_component_topic
+        and has_separate_followup
+    )
 
 
 def _pair_similarity(
@@ -763,16 +1105,21 @@ def _prediction(
     right: dict[str, Any],
     allow_multi_topic: bool,
 ) -> str:
+    shared_clusters = set(left["cluster_ids"]) & set(right["cluster_ids"])
+    left_product = str(left.get("product_category") or "").strip()
+    right_product = str(right.get("product_category") or "").strip()
+    if left_product and right_product and left_product != right_product:
+        return "不同主题"
     if allow_multi_topic:
-        if "multi_topic" in {left["conversation_type"], right["conversation_type"]}:
-            return "多主题需拆分"
         if "uncertain" in {left["conversation_type"], right["conversation_type"]}:
             return "不确定"
-    return (
-        "同一主题"
-        if set(left["cluster_ids"]) & set(right["cluster_ids"])
-        else "不同主题"
-    )
+        if left.get("local_multi_topic_rescue") or right.get("local_multi_topic_rescue"):
+            return "多主题需拆分"
+        if shared_clusters:
+            return "同一主题"
+        if "multi_topic" in {left["conversation_type"], right["conversation_type"]}:
+            return "多主题需拆分"
+    return "同一主题" if shared_clusters else "不同主题"
 
 
 def _stable_rank(value: str) -> str:
@@ -792,6 +1139,10 @@ def _select_pairs(
         for right_row in rows[left_index + 1 :]:
             left_id = left_row["样本ID"]
             right_id = right_row["样本ID"]
+            left_product = str(left_row.get("产品类型") or "").strip()
+            right_product = str(right_row.get("产品类型") or "").strip()
+            if left_product and right_product and left_product != right_product:
+                continue
             old_similarity = _pair_similarity(
                 old_scheme,
                 old_states[left_id]["unit_ids"],

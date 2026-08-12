@@ -73,6 +73,8 @@ def _valid_cluster_result(*atomic_ids: str) -> dict[str, object]:
                 "threshold_exception_consistent": True,
                 "shared_knowledge_definition": "判断屏幕颜色异常是否属于色斑。",
                 "merge_basis": "适用范围、对象、目标、路径和阈值例外均一致。",
+                "confidence": 0.94,
+                "requires_review": False,
             }
         ],
         "split_requests": [],
@@ -87,6 +89,22 @@ def test_atomic_cluster_validation_accepts_one_to_many_cluster() -> None:
     )
 
     assert result["clusters"][0]["member_atomic_ids"] == ["A", "B", "C"]
+    assert result["clusters"][0]["confidence"] == pytest.approx(0.94)
+    assert result["clusters"][0]["requires_review"] is False
+
+
+def test_atomic_cluster_validation_requires_cluster_confidence_and_review_flag() -> None:
+    payload = _valid_cluster_result("A", "B")
+    payload["clusters"][0].pop("confidence")
+
+    with pytest.raises(MimoError, match="confidence"):
+        _validate_atomic_topic_clusters(payload, {"A", "B"})
+
+    payload = _valid_cluster_result("A", "B")
+    payload["clusters"][0].pop("requires_review")
+
+    with pytest.raises(MimoError, match="requires_review"):
+        _validate_atomic_topic_clusters(payload, {"A", "B"})
 
 
 def test_atomic_cluster_payload_uses_chat_and_ignores_transfer_description() -> None:

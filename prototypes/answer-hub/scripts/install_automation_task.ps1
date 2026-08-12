@@ -1,8 +1,14 @@
 param(
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
     [string]$TaskName = "AnswerHubAutomationQueue",
+    [ValidateSet("Minute", "Daily")]
+    [string]$Schedule = "Minute",
     [ValidateRange(1, 1440)]
     [int]$IntervalMinutes = 5,
+    [ValidateRange(1, 365)]
+    [int]$IntervalDays = 1,
+    [ValidatePattern("^\d{2}:\d{2}$")]
+    [string]$StartTime = "03:00",
     [switch]$Uninstall
 )
 
@@ -31,12 +37,22 @@ if (-not (Test-Path -LiteralPath $runner)) {
 }
 
 $taskCommand = "wscript.exe `"$runner`""
+$scheduleArgs = if ($Schedule -eq "Daily") {
+    @("/SC", "DAILY", "/MO", $IntervalDays, "/ST", $StartTime)
+} else {
+    @("/SC", "MINUTE", "/MO", $IntervalMinutes)
+}
+$intervalLabel = if ($Schedule -eq "Daily") {
+    "every $IntervalDays day(s) at $StartTime"
+} else {
+    "every $IntervalMinutes minute(s)"
+}
+
 & schtasks.exe `
     /Create `
     /TN $TaskName `
     /TR $taskCommand `
-    /SC MINUTE `
-    /MO $IntervalMinutes `
+    @scheduleArgs `
     /RL LIMITED `
     /F | Out-Null
 if ($LASTEXITCODE -ne 0) {
@@ -47,5 +63,5 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Installed scheduled task: $TaskName" -ForegroundColor Green
-Write-Host "Interval: every $IntervalMinutes minute(s)" -ForegroundColor Cyan
+Write-Host "Interval: $intervalLabel" -ForegroundColor Cyan
 Write-Host "Inbox: $(Join-Path $ProjectRoot 'data\automation-queue\pending')" -ForegroundColor Cyan

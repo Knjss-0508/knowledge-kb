@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from copy import deepcopy
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
@@ -16,7 +17,11 @@ from .auto_review import (
     partition_auto_review_candidates,
     select_candidates_for_submission,
 )
-from .automation import AutomationRunStore, run_automation_pipeline
+from .automation import (
+    AutomationRunStore,
+    automation_run_succeeded,
+    run_automation_pipeline,
+)
 from .cz_integration import CzIntegrationAdapter
 from .embedding import EmbeddingClient
 from .excel_io import read_workbook_rows, write_rows_to_workbook
@@ -25,6 +30,7 @@ from .workflow import (
     DEFAULT_CLUSTER_REVIEW_FLOOR,
     DEFAULT_CLUSTER_REVIEW_LIMIT,
 )
+from .terminology import ensure_terminology_loaded
 
 
 SUPPORTED_SOURCE_SUFFIXES = {".xlsx", ".xlsm"}
@@ -259,6 +265,74 @@ def _review_result_columns(
     return columns
 
 
+def _complete_retried_queue_item(
+    manifest: dict[str, Any],
+    store: AutomationRunStore,
+) -> dict[str, Any]:
+    queue_manifest = manifest.get("queue")
+    if not isinstance(queue_manifest, dict):
+        return store.save(manifest)
+    if str(queue_manifest.get("disposition") or "") != "failed":
+        return store.save(manifest)
+
+    failed_source = Path(str(queue_manifest.get("final_path") or ""))
+    if not failed_source.is_file():
+        return store.save(manifest)
+
+    queue = AutomationQueue(failed_source.parent.parent)
+    queue.ensure()
+    if failed_source.parent.resolve() != queue.failed.resolve():
+        return store.save(manifest)
+
+    original_queue_manifest = dict(queue_manifest)
+    original_metadata = read_queue_job_metadata(failed_source)
+    completed_source = _unique_destination(queue.completed, failed_source.name)
+    try:
+        _move_queue_item(failed_source, completed_source)
+        metadata = read_queue_job_metadata(completed_source)
+        if metadata:
+            timestamp = _now()
+            metadata.update(
+                {
+                    "status": "completed",
+                    "updated_at": timestamp,
+                    "finished_at": timestamp,
+                    "run_id": str(manifest.get("run_id") or ""),
+                    "run_status": "review_pending",
+                    "final_path": str(completed_source),
+                    "error": "",
+                    "summary": manifest.get("summary") or {},
+                    "artifacts": manifest.get("artifacts") or {},
+                }
+            )
+            write_queue_job_metadata(completed_source, metadata)
+
+        queue_manifest["final_path"] = str(completed_source)
+        queue_manifest["disposition"] = "completed"
+        return store.save(manifest)
+    except Exception:
+        queue_manifest.clear()
+        queue_manifest.update(original_queue_manifest)
+        try:
+            if completed_source.is_file() and not failed_source.exists():
+                _move_queue_item(completed_source, failed_source)
+            else:
+                completed_metadata = queue_job_metadata_path(completed_source)
+                failed_metadata = queue_job_metadata_path(failed_source)
+                if completed_metadata.is_file() and not failed_metadata.exists():
+                    shutil.move(
+                        str(completed_metadata),
+                        str(failed_metadata),
+                    )
+            if original_metadata:
+                write_queue_job_metadata(failed_source, original_metadata)
+        except Exception as rollback_error:
+            raise RuntimeError(
+                "CZ同步成功，但恢复失败队列文件时发生错误。"
+            ) from rollback_error
+        raise
+
+
 def _run_model_review_and_cz_candidate_sync(
     manifest: dict[str, Any],
     output_root: Path,
@@ -270,6 +344,50 @@ def _run_model_review_and_cz_candidate_sync(
     _ensure_delivery_stages(manifest)
     manifest.setdefault("options", {})["submit_to_cz"] = True
     manifest["options"]["sync_to_cz_review"] = True
+    retrying_failed_run = str(manifest.get("status") or "") == "failed"
+    if retrying_failed_run:
+        previous_error = str(manifest.get("error") or "")
+        previous_sync = deepcopy(
+            (manifest.get("summary") or {}).get("cz_candidate_sync")
+            or (manifest.get("summary") or {}).get("cz_submission")
+            or {}
+        )
+        failed_stage = next(
+            (
+                str(stage.get("id") or "")
+                for stage in manifest.get("stages") or []
+                if str(stage.get("status") or "") == "failed"
+            ),
+            "cz_upload",
+        )
+        retry_event = {
+            "attempt": int(manifest.get("attempt_count") or 1),
+            "failed_at": manifest.get("updated_at"),
+            "failed_stage": failed_stage or "cz_upload",
+            "error": previous_error,
+        }
+        if previous_sync:
+            retry_event["cz_candidate_sync"] = previous_sync
+        manifest.setdefault("retry_history", []).append(retry_event)
+        manifest["attempt_count"] = int(
+            manifest.get("attempt_count") or 1
+        ) + 1
+        delivery_stage_ids = {stage_id for stage_id, _label in DELIVERY_STAGES}
+        for stage in manifest.get("stages") or []:
+            if str(stage.get("id") or "") not in delivery_stage_ids:
+                continue
+            stage.update(
+                {
+                    "status": "pending",
+                    "started_at": "",
+                    "finished_at": "",
+                    "duration_seconds": 0.0,
+                    "detail": "",
+                    "metrics": {},
+                }
+            )
+    manifest["status"] = "running"
+    manifest["error"] = ""
     store.save(manifest)
 
     try:
@@ -417,7 +535,9 @@ def _run_model_review_and_cz_candidate_sync(
             ),
             sync_metrics,
         )
-        return manifest
+        manifest["status"] = "review_pending"
+        manifest["error"] = ""
+        return _complete_retried_queue_item(manifest, store)
     except Exception as exc:
         return store.fail(manifest, exc)
 
@@ -441,7 +561,10 @@ def process_automation_queue(
     embedding_client: EmbeddingClient | None = None,
     auto_review_policy: AutoReviewPolicy | None = None,
     cz_adapter: CzIntegrationAdapter | None = None,
+    continue_on_mimo_unavailable: bool = False,
+    acquire_lock: bool = True,
 ) -> dict[str, Any]:
+    terminology = ensure_terminology_loaded()
     standards = Path(standards_path) if standards_path else None
     if standards is not None and not standards.is_file():
         raise FileNotFoundError(f"标准文件不存在：{standards}")
@@ -457,6 +580,7 @@ def process_automation_queue(
         "finished_at": "",
         "queue_root": str(queue.root),
         "output_root": str(output_path),
+        "terminology": terminology,
         "standards_path": str(standards) if standards is not None else "",
         "max_files": max(1, int(max_files)),
         "retry_failed": bool(retry_failed),
@@ -473,7 +597,12 @@ def process_automation_queue(
     }
 
     try:
-        with queue.lock(stale_after_seconds=stale_after_seconds):
+        lock_context = (
+            queue.lock(stale_after_seconds=stale_after_seconds)
+            if acquire_lock
+            else nullcontext()
+        )
+        with lock_context:
             summary["recovered"] = queue.recover_stale_processing(
                 stale_after_seconds=stale_after_seconds
             )
@@ -500,6 +629,10 @@ def process_automation_queue(
                 effective_clustering_mode = str(
                     job_options.get("clustering_mode", clustering_mode)
                     or clustering_mode
+                )
+                effective_continue_on_mimo_unavailable = _option_bool(
+                    job_options.get("continue_on_mimo_unavailable"),
+                    continue_on_mimo_unavailable,
                 )
                 effective_semantic_threshold = _option_float(
                     job_options.get("semantic_threshold"),
@@ -562,9 +695,12 @@ def process_automation_queue(
                         ),
                         cluster_review_limit=effective_cluster_review_limit,
                         embedding_client=embedding_client,
+                        continue_on_mimo_unavailable=(
+                            effective_continue_on_mimo_unavailable
+                        ),
                     )
                     if (
-                        manifest.get("status") != "failed"
+                        automation_run_succeeded(manifest)
                         and effective_submit_to_cz
                     ):
                         manifest = _run_model_review_and_cz_candidate_sync(
@@ -573,7 +709,7 @@ def process_automation_queue(
                             policy=auto_review_policy,
                             cz_adapter=cz_adapter,
                         )
-                    succeeded = manifest.get("status") != "failed"
+                    succeeded = automation_run_succeeded(manifest)
                     final_path = queue.finish(claimed_path, succeeded=succeeded)
                     if job_metadata:
                         job_metadata.update(

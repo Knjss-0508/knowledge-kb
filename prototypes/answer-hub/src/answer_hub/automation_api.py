@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from functools import wraps
+from hashlib import sha256
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Callable
 import hmac
 import json
 import os
+import re
 import uuid
 
 from flask import Flask, jsonify, request, send_file
@@ -20,16 +23,70 @@ from .automation_queue import (
     read_queue_job_metadata,
     write_queue_job_metadata,
 )
+from .excel_io import write_rows_to_workbook
 from .mimo import load_dotenv
+from .run_feedback import (
+    RunFeedbackStore,
+    RunFeedbackStoreError,
+    default_run_feedback,
+)
+from .run_history import list_automation_run_records, sanitize_run_text
+from .workflow import SOURCE_COLUMNS
 
 
 MAX_UPLOAD_BYTES = 40 * 1024 * 1024
+MAX_SECOND_PART_BATCH_ITEMS = 100
 SUPPORTED_CLUSTERING_MODES = {
     "direct_mimo",
     "semantic_mimo",
     "semantic",
     "rule",
 }
+PUBLIC_RUN_SUMMARY_FIELDS = {
+    "source_total_rows",
+    "source_rows",
+    "selected_rows",
+    "eligible_rows",
+    "excluded_rows",
+    "feature_rows",
+    "model_labeled_rows",
+    "topic_rows",
+    "topic_stage_classified_rows",
+    "topic_worthy_rows",
+    "topic_unworthy_rows",
+    "topic_transcribed_rows",
+    "topic_transcription_skipped_rows",
+    "evidence_gap_rows",
+    "pending_cluster_rows",
+    "pending_historical_topic_review",
+    "cluster_rows",
+    "cluster_admission_admitted_topics",
+    "cluster_admission_pending_topics",
+    "model_calls",
+    "model_failed_calls",
+    "model_total_tokens",
+    "model_estimated_cost",
+    "model_key_switches",
+    "topic_signal_fallback_rows",
+    "redaction_warning_findings",
+}
+_PATH_FIELD_NAMES = {
+    "audit_db",
+    "candidate_file",
+    "candidate_output_file",
+    "claimed_path",
+    "direct_mimo_progress_path",
+    "final_path",
+    "output_file",
+    "queue_path",
+    "run_dir",
+    "source_file",
+    "standard_file",
+    "topic_review_file",
+}
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])[A-Z]:[\\/][^\r\n]*"
+)
 
 
 def _now() -> str:
@@ -59,11 +116,109 @@ def _int_value(value: Any, default: int) -> int:
         return default
 
 
+def _text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _normalize_second_part_cell(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "\n".join(
+            _text(item)
+            for item in value
+            if _text(item)
+        )
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return value
+
+
+def _second_part_workbook_bytes(rows: list[dict[str, Any]]) -> bytes:
+    with TemporaryDirectory(prefix="answer-hub-second-part-") as temp_dir:
+        workbook_path = Path(temp_dir) / "second-part.xlsx"
+        write_rows_to_workbook(
+            {"共享数据汇总": (SOURCE_COLUMNS, rows)},
+            workbook_path,
+        )
+        return workbook_path.read_bytes()
+
+
+def _second_part_payload_fingerprint(
+    source_system: str,
+    items: list[dict[str, Any]],
+) -> str:
+    canonical = json.dumps(
+        {
+            "source_system": source_system,
+            "items": items,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return f"sha256:{sha256(canonical.encode('utf-8')).hexdigest()}"
+
+
 def _source_for_metadata(metadata_path: Path) -> Path:
     name = metadata_path.name
     if not name.endswith(JOB_METADATA_SUFFIX):
         raise ValueError(f"无效任务元数据路径：{metadata_path}")
     return metadata_path.with_name(name[: -len(JOB_METADATA_SUFFIX)])
+
+
+def _public_text(value: Any) -> str:
+    return _WINDOWS_ABSOLUTE_PATH_RE.sub(
+        "<redacted-path>",
+        sanitize_run_text(value),
+    )
+
+
+def _public_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _public_value(item)
+            for key, item in value.items()
+            if str(key).strip().lower() not in _PATH_FIELD_NAMES
+            and not str(key).strip().lower().endswith(
+                ("_path", "_dir", "_file")
+            )
+        }
+    if isinstance(value, list):
+        return [_public_value(item) for item in value]
+    if isinstance(value, str):
+        return _public_text(value)
+    return value
+
+
+def _public_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: _public_value(value)
+        for key, value in summary.items()
+        if key in PUBLIC_RUN_SUMMARY_FIELDS
+    }
+
+
+def _public_stage(stage: dict[str, Any]) -> dict[str, Any]:
+    return _public_value(
+        {
+            key: stage.get(key)
+            for key in (
+                "id",
+                "stage_id",
+                "label",
+                "status",
+                "started_at",
+                "finished_at",
+                "updated_at",
+                "duration_seconds",
+                "detail",
+                "metrics",
+            )
+            if key in stage
+        }
+    )
 
 
 class AutomationJobStore:
@@ -159,6 +314,31 @@ class AutomationJobStore:
                 }
         return metadata
 
+    def find_by_source_batch_key(
+        self,
+        source_batch_key: str,
+    ) -> dict[str, Any] | None:
+        if not source_batch_key:
+            return None
+        self.queue.ensure()
+        for directory in (
+            self.queue.pending,
+            self.queue.processing,
+            self.queue.completed,
+            self.queue.failed,
+        ):
+            for metadata_path in directory.glob(f"*{JOB_METADATA_SUFFIX}"):
+                source_path = _source_for_metadata(metadata_path)
+                metadata = read_queue_job_metadata(source_path)
+                options = metadata.get("options") or {}
+                if (
+                    isinstance(options, dict)
+                    and _text(options.get("source_batch_key"))
+                    == source_batch_key
+                ):
+                    return metadata
+        return None
+
     def retry(self, job_id: str) -> dict[str, Any]:
         located = self.locate(job_id)
         if located is None:
@@ -207,6 +387,7 @@ def create_automation_api_app(
     api_key: str | None = None,
     queue_root: str | Path | None = None,
     output_root: str | Path | None = None,
+    feedback_path: str | Path | None = None,
 ) -> Flask:
     load_dotenv()
     configured_key = (
@@ -225,6 +406,11 @@ def create_automation_api_app(
             "ANSWER_HUB_AUTOMATION_OUTPUT",
             "outputs/automation-runs",
         ),
+    )
+    feedback_store = RunFeedbackStore(
+        feedback_path
+        or os.getenv("ANSWER_HUB_RUN_FEEDBACK_PATH", "").strip()
+        or (job_store.queue.root / "run_feedback.db")
     )
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
@@ -267,6 +453,66 @@ def create_automation_api_app(
                 for name, path in artifacts.items()
                 if str(path or "").strip()
             },
+        }
+
+    def public_run_record(
+        record: dict[str, Any],
+        feedback: dict[str, Any],
+    ) -> dict[str, Any]:
+        record_id = str(record.get("record_id") or "")
+        artifact_names = sorted(
+            str(name)
+            for name, path in dict(record.get("artifacts") or {}).items()
+            if str(path or "").strip()
+        )
+        return {
+            "record_id": record_id,
+            "job_id": str(record.get("job_id") or ""),
+            "run_id": str(record.get("run_id") or ""),
+            "source_type": str(record.get("source_type") or ""),
+            "source_label": _public_text(record.get("source_label")),
+            "source_name": _public_text(record.get("source_name")),
+            "queue_status": str(record.get("queue_status") or ""),
+            "run_status": str(record.get("run_status") or ""),
+            "effective_status": str(
+                record.get("effective_status") or ""
+            ),
+            "status_label": _public_text(record.get("status_label")),
+            "health_status": str(record.get("health_status") or ""),
+            "health_label": _public_text(record.get("health_label")),
+            "is_stale": bool(record.get("is_stale")),
+            "stale_seconds": int(record.get("stale_seconds") or 0),
+            "created_at": str(record.get("created_at") or ""),
+            "updated_at": str(record.get("updated_at") or ""),
+            "finished_at": str(record.get("finished_at") or ""),
+            "sync_to_cz_review": bool(record.get("sync_to_cz_review")),
+            "summary": _public_summary(dict(record.get("summary") or {})),
+            "cz_sync": _public_value(dict(record.get("cz_sync") or {})),
+            "stages": [
+                _public_stage(dict(stage))
+                for stage in list(record.get("stages") or [])
+                if isinstance(stage, dict)
+            ],
+            "current_stage": _public_stage(
+                dict(record.get("current_stage") or {})
+            ),
+            "activity_history": [
+                _public_stage(dict(activity))
+                for activity in list(record.get("activity_history") or [])
+                if isinstance(activity, dict)
+            ],
+            "error": _public_text(record.get("error")),
+            "alerts": _public_value(list(record.get("alerts") or [])),
+            "attempt_count": int(record.get("attempt_count") or 1),
+            "attempt_runs": _public_value(
+                list(record.get("attempt_runs") or [])
+            ),
+            "retry_history": _public_value(
+                list(record.get("retry_history") or [])
+            ),
+            "duration_seconds": record.get("duration_seconds"),
+            "artifact_names": artifact_names,
+            "feedback": _public_value(feedback),
         }
 
     @app.get("/health")
@@ -316,6 +562,10 @@ def create_automation_api_app(
                 request.form.get("cluster_review_limit"),
                 100,
             ),
+            "continue_on_mimo_unavailable": _bool_value(
+                request.form.get("continue_on_mimo_unavailable"),
+                False,
+            ),
             "sync_to_cz_review": sync_to_cz_review,
             "submit_to_cz": sync_to_cz_review,
         }
@@ -329,6 +579,213 @@ def create_automation_api_app(
             return jsonify({"error": str(exc)}), 400
         return jsonify(job_payload(metadata)), 202
 
+    @app.post("/api/v1/automation/second-part/records:batch")
+    @require_api_key
+    def receive_second_part_records():
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "请求体必须是 JSON 对象"}), 400
+        items = body.get("items")
+        if not isinstance(items, list) or not items:
+            return jsonify({"error": "items 必须是非空数组"}), 400
+        if len(items) > MAX_SECOND_PART_BATCH_ITEMS:
+            return jsonify(
+                {
+                    "error": (
+                        "单次第二部分数据提交最多 "
+                        f"{MAX_SECOND_PART_BATCH_ITEMS} 条。"
+                    )
+                }
+            ), 400
+
+        source_system = _text(body.get("source_system")) or "second-part"
+        if len(source_system) > 100:
+            return jsonify({"error": "source_system 不能超过 100 个字符"}), 400
+        idempotency_key = _text(body.get("idempotency_key"))
+        if not idempotency_key:
+            return jsonify({"error": "idempotency_key 不能为空"}), 400
+        if len(idempotency_key) > 200:
+            return jsonify({"error": "idempotency_key 不能超过 200 个字符"}), 400
+        raw_options = body.get("options") or {}
+        if not isinstance(raw_options, dict):
+            return jsonify({"error": "options 必须是 JSON 对象"}), 400
+        clustering_mode = _text(
+            raw_options.get("clustering_mode") or "direct_mimo"
+        )
+        if clustering_mode not in SUPPORTED_CLUSTERING_MODES:
+            return jsonify({"error": "不支持的聚类模式"}), 400
+
+        rows: list[dict[str, Any]] = []
+        for index, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                return jsonify(
+                    {"error": f"items[{index}] 必须是 JSON 对象"}
+                ), 400
+            if _text(item.get("redaction_status")).lower() != "redacted":
+                return jsonify(
+                    {
+                        "error": (
+                            f"items[{index}] 未标记为已脱敏，"
+                            "不允许进入自动化队列。"
+                        )
+                    }
+                ), 400
+            record = item.get("record")
+            if not isinstance(record, dict) or not record:
+                return jsonify(
+                    {"error": f"items[{index}].record 必须是非空 JSON 对象"}
+                ), 400
+            row = {
+                column: _normalize_second_part_cell(record.get(column))
+                for column in SOURCE_COLUMNS
+            }
+            if row["序号"] in (None, ""):
+                row["序号"] = index
+            if row["上传者"] in (None, ""):
+                row["上传者"] = source_system
+            if not any(value not in (None, "") for value in row.values()):
+                return jsonify(
+                    {"error": f"items[{index}].record 不能是空记录"}
+                ), 400
+            rows.append(row)
+
+        source_batch_key = (
+            "sha256:"
+            + sha256(
+                f"{source_system}\x00{idempotency_key}".encode("utf-8")
+            ).hexdigest()
+        )
+        payload_fingerprint = _second_part_payload_fingerprint(
+            source_system,
+            items,
+        )
+        existing = job_store.find_by_source_batch_key(source_batch_key)
+        if existing is not None:
+            existing_options = existing.get("options") or {}
+            if (
+                isinstance(existing_options, dict)
+                and _text(existing_options.get("source_payload_fingerprint"))
+                and _text(existing_options.get("source_payload_fingerprint"))
+                != payload_fingerprint
+            ):
+                return jsonify(
+                    {
+                        "error": (
+                            "幂等键已被其他数据批次使用，"
+                            "请为变更后的数据使用新的 idempotency_key。"
+                        )
+                    }
+                ), 409
+            response = job_payload(existing)
+            response.update(
+                {
+                    "reused": True,
+                    "accepted_records": len(rows),
+                }
+            )
+            return jsonify(response), 200
+
+        sync_to_cz_review = _bool_value(
+            raw_options.get("sync_to_cz_review")
+            if "sync_to_cz_review" in raw_options
+            else raw_options.get("submit_to_cz"),
+            False,
+        )
+        options = {
+            "product_type": _text(raw_options.get("product_type")),
+            "use_mimo": _bool_value(raw_options.get("use_mimo"), True),
+            "clustering_mode": clustering_mode,
+            "semantic_threshold": _float_value(
+                raw_options.get("semantic_threshold"),
+                0.84,
+            ),
+            "cluster_review_floor": _float_value(
+                raw_options.get("cluster_review_floor"),
+                0.75,
+            ),
+            "cluster_auto_merge_threshold": _float_value(
+                raw_options.get("cluster_auto_merge_threshold"),
+                0.92,
+            ),
+            "cluster_review_limit": _int_value(
+                raw_options.get("cluster_review_limit"),
+                100,
+            ),
+            "continue_on_mimo_unavailable": _bool_value(
+                raw_options.get("continue_on_mimo_unavailable"),
+                False,
+            ),
+            "sync_to_cz_review": sync_to_cz_review,
+            "submit_to_cz": sync_to_cz_review,
+            "source_system": source_system,
+            "source_batch_key": source_batch_key,
+            "source_idempotency_key": idempotency_key,
+            "source_payload_fingerprint": payload_fingerprint,
+            "source_record_count": len(rows),
+        }
+        source_name = re.sub(
+            r"[^A-Za-z0-9._-]+",
+            "-",
+            source_system,
+        ).strip("-._") or "second-part"
+        try:
+            metadata = job_store.create(
+                f"{source_name}-records.xlsx",
+                _second_part_workbook_bytes(rows),
+                options,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        response = job_payload(metadata)
+        response.update(
+            {
+                "reused": False,
+                "accepted_records": len(rows),
+            }
+        )
+        return jsonify(response), 202
+
+    @app.get("/api/v1/automation/jobs")
+    @require_api_key
+    def list_jobs():
+        limit = max(
+            1,
+            min(_int_value(request.args.get("limit"), 100), 500),
+        )
+        stale_after_seconds = max(
+            60,
+            _int_value(
+                request.args.get("stale_after_seconds"),
+                _int_value(
+                    os.getenv("ANSWER_HUB_AUTOMATION_STALE_AFTER_SECONDS"),
+                    7_200,
+                ),
+            ),
+        )
+        records = list_automation_run_records(
+            job_store.output_root,
+            job_store.queue.root,
+            limit=limit,
+            stale_after_seconds=stale_after_seconds,
+        )
+        record_ids = [
+            str(record.get("record_id") or "")
+            for record in records
+        ]
+        try:
+            feedback_by_record = feedback_store.get_many(record_ids)
+        except RunFeedbackStoreError as exc:
+            return jsonify({"error": str(exc)}), 503
+        items = [
+            public_run_record(
+                record,
+                feedback_by_record.get(record_id)
+                or default_run_feedback(record_id),
+            )
+            for record, record_id in zip(records, record_ids)
+        ]
+        return jsonify({"count": len(items), "items": items})
+
     @app.get("/api/v1/automation/jobs/<job_id>")
     @require_api_key
     def get_job(job_id: str):
@@ -336,6 +793,42 @@ def create_automation_api_app(
         if metadata is None:
             return jsonify({"error": "job not found"}), 404
         return jsonify(job_payload(metadata))
+
+    @app.patch("/api/v1/automation/jobs/<record_id>/feedback")
+    @require_api_key
+    def update_job_feedback(record_id: str):
+        records = list_automation_run_records(
+            job_store.output_root,
+            job_store.queue.root,
+            limit=500,
+        )
+        if not any(
+            str(record.get("record_id") or "") == record_id
+            for record in records
+        ):
+            return jsonify({"error": "job not found"}), 404
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            return jsonify({"error": "JSON对象格式不正确"}), 400
+        try:
+            previous = feedback_store.get(record_id) or default_run_feedback(
+                record_id
+            )
+            feedback = feedback_store.update(
+                record_id,
+                status=str(body.get("status") or previous["status"]),
+                owner=str(body.get("owner", previous["owner"]) or ""),
+                cause_type=str(
+                    body.get("cause_type", previous["cause_type"]) or ""
+                ),
+                note=str(body.get("note", previous["note"]) or ""),
+                actor=str(body.get("actor", previous["actor"]) or ""),
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except RunFeedbackStoreError as exc:
+            return jsonify({"error": str(exc)}), 503
+        return jsonify({"record_id": record_id, "feedback": feedback})
 
     @app.post("/api/v1/automation/jobs/<job_id>/retry")
     @require_api_key

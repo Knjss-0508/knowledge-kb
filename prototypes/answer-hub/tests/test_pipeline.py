@@ -8,6 +8,7 @@ import unittest
 from openpyxl import Workbook, load_workbook
 
 from answer_hub.catalog import StandardCatalogItem, load_standard_catalog
+from answer_hub.ai_result import parse_ai_result
 from answer_hub.workflow import (
     CASE_KNOWLEDGE_COLUMNS,
     build_case_knowledge_rows,
@@ -55,6 +56,178 @@ def _write_workbook(path: Path, headers: list[str], rows: list[list[object]]) ->
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_parse_ai_result_extracts_structured_second_part_evidence(self) -> None:
+        parsed = parse_ai_result(
+            """
+            【核心问题】
+            回收师在现场回收iPad Air4时，发现设备在黑色界面下屏幕显示出现变色。
+
+            【产品类型】
+            平板
+
+            【一级分类】
+            屏幕显示情况
+
+            【二级分类】
+            屏幕显示老化/残影（单选）
+
+            【判定结论】
+            屏幕显示泛红/泛黄(可拍出)。
+
+            【判定依据】
+            黑色背景的右上角区域出现明显的黄绿色变色。
+
+            【参考话术】
+            根据图片中的局部变色情况进行判定。
+            """
+        )
+
+        self.assertEqual(parsed["核心问题"].startswith("回收师在现场"), True)
+        self.assertEqual(parsed["产品类型"], "平板")
+        self.assertEqual(parsed["一级分类"], "屏幕显示情况")
+        self.assertIn("屏幕显示泛红/泛黄", parsed["判定结论"])
+        self.assertIn("黄绿色变色", parsed["判定依据"])
+        self.assertIn("局部变色情况", parsed["参考话术"])
+
+    def test_parse_ai_result_keeps_repeated_evidence_sections(self) -> None:
+        parsed = parse_ai_result(
+            "【核心问题】第一问\n【判定结论】第一结论\n"
+            "【核心问题】第二问\n【判定结论】第二结论"
+        )
+
+        self.assertIn("第一问", parsed["核心问题"])
+        self.assertIn("第二问", parsed["核心问题"])
+        self.assertIn("第一结论", parsed["判定结论"])
+        self.assertIn("第二结论", parsed["判定结论"])
+
+    def test_preprocess_source_rows_maps_ai_result_when_legacy_fields_empty(self) -> None:
+        processed = preprocess_source_rows(
+            [
+                {
+                    "工单ID": "AI-RESULT-001",
+                    "聊天内容": "老师帮忙看下这台平板屏幕怎么判。",
+                    "产品类型": "",
+                    "ai_result": (
+                        "【核心问题】平板屏幕局部黄绿色变色如何判定\n"
+                        "【产品类型】平板\n"
+                        "【判定结论】屏幕显示泛红/泛黄(可拍出)\n"
+                        "【判定依据】黑色背景下右上角出现黄绿色变色"
+                    ),
+                }
+            ]
+        )
+
+        self.assertEqual(processed[0]["产品类型"], "平板电脑")
+        self.assertEqual(processed[0]["核心问题"], "平板屏幕局部黄绿色变色如何判定")
+        self.assertEqual(processed[0]["判定结论"], "屏幕显示泛红/泛黄(可拍出)")
+        self.assertEqual(processed[0]["AI结果解析状态"], "已解析")
+        self.assertIn("核心问题", processed[0]["AI结果字段"])
+
+    def test_preprocess_source_rows_preserves_conflicting_structured_fields(self) -> None:
+        processed = preprocess_source_rows(
+            [
+                {
+                    "工单ID": "AI-RESULT-002",
+                    "聊天内容": "请确认屏幕颜色异常。",
+                    "产品类型": "手机",
+                    "核心问题": "手机屏幕色斑如何判定",
+                    "ai_result": (
+                        "【核心问题】手机屏幕坏点如何判定\n"
+                        "【产品类型】手机\n"
+                        "【判定结论】需要人工复核"
+                    ),
+                }
+            ]
+        )
+
+        self.assertEqual(processed[0]["核心问题"], "手机屏幕色斑如何判定")
+        self.assertEqual(processed[0]["AI结果冲突字段"], "核心问题")
+        self.assertIn("ai_result 与已有结构化字段冲突", processed[0]["预处理备注"])
+
+    def test_resume_rebuilds_stale_ai_result_preprocessing_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "source.xlsx"
+            output_dir = tmp_path / "output"
+            _write_workbook(
+                source_path,
+                [*SOURCE_HEADERS, "ai_result"],
+                [[
+                    1,
+                    "tester",
+                    "2026-08-10",
+                    "AI-RESULT-RESUME-001",
+                    "",
+                    "请确认这台平板屏幕的显示异常。",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    (
+                        "【核心问题】平板屏幕局部黄绿色变色如何判定\n"
+                        "【产品类型】平板\n"
+                        "【判定结论】屏幕显示泛红/泛黄(可拍出)\n"
+                        "【判定依据】黑色背景下右上角出现黄绿色变色"
+                    ),
+                ]],
+            )
+            initial_label_from_workbook(
+                source_path=source_path,
+                standards_path=None,
+                output_dir=output_dir,
+                use_mimo=False,
+                audit_db_path=tmp_path / "audit.db",
+                clustering_mode="rule",
+                use_standard_references=False,
+            )
+            checkpoint_path = output_dir / "workflow_checkpoint.json"
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            checkpoint["stage"] = "preprocess"
+            for row in checkpoint["preprocessed_rows"]:
+                for key in list(row):
+                    if key.startswith("AI结果"):
+                        row.pop(key)
+                row["核心问题"] = ""
+                row["原始核心问题"] = ""
+                row["判定结论"] = ""
+                row["原始判定结论"] = ""
+                row["判定依据"] = ""
+                row["产品类型"] = "未知品类"
+                row["产品类型编码"] = ""
+                row["AI结果解析状态"] = "未识别"
+            checkpoint_path.write_text(
+                json.dumps(checkpoint, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            initial_label_from_workbook(
+                source_path=source_path,
+                standards_path=None,
+                output_dir=output_dir,
+                use_mimo=False,
+                audit_db_path=tmp_path / "audit.db",
+                clustering_mode="rule",
+                use_standard_references=False,
+                resume=True,
+            )
+
+            refreshed = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            restored_row = refreshed["preprocessed_rows"][0]
+            self.assertEqual(restored_row["AI结果解析状态"], "已解析")
+            self.assertEqual(restored_row["产品类型"], "平板电脑")
+            self.assertEqual(
+                restored_row["核心问题"],
+                "平板屏幕局部黄绿色变色如何判定",
+            )
+            self.assertEqual(
+                restored_row["判定结论"],
+                "屏幕显示泛红/泛黄(可拍出)",
+            )
+
     def test_filter_source_rows_by_phone_product_type(self) -> None:
         selected, excluded = filter_source_rows_by_product_type(
             [
@@ -67,6 +240,21 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual([row["序号"] for row in selected], [1])
         self.assertEqual([row["序号"] for row in excluded], [2, 3])
         self.assertIn("产品类型不匹配", excluded[0]["排除原因"])
+
+    def test_filter_source_rows_uses_ai_result_product_when_source_is_blank(self) -> None:
+        selected, excluded = filter_source_rows_by_product_type(
+            [
+                {
+                    "序号": 1,
+                    "产品类型": "",
+                    "ai_result": "【产品类型】平板",
+                }
+            ],
+            "平板电脑",
+        )
+
+        self.assertEqual([row["序号"] for row in selected], [1])
+        self.assertEqual(excluded, [])
 
     def test_preprocess_source_rows_adds_cleaning_fields(self) -> None:
         rows = [
@@ -92,7 +280,83 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(processed[0]["图片链接"], "a.jpg\nb.jpg")
         self.assertEqual(processed[0]["视频链接"], "a.mp4\nb.mp4")
         self.assertEqual(processed[0]["核心问题"], "屏幕这个点怎么判，是色斑吗")
+        self.assertEqual(
+            processed[0]["原始核心问题"],
+            "屏幕这个点怎么判，是色斑吗",
+        )
+        self.assertEqual(
+            processed[0]["原始判定结论"],
+            "该屏幕上的点应被判定为色斑。",
+        )
         self.assertEqual(processed[0]["数据ID"], "row-00001")
+
+    def test_preprocess_source_rows_preserves_original_work_order_id(self) -> None:
+        original_work_order_id = "002077208618029027906"
+        processed = preprocess_source_rows(
+            [
+                {
+                    "工单ID": original_work_order_id,
+                    "聊天内容": "屏幕胶条破损怎么判",
+                    "产品类型": "手机",
+                }
+            ]
+        )
+
+        self.assertEqual(processed[0]["原始工单ID"], original_work_order_id)
+        self.assertEqual(processed[0]["工单ID"], original_work_order_id)
+        self.assertEqual(processed[0]["数据ID"], original_work_order_id)
+
+    def test_preprocess_source_rows_prefers_latest_human_corrections(self) -> None:
+        processed = preprocess_source_rows(
+            [
+                {
+                    "工单ID": "WO-HUMAN-001",
+                    "原始工单ID": "WO-HUMAN-001",
+                    "聊天内容": "请结合现场图片确认屏幕上的点",
+                    "核心问题": "人工确认这是屏幕色斑还是灰尘",
+                    "原始核心问题": "旧模型认为是屏幕坏点",
+                    "判定结论": "人工看图后确认是屏幕色斑",
+                    "原始判定结论": "旧模型判断为屏幕坏点",
+                    "产品类型": "手机",
+                }
+            ]
+        )
+
+        self.assertEqual(
+            processed[0]["原始核心问题"],
+            "人工确认这是屏幕色斑还是灰尘",
+        )
+        self.assertEqual(
+            processed[0]["原始判定结论"],
+            "人工看图后确认是屏幕色斑",
+        )
+
+    def test_preprocess_source_rows_rejects_changed_original_work_order_id(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "工单ID在聚类过程中发生变化"):
+            preprocess_source_rows(
+                [
+                    {
+                        "工单ID": "WO-CURRENT-001",
+                        "原始工单ID": "WO-ORIGINAL-001",
+                        "聊天内容": "屏幕色斑怎么判",
+                        "产品类型": "手机",
+                    }
+                ]
+            )
+
+    def test_preprocess_source_rows_rejects_numeric_long_work_order_id(self) -> None:
+        with self.assertRaisesRegex(ValueError, "工单ID必须以文本格式提供"):
+            preprocess_source_rows(
+                [
+                    {
+                        "工单ID": 2077208618029027906,
+                        "聊天内容": "屏幕胶条破损怎么判",
+                        "产品类型": "手机",
+                    }
+                ]
+            )
 
     def test_missing_legacy_fields_do_not_exclude_a_real_conversation(self) -> None:
         processed = preprocess_source_rows(
@@ -165,7 +429,7 @@ class WorkflowTests(unittest.TestCase):
                     "核心问题": "屏幕这个点怎么判，是色斑吗",
                     "判定结论": "该屏幕上的点应被判定为色斑。",
                     "判定依据": "平台标准依据：色斑属于显示问题。",
-                    "产品类型": "电脑",
+                    "产品类型": "笔记本",
                     "一级分类": "显示问题",
                     "二级分类": "色斑",
                     "参考话术": "根据图片判断为色斑。",
@@ -180,7 +444,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(labeled[0]["预处理状态"], "preprocessed")
             self.assertEqual(labeled[0]["是否重点复核"], "否")
             self.assertEqual(labeled[0]["模型知识形态"], "流程方法")
-            self.assertEqual(labeled[0]["知识分类"], "检测方法")
+            self.assertEqual(labeled[0]["知识分类"], "质检流程")
             self.assertEqual(labeled[0]["生效状态"], "待审核")
             self.assertIn("屏幕显示异常如何通过图片核验", labeled[0]["主标题"])
             self.assertIn("核验流程", labeled[0]["知识内容"])
@@ -354,7 +618,7 @@ class WorkflowTests(unittest.TestCase):
         candidate = initial_label_rows([row], [standard])[0]
 
         self.assertEqual(candidate["候选知识形态"], "具体判定")
-        self.assertEqual(candidate["知识分类"], "场景判定")
+        self.assertEqual(candidate["知识分类"], "质检标准")
         self.assertIn("场景结论", candidate["知识内容"])
 
     def test_candidate_export_contains_only_knowledge_master_columns(self) -> None:
@@ -362,10 +626,10 @@ class WorkflowTests(unittest.TestCase):
             "主标题": "设备机型如何查询与确认",
             "副标题": "设备机型怎么确认",
             "知识内容": "查询流程：\n1. 查看关于本机。",
-            "知识分类": "检测方法",
+            "知识分类": "质检流程",
             "知识来源": "方向二会话候选",
             "关联标准项": "【基本情况】-【机型】",
-            "适用范围": "手机",
+            "适用范围": "手机-通用",
             "生效状态": "待审核",
             "来源版本": "SJ-HSYJBZ-2026009",
             "变更类型": "新增",
@@ -377,6 +641,7 @@ class WorkflowTests(unittest.TestCase):
         }
         expected_headers = [
             "主标题", "副标题", "知识内容", "知识分类", "知识来源", "关联标准项", "适用范围",
+            "适用品牌", "适用机型",
             "生效状态", "来源版本", "变更类型", "失效原因", "检索关键词", "校验备注",
         ]
         with tempfile.TemporaryDirectory() as tmp:
@@ -390,6 +655,7 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(headers, expected_headers)
         self.assertEqual(values[0], candidate["主标题"])
+        self.assertEqual(values[6], "手机")
         self.assertEqual(len(values), len(expected_headers))
 
     def test_candidate_export_groups_duplicate_topics_into_theme_rows(self) -> None:
@@ -398,7 +664,7 @@ class WorkflowTests(unittest.TestCase):
                 "主标题": "设备机型如何查询与确认",
                 "副标题": "设备机型怎么确认",
                 "知识内容": "查询流程：\n1. 查看关于本机。",
-                "知识分类": "检测方法",
+                "知识分类": "质检流程",
                 "知识来源": "方向二会话候选",
                 "关联标准项": "【基本情况】-【机型】",
                 "适用范围": "手机",
@@ -414,7 +680,7 @@ class WorkflowTests(unittest.TestCase):
                 "主标题": "设备机型如何查询与确认",
                 "副标题": "设备机型怎么确认",
                 "知识内容": "查询流程：\n1. 查看关于本机。",
-                "知识分类": "检测方法",
+                "知识分类": "质检流程",
                 "知识来源": "方向二会话候选",
                 "关联标准项": "【基本情况】-【机型】",
                 "适用范围": "手机",
@@ -439,8 +705,9 @@ class WorkflowTests(unittest.TestCase):
         headers = data[0]
         first_row = data[1]
         self.assertEqual(headers[0], "主标题")
-        self.assertIn("主题聚合样本数：2", first_row[12])
-        self.assertIn("来源记录ID：A、B", first_row[12])
+        note_index = headers.index("校验备注")
+        self.assertIn("主题聚合样本数：2", first_row[note_index])
+        self.assertIn("来源记录ID：A、B", first_row[note_index])
 
     def test_topic_review_excludes_structured_only_records(self) -> None:
         base = {
@@ -498,10 +765,13 @@ class WorkflowTests(unittest.TestCase):
             "主题证据摘要": "A | 完整会话",
             "主题检索标准Top5": "STD-001 | 机型",
             "主题标准版本": "SJ-HSYJBZ-2026009",
+            "主题问题分类": "质检流程",
+            "主题沉淀价值": "值得沉淀",
+            "人工主题问题分类": "质检标准",
             "主标题": "手机机型如何查询与确认",
             "副标题": "设备型号怎么确认",
             "知识内容": "查询流程：\n1. 查看关于本机。",
-            "知识分类": "检测方法",
+            "知识分类": "质检流程",
             "知识来源": "方向二主题候选",
             "关联标准项": "【基本情况】-【机型】",
             "适用范围": "手机",
@@ -528,6 +798,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(final_rows[0]["生效状态"], "待审核")
         self.assertEqual(len(feedback_rows), 1)
         self.assertEqual(feedback_rows[0]["错误类型"], "标题不准")
+        self.assertEqual(feedback_rows[0]["主题问题分类"], "质检流程")
+        self.assertEqual(feedback_rows[0]["人工主题问题分类"], "质检标准")
+        self.assertEqual(feedback_rows[0]["主题沉淀价值"], "值得沉淀")
         self.assertEqual(len(training_rows), 1)
         self.assertEqual(training_rows[0]["target"]["主标题"], "手机机型如何查询与确认")
 
@@ -536,7 +809,7 @@ class WorkflowTests(unittest.TestCase):
             "主题ID": "TOP-SIMPLE-001",
             "主标题": "耳机蓝牙连接如何核验",
             "知识内容": "1. 确认设备与耳机状态。\n2. 重新配对并记录结果。",
-            "知识分类": "检测方法",
+            "知识分类": "质检流程",
             "知识来源": "方向二主题候选",
             "适用范围": "耳机-通用",
             "是否值得沉淀": "是",
@@ -548,9 +821,36 @@ class WorkflowTests(unittest.TestCase):
         final_rows, feedback_rows, training_rows = finalize_topic_review_rows([topic_row])
 
         self.assertEqual(len(final_rows), 1)
+        self.assertEqual(final_rows[0]["适用范围"], "耳机/耳麦")
+        self.assertEqual(final_rows[0]["适用品牌"], "")
+        self.assertEqual(final_rows[0]["适用机型"], "")
         self.assertEqual(feedback_rows[0]["审核结论"], "通过")
         self.assertIn("推荐回复可再口语化", feedback_rows[0]["错误原因"])
         self.assertEqual(training_rows, [])
+
+    def test_case_knowledge_export_normalizes_scope_and_rejects_ambiguous_camera(self) -> None:
+        rows = build_case_knowledge_rows(
+            [
+                {
+                    "知识ID": "PHONE-001",
+                    "主标题": "手机问题",
+                    "知识内容": "来源支持的内容。",
+                    "知识分类": "案例解析",
+                    "产品类型": "手机",
+                    "适用范围": "手机-通用",
+                },
+                {
+                    "知识ID": "CAMERA-001",
+                    "主标题": "相机问题",
+                    "知识内容": "来源支持的内容。",
+                    "知识分类": "案例解析",
+                    "适用范围": "相机机身",
+                },
+            ]
+        )
+
+        self.assertEqual(rows[0]["适用范围"], "手机")
+        self.assertEqual(rows[1]["适用范围"], "")
 
     def test_ingest_writes_topic_review_and_theme_candidate_workbooks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -577,7 +877,7 @@ class WorkflowTests(unittest.TestCase):
                 json.dumps(
                     [{
                         "主标题": "设备机型应该如何选择",
-                        "知识分类": "检测方法",
+                        "知识分类": "质检流程",
                         "关联标准项": "【基本情况】-【机型】",
                         "适用范围": "手机",
                         "生效状态": "生效中",
@@ -608,7 +908,209 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("topic_review_queue", topic_book.sheetnames)
             self.assertIn("topic_source_mapping", topic_book.sheetnames)
             self.assertIn("topic_model_drafts", topic_book.sheetnames)
+            topic_headers = [
+                cell.value
+                for cell in next(topic_book["topic_review_queue"].iter_rows(max_row=1))
+            ]
+            self.assertIn("人工主题问题分类", topic_headers)
             topic_book.close()
+
+    def test_full_ingest_enforces_cluster_admission_before_topic_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "source.xlsx"
+            output_dir = tmp_path / "output"
+            _write_workbook(
+                source_path,
+                SOURCE_HEADERS,
+                [[
+                    1,
+                    "tester",
+                    "2026-08-06",
+                    "W-ADMISSION-001",
+                    "",
+                    "手机屏幕色斑如何判定",
+                    "",
+                    "手机屏幕色斑如何判定",
+                    "需要结合聊天证据判断",
+                    "当前仅用于验证聚类准入。",
+                    "手机",
+                    "显示问题",
+                    "色斑",
+                    "请结合实际情况确认。",
+                ]],
+            )
+
+            summary = initial_label_from_workbook(
+                source_path=source_path,
+                standards_path=None,
+                output_dir=output_dir,
+                use_mimo=False,
+                audit_db_path=tmp_path / "audit.db",
+                clustering_mode="rule",
+                use_standard_references=False,
+                enforce_cluster_admission=True,
+            )
+
+            self.assertTrue(summary["cluster_admission_enforced"])
+            self.assertEqual(summary["cluster_admission_admitted_topics"], 0)
+            self.assertEqual(summary["cluster_admission_pending_topics"], 1)
+            self.assertEqual(summary["topic_stage_classified_rows"], 0)
+            self.assertEqual(summary["topic_transcribed_rows"], 0)
+
+            topic_book = load_workbook(
+                summary["topic_review_file"],
+                read_only=True,
+                data_only=True,
+            )
+            pending_rows = list(
+                topic_book["pending_cluster_rows"].iter_rows(
+                    values_only=True
+                )
+            )
+            topic_book.close()
+            pending = dict(zip(pending_rows[0], pending_rows[1]))
+            self.assertEqual(
+                pending["待聚合状态"],
+                "pending_cluster_review",
+            )
+            self.assertIn(
+                "当前聚类模式不是已验证的 direct_mimo",
+                pending["聚类准入原因"],
+            )
+
+    def test_cluster_only_ingest_does_not_apply_downstream_admission_arguments(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "source.xlsx"
+            output_dir = tmp_path / "output"
+            _write_workbook(
+                source_path,
+                SOURCE_HEADERS,
+                [[
+                    1,
+                    "tester",
+                    "2026-08-06",
+                    "W-CLUSTER-ONLY-001",
+                    "",
+                    "手机屏幕色斑如何判定",
+                    "",
+                    "手机屏幕色斑如何判定",
+                    "需要结合聊天证据判断",
+                    "当前仅用于验证聚类。",
+                    "手机",
+                    "显示问题",
+                    "色斑",
+                    "请结合实际情况确认。",
+                ]],
+            )
+
+            summary = initial_label_from_workbook(
+                source_path=source_path,
+                standards_path=None,
+                output_dir=output_dir,
+                use_mimo=False,
+                audit_db_path=tmp_path / "audit.db",
+                clustering_mode="rule",
+                use_standard_references=False,
+                cluster_only=True,
+            )
+
+            self.assertTrue(summary["cluster_only"])
+            self.assertEqual(summary["topic_model_calls"], 0)
+            cluster_book = load_workbook(
+                summary["output_file"],
+                read_only=True,
+                data_only=True,
+            )
+            self.assertEqual(cluster_book.sheetnames, ["聚类结果"])
+            cluster_book.close()
+
+    def test_resume_rebuilds_topic_results_when_admission_policy_is_stale(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "source.xlsx"
+            output_dir = tmp_path / "output"
+            _write_workbook(
+                source_path,
+                SOURCE_HEADERS,
+                [[
+                    1,
+                    "tester",
+                    "2026-08-06",
+                    "W-ADMISSION-RESUME-001",
+                    "",
+                    "手机屏幕色斑如何判定",
+                    "",
+                    "手机屏幕色斑如何判定",
+                    "需要结合聊天证据判断",
+                    "当前仅用于验证恢复门禁。",
+                    "手机",
+                    "显示问题",
+                    "色斑",
+                    "请结合实际情况确认。",
+                ]],
+            )
+
+            old_summary = initial_label_from_workbook(
+                source_path=source_path,
+                standards_path=None,
+                output_dir=output_dir,
+                use_mimo=False,
+                audit_db_path=tmp_path / "audit.db",
+                clustering_mode="rule",
+                use_standard_references=False,
+                enforce_cluster_admission=False,
+            )
+            self.assertEqual(old_summary["topic_rows"], 1)
+            self.assertFalse(old_summary["cluster_admission_enforced"])
+            checkpoint_path = output_dir / "workflow_checkpoint.json"
+            checkpoint_payload = json.loads(
+                checkpoint_path.read_text(encoding="utf-8")
+            )
+            checkpoint_payload["topic_summary"].update(
+                {
+                    "cluster_admission_enforced": True,
+                    "cluster_admission_policy_version": (
+                        "cluster-admission-legacy"
+                    ),
+                    "cluster_admission_min_confidence": 0.5,
+                    "clustering_requested_mode": "rule",
+                }
+            )
+            checkpoint_path.write_text(
+                json.dumps(
+                    checkpoint_payload,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            resumed_summary = initial_label_from_workbook(
+                source_path=source_path,
+                standards_path=None,
+                output_dir=output_dir,
+                use_mimo=False,
+                audit_db_path=tmp_path / "audit.db",
+                clustering_mode="rule",
+                use_standard_references=False,
+                enforce_cluster_admission=True,
+                resume=True,
+            )
+
+            self.assertTrue(
+                resumed_summary["cluster_admission_enforced"]
+            )
+            self.assertEqual(resumed_summary["topic_rows"], 0)
+            self.assertEqual(
+                resumed_summary["cluster_admission_pending_topics"],
+                1,
+            )
 
     def test_case_only_ingest_exports_ten_fields_without_standard_references(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
