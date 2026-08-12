@@ -35,7 +35,6 @@ $script:FooterMessage = "控制台已就绪"
 $script:OperationFeedbackState = "idle"
 $script:OperationFeedbackMessage = "等待操作。环境检查首次加载 ms-swift 时可能需要 2–4 分钟。"
 $script:RefreshErrorMessage = ""
-$script:PrivateHostCache = @{}
 
 [xml]$Xaml = @'
 <Window
@@ -190,7 +189,7 @@ $script:PrivateHostCache = @{}
               <TextBlock Text="任务 URL 和密钥由工作台在创建任务时生成。密钥只保存到本机 training-runner\.env，不显示在日志中。" Margin="0,5,0,14" Foreground="#667085" FontSize="11" TextWrapping="Wrap"/>
 
               <TextBlock Text="任务接入 URL" FontWeight="SemiBold" Foreground="#475467"/>
-              <TextBox x:Name="ServerUrlInput" Margin="0,5,0,11" ToolTip="粘贴工作台生成的完整任务 URL；公网需 HTTPS，内网可 HTTP"/>
+              <TextBox x:Name="ServerUrlInput" Margin="0,5,0,11" ToolTip="粘贴工作台生成的完整 HTTP(S) 任务 URL"/>
 
               <TextBlock Text="Runner 标识" FontWeight="SemiBold" Foreground="#475467"/>
               <TextBox x:Name="RunnerIdInput" Margin="0,5,0,11"/>
@@ -483,62 +482,6 @@ function Current-RuntimeRoot {
     return [IO.Path]::GetFullPath($Value)
 }
 
-function Test-PrivateHost {
-    param([Parameter(Mandatory = $true)][string]$HostName)
-    $NormalizedHost = $HostName.Trim().TrimEnd(".").ToLowerInvariant()
-    if ($script:PrivateHostCache.ContainsKey($NormalizedHost)) {
-        return [bool]$script:PrivateHostCache[$NormalizedHost]
-    }
-    if ($NormalizedHost -eq "localhost") {
-        $script:PrivateHostCache[$NormalizedHost] = $true
-        return $true
-    }
-    $Addresses = @()
-    try {
-        $ParsedAddress = [Net.IPAddress]::Parse($NormalizedHost)
-        $Addresses = @($ParsedAddress)
-    } catch {
-        try {
-            $Addresses = @([Net.Dns]::GetHostAddresses($NormalizedHost))
-        } catch {
-            $script:PrivateHostCache[$NormalizedHost] = $false
-            return $false
-        }
-    }
-    if ($Addresses.Count -eq 0) {
-        $script:PrivateHostCache[$NormalizedHost] = $false
-        return $false
-    }
-    foreach ($Address in $Addresses) {
-        if ([Net.IPAddress]::IsLoopback($Address)) {
-            continue
-        }
-        $Bytes = $Address.GetAddressBytes()
-        if ($Address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork) {
-            $IsPrivateIpv4 = (
-                $Bytes[0] -eq 10 -or
-                ($Bytes[0] -eq 172 -and $Bytes[1] -ge 16 -and $Bytes[1] -le 31) -or
-                ($Bytes[0] -eq 192 -and $Bytes[1] -eq 168)
-            )
-            if ($IsPrivateIpv4) {
-                continue
-            }
-            $script:PrivateHostCache[$NormalizedHost] = $false
-            return $false
-        }
-        if (
-            $Address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6 -and
-            (($Bytes[0] -band 0xFE) -eq 0xFC)
-        ) {
-            continue
-        }
-        $script:PrivateHostCache[$NormalizedHost] = $false
-        return $false
-    }
-    $script:PrivateHostCache[$NormalizedHost] = $true
-    return $true
-}
-
 function Test-ConfigComplete {
     $Url = $Controls.ServerUrlInput.Text.Trim()
     $RunnerId = $Controls.RunnerIdInput.Text.Trim()
@@ -547,7 +490,6 @@ function Test-ConfigComplete {
     $ValidUrl = (
         [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$Uri) -and
         $Uri.Scheme -in @("http", "https") -and
-        ($Uri.Scheme -eq "https" -or (Test-PrivateHost $Uri.DnsSafeHost)) -and
         -not $Uri.UserInfo -and
         -not $Uri.Query -and
         -not $Uri.Fragment -and
@@ -578,12 +520,6 @@ function Save-RunnerConfig {
             $TaskUri.AbsolutePath -notmatch "^/api/v1/embedding-model/runner/tasks/etj-[A-Za-z0-9._-]+/?$"
         ) {
             throw "请粘贴工作台生成的完整 LoRA 任务接入 URL"
-        }
-        if (
-            $TaskUri.Scheme -ne "https" -and
-            -not (Test-PrivateHost $TaskUri.DnsSafeHost)
-        ) {
-            throw "公网任务接入 URL 必须使用 HTTPS；内网地址可使用 HTTP"
         }
         if ($RunnerId -and $RunnerId -notmatch "^[A-Za-z0-9._-]+$") {
             throw "Runner 标识只允许字母、数字、点、横线和下划线"

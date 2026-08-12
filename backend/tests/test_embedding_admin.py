@@ -2,7 +2,6 @@ import hashlib
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -191,7 +190,7 @@ class EmbeddingAdminTests(unittest.TestCase):
             0.55,
         )
 
-    def test_task_runner_public_base_url_accepts_https_or_private_http(self):
+    def test_task_runner_base_url_accepts_external_http_or_https(self):
         settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL = "https://kb.example.test/"
         self.assertEqual(
             _task_runner_url("etj-test"),
@@ -200,20 +199,14 @@ class EmbeddingAdminTests(unittest.TestCase):
         settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL = (
             "http://qa-kb.10.47.193.5.nip.io"
         )
-        with patch(
-            "app.routes.embedding_admin.socket.getaddrinfo",
-            return_value=[
-                (2, 1, 6, "", ("10.47.193.5", 0)),
-            ],
-        ):
-            self.assertEqual(
-                _task_runner_url("etj-test"),
-                "http://qa-kb.10.47.193.5.nip.io"
-                "/api/v1/embedding-model/runner/tasks/etj-test",
-            )
+        self.assertEqual(
+            _task_runner_url("etj-test"),
+            "http://qa-kb.10.47.193.5.nip.io"
+            "/api/v1/embedding-model/runner/tasks/etj-test",
+        )
 
         for invalid_url in (
-            "http://8.8.8.8",
+            "ftp://kb.example.test",
             "https://kb.example.test/app",
             "https://kb.example.test/api/v1",
             "https://kb.example.test/path",

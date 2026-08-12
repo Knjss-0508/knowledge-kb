@@ -228,7 +228,7 @@ class EmbeddingTrainingRunnerTests(unittest.TestCase):
         self.assertEqual(payload["status"], "connected")
         self.assertEqual(payload["runner"]["id"], "runner-local")
 
-    def test_task_access_url_requires_exact_job_path_and_secure_transport(self):
+    def test_task_access_url_requires_exact_job_path_and_http_or_https(self):
         self.assertEqual(
             RUNNER.validate_task_access_url(
                 "https://kb.example.test/api/v1/embedding-model/"
@@ -243,23 +243,16 @@ class EmbeddingTrainingRunnerTests(unittest.TestCase):
                 "runner/tasks/etj-local"
             ).startswith("http://127.0.0.1/")
         )
-        with patch.object(
-            RUNNER.socket,
-            "getaddrinfo",
-            return_value=[
-                (2, 1, 6, "", ("10.47.193.5", 0)),
-            ],
-        ):
-            self.assertTrue(
-                RUNNER.validate_task_access_url(
-                    "http://qa-kb.10.47.193.5.nip.io/api/v1/embedding-model/"
-                    "runner/tasks/etj-private"
-                ).startswith("http://qa-kb.10.47.193.5.nip.io/")
-            )
+        self.assertTrue(
+            RUNNER.validate_task_access_url(
+                "http://qa-kb.10.47.193.5.nip.io/api/v1/embedding-model/"
+                "runner/tasks/etj-external"
+            ).startswith("http://qa-kb.10.47.193.5.nip.io/")
+        )
 
         for invalid_url in (
             (
-                "http://8.8.8.8/api/v1/embedding-model/"
+                "ftp://kb.example.test/api/v1/embedding-model/"
                 "runner/tasks/etj-bound"
             ),
             (
