@@ -21,9 +21,6 @@ dev = [
 ui = [
   "streamlit",
 ]
-collector = [
-  "playwright",
-]
 
 [project.scripts]
 answer-hub = "answer_hub.cli:main"

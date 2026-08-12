@@ -78,7 +78,6 @@ from answer_hub.run_feedback import (  # noqa: E402
     RunFeedbackStoreError,
     default_run_feedback,
 )
-from answer_hub.transfer_analysis.ui import render_transfer_analysis  # noqa: E402
 from answer_hub.cluster_annotation_ui import render_cluster_annotation  # noqa: E402
 
 
@@ -4459,7 +4458,6 @@ page = st.segmented_control(
     [
         "运行监管",
         "自动化看板",
-        "转人工分析",
         "聚类验证",
         "完整聚类标注",
         "生成主题候选",
@@ -4474,8 +4472,6 @@ if page == "运行监管":
     _render_operations_monitor()
 elif page == "自动化看板":
     _render_automation()
-elif page == "转人工分析":
-    render_transfer_analysis()
 elif page == "聚类验证":
     _render_cluster_validation()
 elif page == "完整聚类标注":
