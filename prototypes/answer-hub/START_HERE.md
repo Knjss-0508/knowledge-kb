@@ -133,13 +133,18 @@ Prompt验收前，`AUTO_REVIEW_ENABLED`必须保持关闭。`MIMO_*`缺失时，
 标注可在手动验证流程中回退为规则特征并进入人工优先审核；无人值守自动化会先
 停止并等待人工确认，只有显式允许`--continue-on-mimo-unavailable`后才会规则降级。
 
-Qwen3 Embedding已经包含在CZ基础Compose中，不需要单独启动CPU覆盖文件：
+Qwen3 Embedding已经包含在CZ基础Compose中，不需要另行启动模型进程：
 
 ```powershell
 .\scripts\start_local_cz.ps1
 ```
 
-首次启动会下载模型。Qwen3只在Docker内部提供给CZ查重，不对宿主机公开端口。
+首次启动会下载模型。CPU Compose同时保留两条调用路径：
+
+- CZ后端容器继续使用`http://embedding-qwen:80/v1`；
+- 同一台服务器宿主机上的Answer Hub使用`http://127.0.0.1:8080/v1`。
+
+宿主端口只绑定`127.0.0.1`，不允许改成`0.0.0.0`，也不通过公网Nginx代理。
 
 ## Streamlit 准确性验证顺序
 
