@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -1266,9 +1266,26 @@ def get_retrieval_analytics(
     _: User = Depends(require_permission("knowledge:view")),
     page: int = 1,
     page_size: int = 20,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
 ):
     page = max(1, int(page or 1))
     page_size = max(1, min(100, int(page_size or 20)))
+    start_at = (
+        start_at.astimezone(timezone.utc).replace(tzinfo=None)
+        if start_at is not None and start_at.tzinfo is not None
+        else start_at
+    )
+    end_at = (
+        end_at.astimezone(timezone.utc).replace(tzinfo=None)
+        if end_at is not None and end_at.tzinfo is not None
+        else end_at
+    )
+    if start_at is not None and end_at is not None and start_at >= end_at:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="开始时间必须早于结束时间",
+        )
     summary = {
         "total": 0,
         "accepted": 0,
@@ -1292,7 +1309,10 @@ def get_retrieval_analytics(
         db.query(RetrievalQualityEvent)
         .filter(
             RetrievalQualityEvent.id.in_(
-                latest_retrieval_quality_request_event_ids()
+                latest_retrieval_quality_request_event_ids(
+                    start_at=start_at,
+                    end_at=end_at,
+                )
             )
         )
         .all()
@@ -1421,6 +1441,10 @@ def get_retrieval_analytics(
             "page_size": page_size,
             "total": risk_total,
             "total_pages": risk_total_pages,
+        },
+        "time_range": {
+            "start_at": start_at,
+            "end_at": end_at,
         },
         "risks": risks,
     }

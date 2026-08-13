@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from app.models.integration import RetrievalQualityEvent
@@ -521,6 +521,375 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
         risk_ids = {risk["id"] for risk in analytics["risks"]}
         self.assertNotIn(events["ticket-old"].id, risk_ids)
         self.assertIn(events["ticket-new"].id, risk_ids)
+
+    def test_analytics_filters_before_selecting_latest_request_per_work_order(self):
+        items = [
+            self._payload(
+                "ticket-range-old",
+                conversation_id="202608130001",
+                request_id="request-range-old",
+                request_status="no_match",
+                candidate_count=0,
+                top_knowledge_id=None,
+                top_rerank_score=None,
+                selected=False,
+                selected_knowledge_id=None,
+                selected_candidate_rank=None,
+                candidates=[],
+            ),
+            self._payload(
+                "ticket-range-new",
+                conversation_id="202608130001",
+                request_id="request-range-new",
+            ),
+            self._payload(
+                "ticket-range-other",
+                conversation_id="202608130002",
+                request_id="request-range-other",
+            ),
+        ]
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=items),
+            self.db,
+            None,
+        )
+        events = {
+            event.idempotency_key: event
+            for event in self.db.query(RetrievalQualityEvent).all()
+        }
+        events["ticket-range-old"].created_at = datetime(2026, 8, 12, 10, 0, 0)
+        events["ticket-range-new"].created_at = datetime(2026, 8, 13, 10, 0, 0)
+        events["ticket-range-other"].created_at = datetime(2026, 8, 12, 11, 0, 0)
+        self.db.commit()
+
+        analytics = get_retrieval_analytics(
+            self.db,
+            None,
+            start_at=datetime(2026, 8, 12),
+            end_at=datetime(2026, 8, 13),
+        )
+
+        self.assertEqual(analytics["summary"]["total"], 2)
+        self.assertEqual(analytics["summary"]["no_candidates"], 1)
+        self.assertEqual(analytics["summary"]["accepted"], 1)
+        self.assertEqual(analytics["pagination"]["total"], 2)
+        risk_ids = {risk["id"] for risk in analytics["risks"]}
+        self.assertIn(events["ticket-range-old"].id, risk_ids)
+        self.assertIn(events["ticket-range-other"].id, risk_ids)
+        self.assertNotIn(events["ticket-range-new"].id, risk_ids)
+        self.assertEqual(
+            analytics["time_range"],
+            {
+                "start_at": datetime(2026, 8, 12),
+                "end_at": datetime(2026, 8, 13),
+            },
+        )
+
+    def test_analytics_time_range_end_is_exclusive_and_updates_all_metrics(self):
+        items = [
+            self._payload("before-range", total_latency_ms=10),
+            self._payload("inside-range", total_latency_ms=20),
+            self._payload("at-exclusive-end", total_latency_ms=30),
+        ]
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=items),
+            self.db,
+            None,
+        )
+        events = {
+            event.idempotency_key: event
+            for event in self.db.query(RetrievalQualityEvent).all()
+        }
+        start_at = datetime(2026, 8, 13, 0, 0, 0)
+        end_at = start_at + timedelta(days=1)
+        events["before-range"].created_at = start_at - timedelta(seconds=1)
+        events["inside-range"].created_at = start_at
+        events["at-exclusive-end"].created_at = end_at
+        self.db.commit()
+
+        analytics = get_retrieval_analytics(
+            self.db,
+            None,
+            start_at=start_at,
+            end_at=end_at,
+        )
+
+        self.assertEqual(analytics["summary"]["total"], 1)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 1)
+        self.assertEqual(analytics["rates"]["candidate_coverage_rate"], 1.0)
+        self.assertEqual(analytics["latency"]["count"], 1)
+        self.assertEqual(analytics["latency"]["average_ms"], 20.0)
+        self.assertEqual(analytics["pagination"]["total"], 1)
+        self.assertEqual(
+            [risk["id"] for risk in analytics["risks"]],
+            [events["inside-range"].id],
+        )
+
+    def test_analytics_time_range_keeps_all_source_pools_for_selected_request(self):
+        items = [
+            self._payload(
+                "standard-before-range",
+                conversation_id="202608130003",
+                request_id="request-cross-boundary",
+                candidate_count=1,
+                top_knowledge_id="A-STANDARD",
+                top_rerank_score=0.93,
+                selected=False,
+                selected_knowledge_id=None,
+                selected_candidate_rank=None,
+                metadata={
+                    "source_kind": "standard",
+                    "candidate_origins": ["headquarters_standard"],
+                },
+                candidates=[
+                    {
+                        "knowledge_id": "A-STANDARD",
+                        "rank": 1,
+                        "title": "总部标准",
+                        "final_score": 0.93,
+                        "selected": False,
+                    }
+                ],
+            ),
+            self._payload(
+                "reply-inside-range",
+                conversation_id="202608130003",
+                request_id="request-cross-boundary",
+                candidate_count=1,
+                top_knowledge_id="A-REPLY",
+                top_rerank_score=0.91,
+                selected=False,
+                selected_knowledge_id=None,
+                selected_candidate_rank=None,
+                metadata={
+                    "source_kind": "reply",
+                    "candidate_origins": ["business_accumulation"],
+                },
+                candidates=[
+                    {
+                        "knowledge_id": "A-REPLY",
+                        "rank": 1,
+                        "title": "业务沉淀",
+                        "final_score": 0.91,
+                        "selected": False,
+                    }
+                ],
+            ),
+        ]
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=items),
+            self.db,
+            None,
+        )
+        events = {
+            event.idempotency_key: event
+            for event in self.db.query(RetrievalQualityEvent).all()
+        }
+        events["standard-before-range"].created_at = datetime(
+            2026,
+            8,
+            12,
+            23,
+            59,
+            59,
+        )
+        events["reply-inside-range"].created_at = datetime(
+            2026,
+            8,
+            13,
+            0,
+            0,
+            1,
+        )
+        self.db.commit()
+
+        analytics = get_retrieval_analytics(
+            self.db,
+            None,
+            start_at=datetime(2026, 8, 13),
+            end_at=datetime(2026, 8, 14),
+        )
+
+        self.assertEqual(analytics["summary"]["total"], 1)
+        self.assertEqual(analytics["risks"][0]["candidate_count"], 2)
+        self.assertEqual(
+            [
+                candidate["knowledge_id"]
+                for candidate in analytics["risks"][0]["candidates"]
+            ],
+            ["A-STANDARD", "A-REPLY"],
+        )
+
+    def test_analytics_assigns_cross_end_request_to_latest_event_window(self):
+        items = [
+            self._payload(
+                "standard-inside-range",
+                conversation_id="202608130004",
+                request_id="request-cross-end-boundary",
+                candidate_count=1,
+                top_knowledge_id="B-STANDARD",
+                top_rerank_score=0.94,
+                selected=False,
+                selected_knowledge_id=None,
+                selected_candidate_rank=None,
+                metadata={
+                    "source_kind": "standard",
+                    "candidate_origins": ["headquarters_standard"],
+                },
+                candidates=[
+                    {
+                        "knowledge_id": "B-STANDARD",
+                        "rank": 1,
+                        "title": "范围内总部标准",
+                        "final_score": 0.94,
+                        "selected": False,
+                    }
+                ],
+            ),
+            self._payload(
+                "reply-after-range",
+                conversation_id="202608130004",
+                request_id="request-cross-end-boundary",
+                candidate_count=1,
+                top_knowledge_id="B-REPLY",
+                top_rerank_score=0.92,
+                selected=False,
+                selected_knowledge_id=None,
+                selected_candidate_rank=None,
+                metadata={
+                    "source_kind": "reply",
+                    "candidate_origins": ["business_accumulation"],
+                },
+                candidates=[
+                    {
+                        "knowledge_id": "B-REPLY",
+                        "rank": 1,
+                        "title": "结束边界后的业务沉淀",
+                        "final_score": 0.92,
+                        "selected": False,
+                    }
+                ],
+            ),
+        ]
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=items),
+            self.db,
+            None,
+        )
+        events = {
+            event.idempotency_key: event
+            for event in self.db.query(RetrievalQualityEvent).all()
+        }
+        events["standard-inside-range"].created_at = datetime(
+            2026,
+            8,
+            13,
+            23,
+            59,
+            59,
+        )
+        events["reply-after-range"].created_at = datetime(
+            2026,
+            8,
+            14,
+            0,
+            0,
+            1,
+        )
+        self.db.commit()
+
+        first_window = get_retrieval_analytics(
+            self.db,
+            None,
+            start_at=datetime(2026, 8, 13),
+            end_at=datetime(2026, 8, 14),
+        )
+        second_window = get_retrieval_analytics(
+            self.db,
+            None,
+            start_at=datetime(2026, 8, 14),
+            end_at=datetime(2026, 8, 15),
+        )
+
+        self.assertEqual(first_window["summary"]["total"], 0)
+        self.assertEqual(first_window["pagination"]["total"], 0)
+        self.assertEqual(first_window["risks"], [])
+        self.assertEqual(second_window["summary"]["total"], 1)
+        self.assertEqual(second_window["risks"][0]["candidate_count"], 2)
+        self.assertEqual(
+            second_window["risks"][0]["created_at"],
+            datetime(2026, 8, 14, 0, 0, 1),
+        )
+        self.assertEqual(
+            [
+                candidate["knowledge_id"]
+                for candidate in second_window["risks"][0]["candidates"]
+            ],
+            ["B-STANDARD", "B-REPLY"],
+        )
+
+    def test_analytics_rejects_invalid_time_range(self):
+        with self.assertRaises(HTTPException) as context:
+            get_retrieval_analytics(
+                self.db,
+                None,
+                start_at=datetime(2026, 8, 13, 12, 0, 0),
+                end_at=datetime(2026, 8, 13, 12, 0, 0),
+            )
+
+        self.assertEqual(context.exception.status_code, 422)
+
+    def test_analytics_normalizes_aware_time_range_to_utc(self):
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(
+                items=[self._payload("aware-time-range")]
+            ),
+            self.db,
+            None,
+        )
+        event = (
+            self.db.query(RetrievalQualityEvent)
+            .filter(
+                RetrievalQualityEvent.idempotency_key
+                == "aware-time-range"
+            )
+            .one()
+        )
+        event.created_at = datetime(2026, 8, 12, 16, 30, 0)
+        self.db.commit()
+
+        china_timezone = timezone(timedelta(hours=8))
+        analytics = get_retrieval_analytics(
+            self.db,
+            None,
+            start_at=datetime(
+                2026,
+                8,
+                13,
+                0,
+                0,
+                0,
+                tzinfo=china_timezone,
+            ),
+            end_at=datetime(
+                2026,
+                8,
+                14,
+                0,
+                0,
+                0,
+                tzinfo=china_timezone,
+            ),
+        )
+
+        self.assertEqual(analytics["summary"]["total"], 1)
+        self.assertEqual(
+            analytics["time_range"],
+            {
+                "start_at": datetime(2026, 8, 12, 16, 0, 0),
+                "end_at": datetime(2026, 8, 13, 16, 0, 0),
+            },
+        )
 
     def test_analytics_keeps_legacy_anonymous_events_separate(self):
         items = [
