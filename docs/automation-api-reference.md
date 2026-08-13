@@ -788,16 +788,26 @@ Content-Type: application/json
 ### 6.2 查看检索分析
 
 ```http
-GET /integration/retrieval-analytics?page=1&page_size=20
+GET /integration/retrieval-analytics?page=1&page_size=20&start_at=2026-08-12T16:00:00Z&end_at=2026-08-13T16:00:00Z
 ```
 
 `page` 从 1 开始；`page_size` 支持 1 到 100。分页只作用于待澄清请求列表，
-汇总指标始终基于每个 `conversation_id` 的最后一个 `request_id` 计算；
-同一最终请求的两个候选池不会拆成两条记录。
+汇总指标始终和列表使用同一时间范围。`start_at`、`end_at` 为可选 ISO 8601
+时间，推荐携带 `Z` 或明确时区偏移；范围采用前闭后开 `[start_at, end_at)`。
+未传时间参数时保持全量口径。按自然日筛选时，客户端应把本地起始日
+`00:00` 和结束日次日 `00:00` 转成 UTC 后提交，确保结束日期整天都被纳入。
+同时传入两个边界时，`start_at` 必须早于 `end_at`。
+
+接口先在时间范围内确定每个 `conversation_id` 的最后一个 `request_id`，
+再把该请求的两个候选池完整合并。因此，时间段之后的新提问不会挤掉时间段内
+的历史提问；同一请求的总部标准池和业务沉淀池也不会因上报时间跨过边界而被拆散。
+候选覆盖、阈值通过、采用情况、人工标注、耗时、待澄清总数和分页均按这一
+统一口径计算。
 
 该接口面向知识库内部运营人员，需要平台账号的 `knowledge:view` 权限，不使用 `X-Integration-Key`。
 
-返回内容包括各类结果数量和最近 50 条非 `accepted` 风险记录。
+返回内容包括各类结果数量、耗时统计和分页后的待澄清请求记录；`time_range`
+会回显后端实际使用的 UTC 时间边界。
 
 ## 7. 典型调用顺序
 
