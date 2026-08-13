@@ -73,6 +73,7 @@ logger = logging.getLogger(__name__)
 
 TAXONOMY_VERSION = "automation-v5"
 STANDARD_SEARCH_MAX_RESULTS = 5
+RETRIEVAL_NEAR_THRESHOLD_MARGIN = 0.05
 STANDARD_SEARCH_KNOWLEDGE_ORIGINS = (
     "headquarters_standard",
     "business_accumulation",
@@ -714,10 +715,23 @@ def _retrieval_request_payload(
         if scored_candidates
         else (candidates[0] if candidates else None)
     )
-    top_rerank_score = (
+    event_top_scores = [
+        float(event.top_rerank_score)
+        for event in ordered_events
+        if event.top_rerank_score is not None
+    ]
+    candidate_top_score = (
         _retrieval_candidate_score(top_candidate)
         if top_candidate
         else None
+    )
+    top_rerank_score = max(
+        [
+            score
+            for score in (candidate_top_score, *event_top_scores)
+            if score is not None
+        ],
+        default=None,
     )
     if candidates:
         threshold_status = (
@@ -1297,7 +1311,8 @@ def get_retrieval_analytics(
         "successful_requests": 0,
         "candidate_requests": 0,
         "candidate_queries": 0,
-        "threshold_passed": 0,
+        "near_threshold": 0,
+        "clear_threshold": 0,
         "threshold_below": 0,
         "top_selected": 0,
         "alternative_selected": 0,
@@ -1342,10 +1357,18 @@ def get_retrieval_analytics(
             and item["request_status"] in ("success", "fallback")
         ):
             summary["candidate_requests"] += 1
-        if item["threshold_status"] == "passed":
-            summary["threshold_passed"] += 1
-        elif item["threshold_status"] == "below":
-            summary["threshold_below"] += 1
+            top_score = item["top_rerank_score"]
+            if top_score is not None:
+                score_margin = round(
+                    float(top_score) - float(item["score_threshold"]),
+                    10,
+                )
+                if score_margin < 0:
+                    summary["threshold_below"] += 1
+                elif score_margin < RETRIEVAL_NEAR_THRESHOLD_MARGIN:
+                    summary["near_threshold"] += 1
+                else:
+                    summary["clear_threshold"] += 1
         if item["selection_status"] == "top_selected":
             summary["top_selected"] += 1
         elif item["selection_status"] == "alternative_selected":
@@ -1382,8 +1405,8 @@ def get_retrieval_analytics(
             summary["candidate_queries"],
             summary["successful_requests"],
         ),
-        "threshold_pass_rate": rate(
-            summary["threshold_passed"],
+        "near_threshold_rate": rate(
+            summary["near_threshold"],
             summary["candidate_queries"],
         ),
         "any_selection_rate": rate(
@@ -1430,7 +1453,10 @@ def get_retrieval_analytics(
         "latency": latency,
         "definitions": {
             "candidate_coverage_rate": "成功请求中至少返回一条候选知识的比例",
-            "threshold_pass_rate": "有候选请求中最高分达到当次阈值的比例",
+            "near_threshold_rate": (
+                "状态为成功或回退且有候选的请求中，"
+                "最高分达到当次阈值、但高出不足 0.05 的比例"
+            ),
             "top1_selection_rate": "有候选请求中最终采用所属候选池第一名的比例",
             "alternative_selection_rate": "有候选请求中最终采用所属候选池第二至第五名的比例",
             "no_selection_rate": "有候选请求中最终没有采用任何候选的比例",

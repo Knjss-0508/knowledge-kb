@@ -338,6 +338,23 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
                 failure_reason="technical_failure",
                 total_latency_ms=50,
             ),
+            self._payload(
+                "near-threshold",
+                candidate_count=1,
+                top_rerank_score=0.45,
+                selected=False,
+                selected_knowledge_id=None,
+                selected_candidate_rank=None,
+                candidates=[
+                    {
+                        "knowledge_id": "A-00001",
+                        "rank": 1,
+                        "final_score": 0.45,
+                        "selected": False,
+                    }
+                ],
+                total_latency_ms=25,
+            ),
         ]
 
         response = submit_retrieval_quality_events(
@@ -345,7 +362,7 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
             self.db,
             None,
         )
-        self.assertEqual(response.recorded, 5)
+        self.assertEqual(response.recorded, 6)
         self.assertEqual(response.reused, 0)
         self.assertEqual(
             response.results[0].conversation_id,
@@ -378,7 +395,7 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
         self.db.commit()
 
         analytics = get_retrieval_analytics(self.db, None)
-        self.assertEqual(analytics["summary"]["total"], 5)
+        self.assertEqual(analytics["summary"]["total"], 6)
         self.assertEqual(analytics["summary"]["accepted"], 1)
         self.assertEqual(analytics["summary"]["accepted_alternative"], 1)
         self.assertEqual(analytics["summary"]["low_score"], 1)
@@ -386,15 +403,20 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
         self.assertEqual(analytics["summary"]["technical_failure"], 1)
         self.assertEqual(analytics["summary"]["reviewed"], 1)
         self.assertEqual(analytics["summary"]["training_eligible"], 1)
-        self.assertEqual(analytics["summary"]["candidate_requests"], 3)
-        self.assertEqual(analytics["summary"]["candidate_queries"], 3)
-        self.assertEqual(analytics["rates"]["candidate_coverage_rate"], 0.75)
-        self.assertEqual(analytics["rates"]["threshold_pass_rate"], 0.6667)
-        self.assertEqual(analytics["rates"]["top1_selection_rate"], 0.3333)
-        self.assertEqual(analytics["rates"]["alternative_selection_rate"], 0.3333)
-        self.assertEqual(analytics["rates"]["no_selection_rate"], 0.3333)
-        self.assertEqual(analytics["latency"]["p50_ms"], 30.0)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 4)
+        self.assertEqual(analytics["summary"]["candidate_queries"], 4)
+        self.assertEqual(analytics["summary"]["near_threshold"], 1)
+        self.assertEqual(analytics["summary"]["clear_threshold"], 2)
+        self.assertEqual(analytics["summary"]["threshold_below"], 1)
+        self.assertEqual(analytics["rates"]["candidate_coverage_rate"], 0.8)
+        self.assertEqual(analytics["rates"]["near_threshold_rate"], 0.25)
+        self.assertEqual(analytics["rates"]["top1_selection_rate"], 0.25)
+        self.assertEqual(analytics["rates"]["alternative_selection_rate"], 0.25)
+        self.assertEqual(analytics["rates"]["no_selection_rate"], 0.5)
+        self.assertEqual(analytics["latency"]["p50_ms"], 25.0)
         self.assertEqual(analytics["latency"]["p95_ms"], 50.0)
+        self.assertNotIn("threshold_passed", analytics["summary"])
+        self.assertNotIn("threshold_pass_rate", analytics["rates"])
         alternative_risk = next(
             item
             for item in analytics["risks"]
@@ -407,6 +429,127 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
             ],
             ["headquarters_standard", "headquarters_standard"],
         )
+
+    @patch(
+        "app.routes.integration.get_active_runtime_values",
+        return_value={"retrieval_score_threshold": 0.42},
+    )
+    def test_analytics_near_threshold_margin_has_stable_upper_boundary(
+        self,
+        _runtime_config,
+    ):
+        items = []
+        for key, score in (
+            ("threshold-below", 0.419),
+            ("threshold-exact", 0.42),
+            ("threshold-near", 0.469),
+            ("threshold-clear", 0.47),
+        ):
+            items.append(
+                self._payload(
+                    key,
+                    candidate_count=1,
+                    top_rerank_score=score,
+                    score_threshold=0.42,
+                    selected=False,
+                    selected_knowledge_id=None,
+                    selected_candidate_rank=None,
+                    candidates=[
+                        {
+                            "knowledge_id": "A-00001",
+                            "rank": 1,
+                            "final_score": score,
+                            "selected": False,
+                        }
+                    ],
+                )
+            )
+
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=items),
+            self.db,
+            None,
+        )
+
+        analytics = get_retrieval_analytics(self.db, None)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 4)
+        self.assertEqual(analytics["summary"]["near_threshold"], 2)
+        self.assertEqual(analytics["summary"]["clear_threshold"], 1)
+        self.assertEqual(analytics["summary"]["threshold_below"], 1)
+        self.assertEqual(analytics["rates"]["near_threshold_rate"], 0.5)
+
+    @patch(
+        "app.routes.integration.get_active_runtime_values",
+        return_value={"retrieval_score_threshold": 0.8},
+    )
+    def test_analytics_uses_event_top_score_when_candidate_scores_are_missing(
+        self,
+        _runtime_config,
+    ):
+        payload = self._payload(
+            "event-score-fallback",
+            candidate_count=1,
+            top_rerank_score=0.83,
+            score_threshold=0.8,
+            selected=False,
+            selected_knowledge_id=None,
+            selected_candidate_rank=None,
+            candidates=[
+                {
+                    "knowledge_id": "A-00001",
+                    "rank": 1,
+                    "selected": False,
+                }
+            ],
+        )
+
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=[payload]),
+            self.db,
+            None,
+        )
+
+        analytics = get_retrieval_analytics(self.db, None)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 1)
+        self.assertEqual(analytics["summary"]["near_threshold"], 1)
+        self.assertEqual(analytics["summary"]["clear_threshold"], 0)
+        self.assertEqual(analytics["summary"]["threshold_below"], 0)
+        self.assertEqual(analytics["rates"]["near_threshold_rate"], 1.0)
+
+    def test_analytics_excludes_failed_requests_with_historical_candidates(self):
+        payload = self._payload(
+            "historical-timeout-with-candidate",
+            conversation_id="202608130001",
+            request_status="timeout",
+            candidate_count=1,
+            top_rerank_score=0.43,
+            score_threshold=0.42,
+            selected=False,
+            selected_knowledge_id=None,
+            selected_candidate_rank=None,
+            failure_reason="technical_failure",
+            candidates=[
+                {
+                    "knowledge_id": "A-00001",
+                    "rank": 1,
+                    "final_score": 0.43,
+                    "selected": False,
+                }
+            ],
+        )
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=[payload]),
+            self.db,
+            None,
+        )
+
+        analytics = get_retrieval_analytics(self.db, None)
+        self.assertEqual(analytics["summary"]["total"], 1)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 0)
+        self.assertEqual(analytics["summary"]["near_threshold"], 0)
+        self.assertEqual(analytics["summary"]["clear_threshold"], 0)
+        self.assertEqual(analytics["summary"]["threshold_below"], 0)
+        self.assertEqual(analytics["rates"]["near_threshold_rate"], 0.0)
 
     @patch(
         "app.routes.integration.get_active_runtime_values",

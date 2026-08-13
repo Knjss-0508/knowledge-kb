@@ -801,8 +801,15 @@ GET /integration/retrieval-analytics?page=1&page_size=20&start_at=2026-08-12T16:
 接口先在时间范围内确定每个 `conversation_id` 的最后一个 `request_id`，
 再把该请求的两个候选池完整合并。因此，时间段之后的新提问不会挤掉时间段内
 的历史提问；同一请求的总部标准池和业务沉淀池也不会因上报时间跨过边界而被拆散。
-候选覆盖、阈值通过、采用情况、人工标注、耗时、待澄清总数和分页均按这一
+候选覆盖、临界候选、采用情况、人工标注、耗时、待澄清总数和分页均按这一
 统一口径计算。
+
+其中 `rates.near_threshold_rate` 的分母是状态为 `success` 或 `fallback` 且有
+候选的请求，分子是其中最高分达到当次阈值、但分数余量不足 `0.05` 的请求。
+余量恰好为 `0.05` 时归入明显高于阈值。
+`summary.near_threshold`、`summary.clear_threshold` 和
+`summary.threshold_below` 分别给出临界候选、明显高于阈值和低于阈值的请求数。
+低于阈值通常只会出现在历史数据、阈值变更或异常上报场景。
 
 该接口面向知识库内部运营人员，需要平台账号的 `knowledge:view` 权限，不使用 `X-Integration-Key`。
 
