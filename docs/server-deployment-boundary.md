@@ -8,7 +8,7 @@
 服务器上的本项目根目录：
 
 ```text
-/www/wwwroot/knowledge-kb
+/opt/knowledge-kb
 ```
 
 只允许在上述目录及其子目录中读取、更新和部署。本项目的代码、Compose 配置、后端上传文件和运行日志均应从该目录进入后再操作。
@@ -69,7 +69,7 @@ docker-compose.embedding-cpu.yml
 当前服务器按本地 PostgreSQL、本地媒体目录和 CPU Embedding 的方案运行。普通后端或前端代码更新时，前端会随 `kb-backend` 镜像一起更新，只允许构建和替换后端：
 
 ```bash
-cd /www/wwwroot/knowledge-kb
+cd /opt/knowledge-kb
 git fetch origin
 git pull --ff-only origin master
 
@@ -158,7 +158,7 @@ docker compose -p knowledge-kb \
 更新前必须先检查：
 
 ```bash
-cd /www/wwwroot/knowledge-kb
+cd /opt/knowledge-kb
 git status --short --branch
 docker inspect kb-backend kb-postgres kb-redis kb-embedding-qwen \
   --format '{{.Name}} {{.State.Status}} {{.State.StartedAt}} {{.Image}}'
