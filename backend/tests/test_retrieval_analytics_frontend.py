@@ -107,6 +107,28 @@ class RetrievalAnalyticsFrontendContractTests(unittest.TestCase):
             self.html,
         )
 
+    def test_near_threshold_rate_replaces_threshold_pass_rate(self):
+        self.assertIn("<h3>临界候选占比</h3>", self.html)
+        self.assertIn(
+            "analysis.rates.near_threshold_rate",
+            self.html,
+        )
+        self.assertIn(
+            "临界候选 / 明显高于阈值 / 低于阈值",
+            self.html,
+        )
+        self.assertIn(
+            "analysis.summary.near_threshold",
+            self.html,
+        )
+        self.assertIn(
+            "analysis.summary.clear_threshold",
+            self.html,
+        )
+        self.assertNotIn("阈值通过率", self.html)
+        self.assertNotIn("threshold_pass_rate", self.html)
+        self.assertNotIn("threshold_passed", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()

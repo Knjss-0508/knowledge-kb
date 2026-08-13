@@ -727,7 +727,7 @@
       </div>
       <div class="embedding-grid">
         <div class="embedding-card"><h3>候选覆盖率</h3><div class="embedding-kpi teal">{{formatPercent(analysis.rates.candidate_coverage_rate)}}</div><div class="metric-definition"><strong>请求口径：</strong>{{analysis.summary.candidate_requests}} 个有候选请求 / {{analysis.summary.successful_requests}} 个成功请求；每个请求只计 1 次。</div></div>
-        <div class="embedding-card"><h3>阈值通过率</h3><div class="embedding-kpi">{{formatPercent(analysis.rates.threshold_pass_rate)}}</div><div class="metric-definition"><strong>定义：</strong>有候选请求中，最高分达到该次召回阈值的比例；不代表最终一定采用。</div></div>
+        <div class="embedding-card"><h3>临界候选占比</h3><div class="embedding-kpi">{{formatPercent(analysis.rates.near_threshold_rate)}}</div><div class="metric-definition"><strong>定义：</strong>状态为成功或回退且有候选的请求中，最高分达到当次阈值、但高出不足 0.05 的比例；越高表示越多结果贴近阈值边界，需关注阈值稳定性。</div></div>
         <div class="embedding-card"><h3>首位采用率</h3><div class="embedding-kpi teal">{{formatPercent(analysis.rates.top1_selection_rate)}}</div><div class="metric-definition"><strong>定义：</strong>有候选请求中，最终采用所属候选池第一名的比例，主要反映排序质量。</div></div>
         <div class="embedding-card"><h3>替代候选采用率</h3><div class="embedding-kpi violet">{{formatPercent(analysis.rates.alternative_selection_rate)}}</div><div class="metric-definition"><strong>定义：</strong>未采用所属候选池第一名，但采用该池第二至第五名的比例。</div></div>
         <div class="embedding-card"><h3>真正未采用率</h3><div class="embedding-kpi orange">{{formatPercent(analysis.rates.no_selection_rate)}}</div><div class="metric-definition"><strong>定义：</strong>已经返回候选，但最终没有采用任何候选的比例。</div></div>
@@ -740,7 +740,7 @@
           <div class="embedding-panel-head"><div><h3>召回口径拆分</h3><p>一个请求分别记录服务、阈值和最终采用状态</p></div></div>
           <div class="embedding-panel-body">
             <div class="embedding-info-row"><span>成功请求 / 全部请求</span><b>{{analysis.summary.successful_requests}} / {{analysis.summary.total}}</b></div>
-            <div class="embedding-info-row"><span>有候选请求 / 低于阈值请求</span><b>{{analysis.summary.candidate_requests}} / {{analysis.summary.threshold_below}}</b></div>
+            <div class="embedding-info-row"><span>临界候选 / 明显高于阈值 / 低于阈值</span><b>{{analysis.summary.near_threshold}} / {{analysis.summary.clear_threshold}} / {{analysis.summary.threshold_below}}</b></div>
             <div class="embedding-info-row"><span>首位采用 / 替代采用 / 未采用</span><b>{{analysis.summary.top_selected}} / {{analysis.summary.alternative_selected}} / {{analysis.summary.none_selected}}</b></div>
           </div>
         </div>
@@ -1467,10 +1467,10 @@ Vue.createApp({
         updatedAt: '-'
       },
       analysis: {
-        summary:{total:0, accepted:0, accepted_alternative:0, low_score:0, no_candidates:0, not_selected:0, technical_failure:0, successful_requests:0, candidate_requests:0, candidate_queries:0, threshold_passed:0, threshold_below:0, top_selected:0, alternative_selected:0, none_selected:0, reviewed:0, training_eligible:0},
-        rates:{candidate_coverage_rate:0, threshold_pass_rate:0, any_selection_rate:0, top1_selection_rate:0, alternative_selection_rate:0, no_selection_rate:0, review_coverage_rate:0},
+        summary:{total:0, accepted:0, accepted_alternative:0, low_score:0, no_candidates:0, not_selected:0, technical_failure:0, successful_requests:0, candidate_requests:0, candidate_queries:0, near_threshold:0, clear_threshold:0, threshold_below:0, top_selected:0, alternative_selected:0, none_selected:0, reviewed:0, training_eligible:0},
+        rates:{candidate_coverage_rate:0, near_threshold_rate:0, any_selection_rate:0, top1_selection_rate:0, alternative_selection_rate:0, no_selection_rate:0, review_coverage_rate:0},
         latency:{count:0, average_ms:null, p50_ms:null, p95_ms:null},
-        definitions:{candidate_coverage_rate:'成功请求中至少返回一条候选知识的比例',threshold_pass_rate:'有候选请求中最高分达到当次阈值的比例',top1_selection_rate:'有候选请求中最终采用第一名的比例',alternative_selection_rate:'有候选请求中最终采用第二名及以后候选的比例',no_selection_rate:'有候选请求中最终没有采用任何候选的比例',review_coverage_rate:'已由人工明确原因和正确目标的请求比例'},
+        definitions:{candidate_coverage_rate:'成功请求中至少返回一条候选知识的比例',near_threshold_rate:'状态为成功或回退且有候选的请求中，最高分达到当次阈值、但高出不足 0.05 的比例',top1_selection_rate:'有候选请求中最终采用第一名的比例',alternative_selection_rate:'有候选请求中最终采用第二名及以后候选的比例',no_selection_rate:'有候选请求中最终没有采用任何候选的比例',review_coverage_rate:'已由人工明确原因和正确目标的请求比例'},
         risks:[],
         pagination:{page:1,size:20,appliedPage:1,appliedSize:20,total:0,totalPages:1,jumpPage:''},
         timeFilter:{mode:'today',appliedMode:'today',startDate:'',endDate:'',appliedStartDate:'',appliedEndDate:''},
