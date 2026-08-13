@@ -20,6 +20,8 @@ services:
       TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-0}
     expose:
       - "80"
+    ports:
+      - "127.0.0.1:8080:80"
     volumes:
       - embedding_cpu_model_cache:/data
     healthcheck:

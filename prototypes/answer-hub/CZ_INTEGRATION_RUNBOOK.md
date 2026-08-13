@@ -89,6 +89,11 @@ KB_TIMEOUT_SECONDS=30
 KB_MAX_RETRIES=3
 KB_RETRY_BACKOFF_SECONDS=0.5
 
+EMBEDDING_BASE_URL=http://127.0.0.1:8080/v1
+EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+EMBEDDING_API_KEY=
+EMBEDDING_TIMEOUT_SECONDS=120
+
 MIMO_API_KEY=
 MIMO_BASE_URL=https://api.xiaomimimo.com/v1
 MIMO_MODEL=mimo-v2.5
@@ -125,6 +130,9 @@ DEDUP_STRONG_CONTENT_LEXICAL_SIMILARITY=0.30
 ```
 
 两个系统的集成密钥必须一致，且只能通过环境变量配置。
+Answer Hub与CZ部署在同一台服务器时，`127.0.0.1:8080`指服务器宿主机；
+CZ后端容器自身仍使用`embedding-qwen:80`。8080只能绑定回环地址，不得加入
+公网Nginx代理。
 
 ## 4. 本地部署
 

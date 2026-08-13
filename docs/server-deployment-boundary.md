@@ -31,9 +31,12 @@
 
 ```text
 127.0.0.1:8000 -> 8000/tcp
+127.0.0.1:8080 -> kb-embedding-qwen:80/tcp
 ```
 
-公网访问必须经项目专属 Nginx/宝塔站点反向代理进入。不得把 `8000`、PostgreSQL 或 Redis 直接暴露到公网。
+`8080`只供同机Answer Hub调用Qwen3 Embedding，不加入Nginx代理。
+公网访问必须经项目专属 Nginx/宝塔站点反向代理进入。不得把 `8000`、
+`8080`、PostgreSQL 或 Redis 直接暴露到公网。
 
 知识库当前通过新部署入口 `qa-kb.10.47.193.5.nip.io` 提供页面和 API。
 该域名解析到 `10.47.193.5`，但不能仅根据 DNS 结果判断访问范围；
@@ -87,6 +90,29 @@ docker compose -p knowledge-kb \
 ```
 
 `--no-deps` 是服务器日常更新的必要保护，确保不会重建或重启 PostgreSQL、Redis、Qwen Embedding 和迁移容器。
+
+首次增加或修复Embedding宿主机回环映射时，只允许重建
+`embedding-qwen`服务：
+
+```bash
+cd /opt/knowledge-kb
+
+docker compose -p knowledge-kb \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.embedding-cpu.yml \
+  config --quiet
+
+docker compose -p knowledge-kb \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.embedding-cpu.yml \
+  up -d --force-recreate embedding-qwen
+```
+
+该操作不得携带`--remove-orphans`，不得重建PostgreSQL、Redis或后端。
+完成后必须确认端口为`127.0.0.1:8080->80/tcp`，并分别验证
+`http://127.0.0.1:8080/health`、`/v1/embeddings`和后端`/ready`。
 
 启用任务级本机 GPU 训练接入时，只在项目 `.env` 中设置：
 
