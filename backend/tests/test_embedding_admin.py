@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -162,6 +163,8 @@ class EmbeddingAdminTests(unittest.TestCase):
 
         retrieval_values = dict(base_values)
         retrieval_values["retrieval_score_threshold"] = 0.55
+        retrieval_values["retrieval_headquarters_standard_top_k"] = 2
+        retrieval_values["retrieval_business_accumulation_top_k"] = 4
         retrieval_values["dedup_block_threshold"] = 0.70
         retrieval_values["dedup_review_threshold"] = 0.60
         retrieval_active = create_embedding_config(
@@ -175,6 +178,14 @@ class EmbeddingAdminTests(unittest.TestCase):
             self.user,
         )
         self.assertEqual(retrieval_active["config"]["retrieval_score_threshold"], 0.55)
+        self.assertEqual(
+            retrieval_active["config"]["retrieval_headquarters_standard_top_k"],
+            2,
+        )
+        self.assertEqual(
+            retrieval_active["config"]["retrieval_business_accumulation_top_k"],
+            4,
+        )
         self.assertEqual(retrieval_active["config"]["dedup_block_threshold"], 0.96)
         self.assertEqual(retrieval_active["config"]["dedup_review_threshold"], 0.88)
 
@@ -188,6 +199,132 @@ class EmbeddingAdminTests(unittest.TestCase):
         self.assertEqual(
             activated_dedup["config"]["retrieval_score_threshold"],
             0.55,
+        )
+        self.assertEqual(
+            activated_dedup["config"]["retrieval_headquarters_standard_top_k"],
+            2,
+        )
+        self.assertEqual(
+            activated_dedup["config"]["retrieval_business_accumulation_top_k"],
+            4,
+        )
+
+    def test_retrieval_pool_top_k_defaults_and_bounds(self):
+        values = EmbeddingRuntimeConfigValues()
+        self.assertEqual(values.retrieval_headquarters_standard_top_k, 5)
+        self.assertEqual(values.retrieval_business_accumulation_top_k, 5)
+
+        for field in (
+            "retrieval_headquarters_standard_top_k",
+            "retrieval_business_accumulation_top_k",
+        ):
+            valid_values = EmbeddingRuntimeConfigValues(
+                **{field: 10},
+            )
+            self.assertEqual(getattr(valid_values, field), 10)
+            for invalid_value in (0, 11, 1.5):
+                with self.subTest(field=field, value=invalid_value):
+                    with self.assertRaises(ValidationError):
+                        EmbeddingRuntimeConfigValues(
+                            **{field: invalid_value},
+                        )
+
+    def test_legacy_retrieval_scope_preserves_active_pool_top_k(self):
+        active_values = EmbeddingRuntimeConfigValues(
+            retrieval_headquarters_standard_top_k=2,
+            retrieval_business_accumulation_top_k=4,
+        ).model_dump()
+        self.db.add(
+            EmbeddingRuntimeConfig(
+                id="erc-active",
+                version=1,
+                status="active",
+                config=active_values,
+                evaluation_metrics={},
+                change_reason="分池数量已生效",
+                created_by="admin",
+                activated_by="admin",
+                activated_at=datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+
+        legacy_values = {
+            key: value
+            for key, value in active_values.items()
+            if key
+            not in {
+                "retrieval_headquarters_standard_top_k",
+                "retrieval_business_accumulation_top_k",
+            }
+        }
+        legacy_values["retrieval_score_threshold"] = 0.55
+        legacy_body = EmbeddingRuntimeConfigCreate.model_validate(
+            {
+                "config": legacy_values,
+                "change_reason": "旧前端只调整检索阈值",
+                "evaluation_metrics": {"config_scope": "retrieval_thresholds"},
+                "activate": False,
+            }
+        )
+        self.assertNotIn(
+            "retrieval_headquarters_standard_top_k",
+            legacy_body.config.model_fields_set,
+        )
+        self.assertNotIn(
+            "retrieval_business_accumulation_top_k",
+            legacy_body.config.model_fields_set,
+        )
+
+        legacy_draft = create_embedding_config(
+            legacy_body,
+            self.db,
+            self.user,
+        )
+        self.assertEqual(
+            legacy_draft["config"]["retrieval_headquarters_standard_top_k"],
+            2,
+        )
+        self.assertEqual(
+            legacy_draft["config"]["retrieval_business_accumulation_top_k"],
+            4,
+        )
+        self.assertEqual(
+            legacy_draft["config"]["retrieval_score_threshold"],
+            0.55,
+        )
+
+        historical_values = dict(legacy_values)
+        historical_values["retrieval_score_threshold"] = 0.60
+        self.db.add(
+            EmbeddingRuntimeConfig(
+                id="erc-legacy-draft",
+                version=3,
+                status="draft",
+                config=historical_values,
+                evaluation_metrics={"config_scope": "retrieval_thresholds"},
+                change_reason="历史阈值草稿",
+                created_by="admin",
+            )
+        )
+        self.db.commit()
+
+        activated = activate_embedding_config(
+            "erc-legacy-draft",
+            self.db,
+            self.user,
+        )
+        self.assertEqual(
+            activated["config"]["retrieval_headquarters_standard_top_k"],
+            2,
+        )
+        self.assertEqual(
+            activated["config"]["retrieval_business_accumulation_top_k"],
+            4,
+        )
+        self.assertEqual(
+            activated["config"]["retrieval_score_threshold"],
+            0.60,
         )
 
     def test_task_runner_base_url_accepts_external_http_or_https(self):

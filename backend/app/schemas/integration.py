@@ -410,7 +410,10 @@ class IntegrationStandardSearchRequest(BaseModel):
         5,
         ge=1,
         le=20,
-        description="每个知识来源的候选上限，服务端最多取 5 条。",
+        description=(
+            "每个知识来源的兼容上限，实际还受中台对应知识池 "
+            "1～10 条返回数量配置约束。"
+        ),
     )
 
     @field_validator("normalized_question")

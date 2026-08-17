@@ -519,9 +519,9 @@ Content-Type: application/json
 ```
 
 该接口与“答疑智能推荐助手 0.2.2”的 `external-standard-provider` 契约兼容。
-服务端只检索 `published` 已发布知识，并分别检索“总部标准”和“业务沉淀”：
-每个知识来源最多返回 5 条，合并后最多 10 条。待审核、草稿和已废弃知识不会
-出现在响应中。
+服务端只检索 `published` 已发布知识，并分别检索“总部标准”和“业务沉淀”。
+每个知识池的返回数量由中台独立配置，范围 1～10、当前默认均为 5；合并后最多
+20 条。待审核、草稿和已废弃知识不会出现在响应中。
 
 请求示例：
 
@@ -557,7 +557,7 @@ Content-Type: application/json
 | `productType` / `model` | 否 | 插件提供的商品类目和机型上下文 |
 | `orderInfo` | 否 | 插件订单上下文，当前保留 `category` 和 `model` |
 | `partTerms` / `phenomenonTerms` / `categoryIntent` | 否 | 插件已解析的检索上下文 |
-| `limit` | 否 | 每个知识来源的候选上限；兼容 1～20 输入，服务端每组实际最多返回 5 条 |
+| `limit` | 否 | 调用方对每个知识来源设置的兼容上限；允许 1～20，实际返回量还受中台为总部标准、业务沉淀分别设置的 1～10 条上限约束 |
 
 当前版本只使用 `normalizedQuestion` 生成查询向量，并使用 `businessType` 对已发布
 知识执行硬过滤；同一个查询向量会分别在 `headquarters_standard` 和
@@ -612,11 +612,14 @@ Header 与正文不一致时返回 `REQUEST_IDENTITY_MISMATCH`，Embedding 服�
 返回 `EMBEDDING_SERVICE_UNAVAILABLE`。缺少字段或字段格式不合法的请求会在进入
 业务处理前由参数校验拒绝，因此不承诺回显不完整的身份。
 
-响应按“总部标准 TOP5、业务沉淀 TOP5”的组顺序合并，每组内部按相关性从高到低。
+响应按“总部标准、业务沉淀”的组顺序合并，每组内部按相关性从高到低。
+两个知识池分别使用中台当前激活的 TOP 数量配置，默认均为 5，最高可设置为 10；
+调用方传入的 `limit` 只会进一步收紧，不会突破中台配置。
 每条候选都会返回实际所属的 `knowledgeOrigin` 和 `businessType`。知识正文会转换为纯文本返回；
 图片和视频地址不会下发，但其 `alt`、`caption`
 等可读说明会保留。无命中时返回 HTTP 200、`status: "no_match"` 和空
-`candidates`。某个知识来源不足 5 条时只返回实际命中数，不会用另一来源补位或
+`candidates`。某个知识来源达到阈值的知识不足其配置数量时只返回实际命中数，
+不会用另一来源补位或
 复制结果；当前接口不会跨业务类型扩大检索。服务端会在适用类目、品牌和机型过滤后，
 使用当前激活的知识检索阈值过滤低分候选，并通过 `scoreThreshold` 返回本次生效值。
 Embedding 服务不可用时返回 HTTP 503。
@@ -771,8 +774,8 @@ Content-Type: application/json
 和幂等身份校验，不再作为召回事件收归的分组条件。
 分析和风险复核先按 `conversation_id` 选出整个会话最后一个 `request_id`，
 再把该请求下最新的 `reply`、`standard` 底层事件合并为一个逻辑请求。
-合并后的候选快照通过 `candidate_origins` 分别保留并展示“总部标准 TOP5”
-和“业务沉淀 TOP5”，统计和分页都只计一次请求。训练导入只使用这个最终
+合并后的候选快照通过 `candidate_origins` 分别保留并展示总部标准与业务沉淀
+两个知识池及各自实际候选数量，统计和分页都只计一次请求。训练导入只使用这个最终
 逻辑请求的代表事件。新接口缺少 `source_kind`、传入 `combined` 或其他非法
 值时会拒绝；`combined` 仅用于保留历史数据库事件和分析接口的合并展示。
 
@@ -870,6 +873,6 @@ curl -X POST "$KB_BASE_URL/api/v1/integration/standard-search" \
     "knowledgeOrigin": "headquarters_standard",
     "businessType": "self_operated",
     "productType": "手机",
-    "limit": 5
+    "limit": 10
   }'
 ```

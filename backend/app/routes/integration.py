@@ -72,21 +72,49 @@ router = APIRouter(prefix="/integration", tags=["自动化接入"])
 logger = logging.getLogger(__name__)
 
 TAXONOMY_VERSION = "automation-v5"
-STANDARD_SEARCH_MAX_RESULTS = 5
+STANDARD_SEARCH_DEFAULT_RESULTS = 5
+STANDARD_SEARCH_MAX_RESULTS = 10
 RETRIEVAL_NEAR_THRESHOLD_MARGIN = 0.05
 STANDARD_SEARCH_KNOWLEDGE_ORIGINS = (
     "headquarters_standard",
     "business_accumulation",
 )
+STANDARD_SEARCH_TOP_K_CONFIG_KEYS = {
+    "headquarters_standard": "retrieval_headquarters_standard_top_k",
+    "business_accumulation": "retrieval_business_accumulation_top_k",
+}
 
 
-def _active_retrieval_score_threshold(db: Session) -> float:
-    runtime_config = get_active_runtime_values(db)
+def _retrieval_score_threshold(runtime_config: dict[str, Any]) -> float:
     try:
         score_threshold = float(runtime_config["retrieval_score_threshold"])
     except (KeyError, TypeError, ValueError):
         score_threshold = 0.42
     return max(0.0, min(1.0, score_threshold))
+
+
+def _active_retrieval_score_threshold(db: Session) -> float:
+    return _retrieval_score_threshold(get_active_runtime_values(db))
+
+
+def _standard_search_top_k_by_origin(
+    runtime_config: dict[str, Any],
+    *,
+    request_limit: int,
+) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS:
+        config_key = STANDARD_SEARCH_TOP_K_CONFIG_KEYS[knowledge_origin]
+        try:
+            configured_top_k = int(runtime_config[config_key])
+        except (KeyError, TypeError, ValueError):
+            configured_top_k = STANDARD_SEARCH_DEFAULT_RESULTS
+        configured_top_k = max(
+            1,
+            min(configured_top_k, STANDARD_SEARCH_MAX_RESULTS),
+        )
+        result[knowledge_origin] = min(request_limit, configured_top_k)
+    return result
 
 
 def _to_dedup_response(decision: DedupDecision) -> IntegrationDedupResponse:
@@ -1031,8 +1059,12 @@ def search_standard_provider_knowledge(
                 ),
             },
         )
-    top_k_per_origin = min(body.limit, STANDARD_SEARCH_MAX_RESULTS)
-    score_threshold = _active_retrieval_score_threshold(db)
+    runtime_config = get_active_runtime_values(db)
+    top_k_by_origin = _standard_search_top_k_by_origin(
+        runtime_config,
+        request_limit=body.limit,
+    )
+    score_threshold = _retrieval_score_threshold(runtime_config)
     inferred_business_type = body.business_type
     if not inferred_business_type:
         inferred_business_type = (
@@ -1083,7 +1115,7 @@ def search_standard_provider_knowledge(
                 applicable_category_keys=applicability_scope["categories"],
                 applicable_brand_keys=applicability_scope["brands"],
                 applicable_model_keys=applicability_scope["models"],
-                top_k=top_k_per_origin,
+                top_k=top_k_by_origin[knowledge_origin],
             )
             for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS
         }
@@ -1115,7 +1147,7 @@ def search_standard_provider_knowledge(
                     item.status == KnowledgeStatus.PUBLISHED
                     and float(score) >= score_threshold
                 )
-            ][:top_k_per_origin]
+            ][:top_k_by_origin[knowledge_origin]]
         )
     candidates = [
         _to_standard_search_candidate(item, score)
