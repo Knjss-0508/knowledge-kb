@@ -60,6 +60,7 @@
     .status-cell .tg{white-space:nowrap}
     .import-task-panel{margin:14px 0;padding:12px 14px;border:1px solid #d9ebe6;border-radius:7px;background:#f7fbfa}
     .import-task-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;color:#344054;font-size:13px;font-weight:700}
+    .import-task-notice{margin-bottom:8px;color:#067a6a;font-size:12px;line-height:1.5}
     .import-task-list{display:grid;gap:7px}
     .import-task-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 10px;border:1px solid #e5e6eb;border-radius:6px;background:#fff;font-size:12px}
     .import-task-file{min-width:0;flex:1;color:#344054;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -413,9 +414,15 @@
       <button class="btn bd" v-if="can('knowledge:view')" @click="exportKnowledgeExcel">导出知识</button>
       <button class="btn bp" v-if="can('knowledge:create')" @click="openNew">+ 新建知识</button>
     </div>
-    <div class="import-task-panel" v-if="can('knowledge:create') && (visibleImportTasks().length || showImportHistory)">
-      <div class="import-task-head"><span>{{showImportHistory?'导入记录（最近 100 条）':'正在处理的导入任务'}}</span><button class="btn bd bsm" @click="loadImportTasks">刷新</button></div>
+    <div class="import-task-panel" v-if="can('knowledge:create') && (importing || visibleImportTasks().length || showImportHistory)">
+      <div class="import-task-head"><span>{{showImportHistory?'导入记录（最近 100 条）':'当前/最近导入任务'}}</span><button class="btn bd bsm" @click="loadImportTasks">刷新</button></div>
+      <div class="import-task-notice" v-if="importTaskNotice">{{importTaskNotice}}</div>
       <div class="import-task-list">
+        <div class="import-task-row" v-if="importing && !importTaskNotice">
+          <span class="tg tg-l">上传中</span>
+          <span class="import-task-file" :title="importUploadName">{{importUploadName || '正在上传文件'}}</span>
+          <span class="import-task-meta">正在上传并创建后台任务...</span>
+        </div>
         <div class="import-task-row" v-for="task in visibleImportTasks()" :key="task.id">
           <span class="tg" :class="importTaskStatusClass(task.status)">{{importTaskStatusLabel(task.status)}}</span>
           <span class="import-task-file" :title="task.original_filename">{{task.original_filename}}</span>
@@ -427,7 +434,7 @@
             <button class="btn bd bsm" v-if="isImportTaskTerminal(task)" @click="openImportTaskDetail(task)">查看</button>
           </span>
         </div>
-        <div class="import-task-empty" v-if="!visibleImportTasks().length">{{showImportHistory?'暂无导入记录':'暂无正在处理的导入任务'}}</div>
+        <div class="import-task-empty" v-if="!importing && !visibleImportTasks().length">{{showImportHistory?'暂无导入记录':'暂无当前导入任务'}}</div>
       </div>
     </div>
     <div class="filter-tabs">
@@ -1567,9 +1574,13 @@ Vue.createApp({
       saving: false,
       saveOperationId: 0,
       importing: false,
+      importUploadName: '',
       importTasks: [],
       importTaskPoller: null,
+      importTaskListRequestId: 0,
       showImportHistory: false,
+      currentImportTaskId: '',
+      importTaskNotice: '',
       importTaskCancellingId: '',
       importTaskDetailRequestId: 0,
       importTaskDetail: {open:false, loading:false, error:'', task:null},
@@ -1936,6 +1947,10 @@ Vue.createApp({
       var input = event.target;
       var file = input.files && input.files[0];
       if (!file) return;
+      if (self.importing) {
+        input.value = '';
+        return;
+      }
       if (!/\.xlsx$/i.test(file.name)) {
         alert('仅支持 .xlsx 文件。');
         input.value = '';
@@ -1945,6 +1960,8 @@ Vue.createApp({
       var form = new FormData();
       form.append('file', file);
       self.importing = true;
+      self.importUploadName = file.name;
+      self.importTaskNotice = '';
       fetch(API + '/knowledge/import/excel', {
         method:'POST',
         headers:self.authHeaders(),
@@ -1957,12 +1974,16 @@ Vue.createApp({
           });
         })
         .then(function(data) {
-          alert('文件已上传，服务器正在后台处理。可关闭当前页面，稍后可在“导入记录”中查看结果。');
-          self.loadImportTasks();
+          self.currentImportTaskId = String(data && data.id || '');
+          self.upsertImportTask(data);
+          self.importTaskNotice = '导入任务已创建，处理进度会自动更新。';
+          self.startImportTaskPolling();
+          return self.loadImportTasks();
         })
         .catch(function(error) { alert(error.message); })
         .finally(function() {
           self.importing = false;
+          self.importUploadName = '';
           input.value = '';
         });
     },
@@ -1995,7 +2016,20 @@ Vue.createApp({
     visibleImportTasks: function() {
       var self = this;
       if (self.showImportHistory) return self.importTasks;
-      return self.importTasks.filter(function(task) { return self.isImportTaskActive(task); });
+      var visible = self.importTasks.filter(function(task) {
+        return self.isImportTaskActive(task);
+      });
+      var currentTask = self.importTasks.filter(function(task) {
+        return !!self.currentImportTaskId && task.id === self.currentImportTaskId;
+      })[0];
+      if (currentTask && visible.indexOf(currentTask) === -1) visible.unshift(currentTask);
+      if (!visible.length && self.importTasks.length) return [self.importTasks[0]];
+      return visible;
+    },
+    upsertImportTask: function(task) {
+      if (!task || !task.id) return;
+      var nextTasks = this.importTasks.filter(function(item) { return item.id !== task.id; });
+      this.importTasks = [task].concat(nextTasks);
     },
     toggleImportHistory: function() {
       this.showImportHistory = !this.showImportHistory;
@@ -2124,6 +2158,7 @@ Vue.createApp({
     loadImportTasks: function() {
       var self = this;
       if (!self.token || !self.can('knowledge:create')) return Promise.resolve();
+      var requestId = ++self.importTaskListRequestId;
       return fetch(API + '/knowledge/import/tasks?limit=100', {headers:self.authHeaders()})
         .then(function(response) {
           return response.json().then(function(data) {
@@ -2132,6 +2167,7 @@ Vue.createApp({
           });
         })
         .then(function(data) {
+          if (requestId !== self.importTaskListRequestId) return;
           var hadActiveTasks = self.hasActiveImportTasks();
           self.importTasks = Array.isArray(data.tasks) ? data.tasks : [];
           if (self.hasActiveImportTasks()) self.startImportTaskPolling();
@@ -2142,6 +2178,7 @@ Vue.createApp({
           }
         })
         .catch(function(error) {
+          if (requestId !== self.importTaskListRequestId) return;
           console.warn('load import tasks failed:', error);
         });
     },
