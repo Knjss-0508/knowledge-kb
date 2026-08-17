@@ -5822,6 +5822,61 @@ def test_clustering_rule_lookup_is_cached_per_stable_row(
     assert match_calls == 2
 
 
+def test_direct_reconcile_candidate_scan_caches_fingerprint_per_row(
+    monkeypatch,
+) -> None:
+    real_build_fingerprint = workflow_module.build_clustering_fingerprint
+    fingerprint_calls = 0
+
+    def counted_build_fingerprint(**kwargs):
+        nonlocal fingerprint_calls
+        fingerprint_calls += 1
+        return real_build_fingerprint(**kwargs)
+
+    monkeypatch.setattr(
+        workflow_module,
+        "build_clustering_fingerprint",
+        counted_build_fingerprint,
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "_direct_reconcile_similarity",
+        lambda _left, _right: 0.0,
+    )
+
+    groups = [
+        (
+            ("direct_mimo", "手机", f"candidate-{index}"),
+            [
+                {
+                    "数据ID": f"CANDIDATE-{index:02d}",
+                    "工单ID": f"CANDIDATE-{index:02d}",
+                    "_原子知识ID": f"CANDIDATE-{index:02d}-U01",
+                    "产品类型": "手机",
+                    "模型主题一级分类": "流程操作",
+                    "问题意图": "信息查询",
+                    "对象/部位": "自定义节点",
+                    "异常现象": "状态待确认",
+                    "核心问题": f"自定义节点{index:02d}状态如何核验",
+                    "_聚类裁决提供方": "mimo-direct",
+                }
+            ],
+        )
+        for index in range(12)
+    ]
+    meta: dict[str, object] = {}
+    reviewer = SimpleNamespace(config=SimpleNamespace(model="offline-test"))
+
+    reconciled = workflow_module._reconcile_direct_topic_groups(
+        groups,
+        reviewer,
+        meta,
+    )
+
+    assert len(reconciled) == len(groups)
+    assert fingerprint_calls == len(groups)
+
+
 def test_direct_mimo_review_request_can_rejoin_compatible_family() -> None:
     class ReviewRequestMimo:
         config = SimpleNamespace(model="mimo-review-request-test")
