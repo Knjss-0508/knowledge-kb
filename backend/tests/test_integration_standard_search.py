@@ -212,6 +212,159 @@ class IntegrationStandardSearchTests(unittest.TestCase):
 
     @patch(
         "app.routes.integration.get_active_runtime_values",
+        return_value={
+            "retrieval_score_threshold": 0.42,
+            "retrieval_headquarters_standard_top_k": 2,
+            "retrieval_business_accumulation_top_k": 4,
+        },
+    )
+    @patch("app.routes.integration.search_embeddings")
+    def test_uses_separate_pool_top_k_with_request_limit(
+        self,
+        search,
+        _runtime_config,
+    ):
+        def ranked_for_origin(*_args, **kwargs):
+            origin = kwargs["knowledge_origin"]
+            start = 1 if origin == "headquarters_standard" else 101
+            return [
+                (
+                    _knowledge(index, knowledge_origin=origin),
+                    0.99 - offset * 0.01,
+                )
+                for offset, index in enumerate(range(start, start + 6))
+            ]
+
+        search.side_effect = ranked_for_origin
+        body = IntegrationStandardSearchRequest.model_validate(
+            _identity_payload(
+                normalizedQuestion="屏幕漏光",
+                limit=3,
+            )
+        )
+
+        response = _call_search(body)
+
+        self.assertEqual(
+            [call.kwargs["top_k"] for call in search.call_args_list],
+            [2, 3],
+        )
+        self.assertEqual(
+            [item.id for item in response.candidates],
+            [
+                "A-00001",
+                "A-00002",
+                "A-00101",
+                "A-00102",
+                "A-00103",
+            ],
+        )
+
+    @patch(
+        "app.routes.integration.get_active_runtime_values",
+        return_value={
+            "retrieval_score_threshold": 0.42,
+            "retrieval_headquarters_standard_top_k": 10,
+            "retrieval_business_accumulation_top_k": 8,
+        },
+    )
+    @patch("app.routes.integration.search_embeddings")
+    def test_configured_top_ten_is_used_when_request_limit_allows_it(
+        self,
+        search,
+        _runtime_config,
+    ):
+        def ranked_for_origin(*_args, **kwargs):
+            origin = kwargs["knowledge_origin"]
+            start = 1 if origin == "headquarters_standard" else 101
+            return [
+                (
+                    _knowledge(index, knowledge_origin=origin),
+                    0.99 - offset * 0.01,
+                )
+                for offset, index in enumerate(range(start, start + 12))
+            ]
+
+        search.side_effect = ranked_for_origin
+        body = IntegrationStandardSearchRequest.model_validate(
+            _identity_payload(
+                normalizedQuestion="屏幕漏光",
+                limit=10,
+            )
+        )
+
+        response = _call_search(body)
+
+        self.assertEqual(
+            [call.kwargs["top_k"] for call in search.call_args_list],
+            [10, 8],
+        )
+        self.assertEqual(len(response.candidates), 18)
+        self.assertEqual(
+            [item.knowledge_origin for item in response.candidates],
+            ["headquarters_standard"] * 10
+            + ["business_accumulation"] * 8,
+        )
+
+    @patch(
+        "app.routes.integration.get_active_runtime_values",
+        return_value={
+            "retrieval_score_threshold": 0.90,
+            "retrieval_headquarters_standard_top_k": 4,
+            "retrieval_business_accumulation_top_k": 2,
+        },
+    )
+    @patch("app.routes.integration.search_embeddings")
+    def test_pool_shortfall_is_not_filled_from_the_other_pool(
+        self,
+        search,
+        _runtime_config,
+    ):
+        search.side_effect = [
+            [
+                (
+                    _knowledge(
+                        1,
+                        knowledge_origin="headquarters_standard",
+                    ),
+                    0.95,
+                ),
+                (
+                    _knowledge(
+                        2,
+                        knowledge_origin="headquarters_standard",
+                    ),
+                    0.89,
+                ),
+            ],
+            [
+                (
+                    _knowledge(
+                        index,
+                        knowledge_origin="business_accumulation",
+                    ),
+                    0.99 - offset * 0.01,
+                )
+                for offset, index in enumerate(range(101, 105))
+            ],
+        ]
+        body = IntegrationStandardSearchRequest.model_validate(
+            _identity_payload(normalizedQuestion="屏幕漏光")
+        )
+
+        response = _call_search(body)
+
+        self.assertEqual(
+            [call.kwargs["top_k"] for call in search.call_args_list],
+            [4, 2],
+        )
+        self.assertEqual(
+            [item.id for item in response.candidates],
+            ["A-00001", "A-00101", "A-00102"],
+        )
+
+    @patch(
+        "app.routes.integration.get_active_runtime_values",
         return_value={"retrieval_score_threshold": 0.90},
     )
     @patch("app.routes.integration.search_embeddings")

@@ -73,6 +73,8 @@ _RUNTIME_CONFIG_SCOPE_KEYS = {
     },
     "retrieval_thresholds": {
         "retrieval_score_threshold",
+        "retrieval_headquarters_standard_top_k",
+        "retrieval_business_accumulation_top_k",
     },
 }
 
@@ -96,7 +98,8 @@ def _merge_scoped_runtime_config(
         return EmbeddingRuntimeConfigValues(**requested_values).model_dump()
     merged = dict(active_values)
     for key in _RUNTIME_CONFIG_SCOPE_KEYS[scope]:
-        merged[key] = requested_values[key]
+        if key in requested_values:
+            merged[key] = requested_values[key]
     return EmbeddingRuntimeConfigValues(**merged).model_dump()
 
 
@@ -499,7 +502,7 @@ def create_embedding_config(
     config_scope = _runtime_config_scope(body.evaluation_metrics)
     config_values = _merge_scoped_runtime_config(
         active_values,
-        body.config.model_dump(),
+        body.config.model_dump(exclude_unset=bool(config_scope)),
         config_scope,
     )
     record = EmbeddingRuntimeConfig(
