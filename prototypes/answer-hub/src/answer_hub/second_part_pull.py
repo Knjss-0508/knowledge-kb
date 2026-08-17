@@ -347,11 +347,20 @@ def _mapping_value(item: Any, source_path: Any) -> Any:
 def _map_records(
     profile: SecondPartPullProfile,
     items: list[Any],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
+    rejected_records: list[dict[str, Any]] = []
     for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
-            raise SecondPartPullError("第二部分接口 items 必须由 JSON 对象组成")
+            rejected_records.append(
+                {
+                    "source_index": index,
+                    "source_record_id": "",
+                    "missing_required_fields": [],
+                    "reason": "record_not_object",
+                }
+            )
+            continue
         row = {
             _text(target): _normalize_cell(
                 _mapping_value(item, source_path)
@@ -372,15 +381,29 @@ def _map_records(
             if row.get(field) in (None, "")
         ]
         if missing_required_fields:
-            raise SecondPartPullError(
-                "第二部分字段映射后缺少必填字段"
-                f"（第 {index} 条）："
-                + "、".join(missing_required_fields)
+            rejected_records.append(
+                {
+                    "source_index": index,
+                    "source_record_id": _text(
+                        row.get("工单ID") or item.get("id")
+                    ),
+                    "missing_required_fields": missing_required_fields,
+                    "reason": "missing_required_fields",
+                }
             )
+            continue
         if not any(value not in (None, "") for value in row.values()):
-            raise SecondPartPullError("第二部分字段映射后产生了空记录")
+            rejected_records.append(
+                {
+                    "source_index": index,
+                    "source_record_id": _text(item.get("id")),
+                    "missing_required_fields": [],
+                    "reason": "empty_mapped_record",
+                }
+            )
+            continue
         rows.append(row)
-    return rows
+    return rows, rejected_records
 
 
 def _workbook_bytes(
@@ -469,6 +492,38 @@ def _safe_filename_fragment(value: Any) -> str:
         _text(value),
     ).strip("-._")
     return fragment[:64] or "second-part"
+
+
+def _write_rejection_report(
+    output_root: str | Path,
+    profile: SecondPartPullProfile,
+    cursor: str,
+    next_cursor: str,
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    report_dir = Path(output_root) / "second-part-pull-rejections"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report = {
+        "profile": profile.name,
+        "source_cursor": cursor,
+        "source_next_cursor": next_cursor,
+        "records": records,
+    }
+    encoded = json.dumps(
+        report,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    path = report_dir / (
+        f"{_safe_filename_fragment(profile.name)}-"
+        f"{sha256(encoded).hexdigest()}.json"
+    )
+    path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return {"path": str(path), "records": len(records)}
 
 
 def _load_state(
@@ -560,6 +615,8 @@ def pull_second_part_to_queue(
         "fetched_records": 0,
         "queued_jobs": 0,
         "reused_jobs": 0,
+        "rejected_records": 0,
+        "rejection_reports": [],
         "jobs": [],
     }
 
@@ -610,7 +667,22 @@ def pull_second_part_to_queue(
         summary["fetched_records"] += len(items)
 
         if items:
-            rows = _map_records(profile, items)
+            rows, rejected_records = _map_records(profile, items)
+            if rejected_records:
+                summary["rejected_records"] += len(rejected_records)
+                summary["rejection_reports"].append(
+                    _write_rejection_report(
+                        output_root,
+                        profile,
+                        cursor,
+                        next_cursor,
+                        rejected_records,
+                    )
+                )
+        else:
+            rows = []
+
+        if rows:
             batch_key = _batch_key(
                 profile,
                 cursor,
@@ -687,4 +759,6 @@ def pull_second_part_to_queue(
         summary["status"] = "queued"
     elif summary["reused_jobs"]:
         summary["status"] = "reused"
+    elif summary["rejected_records"]:
+        summary["status"] = "rejected"
     return summary

@@ -247,6 +247,37 @@ def _candidate_queue_state(
     return payload, selection, review_metadata, review_status
 
 
+def _refresh_unreviewed_candidate(
+    existing: IntegrationIngestion,
+    candidate: IntegrationCandidate,
+    *,
+    payload: dict[str, Any],
+    selection: dict[str, Any],
+    review_metadata: dict[str, Any],
+    review_status: str,
+) -> None:
+    if existing.knowledge_id and existing.review_status is None:
+        existing.candidate_payload = payload
+        existing.review_metadata = review_metadata
+        existing.review_status = "submitted"
+        existing.submitted_at = existing.submitted_at or existing.created_at
+    elif existing.reviewed_at is None:
+        existing.event_id = candidate.event_id
+        existing.source_system = candidate.source.system
+        existing.source_conversation_id = candidate.source.conversation_id
+        existing.source_conversation_url = candidate.source.conversation_url
+        existing.source_message_ids = candidate.source.message_ids
+        existing.redaction_status = candidate.source.redaction_status
+        existing.processing_metadata = candidate.processing.model_dump(mode="json")
+        existing.selection_metadata = selection
+        existing.candidate_payload = payload
+        existing.review_metadata = review_metadata
+        existing.review_status = review_status
+        existing.status = f"candidate_{review_status}"
+        existing.error_code = None
+        existing.error_message = None
+
+
 def _deduplication_match_keys(matches) -> list[str]:
     return sorted(
         f"{match.knowledge_id}:{match.match_type}"
@@ -1769,37 +1800,29 @@ def queue_knowledge_review_candidates(
 ):
     results: list[IntegrationCandidateQueueResult] = []
     queued = ready = rejected = reused = 0
+    seen_ingestions: dict[str, IntegrationIngestion] = {}
 
     for candidate in body.items:
         payload, selection, review_metadata, review_status = _candidate_queue_state(
             candidate
         )
-        existing = (
-            db.query(IntegrationIngestion)
-            .filter(IntegrationIngestion.idempotency_key == candidate.idempotency_key)
-            .first()
-        )
+        existing = seen_ingestions.get(candidate.idempotency_key)
+        if existing is None:
+            existing = (
+                db.query(IntegrationIngestion)
+                .filter(IntegrationIngestion.idempotency_key == candidate.idempotency_key)
+                .first()
+            )
         if existing:
-            if existing.knowledge_id and existing.review_status is None:
-                existing.candidate_payload = payload
-                existing.review_metadata = review_metadata
-                existing.review_status = "submitted"
-                existing.submitted_at = existing.submitted_at or existing.created_at
-            elif existing.reviewed_at is None:
-                existing.event_id = candidate.event_id
-                existing.source_system = candidate.source.system
-                existing.source_conversation_id = candidate.source.conversation_id
-                existing.source_conversation_url = candidate.source.conversation_url
-                existing.source_message_ids = candidate.source.message_ids
-                existing.redaction_status = candidate.source.redaction_status
-                existing.processing_metadata = candidate.processing.model_dump(mode="json")
-                existing.selection_metadata = selection
-                existing.candidate_payload = payload
-                existing.review_metadata = review_metadata
-                existing.review_status = review_status
-                existing.status = f"candidate_{review_status}"
-                existing.error_code = None
-                existing.error_message = None
+            _refresh_unreviewed_candidate(
+                existing,
+                candidate,
+                payload=payload,
+                selection=selection,
+                review_metadata=review_metadata,
+                review_status=review_status,
+            )
+            seen_ingestions[candidate.idempotency_key] = existing
             reused += 1
             results.append(
                 IntegrationCandidateQueueResult(
@@ -1831,7 +1854,42 @@ def queue_knowledge_review_candidates(
             review_status=review_status,
             status=f"candidate_{review_status}",
         )
-        db.add(ingestion)
+        try:
+            with db.begin_nested():
+                db.add(ingestion)
+                db.flush()
+        except IntegrityError:
+            existing = (
+                db.query(IntegrationIngestion)
+                .filter(IntegrationIngestion.idempotency_key == candidate.idempotency_key)
+                .first()
+            )
+            if existing is None:
+                raise
+            _refresh_unreviewed_candidate(
+                existing,
+                candidate,
+                payload=payload,
+                selection=selection,
+                review_metadata=review_metadata,
+                review_status=review_status,
+            )
+            seen_ingestions[candidate.idempotency_key] = existing
+            reused += 1
+            results.append(
+                IntegrationCandidateQueueResult(
+                    event_id=candidate.event_id,
+                    idempotency_key=candidate.idempotency_key,
+                    status="reused",
+                    ingestion_id=existing.id,
+                    review_status=(
+                        existing.review_status
+                        or ("submitted" if existing.knowledge_id else "pending")
+                    ),
+                )
+            )
+            continue
+        seen_ingestions[candidate.idempotency_key] = ingestion
         if review_status == "ready":
             ready += 1
             result_status = "ready"

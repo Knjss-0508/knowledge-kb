@@ -255,16 +255,78 @@ def test_pull_rejects_records_missing_profile_required_fields(
         }
     )
 
-    with pytest.raises(SecondPartPullError, match="缺少必填字段.*产品类型"):
-        pull_second_part_to_queue(
-            profile,
-            queue_root=tmp_path / "queue",
-            output_root=tmp_path / "runs",
-            state_path=tmp_path / "pull-state.json",
-            fetcher=fetcher,
-        )
+    summary = pull_second_part_to_queue(
+        profile,
+        queue_root=tmp_path / "queue",
+        output_root=tmp_path / "runs",
+        state_path=tmp_path / "pull-state.json",
+        fetcher=fetcher,
+    )
 
+    assert summary["status"] == "rejected"
+    assert summary["rejected_records"] == 1
+    assert summary["queued_jobs"] == 0
     assert not list((tmp_path / "queue" / "pending").glob("*.xlsx"))
+    report_path = Path(summary["rejection_reports"][0]["path"])
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["records"] == [
+        {
+            "source_index": 1,
+            "source_record_id": "WO-MISSING-001",
+            "missing_required_fields": ["产品类型"],
+            "reason": "missing_required_fields",
+        }
+    ]
+
+
+def test_pull_queues_valid_records_and_reports_invalid_ones(
+    tmp_path: Path,
+) -> None:
+    profile = _write_profile(tmp_path / "profile.json")
+    payload = json.loads(profile.read_text(encoding="utf-8"))
+    payload["required_fields"] = ["工单ID", "聊天内容", "产品类型"]
+    profile.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    fetcher = FakeFetcher(
+        {
+            "": {
+                "data": {
+                    "items": [
+                        {
+                            "work_order_id": "WO-MISSING-002",
+                            "conversation": "手机无法充电怎么处理？",
+                            "product_type": "",
+                        },
+                        {
+                            "work_order_id": "WO-VALID-001",
+                            "conversation": "平板无法开机怎么处理？",
+                            "product_type": "平板电脑",
+                        },
+                    ],
+                    "next_cursor": "",
+                    "has_more": False,
+                }
+            }
+        }
+    )
+
+    summary = pull_second_part_to_queue(
+        profile,
+        queue_root=tmp_path / "queue",
+        output_root=tmp_path / "runs",
+        state_path=tmp_path / "pull-state.json",
+        fetcher=fetcher,
+    )
+
+    assert summary["status"] == "queued"
+    assert summary["queued_jobs"] == 1
+    assert summary["rejected_records"] == 1
+    queue = AutomationQueue(tmp_path / "queue")
+    workbook = next(queue.pending.glob("*.xlsx"))
+    _columns, rows = read_workbook_rows(workbook)
+    assert [row["工单ID"] for row in rows] == ["WO-VALID-001"]
 
 
 def test_http_fetcher_injects_auth_and_cursor_without_persisting_secret(
