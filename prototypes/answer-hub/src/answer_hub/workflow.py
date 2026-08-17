@@ -40,6 +40,10 @@ from .clustering_rules import (
     clustering_rules_metadata,
     match_clustering_judgment_rule,
 )
+from .draft_quality import (
+    assess_case_only_draft,
+    has_source_specific_case_content,
+)
 from .embedding import EmbeddingClient, EmbeddingError
 from .excel_io import read_workbook_rows, write_rows_to_workbook
 from .images import ImageDownloader, ImageEvidence, split_image_urls
@@ -892,6 +896,73 @@ def _normalize_lines(value: Any) -> str:
         if line:
             lines.append(line)
     return "\n".join(lines)
+
+
+_CLUSTER_EVIDENCE_OBJECT_MARKERS = (
+    ("屏幕", ("屏幕", "显示屏", "内屏", "外屏")),
+    ("摄像头", ("后置摄像头", "前置摄像头", "摄像头", "后摄", "前摄")),
+    ("镜头", ("镜头", "镜片", "镜筒")),
+    ("后壳", ("后壳", "后盖", "背板")),
+    ("中框", ("中框", "边框", "侧框")),
+    ("外壳", ("外壳", "机身外观", "机身")),
+    ("电池", ("电池", "最大容量", "电池健康")),
+    ("主板", ("主板",)),
+    ("螺丝", ("螺丝",)),
+    ("硬盘", ("固态硬盘", "机械硬盘", "硬盘")),
+    ("内存", ("运行内存", "内存条", "内存")),
+    ("键盘", ("键盘",)),
+    ("转轴", ("转轴", "铰链")),
+    ("扬声器", ("扬声器", "喇叭")),
+    ("麦克风", ("麦克风", "话筒")),
+)
+
+
+def _conversation_evidence_for_cluster_conflict(value: Any) -> str:
+    """Exclude transfer metadata before comparing human corrections with chat."""
+    evidence_lines = []
+    for line in _normalize_lines(value).splitlines():
+        without_timestamp = re.sub(
+            r"^\s*\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}(?::\d{2})?(?::\d{2})?\s*",
+            "",
+            line,
+        )
+        if re.match(
+            r"^\s*(问题类型|问题描述|转人工原因)\s*[:：]",
+            without_timestamp,
+        ):
+            continue
+        evidence_lines.append(without_timestamp)
+    return "\n".join(evidence_lines)
+
+
+def _cluster_evidence_object_keys(value: Any) -> set[str]:
+    text = _clean_text(value)
+    return {
+        object_key
+        for object_key, aliases in _CLUSTER_EVIDENCE_OBJECT_MARKERS
+        if any(alias in text for alias in aliases)
+    }
+
+
+def _human_evidence_conflict_reason(source_row: dict[str, Any]) -> str:
+    """Return only unambiguous chat-versus-human-correction object conflicts."""
+    chat_objects = _cluster_evidence_object_keys(
+        _conversation_evidence_for_cluster_conflict(source_row.get("聊天内容"))
+    )
+    if not chat_objects:
+        return ""
+    for label, value in (
+        ("人工校正核心问题", source_row.get("核心问题") or source_row.get("原始核心问题")),
+        ("人工校正判定结论", source_row.get("判定结论") or source_row.get("原始判定结论")),
+    ):
+        structured_objects = _cluster_evidence_object_keys(value)
+        if structured_objects and not structured_objects.intersection(chat_objects):
+            return (
+                f"{label}与完整聊天包含的具体对象不同："
+                f"{ '、'.join(sorted(structured_objects)) }"
+                f" vs { '、'.join(sorted(chat_objects)) }"
+            )
+    return ""
 
 
 def _historical_actual_reply(row: dict[str, Any]) -> str:
@@ -4646,8 +4717,18 @@ def _direct_reconcile_rule_match(row: dict[str, Any]) -> ClusteringRuleMatch | N
     return _direct_clustering_rule_match(row)
 
 
-def _direct_reconcile_fingerprint(row: dict[str, Any]) -> ClusteringFingerprint:
-    return build_clustering_fingerprint(
+def _direct_reconcile_fingerprint(
+    row: dict[str, Any],
+    *,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
+) -> ClusteringFingerprint:
+    cache_key = id(row)
+    if fingerprint_cache is not None:
+        cached = fingerprint_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    fingerprint = build_clustering_fingerprint(
         product_category=_clean_text(
             row.get("产品类型") or row.get("product_category")
         ),
@@ -4673,15 +4754,32 @@ def _direct_reconcile_fingerprint(row: dict[str, Any]) -> ClusteringFingerprint:
             row.get("语义标注依据") or row.get("evidence_summary")
         ),
     )
+    if fingerprint_cache is not None:
+        fingerprint_cache[cache_key] = fingerprint
+    return fingerprint
 
 
-def _direct_reconcile_topic_kind(row: dict[str, Any]) -> str:
-    fingerprint = _direct_reconcile_fingerprint(row)
+def _direct_reconcile_topic_kind(
+    row: dict[str, Any],
+    *,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
+) -> str:
+    fingerprint = _direct_reconcile_fingerprint(
+        row,
+        fingerprint_cache=fingerprint_cache,
+    )
     return fingerprint.query_target or fingerprint.detection_target
 
 
-def _direct_reconcile_topic_signature(row: dict[str, Any]) -> tuple[str, ...]:
-    fingerprint = _direct_reconcile_fingerprint(row)
+def _direct_reconcile_topic_signature(
+    row: dict[str, Any],
+    *,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
+) -> tuple[str, ...]:
+    fingerprint = _direct_reconcile_fingerprint(
+        row,
+        fingerprint_cache=fingerprint_cache,
+    )
     return (
         fingerprint.product_category,
         fingerprint.standard_family,
@@ -4704,31 +4802,61 @@ def _direct_reconcile_scope_values(row: dict[str, Any]) -> tuple[str, str, str, 
     )
 
 
-def _direct_reconcile_is_generic_query(row: dict[str, Any]) -> bool:
-    signature = _direct_reconcile_topic_signature(row)
+def _direct_reconcile_is_generic_query(
+    row: dict[str, Any],
+    *,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
+) -> bool:
+    signature = _direct_reconcile_topic_signature(
+        row,
+        fingerprint_cache=fingerprint_cache,
+    )
     return bool(signature[5] or signature[6])
 
 
-def _direct_reconcile_targets(row: dict[str, Any]) -> tuple[str, str]:
-    signature = _direct_reconcile_topic_signature(row)
+def _direct_reconcile_targets(
+    row: dict[str, Any],
+    *,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
+) -> tuple[str, str]:
+    signature = _direct_reconcile_topic_signature(
+        row,
+        fingerprint_cache=fingerprint_cache,
+    )
     return signature[5], signature[6]
 
 
 def _direct_reconcile_same_target(
     left: dict[str, Any],
     right: dict[str, Any],
+    *,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
 ) -> bool:
-    left_target = _direct_reconcile_targets(left)
-    right_target = _direct_reconcile_targets(right)
+    left_target = _direct_reconcile_targets(
+        left,
+        fingerprint_cache=fingerprint_cache,
+    )
+    right_target = _direct_reconcile_targets(
+        right,
+        fingerprint_cache=fingerprint_cache,
+    )
     return bool(any(left_target) and left_target == right_target)
 
 
 def _direct_reconcile_shared_target(
     rows: list[dict[str, Any]],
+    *,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
 ) -> str:
     if not rows:
         return ""
-    targets = [_direct_reconcile_targets(row) for row in rows]
+    targets = [
+        _direct_reconcile_targets(
+            row,
+            fingerprint_cache=fingerprint_cache,
+        )
+        for row in rows
+    ]
     if not any(targets[0]) or any(target != targets[0] for target in targets[1:]):
         return ""
     return targets[0][0] or targets[0][1]
@@ -4736,8 +4864,13 @@ def _direct_reconcile_shared_target(
 
 def _direct_reconcile_shared_trusted_target(
     rows: list[dict[str, Any]],
+    *,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
 ) -> str:
-    target = _direct_reconcile_shared_target(rows)
+    target = _direct_reconcile_shared_target(
+        rows,
+        fingerprint_cache=fingerprint_cache,
+    )
     return target if target in _DIRECT_RECONCILE_TRUSTED_TARGETS else ""
 
 
@@ -4751,9 +4884,12 @@ def _direct_reconcile_trusted_target_floor(target: str) -> float:
 def _direct_reconcile_multi_cluster_target(
     left_rows: list[dict[str, Any]],
     right_rows: list[dict[str, Any]],
+    *,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
 ) -> str:
     target = _direct_reconcile_shared_trusted_target(
-        [*left_rows, *right_rows]
+        [*left_rows, *right_rows],
+        fingerprint_cache=fingerprint_cache,
     )
     return (
         target
@@ -4765,9 +4901,17 @@ def _direct_reconcile_multi_cluster_target(
 def _direct_reconcile_same_topic_family(
     left: dict[str, Any],
     right: dict[str, Any],
+    *,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
 ) -> bool:
-    left_signature = _direct_reconcile_topic_signature(left)
-    right_signature = _direct_reconcile_topic_signature(right)
+    left_signature = _direct_reconcile_topic_signature(
+        left,
+        fingerprint_cache=fingerprint_cache,
+    )
+    right_signature = _direct_reconcile_topic_signature(
+        right,
+        fingerprint_cache=fingerprint_cache,
+    )
     left_family, right_family = left_signature[1], right_signature[1]
     if left_family and right_family:
         if left_family != right_family:
@@ -4782,7 +4926,11 @@ def _direct_reconcile_same_topic_family(
         )
 
     if not left_family and not right_family:
-        if _direct_reconcile_same_target(left, right):
+        if _direct_reconcile_same_target(
+            left,
+            right,
+            fingerprint_cache=fingerprint_cache,
+        ):
             return True
 
         # Some standards are intentionally left unmatched when one case
@@ -4894,6 +5042,8 @@ def _direct_reconcile_candidate_floor(
     left_rows: list[dict[str, Any]],
     right_rows: list[dict[str, Any]],
     default_floor: float,
+    *,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
 ) -> float:
     pairs = [
         (left, right)
@@ -4901,7 +5051,8 @@ def _direct_reconcile_candidate_floor(
         for right in right_rows
     ]
     trusted_target = _direct_reconcile_shared_trusted_target(
-        [*left_rows, *right_rows]
+        [*left_rows, *right_rows],
+        fingerprint_cache=fingerprint_cache,
     )
     if trusted_target:
         return min(
@@ -4909,12 +5060,20 @@ def _direct_reconcile_candidate_floor(
             _direct_reconcile_trusted_target_floor(trusted_target),
         )
     if any(
-        _direct_reconcile_same_target(left, right)
+        _direct_reconcile_same_target(
+            left,
+            right,
+            fingerprint_cache=fingerprint_cache,
+        )
         for left, right in pairs
     ):
         return min(default_floor, DIRECT_RECONCILE_QUERY_RULE_FLOOR)
     if any(
-        _direct_reconcile_same_topic_family(left, right)
+        _direct_reconcile_same_topic_family(
+            left,
+            right,
+            fingerprint_cache=fingerprint_cache,
+        )
         for left, right in pairs
     ):
         return min(default_floor, DIRECT_RECONCILE_FAMILY_RULE_FLOOR)
@@ -5282,6 +5441,9 @@ def _reconcile_direct_topic_groups(
         }
         for key, rows in topic_groups
     ]
+    # `records` retains every row for this reconciliation pass, so object ids
+    # are stable cache keys without writing transient values into row data.
+    fingerprint_cache: dict[int, ClusteringFingerprint] = {}
     candidates: list[tuple[float, int, int]] = []
     for left_index, left in enumerate(records):
         if not left["reconcilable"]:
@@ -5301,6 +5463,7 @@ def _reconcile_direct_topic_groups(
                     and not _direct_reconcile_multi_cluster_target(
                         left["rows"],
                         right["rows"],
+                        fingerprint_cache=fingerprint_cache,
                     )
                 )
             ):
@@ -5310,6 +5473,7 @@ def _reconcile_direct_topic_groups(
                 left["rows"],
                 right["rows"],
                 review_floor,
+                fingerprint_cache=fingerprint_cache,
             )
             if similarity >= candidate_floor:
                 candidates.append((similarity, left_index, right_index))
@@ -5379,6 +5543,7 @@ def _reconcile_direct_topic_groups(
         multi_cluster_target = _direct_reconcile_multi_cluster_target(
             left_rows,
             right_rows,
+            fingerprint_cache=fingerprint_cache,
         )
         if (
             len(left_rows) > 1
@@ -5718,6 +5883,8 @@ def _direct_mimo_topic_groups(
         "atomic_unit_id_collision_samples": [],
         "atomic_product_conflicts": 0,
         "atomic_product_conflict_samples": [],
+        "atomic_human_evidence_conflicts": 0,
+        "atomic_human_evidence_conflict_samples": [],
         "local_multi_topic_rescue": 0,
         "local_multi_topic_rescue_samples": [],
         "clustering_judgment_rule_match_count": 0,
@@ -6242,6 +6409,9 @@ def _direct_mimo_topic_groups(
                 and model_product
                 and source_product != model_product
             )
+            human_evidence_conflict_reason = _human_evidence_conflict_reason(
+                source_row
+            )
             if product_conflict:
                 meta["atomic_product_conflicts"] += 1
                 if len(meta["atomic_product_conflict_samples"]) < 20:
@@ -6250,6 +6420,15 @@ def _direct_mimo_topic_groups(
                             "sample_id": base_id,
                             "source_product": source_product,
                             "model_product": model_product,
+                        }
+                    )
+            if human_evidence_conflict_reason:
+                meta["atomic_human_evidence_conflicts"] += 1
+                if len(meta["atomic_human_evidence_conflict_samples"]) < 20:
+                    meta["atomic_human_evidence_conflict_samples"].append(
+                        {
+                            "sample_id": base_id,
+                            "reason": human_evidence_conflict_reason,
                         }
                     )
             effective_product = source_product or UNKNOWN_PRODUCT_NAME
@@ -6268,6 +6447,7 @@ def _direct_mimo_topic_groups(
                 failed
                 or bool(_clean_text(source_row.get("AI结果冲突字段")))
                 or product_conflict
+                or bool(human_evidence_conflict_reason)
                 or source_product_unknown
                 or business_line_requires_review
                 or topic_confidence < 0.75
@@ -6293,6 +6473,7 @@ def _direct_mimo_topic_groups(
                         if product_conflict
                         else ""
                     ),
+                    human_evidence_conflict_reason,
                     (
                         "源数据品类待确认，已保持未知品类逐条隔离"
                         if source_product_unknown
@@ -8803,87 +8984,10 @@ def _candidate_contains_standard_reference(candidate: dict[str, Any]) -> bool:
     )
 
 
-_GENERIC_TOPIC_DRAFT_MARKERS = (
-    "在设备设置的“关于本机/关于手机”中查看型号",
-    "使用 IMEI、SN 或官方渠道核对出厂机型",
-    "对照实物外观、功能配置和关键部件特征",
-    "查询与实物不一致时，补充截图和实物照片后再判定",
-    "确认异常出现于亮屏、白屏、黑屏、息屏或特定测试画面",
-    "拍摄屏幕正面全景和异常点近景",
-    "记录颜色、位置、数量、直径或面积并记录可复现的显示现象",
-    "确认异常部位、材质及磕碰、划痕、磨损、掉漆、碎裂或脱胶类型",
-    "拍摄整机全景、异常近景和侧视角度",
-    "涉及尺寸或数量时补充量尺",
-    "结合案例证据核对外观边界",
-    "明确疑似拆修或维修痕迹的具体部位",
-    "补充局部近景、整机全景和多角度照片",
-    "核对原厂结构、胶痕、撬痕、部件标识和连接状态",
-    "明确待核验功能、测试条件和所用配件",
-    "排除电量、网络、权限、保护壳等外部影响",
-    "使用一致的测试条件复测",
-    "结果不稳定或无法复现时，补充测试证据后再判定",
-    "明确待确认的对象、现象和对应问题",
-    "补充支持判断的截图、照片、视频或查询结果",
-    "结合案例证据确认适用条件、边界和例外",
-)
-_GENERIC_TOPIC_DRAFT_PATTERNS = (
-    r"(?:明确|确认|先确认|核实|检查).{0,16}(?:对象|设备|现象|问题|功能|条件|配件)",
-    r"(?:补充|提供|上传|记录|完善).{0,24}(?:截图|照片|视频|图片|查询结果|证据|资料|信息)",
-    r"(?:结合|参考|根据).{0,16}(?:案例|证据).{0,24}(?:适用|范围|边界|例外|条件)",
-    r"(?:无法|不能|暂时不能|不稳定|无法复现|无法明确).{0,24}(?:补充|完善).{0,16}(?:证据|资料|信息|测试).{0,16}(?:再|后).{0,8}(?:判定|处理|确认)",
-    r"(?:排除|确认).{0,24}(?:电量|网络|权限|保护壳|外部影响)",
-    r"(?:使用一致|统一|相同).{0,12}(?:测试条件|条件|流程|步骤).{0,12}(?:复测|测试|核验)",
-    r"(?:在设备设置|使用\s*IMEI|官方渠道|关于本机|关于手机).{0,24}(?:查看|核对|确认).{0,12}(?:型号|机型|配置|信息)",
-    r"(?:拍摄|补充).{0,24}(?:整机全景|异常近景|侧视角度|屏幕正面全景|局部近景|多角度照片)",
-    r"(?:确认|记录).{0,24}(?:亮屏|白屏|黑屏|息屏|颜色|位置|数量|直径|面积|显示现象)",
-    r"(?:确认|记录).{0,24}(?:异常部位|材质|磕碰|划痕|磨损|掉漆|碎裂|脱胶)",
-    r"(?:核对|检查).{0,24}(?:原厂结构|胶痕|撬痕|部件标识|连接状态)",
-)
-_GENERIC_EVIDENCE_MARKERS = (
-    "功能",
-    "核验",
-    "流程",
-    "测试",
-    "确认",
-    "设备",
-    "图片",
-    "视频",
-    "案例",
-    "证据",
-    "问题",
-    "步骤",
-    "对象",
-    "现象",
-    "条件",
-    "结果",
-    "信息",
-    "影响",
-    "补充",
-    "判断",
-    "处理",
-    "来源",
-    "待确认",
-    "适用",
-    "范围",
-    "边界",
-    "例外",
-    "截图",
-    "照片",
-    "查询结果",
-    "资料",
-    "复测",
-    "标准",
-    "检测",
-)
-
-
-def _topic_draft_has_source_specific_content(
+def _topic_draft_is_generic(
     candidate: dict[str, Any],
     rows: list[dict[str, Any]],
 ) -> bool:
-    content = re.sub(r"\s+", "", _clean_text(candidate.get("content")))
-    if not content:
-        return False
     source_values = [
         _historical_actual_reply(row)
         for row in rows
@@ -8900,44 +9004,36 @@ def _topic_draft_has_source_specific_content(
             "语义标注依据",
         )
     ]
-    checked = 0
-    for source in source_values:
-        for segment in re.split(r"[\n，,。；;：:（）()“”\"'、]+", source):
-            normalized = re.sub(r"\s+", "", _clean_text(segment))
-            if len(normalized) < 3:
-                continue
-            for width in range(3, min(8, len(normalized)) + 1):
-                for start in range(0, len(normalized) - width + 1):
-                    phrase = normalized[start : start + width]
-                    if any(
-                        marker in phrase
-                        for marker in _GENERIC_EVIDENCE_MARKERS
-                    ):
-                        continue
-                    if phrase in content:
-                        return True
-                    checked += 1
-                    if checked >= 240:
-                        return False
-    return False
+    assessment = assess_case_only_draft(
+        content=_clean_text(candidate.get("content")),
+        source_values=source_values,
+    )
+    return assessment.decision == "manual_review"
 
 
-def _topic_draft_is_generic(
+def _topic_draft_has_source_specific_content(
     candidate: dict[str, Any],
     rows: list[dict[str, Any]],
 ) -> bool:
-    content = _clean_text(candidate.get("content"))
-    generic_hits = sum(
-        marker in content
-        for marker in _GENERIC_TOPIC_DRAFT_MARKERS
-    )
-    pattern_hits = sum(
-        bool(re.search(pattern, content))
-        for pattern in _GENERIC_TOPIC_DRAFT_PATTERNS
-    )
-    return (
-        generic_hits + pattern_hits >= 3
-        and not _topic_draft_has_source_specific_content(candidate, rows)
+    source_values = [
+        _historical_actual_reply(row)
+        for row in rows
+    ] + [
+        _clean_text(row.get(field))
+        for row in rows
+        for field in (
+            "聊天内容",
+            "核心问题",
+            "原始核心问题",
+            "判定结论",
+            "原始判定结论",
+            "判定依据",
+            "语义标注依据",
+        )
+    ]
+    return has_source_specific_case_content(
+        content=_clean_text(candidate.get("content")),
+        source_values=source_values,
     )
 
 
@@ -9936,6 +10032,7 @@ def _untranscribed_topic_candidate_row(
         evidence_package,
     )
     requires_images = _topic_needs_images(rows)
+    missing_required_images = requires_images and not image_links
     preserved_standard_refs = _merge_unique_text(
         [row.get("关联标准项") for row in rows],
         separator="；",
@@ -10015,16 +10112,33 @@ def _untranscribed_topic_candidate_row(
         "主题Prompt版本": "",
         "主题模型运行ID": "",
         "人工主题问题分类": "",
-        "模型初标结论": "未执行",
-        "模型初标是否值得沉淀": _clean_text(
-            classification.get("knowledge_value")
+        "模型初标结论": (
+            "证据不足待补充" if missing_required_images else "未执行"
         ),
-        "模型初标错误类型": "",
-        "模型初标原因": note,
+        "模型初标是否值得沉淀": (
+            "待确认"
+            if missing_required_images
+            else _clean_text(classification.get("knowledge_value"))
+        ),
+        "模型初标错误类型": (
+            "图片判断失误" if missing_required_images else ""
+        ),
+        "模型初标原因": (
+            "草稿内容依赖案例图，但当前没有保留可用图片，"
+            "需人工补充证据后再确认。"
+            if missing_required_images
+            else note
+        ),
         "模型初标标准一致性": "",
-        "模型初标证据充分性": "",
-        "模型初标内容一致性": "",
-        "模型初标图片必要性": "",
+        "模型初标证据充分性": (
+            "不足" if missing_required_images else ""
+        ),
+        "模型初标内容一致性": (
+            "部分一致" if missing_required_images else ""
+        ),
+        "模型初标图片必要性": (
+            "图片不足" if missing_required_images else ""
+        ),
         "模型初标标题质量": "",
         "模型初标置信度": "",
         "模型初标重点复核": "是",
@@ -10032,7 +10146,11 @@ def _untranscribed_topic_candidate_row(
         "模型初标模型名称": "",
         "模型初标Prompt版本": "",
         "模型初标运行ID": "",
-        "模型初标状态": "topic_initial_review_skipped",
+        "模型初标状态": (
+            "topic_initial_review_evidence_gate"
+            if missing_required_images
+            else "topic_initial_review_skipped"
+        ),
         "主标题": title,
         "副标题": "",
         "知识内容": note,
