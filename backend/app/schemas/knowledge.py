@@ -1,7 +1,7 @@
 ﻿from datetime import datetime
 from typing import Literal, Optional, Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 BusinessType = Literal["self_operated", "aggregated"]
@@ -149,7 +149,85 @@ class KnowledgeUpdate(BaseModel):
         return value
 
 
+class ModelConfigurationAttributes(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+    has_card_slot: str = Field(..., alias="是否有卡槽")
+    home_button: str = Field(..., alias="Home键")
+    fingerprint_recognition: str = Field(..., alias="指纹识别")
+    face_id_3d: str = Field(..., alias="3D面容")
+    built_in_stylus: str = Field(..., alias="内置手写笔")
+    flash: str = Field(..., alias="闪光灯")
+    cellular_network: str = Field(..., alias="蜂窝网络")
+    ambient_light_sensor: str = Field(..., alias="光线传感器")
+
+    @field_validator("*")
+    @classmethod
+    def normalize_attribute_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class ModelConfigurationUpdate(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+        extra="forbid",
+        protected_namespaces=(),
+    )
+
+    title: str = Field(..., min_length=1, max_length=256)
+    content: str = Field(..., min_length=1, max_length=100_000)
+    category_id: str = Field(..., min_length=1, max_length=128)
+    category_name: str = Field(..., min_length=1, max_length=500)
+    brand_id: str = Field(..., min_length=1, max_length=128)
+    brand_name: str = Field(..., min_length=1, max_length=500)
+    model_id: str = Field(..., min_length=1, max_length=128)
+    model_name: str = Field(..., min_length=1, max_length=500)
+    attributes: ModelConfigurationAttributes
+
+    @field_validator(
+        "title",
+        "content",
+        "category_id",
+        "category_name",
+        "brand_id",
+        "brand_name",
+        "model_id",
+        "model_name",
+    )
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("字段不能为空")
+        return value
+
+
+class ModelConfigurationDetail(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+        protected_namespaces=(),
+    )
+
+    title: str
+    content: str
+    category_id: str
+    category_name: str
+    brand_id: str
+    brand_name: str
+    model_id: str
+    model_name: str
+    attributes: ModelConfigurationAttributes
+
+
 class KnowledgeResponse(BaseModel):
+    model_config = ConfigDict(
+        from_attributes=True,
+        protected_namespaces=(),
+    )
+
     id: str = Field(description="知识条目ID")
     knowledge_origin: KnowledgeOrigin = Field(description="知识来源")
     business_type: BusinessType = Field(description="业务类型")
@@ -179,10 +257,10 @@ class KnowledgeResponse(BaseModel):
     updated_at: datetime = Field(description="更新时间")
     tags: list["TagBrief"] = Field(default=[], description="关联标签列表")
     media: list["MediaResponse"] = Field(default=[], description="关联媒体文件列表")
-
-    class Config:
-        from_attributes = True
-
+    model_configuration: Optional[ModelConfigurationDetail] = Field(
+        None,
+        description="机型配置信息的结构化编辑详情，仅该知识来源返回",
+    )
 
 # ---- 分类 ----
 

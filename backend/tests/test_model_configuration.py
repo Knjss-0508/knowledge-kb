@@ -13,6 +13,7 @@ from app.routes.integration import (
 )
 from app.routes.knowledge import (
     _create_knowledge_item,
+    _model_configuration_detail,
     delete_knowledge,
     delete_media,
     deprecate_knowledge,
@@ -26,6 +27,8 @@ from app.schemas.integration import (
 )
 from app.schemas.knowledge import KnowledgeCreate
 from app.services.model_configuration import (
+    MODEL_CONFIGURATION_ATTRIBUTE_FIELDS,
+    ModelConfigurationAmbiguousError,
     ModelConfigurationMatch,
     ModelConfigurationSyncError,
     find_exact_model_configuration,
@@ -122,7 +125,7 @@ class ModelConfigurationTests(unittest.TestCase):
                 {"records": [_payload_record(1), duplicate_record]}
             )
 
-    def test_id_triplet_has_priority_over_mismatched_names(self):
+    def test_brand_triplet_has_priority_over_mismatched_names(self):
         item = _knowledge()
         db = _db_with_query_results([item])
         match = find_exact_model_configuration(
@@ -150,25 +153,69 @@ class ModelConfigurationTests(unittest.TestCase):
             query_expressions,
         )
 
-    def test_name_triplet_is_nfkc_and_whitespace_exact_fallback(self):
+    def test_category_model_id_pair_matches_when_brand_is_absent(self):
+        item = _knowledge()
+        db = _db_with_query_results([item])
+
+        match = find_exact_model_configuration(
+            db,
+            category_id="119",
+            model_id="97519",
+        )
+
+        self.assertIsNotNone(match)
+        self.assertIs(match.item, item)
+        self.assertEqual(match.match_mode, "id")
+        query_expressions = " ".join(
+            str(expression)
+            for call in db.query.return_value.filter.call_args_list
+            for expression in call.args
+        )
+        self.assertIn("knowledge_items.source_fields", query_expressions)
+
+    def test_brand_name_triplet_is_strict_nfkc_fallback(self):
         item = _knowledge(
             model_name="ＩＰＡＤ 10   (2022) 10.9英寸",
         )
-        db = _db_with_query_results([], [item], [])
+        db = _db_with_query_results([item], [])
         match = find_exact_model_configuration(
             db,
-            category_id="999",
             category_name=" 平板电脑 ",
-            brand_id="999",
             brand_name="苹果",
-            model_id="999",
             model_name="ipad 10 (2022) 10.9英寸",
         )
 
         self.assertIsNotNone(match)
         self.assertEqual(match.match_mode, "name")
-        self.assertEqual(db.query.call_count, 3)
-        self.assertEqual(db.query.return_value.limit.call_count, 2)
+        self.assertEqual(db.query.call_count, 2)
+        self.assertEqual(db.query.return_value.limit.call_count, 1)
+
+    def test_category_model_name_pair_uses_hidden_key_without_brand(self):
+        item = _knowledge(
+            model_name="ＩＰＡＤ 10   (2022) 10.9英寸",
+        )
+        db = _db_with_query_results([item], [])
+
+        match = find_exact_model_configuration(
+            db,
+            category_name=" 平板电脑 ",
+            model_name="ipad 10 (2022) 10.9英寸",
+        )
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.match_mode, "name")
+        self.assertEqual(db.query.call_count, 2)
+        self.assertEqual(db.query.return_value.limit.call_count, 1)
+        bound_values = [
+            value
+            for call in db.query.return_value.filter.call_args_list
+            for expression in call.args
+            for value in expression.compile().params.values()
+        ]
+        self.assertIn(
+            "_model_configuration_normalized_category_model_key",
+            bound_values,
+        )
 
     def test_missing_or_wrong_scope_returns_no_match(self):
         item = _knowledge()
@@ -191,17 +238,39 @@ class ModelConfigurationTests(unittest.TestCase):
                 model_name="iPad 10 (2022) 10.9英寸",
             )
         )
+        self.assertIsNone(
+            find_exact_model_configuration(
+                _db_with_query_results([]),
+                category_id="119",
+                category_name="平板电脑",
+                brand_id="错误品牌ID",
+                brand_name="苹果",
+                model_id="97519",
+                model_name="iPad 10 (2022) 10.9英寸",
+            )
+        )
 
     def test_multiple_exact_rows_fail_closed(self):
         duplicate_matches = [_knowledge(), _knowledge()]
-        self.assertIsNone(
+        with self.assertRaises(ModelConfigurationAmbiguousError) as raised:
             find_exact_model_configuration(
                 _db_with_query_results(duplicate_matches),
                 category_id="119",
-                brand_id="10530",
                 model_id="97519",
             )
+        self.assertEqual(raised.exception.match_mode, "id")
+        self.assertEqual(
+            raised.exception.knowledge_ids,
+            ("A-00001", "A-00001"),
         )
+
+        with self.assertRaises(ModelConfigurationAmbiguousError) as raised:
+            find_exact_model_configuration(
+                _db_with_query_results(duplicate_matches, []),
+                category_name="平板电脑",
+                model_name="iPad 10 (2022) 10.9英寸",
+            )
+        self.assertEqual(raised.exception.match_mode, "name")
 
     def test_managed_origin_rejects_generic_create_path(self):
         with self.assertRaises(ValidationError):
@@ -350,8 +419,20 @@ class ModelConfigurationTests(unittest.TestCase):
         db.query.return_value.filter.return_value.first.return_value = (
             "cat-extra-knowledge"
         )
+        personalized_attributes = {
+            "是否有卡槽": "蜂窝版有卡槽",
+            "Home键": "不支持",
+            "指纹识别": "屏下指纹",
+            "3D面容": "支持",
+            "内置手写笔": "支持",
+            "闪光灯": "双闪光灯",
+            "蜂窝网络": "支持 5G",
+            "光线传感器": "支持",
+        }
+        payload_record = _payload_record(1)
+        payload_record["source_fields"].update(personalized_attributes)
         record = parse_model_configuration_payload(
-            {"records": [_payload_record(1)]}
+            {"records": [payload_record]}
         )[0]
 
         result = sync_model_configurations(
@@ -373,10 +454,27 @@ class ModelConfigurationTests(unittest.TestCase):
         self.assertEqual(created.applicable_brands, ["10530"])
         self.assertEqual(created.applicable_models, ["97001"])
         self.assertEqual(
+            {
+                field: created.source_fields[field]
+                for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
+            },
+            personalized_attributes,
+        )
+        self.assertEqual(
+            _model_configuration_detail(created)["attributes"],
+            personalized_attributes,
+        )
+        self.assertEqual(
             created.source_fields[
                 "_model_configuration_normalized_name_key"
             ],
             '["平板电脑","苹果","测试平板 1"]',
+        )
+        self.assertEqual(
+            created.source_fields[
+                "_model_configuration_normalized_category_model_key"
+            ],
+            '["平板电脑","测试平板 1"]',
         )
 
 

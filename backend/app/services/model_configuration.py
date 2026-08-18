@@ -26,6 +26,16 @@ MODEL_CONFIGURATION_CATEGORY_ID = "cat-extra-knowledge"
 MODEL_CONFIGURATION_SOURCE = "integration"
 MODEL_CONFIGURATION_CATEGORY_SOURCE_ID = "119"
 MODEL_CONFIGURATION_CATEGORY_NAME = "平板电脑"
+MODEL_CONFIGURATION_ATTRIBUTE_FIELDS = (
+    "是否有卡槽",
+    "Home键",
+    "指纹识别",
+    "3D面容",
+    "内置手写笔",
+    "闪光灯",
+    "蜂窝网络",
+    "光线传感器",
+)
 
 _KNOWLEDGE_ID_ALPHABET = string.ascii_uppercase
 _SOURCE_FIELD_NAMES = {
@@ -48,6 +58,9 @@ _PAYLOAD_FIELD_LABELS = {
     "content": "综合内容",
 }
 _NORMALIZED_NAME_KEY_FIELD = "_model_configuration_normalized_name_key"
+_NORMALIZED_CATEGORY_MODEL_KEY_FIELD = (
+    "_model_configuration_normalized_category_model_key"
+)
 
 
 def _model_configuration_source_knowledge_key(
@@ -115,6 +128,27 @@ class ModelConfigurationMatch:
     match_mode: str
 
 
+class ModelConfigurationAmbiguousError(LookupError):
+    code = "MODEL_CONFIGURATION_AMBIGUOUS"
+
+    def __init__(
+        self,
+        *,
+        match_mode: str,
+        category_value: str,
+        model_value: str,
+        knowledge_ids: list[str],
+    ):
+        super().__init__(
+            "同一类目和机型匹配到多条机型配置信息，已拒绝任选一条。"
+        )
+        self.match_mode = match_mode
+        self.category_value = category_value
+        self.model_value = model_value
+        self.match_count = len(knowledge_ids)
+        self.knowledge_ids = tuple(knowledge_ids[:10])
+
+
 def _clean_text(value: Any) -> str:
     if value is None:
         return ""
@@ -143,6 +177,21 @@ def _normalized_name_key(
         [
             _normalized_exact_text(category_name),
             _normalized_exact_text(brand_name),
+            _normalized_exact_text(model_name),
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _normalized_category_model_key(
+    *,
+    category_name: Any,
+    model_name: Any,
+) -> str:
+    return json.dumps(
+        [
+            _normalized_exact_text(category_name),
             _normalized_exact_text(model_name),
         ],
         ensure_ascii=False,
@@ -303,11 +352,35 @@ def _generate_knowledge_id(db: Session) -> str:
     return f"{_KNOWLEDGE_ID_ALPHABET[letter_index]}-{number + 1:05d}"
 
 
+def acquire_model_configuration_write_lock(db: Session) -> None:
+    """串行化所有机型配置写入，避免 Excel 与人工编辑互相覆盖。"""
+    locked_category = (
+        db.query(Category.id)
+        .filter(Category.id == MODEL_CONFIGURATION_CATEGORY_ID)
+        .with_for_update()
+        .first()
+    )
+    if not locked_category:
+        raise ModelConfigurationSyncError(
+            "MODEL_CONFIGURATION_CATEGORY_MISSING",
+            (
+                "知识分类 cat-extra-knowledge 不存在，"
+                "请先完成数据库迁移初始化。"
+            ),
+        )
+
+
 def _record_values(record: ModelConfigurationRecord) -> dict[str, Any]:
     source_fields = dict(record.source_fields)
     source_fields[_NORMALIZED_NAME_KEY_FIELD] = _normalized_name_key(
         category_name=record.category_name,
         brand_name=record.brand_name,
+        model_name=record.model_name,
+    )
+    source_fields[
+        _NORMALIZED_CATEGORY_MODEL_KEY_FIELD
+    ] = _normalized_category_model_key(
+        category_name=record.category_name,
         model_name=record.model_name,
     )
     return {
@@ -333,21 +406,27 @@ def _record_values(record: ModelConfigurationRecord) -> dict[str, Any]:
 def _find_existing_record(
     db: Session,
     record: ModelConfigurationRecord,
+    *,
+    allow_source_key_change_for: str | None = None,
 ) -> Knowledge | None:
     by_record_id = (
         db.query(Knowledge)
+        .populate_existing()
         .filter(
             Knowledge.knowledge_origin == MODEL_CONFIGURATION_ORIGIN,
             Knowledge.source_record_id == record.source_record_id,
         )
+        .with_for_update()
         .all()
     )
     by_knowledge_key = (
         db.query(Knowledge)
+        .populate_existing()
         .filter(
             Knowledge.knowledge_origin == MODEL_CONFIGURATION_ORIGIN,
             Knowledge.source_knowledge_key == record.source_knowledge_key,
         )
+        .with_for_update()
         .all()
     )
     if len(by_record_id) > 1 or len(by_knowledge_key) > 1:
@@ -373,6 +452,7 @@ def _find_existing_record(
     if record_match and (
         record_match.source_knowledge_key
         and record_match.source_knowledge_key != record.source_knowledge_key
+        and record_match.id != allow_source_key_change_for
     ):
         raise ModelConfigurationSyncError(
             "SOURCE_RECORD_ID_REUSED",
@@ -413,25 +493,22 @@ def sync_model_configurations(
     records: list[ModelConfigurationRecord],
     *,
     actor: str,
+    allow_source_key_change_for: str | None = None,
 ) -> ModelConfigurationSyncResult:
-    if not (
-        db.query(Category.id)
-        .filter(Category.id == MODEL_CONFIGURATION_CATEGORY_ID)
-        .first()
-    ):
-        raise ModelConfigurationSyncError(
-            "MODEL_CONFIGURATION_CATEGORY_MISSING",
-            (
-                "知识分类 cat-extra-knowledge 不存在，"
-                "请先完成数据库迁移初始化。"
-            ),
-        )
+    acquire_model_configuration_write_lock(db)
 
     created = updated = unchanged = 0
     item_results: list[ModelConfigurationSyncItemResult] = []
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     existing_records = [
-        (record, _find_existing_record(db, record))
+        (
+            record,
+            _find_existing_record(
+                db,
+                record,
+                allow_source_key_change_for=allow_source_key_change_for,
+            ),
+        )
         for record in records
     ]
     for record, existing in existing_records:
@@ -552,8 +629,9 @@ def _matches_scope(
     scope: dict[str, dict[str, str]],
     *,
     prefer_ids: bool,
+    dimensions: tuple[str, ...] = ("category", "brand", "model"),
 ) -> bool:
-    for dimension in ("category", "brand", "model"):
+    for dimension in dimensions:
         requested = scope[dimension]
         comparison_field = (
             f"{dimension}_id"
@@ -592,26 +670,47 @@ def find_exact_model_configuration(
         model_id=model_id,
         model_name=model_name,
     )
+    brand_supplied = bool(
+        scope["brand"]["id"] or scope["brand"]["name"]
+    )
+    match_dimensions = (
+        ("category", "brand", "model")
+        if brand_supplied
+        else ("category", "model")
+    )
     if any(
-        not (values["id"] or values["name"])
-        for values in scope.values()
+        not (scope[dimension]["id"] or scope[dimension]["name"])
+        for dimension in match_dimensions
     ):
         return None
 
-    base_query = db.query(Knowledge).filter(
-        Knowledge.status == KnowledgeStatus.PUBLISHED,
-        Knowledge.knowledge_origin == MODEL_CONFIGURATION_ORIGIN,
-    )
-    if all(scope[dimension]["id"] for dimension in ("category", "brand", "model")):
-        source_knowledge_key = _model_configuration_source_knowledge_key(
-            scope["category"]["id"],
-            scope["brand"]["id"],
-            scope["model"]["id"],
+    if all(scope[dimension]["id"] for dimension in match_dimensions):
+        base_query = db.query(Knowledge).filter(
+            Knowledge.status == KnowledgeStatus.PUBLISHED,
+            Knowledge.knowledge_origin == MODEL_CONFIGURATION_ORIGIN,
         )
-        id_matches = (
-            base_query.filter(
-                Knowledge.source_knowledge_key == source_knowledge_key,
+        if brand_supplied:
+            id_query = base_query.filter(
+                Knowledge.source_knowledge_key
+                == _model_configuration_source_knowledge_key(
+                    scope["category"]["id"],
+                    scope["brand"]["id"],
+                    scope["model"]["id"],
+                )
             )
+        else:
+            category_id_expression = Knowledge.source_fields[
+                _SOURCE_FIELD_NAMES["category_id"]
+            ].as_string()
+            model_id_expression = Knowledge.source_fields[
+                _SOURCE_FIELD_NAMES["model_id"]
+            ].as_string()
+            id_query = base_query.filter(
+                category_id_expression == scope["category"]["id"],
+                model_id_expression == scope["model"]["id"],
+            )
+        id_matches = (
+            id_query
             .limit(2)
             .all()
         )
@@ -621,22 +720,39 @@ def find_exact_model_configuration(
                 match_mode="id",
             )
         if len(id_matches) > 1:
+            raise ModelConfigurationAmbiguousError(
+                match_mode="id",
+                category_value=scope["category"]["id"],
+                model_value=scope["model"]["id"],
+                knowledge_ids=[item.id for item in id_matches],
+            )
+        if brand_supplied:
             return None
 
     if not all(
         scope[dimension]["name"]
-        for dimension in ("category", "brand", "model")
+        for dimension in match_dimensions
     ):
         return None
 
-    normalized_name_key = _normalized_name_key(
-        category_name=scope["category"]["name"],
-        brand_name=scope["brand"]["name"],
-        model_name=scope["model"]["name"],
-    )
-    normalized_name_key_expression = Knowledge.source_fields[
-        _NORMALIZED_NAME_KEY_FIELD
-    ].as_string()
+    if brand_supplied:
+        normalized_name_key = _normalized_name_key(
+            category_name=scope["category"]["name"],
+            brand_name=scope["brand"]["name"],
+            model_name=scope["model"]["name"],
+        )
+        normalized_name_key_expression = Knowledge.source_fields[
+            _NORMALIZED_NAME_KEY_FIELD
+        ].as_string()
+    else:
+        normalized_name_key = _normalized_category_model_key(
+            category_name=scope["category"]["name"],
+            model_name=scope["model"]["name"],
+        )
+        normalized_name_key_expression = Knowledge.source_fields[
+            _NORMALIZED_CATEGORY_MODEL_KEY_FIELD
+        ].as_string()
+
     keyed_candidates = (
         db.query(Knowledge)
         .filter(
@@ -647,9 +763,6 @@ def find_exact_model_configuration(
         .limit(2)
         .all()
     )
-    if len(keyed_candidates) > 1:
-        return None
-
     legacy_candidates = (
         db.query(Knowledge)
         .filter(
@@ -662,13 +775,23 @@ def find_exact_model_configuration(
     matches = [
         item
         for item in [*keyed_candidates, *legacy_candidates]
-        if _matches_scope(item, scope, prefer_ids=False)
+        if _matches_scope(
+            item,
+            scope,
+            prefer_ids=False,
+            dimensions=match_dimensions,
+        )
     ]
-    return (
-        ModelConfigurationMatch(
+    if len(matches) == 1:
+        return ModelConfigurationMatch(
             item=matches[0],
             match_mode="name",
         )
-        if len(matches) == 1
-        else None
-    )
+    if len(matches) > 1:
+        raise ModelConfigurationAmbiguousError(
+            match_mode="name",
+            category_value=scope["category"]["name"],
+            model_value=scope["model"]["name"],
+            knowledge_ids=[item.id for item in matches],
+        )
+    return None

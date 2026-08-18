@@ -15,7 +15,10 @@ from app.models.knowledge import KnowledgeStatus
 from app.routes.integration import search_standard_provider_knowledge
 from app.schemas.integration import IntegrationStandardSearchRequest
 from app.services.embedding import EmbeddingServiceUnavailable
-from app.services.model_configuration import ModelConfigurationMatch
+from app.services.model_configuration import (
+    ModelConfigurationAmbiguousError,
+    ModelConfigurationMatch,
+)
 
 
 TEST_CONVERSATION_ID = "202608100001"
@@ -260,8 +263,6 @@ class IntegrationStandardSearchTests(unittest.TestCase):
                 normalizedQuestion="这个机型有没有指纹",
                 categoryId="119",
                 productType="平板电脑",
-                brandId="10530",
-                brand="苹果",
                 modelId="97519",
                 model="iPad 10 (2022) 10.9英寸",
                 limit=1,
@@ -286,6 +287,86 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         self.assertEqual(exact["item"]["attributes"]["指纹识别"], "有指纹")
         self.assertNotIn("score", exact["item"])
         self.assertNotIn("finalScore", exact["item"])
+        _exact_match.assert_called_once()
+        match_kwargs = _exact_match.call_args.kwargs
+        self.assertEqual(match_kwargs["category_id"], "119")
+        self.assertEqual(match_kwargs["model_id"], "97519")
+        self.assertEqual(match_kwargs["brand_id"], "")
+        self.assertEqual(match_kwargs["brand_name"], "")
+
+    @patch(
+        "app.routes.integration.find_exact_model_configuration",
+        return_value=None,
+    )
+    @patch("app.routes.integration.search_embeddings", return_value=[])
+    def test_legacy_brand_scope_is_forwarded_for_strict_matching(
+        self,
+        _search,
+        exact_match,
+    ):
+        body = IntegrationStandardSearchRequest.model_validate(
+            _identity_payload(
+                normalizedQuestion="这个机型有没有指纹",
+                categoryId="119",
+                productType="平板电脑",
+                brandId="10530",
+                brand="苹果",
+                modelId="97519",
+                model="iPad 10 (2022) 10.9英寸",
+            )
+        )
+
+        _call_search(body)
+
+        match_kwargs = exact_match.call_args.kwargs
+        self.assertEqual(match_kwargs["category_id"], "119")
+        self.assertEqual(match_kwargs["brand_id"], "10530")
+        self.assertEqual(match_kwargs["brand_name"], "苹果")
+        self.assertEqual(match_kwargs["model_id"], "97519")
+
+    @patch(
+        "app.routes.integration.find_exact_model_configuration",
+        side_effect=ModelConfigurationAmbiguousError(
+            match_mode="id",
+            category_value="119",
+            model_value="97519",
+            knowledge_ids=["A-00900", "A-00901"],
+        ),
+    )
+    @patch("app.routes.integration.search_embeddings", return_value=[])
+    def test_ambiguous_category_model_pair_fails_closed_and_is_audited(
+        self,
+        _search,
+        _exact_match,
+    ):
+        body = IntegrationStandardSearchRequest.model_validate(
+            _identity_payload(
+                normalizedQuestion="这个机型有没有指纹",
+                categoryId="119",
+                productType="平板电脑",
+                modelId="97519",
+                model="iPad 10 (2022) 10.9英寸",
+            )
+        )
+
+        with self.assertLogs(
+            "app.routes.integration",
+            level="WARNING",
+        ) as captured:
+            response = _call_search(body)
+        payload = response.model_dump(mode="json", by_alias=True)
+
+        self.assertEqual(payload["status"], "no_match")
+        self.assertEqual(
+            payload["modelConfiguration"],
+            {"status": "no_match", "matchMode": "none", "item": None},
+        )
+        audit_message = "\n".join(captured.output)
+        self.assertIn("MODEL_CONFIGURATION_AMBIGUOUS", audit_message)
+        self.assertIn(TEST_CONVERSATION_ID, audit_message)
+        self.assertIn(TEST_REQUEST_ID, audit_message)
+        self.assertIn("match_count=2", audit_message)
+        self.assertIn("A-00900,A-00901", audit_message)
 
     @patch(
         "app.routes.integration.find_exact_model_configuration",
@@ -315,8 +396,6 @@ class IntegrationStandardSearchTests(unittest.TestCase):
                 normalizedQuestion="这个机型有没有指纹",
                 categoryId="119",
                 productType="平板电脑",
-                brandId="10530",
-                brand="苹果",
                 modelId="97519",
                 model="iPad 10 (2022) 10.9英寸",
             )
@@ -356,7 +435,6 @@ class IntegrationStandardSearchTests(unittest.TestCase):
             _identity_payload(
                 normalizedQuestion="这个机型有没有蜂窝网络",
                 productType="平板电脑",
-                brand="苹果",
                 model="iPad 10 (2022) 10.9英寸",
             )
         )
@@ -797,8 +875,16 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         self.assertIn(require_integration_key, upstream_dependencies)
         self.assertNotIn(require_retrieval_key, upstream_dependencies)
 
+    @patch(
+        "app.routes.integration.find_exact_model_configuration",
+        return_value=None,
+    )
     @patch("app.routes.integration.search_embeddings")
-    def test_http_contract_uses_retrieval_key_and_camel_case(self, search):
+    def test_http_contract_uses_retrieval_key_and_camel_case(
+        self,
+        search,
+        _exact_match,
+    ):
         def ranked_for_origin(*_args, **kwargs):
             origin = kwargs["knowledge_origin"]
             start = 1 if origin == "headquarters_standard" else 101
