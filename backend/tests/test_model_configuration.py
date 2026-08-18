@@ -361,6 +361,9 @@ class ModelConfigurationTests(unittest.TestCase):
         )
 
         self.assertEqual(result.created, 1)
+        self.assertEqual(len(result.items), 1)
+        self.assertEqual(result.items[0].knowledge_id, "A-00001")
+        self.assertEqual(result.items[0].operation, "created")
         created = db.add.call_args.args[0]
         self.assertEqual(created.id, "A-00001")
         self.assertEqual(created.knowledge_origin, "model_configuration")

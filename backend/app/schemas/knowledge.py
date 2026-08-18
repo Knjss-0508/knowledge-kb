@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 BusinessType = Literal["self_operated", "aggregated"]
+KnowledgeImportType = Literal["knowledge", "model_configuration"]
 KnowledgeOrigin = Literal[
     "headquarters_standard",
     "business_accumulation",
@@ -322,6 +323,10 @@ class ExcelImportRowResult(BaseModel):
         None,
         description="疑似重复进入审核队列后的任务ID",
     )
+    operation: Optional[Literal["created", "updated", "unchanged"]] = Field(
+        None,
+        description="机型配置整批同步中的逐行幂等操作结果",
+    )
 
 
 class ExcelImportResponse(BaseModel):
@@ -336,6 +341,7 @@ class ExcelImportResponse(BaseModel):
 
 class KnowledgeImportTaskResponse(BaseModel):
     id: str = Field(description="导入任务ID")
+    import_type: KnowledgeImportType = Field(description="导入类型")
     original_filename: str = Field(description="原始 Excel 文件名")
     file_size: int = Field(description="上传文件大小（字节）")
     status: Literal[
@@ -348,11 +354,14 @@ class KnowledgeImportTaskResponse(BaseModel):
     ] = Field(description="任务状态")
     total_rows: int = Field(description="解析后的总行数")
     processed_rows: int = Field(description="已完成处理的行数")
-    imported: int = Field(description="成功创建的知识数")
+    imported: int = Field(description="成功处理数")
     review_required: int = Field(description="需人工确认疑似重复的知识数")
     pending_review: int = Field(description="进入待发布审核的知识数")
     deprecated: int = Field(description="已同步为废弃的知识数")
     failed: int = Field(description="失败行数")
+    created: int = Field(description="机型配置新增数")
+    updated: int = Field(description="机型配置更新数")
+    unchanged: int = Field(description="机型配置无变化数")
     retry_rows: list[int] = Field(
         default_factory=list,
         description="等待安全重试的 Excel 原始行号",

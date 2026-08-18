@@ -107,7 +107,16 @@
     .import-task-failure-table{min-width:680px}
     .import-task-failure-table th,.import-task-failure-table td{vertical-align:top}
     .import-task-failure-reason{max-width:460px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+    .dlg.import-mode-dialog{width:min(680px,94vw)}
+    .import-mode-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .import-mode-option{min-height:126px;padding:16px;border:1px solid #dfe5ea;border-radius:8px;background:#fff;color:#344054;text-align:left;cursor:pointer;transition:border-color .18s ease,background-color .18s ease,box-shadow .18s ease}
+    .import-mode-option:hover{border-color:#9bcfc5;background:#f8fcfb}
+    .import-mode-option.on{border-color:#009b83;background:#f1fbf8;box-shadow:0 0 0 2px rgba(0,155,131,.1)}
+    .import-mode-option b{display:block;font-size:14px}
+    .import-mode-option span{display:block;margin-top:7px;color:#667085;font-size:12px;line-height:1.6}
+    .import-mode-note{margin-top:14px;padding:10px 12px;border-left:3px solid #009b83;background:#f7fbfa;color:#667085;font-size:12px;line-height:1.6}
     @media(max-width:760px){.import-task-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dlg.import-task-detail-dialog{width:100%}}
+    @media(max-width:760px){.import-mode-options{grid-template-columns:1fr}.dlg.import-mode-dialog{width:100%}}
     .mask{position:fixed;inset:0;background:rgba(19,36,51,.56);backdrop-filter:blur(3px);z-index:1000;display:flex;align-items:center;justify-content:center;padding:28px;overflow-y:auto}
     .dlg{width:min(980px,100%);max-height:calc(100vh - 56px);display:flex;flex-direction:column;overflow:hidden;background:#fff;border:1px solid rgba(229,233,239,.9);border-radius:8px;box-shadow:0 28px 80px rgba(16,24,40,.28)}
     .dlg-h{min-height:72px;padding:0 24px;border-bottom:1px solid #e8edf0;display:flex;align-items:center;justify-content:space-between;background:#fff}
@@ -462,8 +471,8 @@
       <button class="btn bd" v-if="dev.showManhattanUpdate && can('account:manage')" @click="openManhattanPanel">更新曼哈顿数据</button>
       <input class="inp" style="width:240px" v-model="f.kw" placeholder="搜索标题、副标题、正文..." @keyup.enter="searchKnowledge">
       <button class="btn bp" @click="searchKnowledge">搜索</button>
-      <button class="btn b-template" v-if="can('knowledge:create')" @click="downloadImportTemplate">下载导入模板</button>
-      <button class="btn b-import" v-if="can('knowledge:create')" @click="chooseImportFile" :disabled="importing">{{importing?'上传中...':'Excel 批量导入'}}</button>
+      <button class="btn b-template" v-if="can('knowledge:create')" @click="openImportDialog">下载导入模板</button>
+      <button class="btn b-import" v-if="can('knowledge:create')" @click="openImportDialog" :disabled="importing">{{importing?'上传中...':'Excel 批量导入'}}</button>
       <input ref="knowledgeImportFile" type="file" accept=".xlsx" style="display:none" @change="importKnowledgeExcel">
       <button class="btn bd" v-if="can('knowledge:create')" @click="toggleImportHistory">{{showImportHistory?'收起导入记录':'导入记录'}}</button>
       <button class="btn bd" v-if="can('knowledge:view')" @click="exportKnowledgeExcel">导出知识</button>
@@ -475,6 +484,7 @@
       <div class="import-task-list">
         <div class="import-task-row" v-if="importing && !importTaskNotice">
           <span class="tg tg-l">上传中</span>
+          <span class="tg tg-d">{{importTypeLabel(importUploadType)}}</span>
           <span class="import-task-file" :title="importUploadName">{{importUploadName || '正在上传文件'}}</span>
           <span class="import-task-meta">正在上传并创建后台任务...</span>
         </div>
@@ -485,12 +495,13 @@
         </div>
         <div class="import-task-row" v-for="task in visibleImportTasks()" :key="task.id">
           <span class="tg" :class="importTaskStatusClass(task.status)">{{importTaskStatusLabel(task.status)}}</span>
+          <span class="tg tg-d">{{importTaskTypeLabel(task)}}</span>
           <span class="import-task-file" :title="task.original_filename">{{task.original_filename}}</span>
           <span class="import-task-meta">{{importTaskProgress(task)}}</span>
-          <span class="import-task-meta" v-if="task.processed_rows">已创建 {{task.imported}} · 疑似重复 {{task.review_required}} · 待审核 {{task.pending_review}} · 失败 {{task.failed}}</span>
+          <span class="import-task-meta" v-if="task.processed_rows">{{importTaskSummary(task)}}</span>
           <span class="import-task-error" v-if="task.error_message" :title="task.error_message">{{task.error_message}}</span>
           <span class="import-task-actions">
-            <button class="btn br bsm" v-if="isImportTaskActive(task)" @click="cancelImportTask(task)" :disabled="importTaskCancellingId===task.id">{{importTaskCancellingId===task.id?'取消中...':'取消'}}</button>
+            <button class="btn br bsm" v-if="canCancelImportTask(task)" @click="cancelImportTask(task)" :disabled="importTaskCancellingId===task.id">{{importTaskCancellingId===task.id?'取消中...':'取消'}}</button>
             <button class="btn bd bsm" v-if="isImportTaskTerminal(task)" @click="openImportTaskDetail(task)">查看</button>
             <button class="btn bd bsm" v-if="!showImportHistory && isImportTaskAttention(task)" @click="dismissImportTaskAttention(task)">关闭提醒</button>
           </span>
@@ -1076,6 +1087,37 @@
   </main>
   </div>
 
+  <div class="mask" v-if="importDialogOpen" @click.self="closeImportDialog" role="dialog" aria-modal="true" aria-labelledby="import-mode-dialog-title">
+    <div class="dlg import-mode-dialog">
+      <div class="dlg-h">
+        <div>
+          <h3 id="import-mode-dialog-title">Excel 批量导入</h3>
+          <p>请选择本次 Excel 对应的数据类型</p>
+        </div>
+        <button class="dlg-x" @click="closeImportDialog" aria-label="关闭 Excel 批量导入">&times;</button>
+      </div>
+      <div class="dlg-b">
+        <div class="import-mode-options">
+          <button type="button" class="import-mode-option" :class="{on:importType==='knowledge'}" @click="importType='knowledge'">
+            <b>普通知识</b>
+            <span>用于总部标准、业务沉淀；知识来源和业务类型继续在 Excel 每一行中填写。</span>
+          </button>
+          <button type="button" class="import-mode-option" :class="{on:importType==='model_configuration'}" @click="importType='model_configuration'">
+            <b>机型配置信息</b>
+            <span>用于按品类、品牌、机型精确匹配的个性化配置；导入后由系统直接维护。</span>
+          </button>
+        </div>
+        <div class="import-mode-note" v-if="importType==='knowledge'">当前模式保留原有总部标准、业务沉淀导入规则和审核流程。</div>
+        <div class="import-mode-note" v-else>当前模式固定写入“机型配置信息”，不进入向量、阈值、TOP 和召回反馈链路。</div>
+      </div>
+      <div class="dlg-f">
+        <button class="btn bd" @click="closeImportDialog">取消</button>
+        <button class="btn b-template" @click="downloadImportTemplate" :disabled="importTemplateDownloading">{{importTemplateDownloading?'下载中...':'下载当前模式模板'}}</button>
+        <button class="btn bp" @click="chooseImportFile" :disabled="importing">{{importing?'上传中...':'选择 Excel 并导入'}}</button>
+      </div>
+    </div>
+  </div>
+
   <div class="mask" v-if="importTaskDetail.open" @click.self="closeImportTaskDetail" role="dialog" aria-modal="true" aria-labelledby="import-task-detail-title">
     <div class="dlg import-task-detail-dialog">
       <div class="dlg-h">
@@ -1088,34 +1130,44 @@
           <div class="import-task-detail-meta">
             <strong :title="importTaskDetail.task.original_filename">{{importTaskDetail.task.original_filename}}</strong>
             <span class="tg" :class="importTaskStatusClass(importTaskDetail.task.status)">{{importTaskStatusLabel(importTaskDetail.task.status)}}</span>
+            <span class="tg tg-d">{{importTaskTypeLabel(importTaskDetail.task)}}</span>
             <span>{{importTaskProgress(importTaskDetail.task)}}</span>
-            <span v-if="importTaskDetail.task.deprecated">已废弃 {{importTaskDetail.task.deprecated}} 条</span>
+            <span v-if="isModelConfigurationImportTask(importTaskDetail.task) && importTaskDisplayedResultCount(importTaskDetail.task)">已展示 {{importTaskDisplayedResultCount(importTaskDetail.task)}}/{{importTaskDetailResultTotal(importTaskDetail.task)}} 条逐行结果</span>
+            <span v-if="!isModelConfigurationImportTask(importTaskDetail.task) && importTaskDetail.task.deprecated">已废弃 {{importTaskDetail.task.deprecated}} 条</span>
             <span>创建时间 {{formatDate(importTaskDetail.task.created_at)}}</span>
           </div>
-          <div class="import-task-summary-grid">
+          <div class="import-task-summary-grid" v-if="isModelConfigurationImportTask(importTaskDetail.task)">
+            <div class="import-task-summary-card"><span>新增</span><b>{{importTaskOperationCount(importTaskDetail.task,'created')}}</b></div>
+            <div class="import-task-summary-card suspected"><span>更新</span><b>{{importTaskOperationCount(importTaskDetail.task,'updated')}}</b></div>
+            <div class="import-task-summary-card pending"><span>未变化</span><b>{{importTaskOperationCount(importTaskDetail.task,'unchanged')}}</b></div>
+            <div class="import-task-summary-card failed"><span>失败</span><b>{{importTaskResultCount(importTaskDetail.task,'failed')}}</b></div>
+          </div>
+          <div class="import-task-summary-grid" v-else>
             <div class="import-task-summary-card"><span>成功</span><b>{{importTaskResultCount(importTaskDetail.task,'imported')}}</b></div>
             <div class="import-task-summary-card suspected"><span>疑似重复</span><b>{{importTaskResultCount(importTaskDetail.task,'review_required')}}</b></div>
             <div class="import-task-summary-card pending"><span>待审核</span><b>{{importTaskResultCount(importTaskDetail.task,'review_pending')}}</b></div>
             <div class="import-task-summary-card failed"><span>失败</span><b>{{importTaskResultCount(importTaskDetail.task,'failed')}}</b></div>
           </div>
           <div class="import-task-detail-error" v-if="importTaskDetail.task.error_message">{{importTaskDetail.task.error_message}}</div>
-          <div v-if="importTaskFailureRows(importTaskDetail.task).length">
-            <div class="import-task-failure-title">失败行原因</div>
+          <div v-if="importTaskDetailRows(importTaskDetail.task).length">
+            <div class="import-task-failure-title">{{isModelConfigurationImportTask(importTaskDetail.task)?'逐行处理结果':'失败行原因'}}</div>
             <div class="import-task-failure-wrap">
               <table class="import-task-failure-table">
-                <thead><tr><th style="width:72px">Excel 行</th><th style="width:220px">标题</th><th style="width:150px">错误代码</th><th>失败原因</th></tr></thead>
+                <thead><tr><th style="width:72px">Excel 行</th><th style="width:220px">标题</th><th style="width:100px" v-if="isModelConfigurationImportTask(importTaskDetail.task)">操作</th><th style="width:130px" v-if="isModelConfigurationImportTask(importTaskDetail.task)">知识ID</th><th style="width:150px">错误代码</th><th>失败原因</th></tr></thead>
                 <tbody>
-                  <tr v-for="row in importTaskFailureRows(importTaskDetail.task)" :key="row.row + ':' + row.title">
+                  <tr v-for="row in importTaskDetailRows(importTaskDetail.task)" :key="row.row + ':' + row.title + ':' + (row.operation || '')">
                     <td>{{row.row}}</td>
                     <td>{{row.title || '-'}}</td>
+                    <td v-if="isModelConfigurationImportTask(importTaskDetail.task)">{{importTaskOperationLabel(row.operation)}}</td>
+                    <td v-if="isModelConfigurationImportTask(importTaskDetail.task)">{{row.knowledge_id || '-'}}</td>
                     <td>{{row.error_code || '-'}}</td>
-                    <td><div class="import-task-failure-reason">{{row.error_message || '未返回失败原因'}}</div></td>
+                    <td><div class="import-task-failure-reason">{{row.error_message || (row.status==='failed'?'未返回失败原因':'-')}}</div></td>
                   </tr>
                 </tbody>
               </table>
             </div>
           </div>
-          <div class="import-task-detail-empty" v-else-if="!importTaskDetail.task.error_message">没有失败行。</div>
+          <div class="import-task-detail-empty" v-else-if="!importTaskDetail.task.error_message">{{isModelConfigurationImportTask(importTaskDetail.task)?'没有逐行结果。':'没有失败行。'}}</div>
         </template>
         <div class="import-task-detail-empty" v-else>{{importTaskDetail.error || '未能加载导入任务详情。'}}</div>
       </div>
@@ -1671,10 +1723,15 @@ Vue.createApp({
       eid: '',
       saving: false,
       saveOperationId: 0,
+      importDialogOpen: false,
+      importType: 'knowledge',
+      importUploadType: 'knowledge',
+      importTemplateDownloading: false,
       importing: false,
       importUploadName: '',
       importTasks: [],
       importTaskPoller: null,
+      importTaskListLoading: false,
       importTaskListRequestId: 0,
       showImportHistory: false,
       currentImportTaskId: '',
@@ -1987,9 +2044,38 @@ Vue.createApp({
         .catch(function(error) { alert(error.message); })
         .finally(function() { self.batchApproving = false; });
     },
+    normalizeImportType: function(value) {
+      return value === 'model_configuration' ? 'model_configuration' : 'knowledge';
+    },
+    importTypeLabel: function(value) {
+      return this.normalizeImportType(value) === 'model_configuration'
+        ? '机型配置信息'
+        : '普通知识';
+    },
+    importTaskTypeLabel: function(task) {
+      return this.importTypeLabel(task && task.import_type);
+    },
+    isModelConfigurationImportTask: function(task) {
+      return this.normalizeImportType(task && task.import_type) === 'model_configuration';
+    },
+    openImportDialog: function() {
+      if (this.importing) return;
+      this.importType = 'knowledge';
+      this.importDialogOpen = true;
+    },
+    closeImportDialog: function() {
+      this.importDialogOpen = false;
+    },
     downloadImportTemplate: function() {
       var self = this;
-      fetch(API + '/knowledge/import/template', {headers:self.authHeaders()})
+      if (self.importTemplateDownloading) return;
+      var selectedImportType = self.normalizeImportType(self.importType);
+      self.importTemplateDownloading = true;
+      fetch(
+        API + '/knowledge/import/template?import_type='
+          + encodeURIComponent(selectedImportType),
+        {headers:self.authHeaders()}
+      )
         .then(function(response) {
           if (!response.ok) {
             return response.json().then(function(data) {
@@ -2002,13 +2088,16 @@ Vue.createApp({
           var url = URL.createObjectURL(blob);
           var link = document.createElement('a');
           link.href = url;
-          link.download = '知识批量导入模板.xlsx';
+          link.download = selectedImportType === 'model_configuration'
+            ? '机型配置信息批量导入模板.xlsx'
+            : '知识批量导入模板.xlsx';
           document.body.appendChild(link);
           link.click();
           link.remove();
           URL.revokeObjectURL(url);
         })
-        .catch(function(error) { alert(error.message); });
+        .catch(function(error) { alert(error.message); })
+        .finally(function() { self.importTemplateDownloading = false; });
     },
     exportKnowledgeExcel: function() {
       var self = this;
@@ -2063,9 +2152,13 @@ Vue.createApp({
         return;
       }
 
+      var selectedImportType = self.normalizeImportType(self.importType);
       var form = new FormData();
       form.append('file', file);
+      form.append('import_type', selectedImportType);
       self.importing = true;
+      self.importDialogOpen = false;
+      self.importUploadType = selectedImportType;
       self.importUploadName = file.name;
       self.importTaskNotice = '';
       self.importUploadError = '';
@@ -2081,9 +2174,11 @@ Vue.createApp({
           });
         })
         .then(function(data) {
+          if (data && !data.import_type) data.import_type = selectedImportType;
           self.trackCurrentImportTask(data && data.id);
           self.upsertImportTask(data);
-          self.importTaskNotice = '导入任务已创建，处理进度会自动更新。';
+          self.importTaskNotice = self.importTypeLabel(selectedImportType)
+            + '导入任务已创建，处理进度会自动更新。';
           self.startImportTaskPolling();
           return self.loadImportTasks();
         })
@@ -2118,8 +2213,26 @@ Vue.createApp({
         cancelled:'tg-d'
       }[status] || 'tg-d';
     },
+    importTaskSummary: function(task) {
+      if (this.isModelConfigurationImportTask(task)) {
+        return '新增 ' + this.importTaskOperationCount(task, 'created')
+          + ' · 更新 ' + this.importTaskOperationCount(task, 'updated')
+          + ' · 未变化 ' + this.importTaskOperationCount(task, 'unchanged')
+          + ' · 失败 ' + Number(task && task.failed || 0);
+      }
+      return '已创建 ' + Number(task && task.imported || 0)
+        + ' · 疑似重复 ' + Number(task && task.review_required || 0)
+        + ' · 待审核 ' + Number(task && task.pending_review || 0)
+        + ' · 失败 ' + Number(task && task.failed || 0);
+    },
     isImportTaskActive: function(task) {
       return !!task && (task.status === 'queued' || task.status === 'running');
+    },
+    canCancelImportTask: function(task) {
+      return this.isImportTaskActive(task) && !(
+        this.isModelConfigurationImportTask(task) &&
+        task.status === 'running'
+      );
     },
     isImportTaskTerminal: function(task) {
       return !!task && ['completed','completed_with_errors','failed','cancelled'].indexOf(task.status) !== -1;
@@ -2275,6 +2388,32 @@ Vue.createApp({
     importTaskProgress: function(task) {
       var total = Number(task && task.total_rows || 0);
       var processed = Number(task && task.processed_rows || 0);
+      if (this.isModelConfigurationImportTask(task)) {
+        if (!total) {
+          return {
+            queued:'等待解析',
+            running:'正在解析',
+            failed:'文件校验失败，未写入数据',
+            cancelled:'已取消，未写入数据',
+            completed:'处理完成，无有效数据',
+            completed_with_errors:'整批处理结束，未写入数据'
+          }[task && task.status] || '尚未解析';
+        }
+        if (task.status === 'queued' && !processed) {
+          return '已解析 ' + total + ' 行，等待整批同步';
+        }
+        if (task.status === 'running' && !processed) {
+          return '已解析 ' + total + ' 行，正在整批同步';
+        }
+        if (task.status === 'failed') {
+          return '整批失败，' + total + ' 行全部回滚';
+        }
+        if (task.status === 'cancelled') return '已取消，未写入数据';
+        if (task.status === 'completed') {
+          return '整批同步完成，已处理 ' + processed + '/' + total + ' 行';
+        }
+        return '整批处理中 ' + processed + '/' + total + ' 行';
+      }
       if (!total) {
         return {
           queued:'等待解析',
@@ -2307,13 +2446,48 @@ Vue.createApp({
       }
       return 0;
     },
+    importTaskOperationCount: function(task, operation) {
+      if (
+        task &&
+        Object.prototype.hasOwnProperty.call(task, operation)
+      ) {
+        return Number(task[operation] || 0);
+      }
+      var results = task && Array.isArray(task.results) ? task.results : [];
+      return results.filter(function(row) {
+        return row.operation === operation;
+      }).length;
+    },
+    importTaskOperationLabel: function(operation) {
+      return {
+        created:'新增',
+        updated:'更新',
+        unchanged:'未变化'
+      }[operation] || operation || '-';
+    },
+    importTaskDisplayedResultCount: function(task) {
+      return task && Array.isArray(task.results) ? task.results.length : 0;
+    },
+    importTaskDetailResultTotal: function(task) {
+      return Math.max(
+        Number(task && task.total_rows || 0),
+        Number(task && task.processed_rows || 0),
+        this.importTaskDisplayedResultCount(task)
+      );
+    },
     importTaskFailureRows: function(task) {
       var results = task && Array.isArray(task.results) ? task.results : [];
       return results.filter(function(row) { return row.status === 'failed'; });
     },
+    importTaskDetailRows: function(task) {
+      if (this.isModelConfigurationImportTask(task)) {
+        return task && Array.isArray(task.results) ? task.results : [];
+      }
+      return this.importTaskFailureRows(task);
+    },
     cancelImportTask: function(task) {
       var self = this;
-      if (!self.isImportTaskActive(task) || self.importTaskCancellingId) return;
+      if (!self.canCancelImportTask(task) || self.importTaskCancellingId) return;
       if (!confirm('确认取消导入任务“' + (task.original_filename || task.id) + '”？已处理并保存的知识不会自动回滚。')) return;
       self.importTaskCancellingId = task.id;
       fetch(API + '/knowledge/import/tasks/' + encodeURIComponent(task.id) + '/cancel', {
@@ -2345,7 +2519,7 @@ Vue.createApp({
       self.importTaskDetail = {open:true, loading:true, error:'', task:task};
       fetch(
         API + '/knowledge/import/tasks/' + encodeURIComponent(task.id)
-          + '?include_results=true&result_limit=500',
+          + '?include_results=true&result_limit=5000',
         {headers:self.authHeaders()}
       )
         .then(function(response) {
@@ -2391,7 +2565,12 @@ Vue.createApp({
     },
     loadImportTasks: function() {
       var self = this;
-      if (!self.token || !self.can('knowledge:create')) return Promise.resolve();
+      if (
+        !self.token ||
+        !self.can('knowledge:create') ||
+        self.importTaskListLoading
+      ) return Promise.resolve();
+      self.importTaskListLoading = true;
       var requestId = ++self.importTaskListRequestId;
       return fetch(API + '/knowledge/import/tasks?limit=100', {headers:self.authHeaders()})
         .then(function(response) {
@@ -2402,13 +2581,34 @@ Vue.createApp({
         })
         .then(function(data) {
           if (requestId !== self.importTaskListRequestId) return;
-          var hadActiveTasks = self.hasActiveImportTasks();
           var previousStatuses = self.importTaskStatusById;
-          self.importTasks = Array.isArray(data.tasks) ? data.tasks : [];
+          var previousActiveTasksById = {};
+          self.importTasks.forEach(function(task) {
+            if (self.isImportTaskActive(task)) {
+              previousActiveTasksById[task.id] = task;
+            }
+          });
+          var nextTasks = Array.isArray(data.tasks) ? data.tasks : [];
+          var nextTasksById = {};
+          nextTasks.forEach(function(task) {
+            nextTasksById[task.id] = task;
+          });
+          Object.keys(previousActiveTasksById).forEach(function(taskId) {
+            if (!nextTasksById[taskId]) {
+              var pendingTask = previousActiveTasksById[taskId];
+              nextTasks.unshift(pendingTask);
+              nextTasksById[taskId] = pendingTask;
+            }
+          });
+          var completedTaskDetected = Object.keys(previousActiveTasksById).some(function(taskId) {
+            var nextTask = nextTasksById[taskId];
+            return !!nextTask && !self.isImportTaskActive(nextTask);
+          });
+          self.importTasks = nextTasks;
           self.reconcileImportTaskPresentation(previousStatuses);
           if (self.hasActiveImportTasks()) self.startImportTaskPolling();
           else self.stopImportTaskPolling();
-          if (hadActiveTasks && !self.hasActiveImportTasks()) {
+          if (completedTaskDetected) {
             self.load();
             self.loadStats();
           }
@@ -2416,6 +2616,9 @@ Vue.createApp({
         .catch(function(error) {
           if (requestId !== self.importTaskListRequestId) return;
           console.warn('load import tasks failed:', error);
+        })
+        .finally(function() {
+          self.importTaskListLoading = false;
         });
     },
     logout: function() {

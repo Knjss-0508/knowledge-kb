@@ -82,9 +82,65 @@ class ApiContractTests(unittest.TestCase):
         task_properties = schemas["KnowledgeImportTaskResponse"]["properties"]
         self.assertIn("pending_review", task_properties)
         self.assertIn("deprecated", task_properties)
+        self.assertTrue(
+            {
+                "import_type",
+                "created",
+                "updated",
+                "unchanged",
+            }.issubset(task_properties)
+        )
         self.assertIn(
             "review_task_id",
             schemas["ExcelImportRowResult"]["properties"],
+        )
+        self.assertIn(
+            "operation",
+            schemas["ExcelImportRowResult"]["properties"],
+        )
+
+        template_parameters = {
+            parameter["name"]: parameter
+            for parameter in paths[
+                "/api/v1/knowledge/import/template"
+            ]["get"]["parameters"]
+        }
+        self.assertEqual(
+            template_parameters["import_type"]["schema"]["enum"],
+            ["knowledge", "model_configuration"],
+        )
+        self.assertEqual(
+            template_parameters["import_type"]["schema"]["default"],
+            "knowledge",
+        )
+
+        upload_schema_ref = paths[
+            "/api/v1/knowledge/import/excel"
+        ]["post"]["requestBody"]["content"]["multipart/form-data"]["schema"][
+            "$ref"
+        ]
+        upload_schema = schemas[upload_schema_ref.rsplit("/", 1)[-1]]
+        self.assertEqual(
+            upload_schema["properties"]["import_type"]["enum"],
+            ["knowledge", "model_configuration"],
+        )
+        self.assertEqual(
+            upload_schema["properties"]["import_type"]["default"],
+            "knowledge",
+        )
+        detail_parameters = {
+            parameter["name"]: parameter
+            for parameter in paths[
+                "/api/v1/knowledge/import/tasks/{task_id}"
+            ]["get"]["parameters"]
+        }
+        self.assertEqual(
+            detail_parameters["result_limit"]["schema"]["maximum"],
+            5000,
+        )
+        self.assertEqual(
+            task_properties["imported"]["description"],
+            "成功处理数",
         )
 
     def test_knowledge_list_exposes_applicability_filters(self):
