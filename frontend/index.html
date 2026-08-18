@@ -58,6 +58,28 @@
     .knowledge-title-col{min-width:240px;line-height:1.5}
     .status-cell{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:200px}
     .status-cell .tg{white-space:nowrap}
+    .change-log-table{min-width:820px;table-layout:fixed}
+    .change-log-row td{vertical-align:top}
+    .change-log-time{color:#344054;font-variant-numeric:tabular-nums;white-space:nowrap}
+    .change-log-actor{color:#1d2939;font-weight:700;overflow-wrap:anywhere}
+    .change-log-detail-cell{min-width:0}
+    .change-log-groups{display:grid;gap:10px}
+    .change-log-group{overflow:hidden;border:1px solid #e3e8ec;border-radius:8px;background:#fff}
+    .change-log-group-head{min-height:36px;padding:8px 11px;display:flex;align-items:center;gap:8px;background:#f7f9fa;border-bottom:1px solid #e8edf0}
+    .change-log-section-badge{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;background:#e9f7f3;color:#007f6b;font-size:11px;font-weight:700}
+    .change-log-group-count{color:#86909c;font-size:11px}
+    .change-log-change-list{display:grid;gap:0}
+    .change-log-change{padding:11px;border-bottom:1px solid #edf0f2}
+    .change-log-change:last-child{border-bottom:0}
+    .change-log-change-title{margin-bottom:8px;color:#344054;font-size:12px;font-weight:700}
+    .change-log-values{display:grid;grid-template-columns:minmax(0,1fr) 28px minmax(0,1fr);gap:8px;align-items:stretch}
+    .change-log-value-card{min-width:0;padding:9px 10px;border:1px solid #e3e8ec;border-radius:6px;background:#fafbfc}
+    .change-log-value-card.after{border-color:#bfe5dc;background:#f3fbf8}
+    .change-log-value-label{display:block;margin-bottom:5px;color:#86909c;font-size:10px;font-weight:700}
+    .change-log-value-text{min-width:0;color:#344054;font-size:12px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+    .change-log-change.is-long .change-log-value-text{max-height:220px;overflow:auto;padding-right:4px}
+    .change-log-arrow{display:flex;align-items:center;justify-content:center;color:#009b83;font-size:18px;font-weight:700}
+    @media(max-width:760px){.change-log-values{grid-template-columns:1fr}.change-log-arrow{min-height:18px;transform:rotate(90deg)}}
     .import-task-panel{margin:14px 0;padding:12px 14px;border:1px solid #d9ebe6;border-radius:7px;background:#f7fbfa}
     .import-task-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;color:#344054;font-size:13px;font-weight:700}
     .import-task-notice{margin-bottom:8px;color:#067a6a;font-size:12px;line-height:1.5}
@@ -562,7 +584,7 @@
             <td style="text-align:right">
               <button class="btn bd bsm" v-if="can('knowledge:view')" @click="openView(r)">查看</button>
               <button class="btn bd bsm" v-if="canEditKnowledge(r)" @click="openEdit(r)">编辑</button>
-              <button class="btn bd bsm" v-if="r.status==='published'" @click="openChangeLogs(r)">变更日志</button>
+              <button class="btn bd bsm" v-if="r.status==='published' || r.status==='deprecated'" @click="openChangeLogs(r)">变更日志</button>
               <button class="btn bw bsm" v-if="can('knowledge:submit') && r.status==='draft'" @click="act(r,'submit-review')">提交发布审核</button>
               <button class="btn bs bsm" v-if="can('knowledge:approve') && r.status==='review'" @click="openReview(r)">发布审核</button>
               <button class="btn bs bsm" v-if="can('knowledge:deprecate') && r.status==='deprecated'" @click="act(r,'restore')">重新启用</button>
@@ -670,13 +692,38 @@
       <button class="btn bd" v-if="changeLogs.item" @click="loadChangeLogs(changeLogs.item)">刷新</button>
     </div>
     <div class="tw">
-      <table>
-        <thead><tr><th style="width:190px">变更时间</th><th style="width:140px">变更人</th><th>变更内容</th></tr></thead>
+      <table class="change-log-table">
+        <thead><tr><th style="width:170px">变更时间</th><th style="width:140px">变更人</th><th>变更详情</th></tr></thead>
         <tbody>
-          <tr v-for="log in changeLogs.entries" :key="log.id">
-            <td>{{formatDate(log.created_at)}}</td>
-            <td style="font-weight:600">{{log.changed_by}}</td>
-            <td><div class="tl" style="margin-top:0"><span class="ti" v-for="field in log.changed_fields" :key="field">{{changeFieldLabel(field)}}</span></div></td>
+          <tr class="change-log-row" v-for="log in changeLogs.entries" :key="log.id">
+            <td><div class="change-log-time">{{formatDate(log.created_at)}}</div></td>
+            <td><div class="change-log-actor">{{log.changed_by || '系统'}}</div></td>
+            <td class="change-log-detail-cell">
+              <div class="change-log-groups">
+                <section class="change-log-group" v-for="group in changeLogGroups(log)" :key="group.section">
+                  <div class="change-log-group-head">
+                    <span class="change-log-section-badge">{{group.section}}</span>
+                    <span class="change-log-group-count">{{group.changes.length}} 项变更</span>
+                  </div>
+                  <div class="change-log-change-list">
+                    <article class="change-log-change" :class="{'is-long':change.long}" v-for="change in group.changes" :key="change.field">
+                      <div class="change-log-change-title">修改{{change.label}}</div>
+                      <div class="change-log-values">
+                        <div class="change-log-value-card">
+                          <span class="change-log-value-label">变更前</span>
+                          <div class="change-log-value-text">{{change.before_text}}</div>
+                        </div>
+                        <span class="change-log-arrow" aria-hidden="true">→</span>
+                        <div class="change-log-value-card after">
+                          <span class="change-log-value-label">变更后</span>
+                          <div class="change-log-value-text">{{change.after_text}}</div>
+                        </div>
+                      </div>
+                    </article>
+                  </div>
+                </section>
+              </div>
+            </td>
           </tr>
           <tr v-if="!changeLogs.entries.length"><td colspan="3" style="text-align:center;padding:40px;color:#c9cdd4">暂无变更日志。发布审核或已发布知识发生实际修改后会在这里记录。</td></tr>
         </tbody>
@@ -1189,10 +1236,6 @@
             <div class="import-review-card" v-if="validationRemarkParts(fm).conclusion"><span>校验结论</span><div>{{validationRemarkParts(fm).conclusion}}</div></div>
             <div class="import-review-card" v-if="validationRemarkParts(fm).reason"><span>审核原因</span><div>{{validationRemarkParts(fm).reason}}</div></div>
             <div class="import-review-card" v-if="validationRemarkParts(fm).suggestion"><span>处理建议</span><div>{{validationRemarkParts(fm).suggestion}}</div></div>
-          </div>
-          <div class="import-review-block" v-if="validationSourceTrace(fm)">
-            <div class="import-review-block-label">来源追溯</div>
-            <div class="import-review-raw">{{validationSourceTrace(fm)}}</div>
           </div>
           <div class="import-review-block">
             <div class="import-review-block-label">原始校验备注</div>
@@ -3759,17 +3802,148 @@ Vue.createApp({
       return {
         title:'标题',
         subtitles:'副标题',
-        content:'正文内容',
+        content:'知识内容',
         knowledge_origin:'知识来源',
         business_type:'业务类型',
         category_id:'所属分类',
-        status:'状态',
+        status:'知识状态',
         applicable_scenes:'场景标签',
         applicable_categories:'适用类目',
         applicable_brands:'适用品牌',
         applicable_models:'适用机型',
-        related_standard_items:'关联标准项'
+        related_standard_items:'关联标准项',
+        source_topic_key:'来源主题标识',
+        source_record_id:'来源记录标识',
+        source_knowledge_key:'来源知识标识',
+        source_fields:'源表原始字段'
       }[field] || field;
+    },
+    changeFieldSection: function(field) {
+      if (field === 'content') return '知识内容';
+      if (field === 'status') return '知识状态';
+      if ([
+        'applicable_scenes',
+        'applicable_categories',
+        'applicable_brands',
+        'applicable_models'
+      ].indexOf(field) >= 0) return '适用范围';
+      if (String(field || '').indexOf('source_') === 0) return '来源信息';
+      return '知识信息';
+    },
+    changeFieldIsInternal: function(field) {
+      return [
+        'source_topic_key',
+        'source_record_id',
+        'source_knowledge_key',
+        'source_fields'
+      ].indexOf(field) >= 0;
+    },
+    changeLogContentValue: function(content) {
+      if (content === null || typeof content === 'undefined' || content === '') return '（空）';
+      if (typeof content === 'string') return this.richTextToPlainText(content) || '（空）';
+      var blocks = content && Array.isArray(content.blocks) ? content.blocks : [];
+      if (!blocks.length) {
+        if (content && typeof content === 'object' && Object.keys(content).length) {
+          return JSON.stringify(content, null, 2);
+        }
+        return '（空）';
+      }
+      var self = this;
+      var values = blocks.map(function(block) {
+        if (!block || typeof block !== 'object') return String(block || '');
+        var type = String(block.type || 'text');
+        if (type === 'text') {
+          return self.richTextToPlainText(block.value || block.text || '');
+        }
+        if (type === 'image' || type === 'video') {
+          var details = [];
+          [
+            block.alt,
+            block.caption,
+            block.external_url || block.url,
+            block.media_id
+          ].forEach(function(value) {
+            var text = String(value || '').trim();
+            if (text && details.indexOf(text) < 0) details.push(text);
+          });
+          return '[' + (type === 'image' ? '图片' : '视频') + '] ' + (details.join(' · ') || '未填写说明');
+        }
+        return JSON.stringify(block, null, 2);
+      }).filter(function(value) {
+        return String(value || '').trim();
+      });
+      return values.join('\n\n') || '（空）';
+    },
+    changeLogValue: function(field, value, hasValue, isAfter) {
+      if (!hasValue) return '（历史记录未保存）';
+      if (this.changeFieldIsInternal(field)) {
+        return isAfter
+          ? '（内部来源字段已更新，具体值不在前端展示）'
+          : '（内部来源字段，具体值不在前端展示）';
+      }
+      if (value === null || typeof value === 'undefined' || value === '') return '（空）';
+      if (field === 'status') return this.sl(value);
+      if (field === 'knowledge_origin') return this.knowledgeOriginLabel(value);
+      if (field === 'business_type') return this.businessTypeLabel(value);
+      if (field === 'category_id') return this.categoryLabel(value) || '（空）';
+      if (field === 'content') return this.changeLogContentValue(value);
+      if (Array.isArray(value)) {
+        if (!value.length) return '（空）';
+        var separator = field === 'subtitles' ? '\n' : '、';
+        return value.map(function(item) {
+          if (item && typeof item === 'object') {
+            return item.label || item.name || item.value || item.id || JSON.stringify(item);
+          }
+          return String(item);
+        }).join(separator);
+      }
+      if (typeof value === 'object') return JSON.stringify(value, null, 2);
+      if (typeof value === 'boolean') return value ? '是' : '否';
+      return String(value);
+    },
+    changeLogGroups: function(log) {
+      var beforeData = log && log.before_data && typeof log.before_data === 'object'
+        ? log.before_data
+        : {};
+      var afterData = log && log.after_data && typeof log.after_data === 'object'
+        ? log.after_data
+        : {};
+      var fields = log && Array.isArray(log.changed_fields)
+        ? log.changed_fields.slice()
+        : [];
+      if (!fields.length) {
+        Object.keys(beforeData).concat(Object.keys(afterData)).forEach(function(field) {
+          if (fields.indexOf(field) < 0 &&
+              JSON.stringify(beforeData[field]) !== JSON.stringify(afterData[field])) {
+            fields.push(field);
+          }
+        });
+      }
+      var self = this;
+      var groups = [];
+      var grouped = {};
+      fields.forEach(function(field) {
+        var key = String(field || '');
+        if (!key) return;
+        var section = self.changeFieldSection(key);
+        if (!grouped[section]) {
+          grouped[section] = {section:section, changes:[]};
+          groups.push(grouped[section]);
+        }
+        var hasBefore = Object.prototype.hasOwnProperty.call(beforeData, key);
+        var hasAfter = Object.prototype.hasOwnProperty.call(afterData, key);
+        var beforeText = self.changeLogValue(key, beforeData[key], hasBefore, false);
+        var afterText = self.changeLogValue(key, afterData[key], hasAfter, true);
+        grouped[section].changes.push({
+          field:key,
+          label:self.changeFieldLabel(key),
+          before_text:beforeText,
+          after_text:afterText,
+          long:key === 'content' || beforeText.length > 120 || afterText.length > 120 ||
+            beforeText.indexOf('\n') >= 0 || afterText.indexOf('\n') >= 0
+        });
+      });
+      return groups;
     },
     businessTypeLabel: function(value) {
       var key = String(value || '');
@@ -4324,9 +4498,6 @@ Vue.createApp({
     },
     validationRemark: function(item) {
       return String(this.importReviewMetadata(item).validation_remark || '').trim();
-    },
-    validationSourceTrace: function(item) {
-      return String(this.importReviewMetadata(item).source_trace || '').trim();
     },
     validationRemarkParts: function(item) {
       var raw = this.validationRemark(item);

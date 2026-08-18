@@ -2435,6 +2435,44 @@ def _knowledge_snapshot(item: Knowledge) -> dict:
     }
 
 
+def _change_log_from_snapshots(
+    item: Knowledge,
+    *,
+    changed_by: str,
+    before_data: dict,
+    after_data: dict,
+    created_at: datetime | None = None,
+) -> KnowledgeChangeLog | None:
+    """根据前后快照生成仅包含实际变化字段的审计记录。"""
+    ordered_fields = list(before_data)
+    ordered_fields.extend(
+        field for field in after_data
+        if field not in before_data
+    )
+    changed_fields = [
+        field
+        for field in ordered_fields
+        if before_data.get(field) != after_data.get(field)
+    ]
+    if not changed_fields:
+        return None
+    return KnowledgeChangeLog(
+        id=f"kcl-{uuid.uuid4().hex[:12]}",
+        knowledge_id=item.id,
+        changed_by=changed_by,
+        changed_fields=changed_fields,
+        before_data={
+            field: deepcopy(before_data.get(field))
+            for field in changed_fields
+        },
+        after_data={
+            field: deepcopy(after_data.get(field))
+            for field in changed_fields
+        },
+        created_at=created_at or datetime.utcnow(),
+    )
+
+
 def _approval_change_log(
     item: Knowledge,
     *,
@@ -2442,15 +2480,16 @@ def _approval_change_log(
     reviewed_at: datetime,
 ) -> KnowledgeChangeLog:
     """记录待审核知识成功发布的审核人、审核时间和状态变化。"""
-    return KnowledgeChangeLog(
-        id=f"kcl-{uuid.uuid4().hex[:12]}",
-        knowledge_id=item.id,
+    change_log = _change_log_from_snapshots(
+        item,
         changed_by=reviewed_by,
-        changed_fields=["status"],
         before_data={"status": KnowledgeStatus.REVIEW.value},
         after_data={"status": KnowledgeStatus.PUBLISHED.value},
         created_at=reviewed_at,
     )
+    if change_log is None:
+        raise RuntimeError("发布审核状态未发生变化，无法生成变更日志。")
+    return change_log
 
 
 def _can_edit_knowledge(item: Knowledge, user: User) -> bool:
@@ -2542,7 +2581,6 @@ def update_knowledge(
     if not allowed:
         raise HTTPException(403, "You do not have permission to edit this knowledge item.")
     was_published = item.status == KnowledgeStatus.PUBLISHED
-    before_data = _knowledge_snapshot(item) if was_published else None
     updates = body.model_dump(exclude_unset=True)
     updated_fields = set(updates)
     origin_changed = (
@@ -2589,6 +2627,7 @@ def update_knowledge(
             item.applicable_categories,
         ),
     )
+    before_data = _knowledge_snapshot(item)
     try:
         for field, val in updates.items():
             if field == "content":
@@ -2654,23 +2693,22 @@ def update_knowledge(
             field for field, before_value in (before_data or {}).items()
             if before_value != after_data.get(field)
         ]
+        changed_at = datetime.utcnow()
         if changed_fields:
             item.updated_by = current_user.username
-        if was_published and changed_fields:
-            db.add(
-                KnowledgeChangeLog(
-                    id=f"kcl-{uuid.uuid4().hex[:12]}",
-                    knowledge_id=item.id,
-                    changed_by=current_user.username,
-                    changed_fields=changed_fields,
-                    before_data=before_data,
-                    after_data=after_data,
-                )
+            change_log = _change_log_from_snapshots(
+                item,
+                changed_by=current_user.username,
+                before_data=before_data,
+                after_data=after_data,
+                created_at=changed_at,
             )
+            if change_log is not None:
+                db.add(change_log)
         if {"title", "subtitles", "content"} & updated_fields:
             ensure_embedding(db, item)
             ensure_search_embeddings(db, item)
-        item.updated_at = datetime.utcnow()
+        item.updated_at = changed_at
         db.commit()
     except Exception:
         db.rollback()
@@ -2790,6 +2828,7 @@ def submit_review(
         raise HTTPException(400, "只有草稿状态才能提交审核")
     if current_user.role != "super_admin" and item.created_by != current_user.username:
         raise HTTPException(403, "Only the creator can submit this knowledge item for review.")
+    before_data = _knowledge_snapshot(item)
     decision = _check_manual_deduplication(
         db,
         title=item.title,
@@ -2816,7 +2855,19 @@ def submit_review(
             content_embedding=decision.content_embedding,
         )
     ensure_search_embeddings(db, item)
-    item.updated_at = datetime.utcnow()
+    changed_at = datetime.utcnow()
+    item.updated_by = current_user.username
+    item.updated_at = changed_at
+    after_data = _knowledge_snapshot(item)
+    change_log = _change_log_from_snapshots(
+        item,
+        changed_by=current_user.username,
+        before_data=before_data,
+        after_data=after_data,
+        created_at=changed_at,
+    )
+    if change_log is not None:
+        db.add(change_log)
     db.commit()
     db.refresh(item)
     return _to_response(item)
@@ -2989,12 +3040,29 @@ def batch_approve_knowledge(
 
 
 @router.post("/{knowledge_id}/deprecate", response_model=KnowledgeResponse, summary="废弃知识条目")
-def deprecate_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:deprecate"))):
+def deprecate_knowledge(
+    knowledge_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:deprecate")),
+):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    before_data = _knowledge_snapshot(item)
+    changed_at = datetime.utcnow()
     item.status = KnowledgeStatus.DEPRECATED
-    item.updated_at = datetime.utcnow()
+    item.updated_by = current_user.username
+    item.updated_at = changed_at
+    after_data = _knowledge_snapshot(item)
+    change_log = _change_log_from_snapshots(
+        item,
+        changed_by=current_user.username,
+        before_data=before_data,
+        after_data=after_data,
+        created_at=changed_at,
+    )
+    if change_log is not None:
+        db.add(change_log)
     db.commit()
     db.refresh(item)
     return _to_response(item)
@@ -3014,18 +3082,18 @@ def restore_knowledge(
     before_data = _knowledge_snapshot(item)
     item.status = KnowledgeStatus.PUBLISHED
     item.updated_by = current_user.username
-    item.updated_at = datetime.utcnow()
+    changed_at = datetime.utcnow()
+    item.updated_at = changed_at
     after_data = _knowledge_snapshot(item)
-    db.add(
-        KnowledgeChangeLog(
-            id=f"kcl-{uuid.uuid4().hex[:12]}",
-            knowledge_id=item.id,
-            changed_by=current_user.username,
-            changed_fields=["status"],
-            before_data=before_data,
-            after_data=after_data,
-        )
+    change_log = _change_log_from_snapshots(
+        item,
+        changed_by=current_user.username,
+        before_data=before_data,
+        after_data=after_data,
+        created_at=changed_at,
     )
+    if change_log is not None:
+        db.add(change_log)
     db.commit()
     db.refresh(item)
     return _to_response(item)
