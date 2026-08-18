@@ -223,7 +223,7 @@ CREATE TABLE public.knowledge_items (
     business_type character varying(32) NOT NULL,
     knowledge_origin character varying(32) NOT NULL,
     CONSTRAINT ck_knowledge_items_business_type CHECK (((business_type)::text = ANY ((ARRAY['self_operated'::character varying, 'aggregated'::character varying])::text[]))),
-    CONSTRAINT ck_knowledge_items_knowledge_origin CHECK (((knowledge_origin)::text = ANY ((ARRAY['headquarters_standard'::character varying, 'business_accumulation'::character varying])::text[])))
+    CONSTRAINT ck_knowledge_items_knowledge_origin CHECK (((knowledge_origin)::text = ANY ((ARRAY['headquarters_standard'::character varying, 'business_accumulation'::character varying, 'model_configuration'::character varying])::text[])))
 );
 
 
@@ -866,6 +866,20 @@ CREATE INDEX ix_knowledge_items_status ON public.knowledge_items USING btree (st
 --
 
 CREATE INDEX ix_knowledge_items_title ON public.knowledge_items USING btree (title);
+
+
+--
+-- Name: uq_knowledge_items_model_configuration_source_knowledge_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_knowledge_items_model_configuration_source_knowledge_key ON public.knowledge_items USING btree (source_knowledge_key) WHERE (((knowledge_origin)::text = 'model_configuration'::text) AND (source_knowledge_key IS NOT NULL));
+
+
+--
+-- Name: uq_knowledge_items_model_configuration_source_record_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_knowledge_items_model_configuration_source_record_id ON public.knowledge_items USING btree (source_record_id) WHERE (((knowledge_origin)::text = 'model_configuration'::text) AND (source_record_id IS NOT NULL));
 
 
 --

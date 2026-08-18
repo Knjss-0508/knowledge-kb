@@ -102,14 +102,14 @@ GET /integration/taxonomy
 ```
 
 用途：上游在自动标注和改写前获取可用的知识来源、业务类型、`category_id` 和标签维度。
-知识层级为“知识来源 → 业务类型 → 知识分类”；两种知识来源目前都支持自营回收、
-聚合回收，但每条知识必须分别保存自己的 `knowledge_origin` 和 `business_type`。
+知识层级为“知识来源 → 业务类型 → 知识分类”。总部标准和业务沉淀支持人工与上游
+候选维护；机型配置信息是飞书托管来源，仅通过专用同步维护。
 
 响应示例：
 
 ```json
 {
-  "version": "automation-v5",
+  "version": "automation-v6",
   "knowledge_origins": [
     {
       "value": "headquarters_standard",
@@ -118,6 +118,10 @@ GET /integration/taxonomy
     {
       "value": "business_accumulation",
       "label": "业务沉淀"
+    },
+    {
+      "value": "model_configuration",
+      "label": "机型配置信息"
     }
   ],
   "business_types": [
@@ -165,7 +169,8 @@ GET /integration/taxonomy
 ```
 
 上游应保存 `knowledge_origins[].value` 和 `business_types[].value`，提交知识时传递编码
-而不是中文名称。`automation-v5` 相比 v4 新增 `knowledge_origins`；分类和标签字段保持兼容。
+而不是中文名称。`automation-v6` 新增托管来源 `model_configuration`；分类和标签
+字段保持兼容。
 预查重、直接候选提交、价值复核候选同步和标准检索均要求显式传递知识来源与业务类型
 （标准检索的业务类型仍可由旧上下文推断，但新客户端应明确传递两者）。
 
@@ -336,7 +341,7 @@ POST /integration/knowledge-candidates:batch
 | `knowledge.title` | 是 | 主标题 |
 | `knowledge.subtitles` | 否 | 可检索的用户问法或别名；不要堆砌关键词 |
 | `knowledge.content` | 是 | 改写后的知识正文；支持字符串或 `blocks` 富文本结构 |
-| `knowledge.knowledge_origin` | 是 | 知识来源编码，只允许 `headquarters_standard` 或 `business_accumulation`；必须来自 `/integration/taxonomy` |
+| `knowledge.knowledge_origin` | 是 | 普通候选只允许 `headquarters_standard` 或 `business_accumulation`；`model_configuration` 由飞书专用同步维护，不接受候选提交 |
 | `knowledge.business_type` | 是 | 业务类型编码，只允许 `self_operated` 或 `aggregated`；必须来自 `/integration/taxonomy` |
 | `knowledge.category_id` | 是 | 必须来自 `/integration/taxonomy` |
 | `knowledge.evidence_excerpt` | 否 | 不超过 4000 字的脱敏证据摘要 |
@@ -521,7 +526,8 @@ Content-Type: application/json
 该接口与“答疑智能推荐助手 0.2.2”的 `external-standard-provider` 契约兼容。
 服务端只检索 `published` 已发布知识，并分别检索“总部标准”和“业务沉淀”。
 每个知识池的返回数量由中台独立配置，范围 1～10、当前默认均为 5；合并后最多
-20 条。待审核、草稿和已废弃知识不会出现在响应中。
+20 条。机型配置信息使用独立的品类、品牌、机型精确匹配结果，不进入向量候选、
+阈值、TOP 或召回质量反馈。待审核、草稿和已废弃知识不会出现在响应中。
 
 请求示例：
 
@@ -532,11 +538,19 @@ Content-Type: application/json
   "normalizedQuestion": "屏幕四周胶条破损怎么判定",
   "knowledgeOrigin": "headquarters_standard",
   "businessType": "self_operated",
-  "productType": "手机",
-  "model": "iPhone 13",
+  "productType": "平板电脑",
+  "categoryId": "119",
+  "brand": "苹果",
+  "brandId": "10530",
+  "model": "iPad 10 (2022) 10.9英寸",
+  "modelId": "97519",
   "orderInfo": {
-    "category": "手机",
-    "model": "iPhone 13"
+    "category": "平板电脑",
+    "categoryId": "119",
+    "brand": "苹果",
+    "brandId": "10530",
+    "model": "iPad 10 (2022) 10.9英寸",
+    "modelId": "97519"
   },
   "partTerms": ["屏幕", "胶条"],
   "phenomenonTerms": ["破损"],
@@ -554,16 +568,21 @@ Content-Type: application/json
 | `normalizedQuestion` | 是 | 插件整理后的检索问题，不能为空 |
 | `knowledgeOrigin` | 否 | 兼容旧插件的来源字段；当前接口固定同时检索总部标准和业务沉淀 |
 | `businessType` | 否 | 业务类型硬过滤，只允许 `self_operated` 或 `aggregated`；新插件应明确传递 |
-| `productType` / `model` | 否 | 插件提供的商品类目和机型上下文 |
-| `orderInfo` | 否 | 插件订单上下文，当前保留 `category` 和 `model` |
+| `productType` / `categoryId` | 否 | 插件提供的品类名称和 ID；机型配置精确匹配需要品类、品牌、机型三层信息完整 |
+| `brand` / `brandId` | 否 | 插件提供的品牌名称和 ID |
+| `model` / `modelId` | 否 | 插件提供的机型名称和 ID |
+| `orderInfo` | 否 | 插件订单上下文，支持同名的品类、品牌、机型名称与 ID |
 | `partTerms` / `phenomenonTerms` / `categoryIntent` | 否 | 插件已解析的检索上下文 |
 | `limit` | 否 | 调用方对每个知识来源设置的兼容上限；允许 1～20，实际返回量还受中台为总部标准、业务沉淀分别设置的 1～10 条上限约束 |
 
-当前版本只使用 `normalizedQuestion` 生成查询向量，并使用 `businessType` 对已发布
-知识执行硬过滤；同一个查询向量会分别在 `headquarters_standard` 和
-`business_accumulation` 范围内检索。插件传入的类目和机型是中文名称，而知识库
-适用范围保存的是曼哈顿 ID，尚未建立名称到 ID 的稳定映射，因此其他上下文字段
-暂不作为硬过滤条件，避免误删正确候选。
+`normalizedQuestion` 用于总部标准和业务沉淀的语义检索，`businessType` 用于业务
+类型硬过滤。品类、品牌、机型上下文先统一解析为可比较的名称和 ID，再作为两类
+语义知识的适用范围过滤条件。
+
+机型配置信息不生成查询向量。服务端优先严格匹配
+`categoryId + brandId + modelId`；ID 组合未命中且三个名称都完整时，再对
+`category + brand + model` 做 NFKC、大小写和空白归一后的精确匹配。任一层缺失、
+不一致或匹配到多条时均返回 `no_match`，不做模糊、包含或向量兜底。
 
 为兼容尚未发送 `businessType` 的旧插件，服务端仍会检查 `productType` 和
 `orderInfo.category`：任一字段明确等于“聚合回收”时按 `aggregated` 检索，
@@ -578,7 +597,7 @@ Content-Type: application/json
   "requestId": "qa-plugin-202608100001-1",
   "provider": "knowledge-kb",
   "status": "success",
-  "retrievalMode": "semantic_pgvector",
+  "retrievalMode": "hybrid_exact_scope_pgvector",
   "knowledgeVersion": "0.1.0",
   "scoreThreshold": 0.42,
   "candidates": [
@@ -598,7 +617,29 @@ Content-Type: application/json
       "keywords": ["手机黑屏怎么处理"],
       "sourceRef": "knowledge-kb://knowledge/A-00001"
     }
-  ]
+  ],
+  "modelConfiguration": {
+    "status": "success",
+    "matchMode": "id",
+    "item": {
+      "knowledgeId": "A-00832",
+      "knowledgeOrigin": "model_configuration",
+      "categoryId": "119",
+      "category": "平板电脑",
+      "brandId": "10530",
+      "brand": "苹果",
+      "modelId": "97519",
+      "model": "iPad 10 (2022) 10.9英寸",
+      "title": "iPad 10 (2022) 10.9英寸 机型的硬件与基础信息",
+      "content": "是否有卡槽：国行单SIM卡；其他版本单SIM卡+eSIM卡；",
+      "attributes": {
+        "是否有卡槽": "国行:单SIM卡\n其他版本:单SIM卡+eSIM卡",
+        "指纹识别": "有指纹",
+        "蜂窝网络": "有蜂窝网络版"
+      },
+      "sourceRef": "knowledge-kb://knowledge/A-00832"
+    }
+  }
 }
 ```
 
@@ -622,7 +663,11 @@ Header 与正文不一致时返回 `REQUEST_IDENTITY_MISMATCH`，Embedding 服�
 不会用另一来源补位或
 复制结果；当前接口不会跨业务类型扩大检索。服务端会在适用类目、品牌和机型过滤后，
 使用当前激活的知识检索阈值过滤低分候选，并通过 `scoreThreshold` 返回本次生效值。
-Embedding 服务不可用时返回 HTTP 503。
+`modelConfiguration` 始终返回独立状态；未命中时为
+`{"status":"no_match","matchMode":"none","item":null}`。精确命中不受 `limit`、
+阈值和两个向量知识池的 TOP 配置影响，也不计入 `candidates`。Embedding 服务
+不可用但机型配置精确命中时，接口仍以 HTTP 200 返回该精确结果；精确结果也未
+命中时才返回 HTTP 503。
 
 插件的 Provider 配置示例：
 
@@ -631,7 +676,7 @@ Embedding 服务不可用时返回 HTTP 503。
   {
     "id": "knowledge-kb",
     "enabled": true,
-    "searchUrl": "http://qa-kb.10.47.193.5.nip.io/api/v1/integration/standard-search",
+    "searchUrl": "https://<knowledge-kb-host>/api/v1/integration/standard-search",
     "apiKeyEnv": "KNOWLEDGE_KB_RETRIEVAL_KEY",
     "authHeader": "X-Integration-Key",
     "authScheme": "",

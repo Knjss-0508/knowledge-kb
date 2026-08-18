@@ -21,10 +21,12 @@ def _candidate(idempotency_key: str) -> dict:
             "plugin_name": "answer-hub-topic-transcription",
             "plugin_version": "1.0.0",
         },
-        "selection": {"eligible": True, "confidence": 0.95},
+        "selection": {"eligible": False, "confidence": 0.95},
         "knowledge": {
             "title": "手机无法充电的排查方法",
             "content": "先检查充电线和充电口。",
+            "knowledge_origin": "headquarters_standard",
+            "business_type": "self_operated",
             "category_id": "cat-qc-standard",
         },
     }

@@ -22,4 +22,8 @@ def list_knowledge_origins() -> list[KnowledgeOriginOption]:
             value="business_accumulation",
             label="业务沉淀",
         ),
+        KnowledgeOriginOption(
+            value="model_configuration",
+            label="机型配置信息",
+        ),
     ]

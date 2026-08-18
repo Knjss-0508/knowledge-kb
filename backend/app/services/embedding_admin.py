@@ -125,7 +125,10 @@ def import_retrieval_samples(db: Session, *, created_by: str) -> int:
             .filter(Knowledge.id == event.expected_knowledge_id)
             .first()
         )
-        if not expected:
+        if (
+            not expected
+            or expected.knowledge_origin == "model_configuration"
+        ):
             continue
         negatives: list[str] = []
         for candidate in event.candidate_snapshot or []:
@@ -135,7 +138,10 @@ def import_retrieval_samples(db: Session, *, created_by: str) -> int:
             if not knowledge_id or knowledge_id == expected.id:
                 continue
             item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
-            if item:
+            if (
+                item
+                and item.knowledge_origin != "model_configuration"
+            ):
                 negatives.append(knowledge_training_text(item))
         if _create_source_sample(
             db,
@@ -178,7 +184,12 @@ def import_deduplication_samples(db: Session, *, created_by: str) -> int:
             .filter(Knowledge.id == feedback.matched_knowledge_id)
             .first()
         )
-        if not item or not matched:
+        if (
+            not item
+            or not matched
+            or item.knowledge_origin == "model_configuration"
+            or matched.knowledge_origin == "model_configuration"
+        ):
             continue
         query_text = item.title.strip()
         positive_text = _content_to_text(item.content)

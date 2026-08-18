@@ -111,12 +111,15 @@ BUSINESS_TYPE_VALUE_ALIASES = {
 KNOWLEDGE_ORIGIN_LABELS = {
     "headquarters_standard": "总部标准",
     "business_accumulation": "业务沉淀",
+    "model_configuration": "机型配置信息",
 }
 KNOWLEDGE_ORIGIN_VALUE_ALIASES = {
     "总部标准": "headquarters_standard",
     "业务沉淀": "business_accumulation",
+    "机型配置信息": "model_configuration",
     "headquarters_standard": "headquarters_standard",
     "business_accumulation": "business_accumulation",
+    "model_configuration": "model_configuration",
 }
 
 VALID_SOURCE_STATUSES = {"生效中", "待审核", "已禁用"}
@@ -426,12 +429,18 @@ def _resolve_knowledge_origin(value) -> str:
         )
     normalized = text.lower()
     knowledge_origin = KNOWLEDGE_ORIGIN_VALUE_ALIASES.get(normalized)
+    if knowledge_origin == "model_configuration":
+        raise KnowledgeExcelRowError(
+            "KNOWLEDGE_ORIGIN_MANAGED",
+            "机型配置信息由飞书专用同步维护，不能通过普通 Excel 导入。",
+        )
     if knowledge_origin:
         return knowledge_origin
     raise KnowledgeExcelRowError(
         "KNOWLEDGE_ORIGIN_INVALID",
         f"知识来源“{text}”不受支持，仅允许总部标准、业务沉淀、"
-        "headquarters_standard 或 business_accumulation。",
+        "headquarters_standard 或 business_accumulation；"
+        "机型配置信息由飞书专用同步维护。",
     )
 
 
@@ -924,7 +933,8 @@ def build_knowledge_import_template(categories) -> bytes:
     import_sheet["A1"].comment = Comment("必填，最多 256 个字符。", "知识库")
     import_sheet["B1"].comment = Comment(
         "必填。可填写总部标准、业务沉淀，或对应代码 "
-        "headquarters_standard、business_accumulation。",
+        "headquarters_standard、business_accumulation。"
+        "机型配置信息由飞书专用同步维护。",
         "知识库",
     )
     import_sheet["C1"].comment = Comment(
@@ -950,6 +960,8 @@ def build_knowledge_import_template(categories) -> bytes:
 
     knowledge_origin_sheet.append(["知识来源代码", "知识来源名称"])
     for code, label in KNOWLEDGE_ORIGIN_LABELS.items():
+        if code == "model_configuration":
+            continue
         knowledge_origin_sheet.append([code, label])
     knowledge_origin_sheet.freeze_panes = "A2"
     knowledge_origin_sheet.auto_filter.ref = (
@@ -1008,8 +1020,9 @@ def build_knowledge_import_template(categories) -> bytes:
         (
             "知识来源",
             "从“知识来源字典”复制中文名称或代码；"
-            "仅允许总部标准、业务沉淀、headquarters_standard、"
-            "business_accumulation。",
+            "普通导入仅允许总部标准、业务沉淀、"
+            "headquarters_standard、business_accumulation；"
+            "机型配置信息由飞书专用同步维护。",
         ),
         (
             "业务类型",

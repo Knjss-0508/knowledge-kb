@@ -9,6 +9,7 @@ from app.routes.integration import _candidate_payload_with_taxonomy_defaults
 from app.routes.knowledge_origin import list_knowledge_origins
 from app.schemas.integration import (
     CandidateReviewUpdate,
+    IntegrationStandardSearchCandidate,
     IntegrationStandardSearchRequest,
 )
 from app.schemas.knowledge import (
@@ -34,9 +35,31 @@ class KnowledgeOriginTests(unittest.TestCase):
             check_constraints["ck_knowledge_items_knowledge_origin"],
             (
                 "knowledge_origin IN "
-                "('headquarters_standard', 'business_accumulation')"
+                "('headquarters_standard', 'business_accumulation', "
+                "'model_configuration')"
             ),
         )
+        self.assertTrue(
+            {
+                "uq_knowledge_items_model_configuration_source_record_id",
+                "uq_knowledge_items_model_configuration_source_knowledge_key",
+            }.issubset(
+                {index.name for index in Knowledge.__table__.indexes}
+            )
+        )
+        managed_indexes = {
+            index.name: index
+            for index in Knowledge.__table__.indexes
+            if index.name
+            and index.name.startswith(
+                "uq_knowledge_items_model_configuration_"
+            )
+        }
+        for index in managed_indexes.values():
+            self.assertIsNotNone(
+                index.dialect_options["postgresql"]["where"]
+            )
+            self.assertIsNotNone(index.dialect_options["sqlite"]["where"])
 
     def test_origin_is_required_and_restricted_in_write_schemas(self):
         base_knowledge = {
@@ -52,6 +75,13 @@ class KnowledgeOriginTests(unittest.TestCase):
             KnowledgeCreate.model_validate(
                 {**base_knowledge, "knowledge_origin": "invalid"}
             )
+        with self.assertRaises(ValidationError):
+            KnowledgeCreate.model_validate(
+                {
+                    **base_knowledge,
+                    "knowledge_origin": "model_configuration",
+                }
+            )
 
         created = KnowledgeCreate.model_validate(
             {
@@ -64,10 +94,24 @@ class KnowledgeOriginTests(unittest.TestCase):
         self.assertIsNone(KnowledgeUpdate.model_validate({}).knowledge_origin)
         with self.assertRaises(ValidationError):
             KnowledgeUpdate.model_validate({"knowledge_origin": None})
+        with self.assertRaises(ValidationError):
+            KnowledgeUpdate.model_validate(
+                {"knowledge_origin": "model_configuration"}
+            )
 
         with self.assertRaises(ValidationError):
             CandidateSubmit.model_validate(
                 {
+                    "business_type": "self_operated",
+                    "title": "候选知识",
+                    "content": "候选内容",
+                    "category_id": "cat-qc-standard",
+                }
+            )
+        with self.assertRaises(ValidationError):
+            CandidateSubmit.model_validate(
+                {
+                    "knowledge_origin": "model_configuration",
                     "business_type": "self_operated",
                     "title": "候选知识",
                     "content": "候选内容",
@@ -88,6 +132,10 @@ class KnowledgeOriginTests(unittest.TestCase):
                     "value": "business_accumulation",
                     "label": "业务沉淀",
                 },
+                {
+                    "value": "model_configuration",
+                    "label": "机型配置信息",
+                },
             ],
         )
 
@@ -107,6 +155,10 @@ class KnowledgeOriginTests(unittest.TestCase):
         )
         with self.assertRaises(ValidationError):
             CandidateReviewUpdate.model_validate({"knowledge_origin": None})
+        with self.assertRaises(ValidationError):
+            CandidateReviewUpdate.model_validate(
+                {"knowledge_origin": "model_configuration"}
+            )
         self.assertIsNone(
             CandidateReviewUpdate.model_validate({}).business_type
         )
@@ -125,6 +177,14 @@ class KnowledgeOriginTests(unittest.TestCase):
             SearchRequest.model_validate(
                 {
                     "query": "屏幕漏光",
+                    "business_type": "self_operated",
+                }
+            )
+        with self.assertRaises(ValidationError):
+            SearchRequest.model_validate(
+                {
+                    "query": "iPad 指纹",
+                    "knowledge_origin": "model_configuration",
                     "business_type": "self_operated",
                 }
             )
@@ -148,6 +208,19 @@ class KnowledgeOriginTests(unittest.TestCase):
             }
         )
         self.assertEqual(request.knowledge_origin, "headquarters_standard")
+        with self.assertRaises(ValidationError):
+            IntegrationStandardSearchCandidate.model_validate(
+                {
+                    "id": "A-00001",
+                    "title": "iPad 机型配置",
+                    "text": "配置正文",
+                    "score": 1,
+                    "finalScore": 1,
+                    "knowledgeOrigin": "model_configuration",
+                    "businessType": "self_operated",
+                    "sourceRef": "knowledge://A-00001",
+                }
+            )
 
     def test_legacy_candidate_payload_gets_explicit_taxonomy_defaults(self):
         payload, knowledge = _candidate_payload_with_taxonomy_defaults(

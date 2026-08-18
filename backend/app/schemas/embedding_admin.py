@@ -40,7 +40,10 @@ class EmbeddingRuntimeConfigCreate(BaseModel):
 class EmbeddingLabSearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=1000)
     top_k: int = Field(10, ge=1, le=50)
-    knowledge_origin: str | None = Field(None, max_length=32)
+    knowledge_origin: Literal[
+        "headquarters_standard",
+        "business_accumulation",
+    ] | None = None
     business_type: str | None = Field(None, max_length=32)
     category_id: str | None = Field(None, max_length=64)
 

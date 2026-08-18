@@ -559,6 +559,37 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertEqual(rows[1].error_code, "KNOWLEDGE_ORIGIN_INVALID")
         self.assertIn("仅允许总部标准、业务沉淀", rows[1].error_message)
 
+    def test_managed_model_configuration_origin_rejects_generic_excel_import(self):
+        payload = self.workbook_bytes(
+            ["知识来源", "业务类型", "标题", "知识分类", "正文"],
+            [
+                [
+                    "机型配置信息",
+                    "自营回收",
+                    "iPad 机型配置",
+                    "cat-process",
+                    "配置正文。",
+                ],
+                [
+                    "model_configuration",
+                    "self_operated",
+                    "iPad 机型配置代码",
+                    "cat-process",
+                    "配置正文。",
+                ],
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(
+            [row.error_code for row in rows],
+            ["KNOWLEDGE_ORIGIN_MANAGED", "KNOWLEDGE_ORIGIN_MANAGED"],
+        )
+        self.assertTrue(
+            all("飞书专用同步" in row.error_message for row in rows)
+        )
+
     def test_parse_only_promotes_prefixed_media_tokens(self):
         payload = self.workbook_bytes(
             ["主标题", "知识分类", "知识内容"],

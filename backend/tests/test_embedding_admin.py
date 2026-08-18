@@ -2,6 +2,7 @@ import hashlib
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -26,13 +27,17 @@ from app.routes.embedding_admin import (
     create_embedding_config,
     create_training_job,
     decide_model_version,
+    embedding_lab_search,
     fail_training_job,
+    get_embedding_overview,
     probe_task_runner_access,
     regenerate_training_job_runner_access,
+    review_retrieval_event,
     runner_heartbeat,
 )
 from app.schemas.embedding_admin import (
     EmbeddingModelDecision,
+    EmbeddingLabSearchRequest,
     EmbeddingRunnerClaim,
     EmbeddingRunnerComplete,
     EmbeddingRunnerFailure,
@@ -40,8 +45,13 @@ from app.schemas.embedding_admin import (
     EmbeddingRuntimeConfigCreate,
     EmbeddingRuntimeConfigValues,
     EmbeddingTrainingJobCreate,
+    RetrievalQualityReview,
 )
-from app.services.embedding_admin import build_training_dataset
+from app.services.embedding_admin import (
+    build_training_dataset,
+    import_deduplication_samples,
+    import_retrieval_samples,
+)
 from app.services.embedding_runtime import default_embedding_runtime_config
 
 
@@ -228,6 +238,191 @@ class EmbeddingAdminTests(unittest.TestCase):
                         EmbeddingRuntimeConfigValues(
                             **{field: invalid_value},
                         )
+        with self.assertRaises(ValidationError):
+            EmbeddingLabSearchRequest(
+                query="iPad 指纹",
+                knowledge_origin="model_configuration",
+            )
+
+    def test_vector_coverage_excludes_managed_exact_knowledge(self):
+        db = MagicMock()
+        published = MagicMock()
+        published.filter.return_value = published
+        published.count.return_value = 2
+        dedup = MagicMock()
+        dedup.join.return_value = dedup
+        dedup.filter.return_value = dedup
+        dedup.scalar.return_value = 1
+        search = MagicMock()
+        search.join.return_value = search
+        search.filter.return_value = search
+        search.scalar.return_value = 1
+        samples = MagicMock()
+        samples.group_by.return_value.all.return_value = []
+        jobs = MagicMock()
+        jobs.group_by.return_value.all.return_value = []
+        runner = MagicMock()
+        runner.order_by.return_value.first.return_value = None
+        latest_job = MagicMock()
+        latest_job.order_by.return_value.first.return_value = None
+        db.query.side_effect = [
+            published,
+            dedup,
+            search,
+            samples,
+            jobs,
+            runner,
+            latest_job,
+        ]
+
+        with (
+            patch(
+                "app.routes.embedding_admin._health_snapshot",
+                return_value={"status": "ok"},
+            ),
+            patch(
+                "app.routes.embedding_admin.get_active_runtime_record",
+                return_value=None,
+            ),
+        ):
+            result = get_embedding_overview(db, None)
+
+        self.assertEqual(result["vectors"]["published_total"], 2)
+        self.assertEqual(result["vectors"]["dedup_missing"], 1)
+        self.assertEqual(result["vectors"]["search_missing"], 1)
+        for query in (published, dedup, search):
+            expression_text = " ".join(
+                str(expression)
+                for expression in query.filter.call_args.args
+            )
+            self.assertIn(
+                "knowledge_items.knowledge_origin !=",
+                expression_text,
+            )
+
+    def test_vector_lab_excludes_managed_exact_knowledge(self):
+        db = MagicMock()
+        query = MagicMock()
+        query.join.return_value = query
+        query.filter.return_value = query
+        query.order_by.return_value.limit.return_value.all.return_value = []
+        db.query.return_value = query
+
+        with patch(
+            "app.routes.embedding_admin.embed_texts",
+            return_value=[[0.1] * settings.EMBEDDING_DIMENSIONS],
+        ):
+            result = embedding_lab_search(
+                EmbeddingLabSearchRequest(query="iPad 指纹"),
+                db,
+                None,
+            )
+
+        self.assertEqual(result["results"], [])
+        expression_text = " ".join(
+            str(expression)
+            for expression in query.filter.call_args.args
+        )
+        self.assertIn(
+            "knowledge_items.knowledge_origin !=",
+            expression_text,
+        )
+
+    def test_retrieval_review_rejects_managed_exact_expected_knowledge(self):
+        event = SimpleNamespace(
+            event_metadata={},
+        )
+        event_query = MagicMock()
+        event_query.filter.return_value.first.return_value = event
+        expected_query = MagicMock()
+        expected_query.filter.return_value.first.return_value = None
+        db = MagicMock()
+        db.query.side_effect = [event_query, expected_query]
+
+        with self.assertRaises(HTTPException) as raised:
+            review_retrieval_event(
+                "rqe-test",
+                RetrievalQualityReview(
+                    review_status="confirmed",
+                    expected_knowledge_id="A-00001",
+                    training_eligible=True,
+                ),
+                db,
+                self.user,
+            )
+
+        self.assertEqual(raised.exception.status_code, 422)
+        expression_text = " ".join(
+            str(expression)
+            for expression in expected_query.filter.call_args.args
+        )
+        self.assertIn(
+            "knowledge_items.knowledge_origin !=",
+            expression_text,
+        )
+        db.commit.assert_not_called()
+
+    def test_training_import_skips_managed_exact_knowledge(self):
+        event = SimpleNamespace(
+            expected_knowledge_id="A-00001",
+        )
+        event_query = MagicMock()
+        event_query.filter.return_value.order_by.return_value.all.return_value = [
+            event
+        ]
+        expected_query = MagicMock()
+        expected_query.filter.return_value.first.return_value = SimpleNamespace(
+            knowledge_origin="model_configuration",
+        )
+        retrieval_db = MagicMock()
+        retrieval_db.query.side_effect = [event_query, expected_query]
+
+        with patch(
+            "app.services.embedding_admin.latest_retrieval_quality_event_ids",
+            return_value=[],
+        ):
+            self.assertEqual(
+                import_retrieval_samples(
+                    retrieval_db,
+                    created_by="admin",
+                ),
+                0,
+            )
+        retrieval_db.add.assert_not_called()
+        retrieval_db.commit.assert_called_once_with()
+
+        feedback = SimpleNamespace(
+            knowledge_id="A-00001",
+            matched_knowledge_id="A-00002",
+        )
+        feedback_query = MagicMock()
+        feedback_query.filter.return_value.order_by.return_value.all.return_value = [
+            feedback
+        ]
+        item_query = MagicMock()
+        item_query.filter.return_value.first.return_value = SimpleNamespace(
+            knowledge_origin="model_configuration",
+        )
+        matched_query = MagicMock()
+        matched_query.filter.return_value.first.return_value = SimpleNamespace(
+            knowledge_origin="business_accumulation",
+        )
+        dedup_db = MagicMock()
+        dedup_db.query.side_effect = [
+            feedback_query,
+            item_query,
+            matched_query,
+        ]
+
+        self.assertEqual(
+            import_deduplication_samples(
+                dedup_db,
+                created_by="admin",
+            ),
+            0,
+        )
+        dedup_db.add.assert_not_called()
+        dedup_db.commit.assert_called_once_with()
 
     def test_legacy_retrieval_scope_preserves_active_pool_top_k(self):
         active_values = EmbeddingRuntimeConfigValues(

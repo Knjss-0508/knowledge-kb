@@ -373,7 +373,8 @@ def get_embedding_overview(
     _: User = Depends(require_permission("embedding:manage")),
 ):
     published_query = db.query(Knowledge.id).filter(
-        Knowledge.status == KnowledgeStatus.PUBLISHED
+        Knowledge.status == KnowledgeStatus.PUBLISHED,
+        Knowledge.knowledge_origin != "model_configuration",
     )
     published_total = published_query.count()
     dedup_covered = (
@@ -381,6 +382,7 @@ def get_embedding_overview(
         .join(Knowledge, Knowledge.id == KnowledgeEmbedding.knowledge_id)
         .filter(
             Knowledge.status == KnowledgeStatus.PUBLISHED,
+            Knowledge.knowledge_origin != "model_configuration",
             KnowledgeEmbedding.embedding_model == settings.EMBEDDING_MODEL,
             KnowledgeEmbedding.embedding_vector.is_not(None),
         )
@@ -392,6 +394,7 @@ def get_embedding_overview(
         .join(Knowledge, Knowledge.id == KnowledgeSearchEmbedding.knowledge_id)
         .filter(
             Knowledge.status == KnowledgeStatus.PUBLISHED,
+            Knowledge.knowledge_origin != "model_configuration",
             KnowledgeSearchEmbedding.embedding_model == settings.EMBEDDING_MODEL,
             KnowledgeSearchEmbedding.embedding_vector.is_not(None),
         )
@@ -597,6 +600,7 @@ def embedding_lab_search(
         )
         .filter(
             Knowledge.status == KnowledgeStatus.PUBLISHED,
+            Knowledge.knowledge_origin != "model_configuration",
             KnowledgeSearchEmbedding.embedding_model == settings.EMBEDDING_MODEL,
             KnowledgeSearchEmbedding.embedding_vector.is_not(None),
         )
@@ -761,6 +765,7 @@ def review_retrieval_event(
             .filter(
                 Knowledge.id == body.expected_knowledge_id,
                 Knowledge.status == KnowledgeStatus.PUBLISHED,
+                Knowledge.knowledge_origin != "model_configuration",
             )
             .first()
         )
