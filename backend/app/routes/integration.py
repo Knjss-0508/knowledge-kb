@@ -67,7 +67,9 @@ from app.services.knowledge_dedup import (
     search_embeddings,
 )
 from app.services.model_configuration import (
+    MODEL_CONFIGURATION_ATTRIBUTE_FIELDS,
     MODEL_CONFIGURATION_ORIGIN,
+    ModelConfigurationAmbiguousError,
     ModelConfigurationMatch,
     find_exact_model_configuration,
 )
@@ -1037,18 +1039,6 @@ def _to_standard_search_candidate(
     )
 
 
-_MODEL_CONFIGURATION_ATTRIBUTE_FIELDS = (
-    "是否有卡槽",
-    "Home键",
-    "指纹识别",
-    "3D面容",
-    "内置手写笔",
-    "闪光灯",
-    "蜂窝网络",
-    "光线传感器",
-)
-
-
 def _model_configuration_source_field(
     item: Knowledge,
     field: str,
@@ -1071,7 +1061,7 @@ def _to_model_configuration_result(
     item = match.item
     attributes = {
         field: value
-        for field in _MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
+        for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
         if (value := _model_configuration_source_field(item, field))
     }
     return IntegrationModelConfigurationResult(
@@ -1176,33 +1166,48 @@ def search_standard_provider_knowledge(
             body.order_info.model,
         ),
     )
-    model_configuration_match = find_exact_model_configuration(
-        db,
-        category_id=(
-            body.category_id
-            or body.order_info.category_id
-        ),
-        category_name=(
-            body.order_info.category
-            or body.product_type
-        ),
-        brand_id=(
-            body.brand_id
-            or body.order_info.brand_id
-        ),
-        brand_name=(
-            body.brand
-            or body.order_info.brand
-        ),
-        model_id=(
-            body.model_id
-            or body.order_info.model_id
-        ),
-        model_name=(
-            body.model
-            or body.order_info.model
-        ),
-    )
+    try:
+        model_configuration_match = find_exact_model_configuration(
+            db,
+            category_id=(
+                body.category_id
+                or body.order_info.category_id
+            ),
+            category_name=(
+                body.order_info.category
+                or body.product_type
+            ),
+            brand_id=(
+                body.brand_id
+                or body.order_info.brand_id
+            ),
+            brand_name=(
+                body.brand
+                or body.order_info.brand
+            ),
+            model_id=(
+                body.model_id
+                or body.order_info.model_id
+            ),
+            model_name=(
+                body.model
+                or body.order_info.model
+            ),
+        )
+    except ModelConfigurationAmbiguousError as exc:
+        logger.warning(
+            "%s conversation_id=%s request_id=%s match_mode=%s "
+            "category=%s model=%s match_count=%s knowledge_ids=%s",
+            exc.code,
+            body.conversation_id,
+            body.request_id,
+            exc.match_mode,
+            exc.category_value,
+            exc.model_value,
+            exc.match_count,
+            ",".join(exc.knowledge_ids),
+        )
+        model_configuration_match = None
     model_configuration = _to_model_configuration_result(
         model_configuration_match
     )

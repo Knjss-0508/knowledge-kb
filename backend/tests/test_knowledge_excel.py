@@ -13,6 +13,7 @@ from app.services.knowledge_excel import (
     parse_model_configuration_workbook,
     parse_knowledge_workbook,
 )
+from app.services.model_configuration import MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
 
 
 class KnowledgeExcelTests(unittest.TestCase):
@@ -187,19 +188,25 @@ class KnowledgeExcelTests(unittest.TestCase):
                 "品牌（必填）",
                 "型号ID（必填）",
                 "型号（必填）",
-                "是否有卡槽（选填）",
-                "Home键（选填）",
-                "指纹识别（选填）",
-                "3D面容（选填）",
-                "内置手写笔（选填）",
-                "闪光灯（选填）",
-                "蜂窝网络（选填）",
-                "光线传感器（选填）",
+                *[
+                    f"{field}（选填）"
+                    for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
+                ],
                 "综合内容（必填）",
             ],
         )
 
     def test_parse_model_configuration_template_preserves_source_fields(self):
+        personalized_attributes = {
+            "是否有卡槽": "蜂窝版有卡槽",
+            "Home键": "不支持",
+            "指纹识别": "屏下指纹",
+            "3D面容": "支持",
+            "内置手写笔": "支持",
+            "闪光灯": "双闪光灯",
+            "蜂窝网络": "支持 5G",
+            "光线传感器": "支持",
+        }
         payload = self.model_configuration_workbook_bytes(
             [
                 "来源知识ID（必填）",
@@ -210,8 +217,10 @@ class KnowledgeExcelTests(unittest.TestCase):
                 "品牌（必填）",
                 "型号ID（必填）",
                 "型号（必填）",
-                "是否有卡槽（选填）",
-                "Home键（选填）",
+                *[
+                    f"{field}（选填）"
+                    for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
+                ],
                 "综合内容（必填）",
             ],
             [
@@ -224,9 +233,11 @@ class KnowledgeExcelTests(unittest.TestCase):
                     "苹果",
                     "97519",
                     "iPad 10 (2022) 10.9英寸",
-                    "蜂窝版有卡槽",
-                    "不支持",
-                    "Home键：不支持；",
+                    *[
+                        personalized_attributes[field]
+                        for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
+                    ],
+                    "Home键：不支持；指纹识别：屏下指纹；",
                 ]
             ],
         )
@@ -240,7 +251,13 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertEqual(record.category_id, "119")
         self.assertEqual(record.brand_id, "10530")
         self.assertEqual(record.model_id, "97519")
-        self.assertEqual(record.source_fields["是否有卡槽"], "蜂窝版有卡槽")
+        self.assertEqual(
+            {
+                field: record.source_fields[field]
+                for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
+            },
+            personalized_attributes,
+        )
         self.assertEqual(record.source_fields["来源工作表"], "机型配置信息")
         self.assertEqual(record.source_fields["来源行号"], "2")
 

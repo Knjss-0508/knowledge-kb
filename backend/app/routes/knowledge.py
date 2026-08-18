@@ -59,7 +59,10 @@ from app.services.knowledge_excel import (
     parse_knowledge_workbook,
 )
 from app.services.model_configuration import (
+    MODEL_CONFIGURATION_ATTRIBUTE_FIELDS,
     ModelConfigurationSyncError,
+    acquire_model_configuration_write_lock,
+    parse_model_configuration_payload,
     sync_model_configurations,
 )
 from app.services.media_deletion import (
@@ -72,6 +75,7 @@ from app.schemas.knowledge import (
     KnowledgeImportType,
     KnowledgeOrigin,
     KnowledgeCreate, KnowledgeUpdate, KnowledgeResponse,
+    ModelConfigurationUpdate,
     CandidateSubmit, DeduplicationFeedbackSubmit, FeedbackSubmit,
     ExcelImportRowResult, KnowledgeImportTaskListResponse,
     KnowledgeImportTaskResponse,
@@ -262,6 +266,205 @@ def _validate_business_applicable_categories(
                 + "、".join(invalid_values[:5])
             ),
         )
+
+
+def _manhattan_option_text(option, *keys: str) -> str:
+    if not isinstance(option, dict):
+        return ""
+    for key in keys:
+        value = option.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _resolve_model_configuration_scope(
+    *,
+    category_id: str,
+    brand_id: str,
+    model_id: str,
+) -> dict[str, str]:
+    """按自营 Manhattan 缓存解析机型配置的可信名称和父子关系。"""
+    snapshot = cached_manhattan_options_snapshot()
+    business_options = (
+        snapshot.get("options_by_business_type", {}).get("self_operated")
+        if isinstance(snapshot, dict)
+        else None
+    )
+    categories = (
+        business_options.get("applicable_categories", [])
+        if isinstance(business_options, dict)
+        else []
+    )
+    if not categories:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MANHATTAN_CACHE_UNAVAILABLE",
+                "message": "自营类目缓存尚未准备，暂不能保存机型配置信息。",
+            },
+        )
+
+    category_matches = [
+        option
+        for option in categories
+        if _manhattan_option_text(
+            option,
+            "categoryId",
+            "id",
+            "code",
+            "value",
+        )
+        == category_id
+    ]
+    if len(category_matches) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "MODEL_CONFIGURATION_CATEGORY_INVALID",
+                "message": f"类目ID {category_id} 不在当前自营类目缓存中。",
+            },
+        )
+    category_name = _manhattan_option_text(
+        category_matches[0],
+        "categoryName",
+        "name",
+        "label",
+        "title",
+        "text",
+    )
+    if not category_name:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MANHATTAN_CACHE_INCOMPLETE",
+                "message": f"类目ID {category_id} 缺少名称，暂不能保存。",
+            },
+        )
+
+    brands_by_category = business_options.get("brands_by_category", {})
+    category_brands = (
+        brands_by_category.get(category_id, [])
+        if isinstance(brands_by_category, dict)
+        else []
+    )
+    if not category_brands:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MANHATTAN_BRAND_CACHE_UNAVAILABLE",
+                "message": f"类目ID {category_id} 的品牌缓存尚未准备。",
+            },
+        )
+    brand_matches = [
+        option
+        for option in category_brands
+        if _manhattan_option_text(
+            option,
+            "brandId",
+            "id",
+            "code",
+            "value",
+        )
+        == brand_id
+    ]
+    if len(brand_matches) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "MODEL_CONFIGURATION_BRAND_SCOPE_INVALID",
+                "message": (
+                    f"品牌ID {brand_id} 不属于当前类目ID {category_id}。"
+                ),
+            },
+        )
+    brand_name = _manhattan_option_text(
+        brand_matches[0],
+        "brandName",
+        "name",
+        "label",
+        "title",
+        "text",
+    )
+    if not brand_name:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MANHATTAN_CACHE_INCOMPLETE",
+                "message": f"品牌ID {brand_id} 缺少名称，暂不能保存。",
+            },
+        )
+
+    models = business_options.get("models", [])
+    if not models:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MANHATTAN_MODEL_CACHE_UNAVAILABLE",
+                "message": "自营机型缓存尚未准备，暂不能保存。",
+            },
+        )
+    model_matches = [
+        option
+        for option in models
+        if (
+            _manhattan_option_text(
+                option,
+                "modelId",
+                "id",
+                "code",
+                "value",
+            )
+            == model_id
+            and _manhattan_option_text(
+                option,
+                "categoryId",
+                "category_id",
+            )
+            == category_id
+            and _manhattan_option_text(
+                option,
+                "brandId",
+                "brand_id",
+            )
+            == brand_id
+        )
+    ]
+    if len(model_matches) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "MODEL_CONFIGURATION_MODEL_SCOPE_INVALID",
+                "message": (
+                    f"机型ID {model_id} 不属于当前类目ID {category_id} "
+                    f"和品牌ID {brand_id}。"
+                ),
+            },
+        )
+    model_name = _manhattan_option_text(
+        model_matches[0],
+        "modelName",
+        "name",
+        "label",
+        "title",
+        "text",
+    )
+    if not model_name:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MANHATTAN_CACHE_INCOMPLETE",
+                "message": f"机型ID {model_id} 缺少名称，暂不能保存。",
+            },
+        )
+    return {
+        "category_id": category_id,
+        "category_name": category_name,
+        "brand_id": brand_id,
+        "brand_name": brand_name,
+        "model_id": model_id,
+        "model_name": model_name,
+    }
 
 
 class SourceKnowledgeMatchError(ValueError):
@@ -632,6 +835,38 @@ def _import_review_metadata(item: Knowledge) -> dict[str, str]:
     return {key: value for key, value in metadata.items() if value}
 
 
+def _model_configuration_detail(item: Knowledge) -> dict | None:
+    if getattr(item, "knowledge_origin", "") != "model_configuration":
+        return None
+    source_fields = (
+        item.source_fields
+        if isinstance(getattr(item, "source_fields", None), dict)
+        else {}
+    )
+    content = str(source_fields.get("综合内容") or "").strip()
+    if not content:
+        normalized_content = _normalize_content(item.content)
+        content = "\n".join(
+            str(block.get("value") or "")
+            for block in normalized_content.get("blocks", [])
+            if block.get("type") == "text"
+        ).strip()
+    return {
+        "title": item.title,
+        "content": content,
+        "category_id": str(source_fields.get("品类ID") or "").strip(),
+        "category_name": str(source_fields.get("品类") or "").strip(),
+        "brand_id": str(source_fields.get("品牌ID") or "").strip(),
+        "brand_name": str(source_fields.get("品牌") or "").strip(),
+        "model_id": str(source_fields.get("型号ID") or "").strip(),
+        "model_name": str(source_fields.get("型号") or "").strip(),
+        "attributes": {
+            field: str(source_fields.get(field) or "").strip()
+            for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
+        },
+    }
+
+
 def _to_response(item: Knowledge) -> dict:
     tags = []
     for kt in item.tags:
@@ -680,6 +915,7 @@ def _to_response(item: Knowledge) -> dict:
         "updated_at": item.updated_at,
         "tags": tags,
         "media": media_list,
+        "model_configuration": _model_configuration_detail(item),
     }
 
 
@@ -2779,6 +3015,146 @@ def list_change_logs(
         }
         for log in logs
     ]
+
+
+@router.put(
+    "/{knowledge_id}/model-configuration",
+    response_model=KnowledgeResponse,
+    summary="更新机型配置信息",
+)
+def update_model_configuration(
+    knowledge_id: str,
+    body: ModelConfigurationUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission("knowledge:edit_published")
+    ),
+):
+    try:
+        acquire_model_configuration_write_lock(db)
+    except ModelConfigurationSyncError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+            },
+        ) from exc
+
+    item = (
+        db.query(Knowledge)
+        .populate_existing()
+        .filter(Knowledge.id == knowledge_id)
+        .with_for_update()
+        .first()
+    )
+    if not item:
+        db.rollback()
+        raise HTTPException(404, "知识条目不存在")
+    if item.knowledge_origin != "model_configuration":
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "MODEL_CONFIGURATION_ONLY",
+                "message": "只有机型配置信息可以使用此编辑接口。",
+            },
+        )
+    source_record_id = str(item.source_record_id or "").strip()
+    if not source_record_id:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "MODEL_CONFIGURATION_SOURCE_RECORD_ID_MISSING",
+                "message": "当前机型配置信息缺少来源知识ID，不能执行原地更新。",
+            },
+        )
+    try:
+        resolved_scope = _resolve_model_configuration_scope(
+            category_id=body.category_id,
+            brand_id=body.brand_id,
+            model_id=body.model_id,
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+
+    source_fields = deepcopy(
+        item.source_fields
+        if isinstance(item.source_fields, dict)
+        else {}
+    )
+    attributes = body.attributes.model_dump(by_alias=True)
+    for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS:
+        value = str(attributes[field] or "").strip()
+        if value:
+            source_fields[field] = value
+        else:
+            source_fields.pop(field, None)
+
+    payload = {
+        "records": [
+            {
+                "source_record_id": source_record_id,
+                "title": body.title,
+                "content": body.content,
+                **resolved_scope,
+                "source_fields": source_fields,
+            }
+        ]
+    }
+
+    try:
+        records = parse_model_configuration_payload(payload)
+        sync_result = sync_model_configurations(
+            db,
+            records,
+            actor=current_user.username,
+            allow_source_key_change_for=item.id,
+        )
+        if (
+            sync_result.total != 1
+            or len(sync_result.items) != 1
+            or sync_result.items[0].knowledge_id != item.id
+        ):
+            raise ModelConfigurationSyncError(
+                "MODEL_CONFIGURATION_TARGET_MISMATCH",
+                "机型配置同步结果与当前知识不一致，已取消更新。",
+                source_record_id=source_record_id,
+            )
+        db.commit()
+    except ModelConfigurationSyncError as exc:
+        db.rollback()
+        conflict_codes = {
+            "SOURCE_IDENTIFIER_AMBIGUOUS",
+            "SOURCE_IDENTIFIER_CONFLICT",
+            "SOURCE_RECORD_ID_REUSED",
+            "MODEL_CONFIGURATION_TARGET_MISMATCH",
+        }
+        raise HTTPException(
+            status_code=409 if exc.code in conflict_codes else 422,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+            },
+        ) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SOURCE_IDENTIFIER_CONFLICT",
+                "message": "新的品类、品牌和型号组合已绑定其他机型配置信息。",
+            },
+        ) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(item)
+    return _to_response(item)
 
 
 @router.patch("/{knowledge_id}", response_model=KnowledgeResponse, summary="更新知识条目")
