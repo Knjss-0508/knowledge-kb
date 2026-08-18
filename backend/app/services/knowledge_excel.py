@@ -142,6 +142,9 @@ EXTERNAL_MEDIA_TOKEN_PATTERN = re.compile(
     r"(?P<url>https://[^\s\[\]<>\"']+)\]",
     re.IGNORECASE,
 )
+MEDIA_PLACEHOLDER_LINE_PATTERN = re.compile(
+    r"^[+\-‐‑‒–—―*•·●○▪▫]$"
+)
 
 
 class KnowledgeExcelError(ValueError):
@@ -238,14 +241,57 @@ def _is_safe_external_url(value: str) -> bool:
         return False
 
 
+def _trim_media_placeholder_lines(
+    segment: str,
+    *,
+    has_media_before: bool,
+    has_media_after: bool,
+) -> str:
+    """仅清理紧邻媒体标记、且独占一行的列表占位符。"""
+    lines = segment.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+    if has_media_before:
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while (
+            lines
+            and MEDIA_PLACEHOLDER_LINE_PATTERN.fullmatch(lines[0].strip())
+        ):
+            lines.pop(0)
+            while lines and not lines[0].strip():
+                lines.pop(0)
+
+    if has_media_after:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        while (
+            lines
+            and MEDIA_PLACEHOLDER_LINE_PATTERN.fullmatch(lines[-1].strip())
+        ):
+            lines.pop()
+            while lines and not lines[-1].strip():
+                lines.pop()
+
+    return "\n".join(lines)
+
+
 def _content_with_external_media(value) -> str | dict[str, Any]:
     text = _cell_text(value)
     blocks: list[dict[str, str]] = []
     found_media = False
     cursor = 0
 
-    def append_text(segment: str) -> None:
-        segment = segment.strip("\n")
+    def append_text(
+        segment: str,
+        *,
+        has_media_before: bool,
+        has_media_after: bool,
+    ) -> None:
+        segment = _trim_media_placeholder_lines(
+            segment,
+            has_media_before=has_media_before,
+            has_media_after=has_media_after,
+        )
         if segment.strip():
             blocks.append({"type": "text", "value": segment})
 
@@ -254,7 +300,11 @@ def _content_with_external_media(value) -> str | dict[str, Any]:
         if not _is_safe_external_url(external_url):
             continue
         media_type = "image" if match.group("kind").lower() == "img" else "video"
-        append_text(text[cursor : match.start()])
+        append_text(
+            text[cursor : match.start()],
+            has_media_before=found_media,
+            has_media_after=True,
+        )
         blocks.append(
             {
                 "type": media_type,
@@ -265,7 +315,11 @@ def _content_with_external_media(value) -> str | dict[str, Any]:
         )
         cursor = match.end()
         found_media = True
-    append_text(text[cursor:])
+    append_text(
+        text[cursor:],
+        has_media_before=found_media,
+        has_media_after=False,
+    )
 
     return {"blocks": blocks} if found_media else text
 

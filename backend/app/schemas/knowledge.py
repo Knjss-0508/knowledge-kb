@@ -14,6 +14,10 @@ class ContentBlock(BaseModel):
     type: str = Field(description="内容块类型: text=文本 image=图片 video=视频")
     value: Optional[str] = Field(None, description="文本内容，type=text时使用")
     media_id: Optional[str] = Field(None, description="媒体文件ID，type=image/video时使用")
+    external_url: Optional[str] = Field(
+        None,
+        description="HTTPS 外链媒体地址，type=image/video时可代替media_id使用",
+    )
     alt: Optional[str] = Field(None, description="媒体标题/替代文本")
     caption: Optional[str] = Field(None, description="媒体描述/说明文字，会显示在内容下方")
     duration: Optional[str] = Field(None, description="视频时长，如 03:20，仅type=video时使用")

@@ -624,6 +624,94 @@ class KnowledgeExcelTests(unittest.TestCase):
             },
         )
 
+    def test_parse_drops_standalone_list_markers_adjacent_to_media(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容"],
+            [
+                [
+                    "媒体列表占位符",
+                    "标准定义",
+                    "【检测方法】\n"
+                    "- 通过官网查询。\n"
+                    "-\n"
+                    "[img:https://cdn.example.com/first.png]\n"
+                    "-\n"
+                    "[img:https://cdn.example.com/second.png]\n"
+                    "- 安卓系统按其他版本判断。",
+                ]
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(
+            rows[0].content,
+            {
+                "blocks": [
+                    {
+                        "type": "text",
+                        "value": "【检测方法】\n- 通过官网查询。",
+                    },
+                    {
+                        "type": "image",
+                        "external_url": "https://cdn.example.com/first.png",
+                        "alt": "",
+                        "caption": "",
+                    },
+                    {
+                        "type": "image",
+                        "external_url": "https://cdn.example.com/second.png",
+                        "alt": "",
+                        "caption": "",
+                    },
+                    {
+                        "type": "text",
+                        "value": "- 安卓系统按其他版本判断。",
+                    },
+                ]
+            },
+        )
+
+    def test_parse_keeps_standalone_marker_without_media(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容"],
+            [["保留普通横杠", "标准定义", "说明文字\n-"]],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(rows[0].content, "说明文字\n-")
+
+    def test_parse_preserves_multi_character_separator_before_media(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容"],
+            [
+                [
+                    "保留正文分隔线",
+                    "标准定义",
+                    "说明文字\n---\n"
+                    "[img:https://cdn.example.com/separator.png]",
+                ]
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(
+            rows[0].content,
+            {
+                "blocks": [
+                    {"type": "text", "value": "说明文字\n---"},
+                    {
+                        "type": "image",
+                        "external_url": "https://cdn.example.com/separator.png",
+                        "alt": "",
+                        "caption": "",
+                    },
+                ]
+            },
+        )
+
     def test_parse_preserves_external_media_order_and_duplicate_references(self):
         repeated_image = "https://cdn.example.com/psn-resource"
         payload = self.workbook_bytes(

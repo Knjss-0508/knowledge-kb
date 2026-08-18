@@ -138,36 +138,68 @@
     .ms-all:hover{background:#0f74df}
     .ms-more{padding:8px;color:#86909c;font-size:12px;border-top:1px solid #f2f3f5}
     .hint{font-size:11px;color:#86909c;margin-top:4px;line-height:1.4}
-    /* 块样式 */
-    .blk{padding:13px;margin-bottom:10px;background:#fff;border:1px solid #dfe7e9;border-radius:6px;box-shadow:0 2px 5px rgba(16,24,40,.03)}
-    .blk-h{display:flex;gap:8px;align-items:flex-start}
-    .blk-tag{font-size:10px;color:#fff;padding:2px 6px;border-radius:4px;white-space:nowrap;flex-shrink:0;margin-top:2px}
-    .blk-body{flex:1;display:flex;flex-direction:column;gap:5px}
-    .blk-rm{width:24px;height:24px;border:none;background:none;color:#c9cdd4;cursor:pointer;font-size:15px;flex-shrink:0;border-radius:4px;margin-top:2px}
-    .blk-rm:hover{color:#f53f3f;background:#fff0f0}
-    .blk-acts{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:6px}
-    .blk-act{display:inline-flex;align-items:center;gap:3px;padding:3px 8px;background:#f0f5ff;color:#3370ff;border:1px solid #bedaff;border-radius:4px;font-size:10px;cursor:pointer}
-    .blk-act.vi{background:#f5f0ff;color:#722ed1;border-color:#d3adf7}
-    .blk-act.legacy{background:#f7f8fa;color:#667085;border-color:#d0d5dd}
-    .blk-act:hover{opacity:.8}
-    .rich-editor{min-height:92px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
-    textarea.rich-editor{resize:vertical}
-    .rich-editor-view{height:auto;background:#f2f5f6;color:#667085}
-    .rich-editor a,.linkified-text a{color:#1677ff;text-decoration:underline;text-underline-offset:2px}
-    .rich-editor-tip{font-size:10px;color:#667085;line-height:1.5}
-    .child{margin-top:8px;padding:10px;background:#fbfcfd;border:1px solid #dfe7e9;border-radius:8px}
-    .child-h{display:flex;gap:8px;align-items:flex-start}
-    .upload-zone{display:flex;align-items:center;justify-content:center;gap:6px;padding:16px;border:1.5px dashed #a9dcd2;border-radius:6px;cursor:pointer;color:#52746e;background:#f6fcfa;transition:all .2s}
-    .upload-zone:hover{border-color:#009b83;color:#007f6b;background:#eafaf5}
-    .img-preview{width:72px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e5e6eb;flex-shrink:0}
-    .vid-preview{width:72px;height:54px;max-width:72px;max-height:54px;border-radius:6px;border:1px solid #e5e6eb;background:#000;flex-shrink:0}
-    .media-inline-card{display:flex;align-items:flex-start;gap:12px;min-width:0}
-    .media-inline-meta{display:flex;flex:1;min-width:0;flex-direction:column;gap:5px}
-    .media-inline-title{font-size:12px;font-weight:600;color:#1d2939;overflow-wrap:anywhere}
-    .media-inline-caption{font-size:11px;line-height:1.5;color:#667085;overflow-wrap:anywhere}
-    .img-thumb-wrap{position:relative;width:220px;height:132px;max-width:44%;min-width:160px;flex-shrink:0;border-radius:8px;overflow:hidden;border:1px solid #d8e0e7;cursor:pointer;background:#f2f4f7}.img-thumb-wrap img{width:100%;height:100%;object-fit:contain;display:block;background:#f7f8fa}.img-thumb-wrap .img-mask{position:absolute;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600;letter-spacing:2px;opacity:0;transition:opacity .2s;pointer-events:none;border-radius:8px}.img-thumb-wrap:hover .img-mask{opacity:1}.img-thumb-wrap:focus-visible{outline:2px solid #3370ff;outline-offset:2px}.media-thumb-error{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:10px;text-align:center;background:#fff7e8;color:#c65b00;font-size:11px;line-height:1.4}.external-media-note{font-size:10px;color:#3370ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .img-thumb:hover{box-shadow:0 2px 12px rgba(0,0,0,.15)}
-    .vid-thumb-wrap{position:relative;width:220px;height:124px;max-width:44%;min-width:160px;flex-shrink:0;border-radius:8px;overflow:hidden;border:1px solid #d8e0e7;cursor:pointer;background:#1d2129}.vid-thumb-wrap video{width:100%;height:100%;object-fit:contain;display:block;background:#101828}.vid-thumb-wrap .vid-mask{position:absolute;inset:0;background:rgba(0,0,0,.38);display:flex;align-items:center;justify-content:center;color:#fff;font-size:24px;font-weight:700;opacity:.86;transition:opacity .2s;pointer-events:none;border-radius:8px}.vid-thumb-wrap:hover .vid-mask{opacity:1}.vid-thumb-wrap:focus-visible{outline:2px solid #765be6;outline-offset:2px}
+    /* 知识内容：与 API content.blocks 一致的平铺内容流 */
+    .content-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px}
+    .content-section-head .sec-t{margin-bottom:0}
+    .content-editor-note{max-width:650px;color:#667085;font-size:11px;line-height:1.55;text-align:right}
+    .content-editor{overflow:hidden;border:1px solid #dce4e8;border-radius:8px;background:#fff}
+    .content-flow{display:flex;flex-direction:column}
+    .content-flow-block{position:relative;border-bottom:1px solid #edf0f2}
+    .content-flow-block:last-child{border-bottom:0}
+    .content-block-shell,.content-media-card{padding:11px 12px;background:#fff}
+    .content-block-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}
+    .content-block-head-main{display:flex;align-items:center;gap:7px;min-width:0}
+    .content-kind{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:4px;background:#eef1f4;color:#475467;font-size:10px;font-weight:700;white-space:nowrap}
+    .content-kind.image{background:#e8f3ff;color:#245bdb}
+    .content-kind.video{background:#f1edff;color:#644bd1}
+    .content-source-badge{display:inline-flex;align-items:center;height:22px;padding:0 7px;border:1px solid #dce4e8;border-radius:999px;background:#fafbfc;color:#667085;font-size:10px;white-space:nowrap}
+    .content-source-badge.external{border-color:#bedaff;background:#f0f5ff;color:#245bdb}
+    .content-block-actions{display:flex;align-items:center;gap:5px}
+    .content-action-button{height:26px;padding:0 8px;display:inline-flex;align-items:center;justify-content:center;border:1px solid transparent;border-radius:5px;background:transparent;color:#667085;font-size:11px;cursor:pointer}
+    .content-action-button:hover,.content-action-button:focus-visible,.content-action-button:focus-within{border-color:#d0d5dd;background:#f7f8fa;color:#344054;outline:none}
+    .content-action-button.disabled{opacity:.55;cursor:not-allowed}
+    .content-action-button:disabled,.content-toolbar-button:disabled{opacity:.55;cursor:not-allowed}
+    .content-action-button.danger:hover,.content-action-button.danger:focus-visible{border-color:#f3c7c2;background:#fff4f2;color:#c83827}
+    .content-text-label{display:block;margin-bottom:5px;color:#475467;font-size:11px;font-weight:600}
+    .content-textarea{width:100%;min-height:62px;padding:9px 10px;border:1px solid #dce4e8;border-radius:6px;background:#fff;color:#1d2939;font-size:13px;line-height:1.65;resize:vertical;outline:none;white-space:pre-wrap;overflow-wrap:anywhere}
+    .content-textarea:focus{border-color:#20a68c;box-shadow:0 0 0 2px rgba(32,166,140,.1)}
+    .content-media-body{display:grid;grid-template-columns:168px minmax(0,1fr);gap:12px;align-items:start}
+    .content-media-preview{position:relative;width:168px;height:100px;padding:0;overflow:hidden;border:1px solid #d8e0e7;border-radius:7px;background:#f2f4f7;cursor:pointer}
+    .content-media-preview img,.content-media-preview video{display:block;width:100%;height:100%;object-fit:contain;background:#f7f8fa;pointer-events:none}
+    .content-media-preview video{background:#101828}
+    .content-media-preview:focus-visible{outline:2px solid #20a68c;outline-offset:2px}
+    .content-media-preview-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(16,24,40,.48);color:#fff;font-size:12px;font-weight:700;opacity:0;transition:opacity .16s ease;pointer-events:none}
+    .content-media-preview:hover .content-media-preview-overlay,.content-media-preview:focus-visible .content-media-preview-overlay{opacity:1}
+    .media-thumb-error{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:10px;text-align:center;background:#fff7e8;color:#c65b00;font-size:11px;line-height:1.4}
+    .upload-zone{width:168px;height:100px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:10px;border:1.5px dashed #a9dcd2;border-radius:7px;cursor:pointer;color:#52746e;background:#f6fcfa;transition:all .16s ease;text-align:center}
+    .upload-zone:hover,.upload-zone:focus-within{border-color:#009b83;color:#007f6b;background:#eafaf5}
+    .upload-zone-title{font-size:12px;font-weight:700}
+    .upload-zone-note{font-size:10px;line-height:1.4;color:#667085}
+    .content-media-meta{display:flex;min-width:0;flex-direction:column;gap:8px}
+    .content-media-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+    .content-media-field{min-width:0}
+    .content-media-field label{display:block;margin-bottom:4px;color:#475467;font-size:11px;font-weight:600}
+    .content-media-field .fi{min-height:34px;padding:6px 8px;font-size:12px}
+    .content-media-status{display:flex;align-items:center;gap:8px;min-width:0;color:#667085;font-size:10px}
+    .content-media-status-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .content-media-link{flex-shrink:0;padding:0;border:0;background:none;color:#1677ff;font-size:11px;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+    .content-media-link:hover,.content-media-link:focus-visible{color:#0f5ed7;outline:none}
+    .content-toolbar{display:flex;align-items:center;gap:7px;padding:10px 12px;background:#fafbfc;border-top:1px solid #edf0f2}
+    .content-toolbar-button{height:31px;padding:0 11px;border:1px solid #d0d5dd;border-radius:5px;background:#fff;color:#475467;font-size:11px;font-weight:600;cursor:pointer}
+    .content-toolbar-button:hover,.content-toolbar-button:focus-visible{border-color:#20a68c;background:#f2fbf8;color:#007f6b;outline:none}
+    .content-empty{padding:34px 20px;color:#98a2b3;font-size:12px;text-align:center}
+    .content-editor.view-mode{border-color:#e3e8ec;background:#fff}
+    .content-editor.view-mode .content-flow{padding:10px 14px}
+    .content-editor.view-mode .content-flow-block{border-bottom:0}
+    .content-article-text{padding:5px 2px;color:#1d2939;font-size:14px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+    .content-article-text+.content-article-text{padding-top:0}
+    .content-article-text a,.linkified-text a{color:#1677ff;text-decoration:underline;text-underline-offset:2px}
+    .content-article-media{display:grid;grid-template-columns:minmax(180px,320px) minmax(0,1fr);gap:14px;align-items:start;margin:8px 0 14px;padding:10px;border:1px solid #e3e8ec;border-radius:8px;background:#fafbfc}
+    .content-article-media .content-media-preview{width:100%;height:auto;min-height:112px;aspect-ratio:16/9}
+    .content-article-caption{display:flex;min-width:0;flex-direction:column;gap:6px;padding-top:2px;color:#667085;font-size:12px;line-height:1.6}
+    .content-article-caption strong{color:#344054;font-size:13px;overflow-wrap:anywhere}
+    .content-article-caption span{overflow-wrap:anywhere}
+    @media(max-width:760px){.content-section-head{display:block}.content-editor-note{margin-top:8px;text-align:left}.content-media-body,.content-article-media{grid-template-columns:1fr}.content-media-preview,.upload-zone{width:100%;height:auto;min-height:132px;aspect-ratio:16/9}.content-media-fields{grid-template-columns:1fr}}
 
     .full-preview{position:fixed;inset:0;z-index:3000;background:rgba(8,15,24,.9);backdrop-filter:blur(5px);display:flex;align-items:center;justify-content:center;padding:28px;overscroll-behavior:contain}
     .full-preview-stage{position:relative;display:flex;flex-direction:column;max-width:calc(100vw - 56px);max-height:calc(100vh - 56px);min-width:280px;border:1px solid rgba(255,255,255,.16);border-radius:10px;background:#111b26;box-shadow:0 24px 80px rgba(0,0,0,.48);overflow:hidden}
@@ -177,7 +209,6 @@
     .full-preview img{display:block;max-width:calc(100vw - 80px);max-height:calc(100vh - 104px);object-fit:contain}
     .full-preview video{display:block;max-width:calc(100vw - 80px);max-height:calc(100vh - 104px)}
     .full-preview-error{padding:48px;color:#fdb9b9;font-size:13px;text-align:center}
-    @media(max-width:720px){.media-inline-card{flex-direction:column}.img-thumb-wrap,.vid-thumb-wrap{width:100%;max-width:100%;min-width:0}.img-thumb-wrap{height:auto;aspect-ratio:5/3}.vid-thumb-wrap{height:auto;aspect-ratio:16/9}}
 
     /* 运营工作台视觉层：保留既有 Vue 数据与操作逻辑 */
     :root{--app-font:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",Arial,sans-serif;--ink:#1d2939;--muted:#667085;--line:#e5e9ef;--canvas:#f7f8fa;--surface:#fff;--blue:#3370ff;--green:#00b42a;--teal:#009b83;--coral:#ef6d5b;--orange:#ff7d00;--gold:#e6a83c;--violet:#765be6;--nav:#172633}
@@ -1182,82 +1213,98 @@
           </div>
         </div>
         <div class="sec">
-          <div class="sec-t">知识内容</div>
-          <div v-for="(b,bi) in fm.blocks" :key="bi" class="blk">
-            <div class="blk-h">
-              <span class="blk-tag" style="background:#86909c">文本</span>
-              <div class="blk-body">
-                <textarea v-if="!viewOnly" class="fi rich-editor" v-model="b.value" placeholder="输入正文；媒体标记使用 [img:https://...] 或 [video:https://...]..." @paste="handleRichTextPaste($event,bi)" @blur="syncInlineMediaFromText(bi)"></textarea>
-                <div v-else class="fi rich-editor rich-editor-view" v-html="linkifyText(b.value)"></div>
-                <div v-if="!viewOnly" class="rich-editor-tip">仅处理插件自动回填的 [img:https://...] / [video:https://...]；官网、文档及正文原有 URL 保持不变。</div>
-                <div class="blk-acts" v-if="!viewOnly">
-                  <span class="blk-act legacy" @click="addImg(b)">📷 本地图片（兼容）</span>
-                  <span class="blk-act legacy" @click="addVid(b)">🎬 本地视频（兼容）</span>
-                </div>
-                <!-- 子模块 -->
-                <div v-for="(ch,ci) in b.children" :key="ci" class="child">
-                  <div class="child-h">
-                    <span class="blk-tag" :style="{background:ch.type==='image'?'#3370ff':'#722ed1'}">{{ch.type==='image'?'图片':'视频'}}</span>
-                    <div class="blk-body">
-                    <!-- 已关联 -->
-                      <div v-if="ch.media_id || ch.external_url" class="media-inline-card">
-                        <div v-if="ch.type==='image'" class="img-thumb-wrap" role="button" tabindex="0" aria-label="查看原图" title="点击查看原图" @click="showFull(childMediaUrl(ch))" @keyup.enter="showFull(childMediaUrl(ch))" @keyup.space.prevent="showFull(childMediaUrl(ch))">
-                          <img v-if="childMediaUrl(ch)" :src="childMediaUrl(ch)" :alt="ch.alt || '图片缩略图'" loading="lazy" decoding="async" referrerpolicy="no-referrer" @load="ch.load_error=false" @error="ch.load_error=true">
-                          <div v-if="ch.load_error || !childMediaUrl(ch)" class="media-thumb-error">图片不可用</div>
-                          <div v-if="!ch.load_error && childMediaUrl(ch)" class="img-mask">预览</div>
-                        </div>
-                        <div v-else class="vid-thumb-wrap" role="button" tabindex="0" aria-label="播放视频" title="点击播放视频" @click="showFull(childMediaUrl(ch), true)" @keyup.enter="showFull(childMediaUrl(ch), true)" @keyup.space.prevent="showFull(childMediaUrl(ch), true)">
-                          <video v-if="childMediaUrl(ch)" :src="childMediaUrl(ch)" muted preload="metadata" playsinline controlsList="nodownload nofullscreen noremoteplayback" disablePictureInPicture style="pointer-events:none" @loadedmetadata="ch.load_error=false" @error="ch.load_error=true"></video>
-                          <div v-if="ch.load_error || !childMediaUrl(ch)" class="media-thumb-error">视频不可用</div>
-                          <div v-if="!ch.load_error && childMediaUrl(ch)" class="vid-mask">▶</div>
-                        </div>
-                        <div class="media-inline-meta">
-                          <input v-if="!viewOnly" class="fi" v-model="ch.alt" :placeholder="ch.type==='image'?'图片标题':'视频标题'" style="font-size:11px;padding:4px 6px">
-                          <input v-if="!viewOnly" class="fi" v-model="ch.caption" :placeholder="ch.type==='image'?'图片说明':'视频说明'" style="font-size:11px;padding:4px 6px">
-                          <div v-if="viewOnly && ch.alt" class="media-inline-title">{{ch.alt}}</div>
-                          <div v-if="viewOnly && ch.caption" class="media-inline-caption">{{ch.caption}}</div>
-                          <span :style="{fontSize:'10px',color:ch.external_url?'#3370ff':'#00b42a'}">{{ch.external_url?(ch.type==='image'?'外链图片':'外链视频'):'已关联'}}</span>
-                          <span v-if="ch.external_url" class="external-media-note" :title="ch.external_url">{{ch.type==='image'?'点击缩略图查看原图':'点击缩略图播放视频'}}</span>
-                        </div>
+          <div class="content-section-head">
+            <div class="sec-t">知识内容</div>
+            <div v-if="!viewOnly" class="content-editor-note">支持按顺序混排文本、图片和视频；插件媒体标记使用 [img:https://...] / [video:https://...]，正文中的其他 URL 保持原文。</div>
+          </div>
+          <div class="content-editor" :class="{'view-mode':viewOnly}">
+            <div v-if="!fm.blocks.length" class="content-empty">{{viewOnly?'暂无知识内容':'暂无内容，请添加文本、图片或视频。'}}</div>
+            <div v-else class="content-flow">
+              <div v-for="(b,bi) in fm.blocks" :key="b._uid" class="content-flow-block">
+                <template v-if="b.type==='text'">
+                  <div v-if="!viewOnly" class="content-block-shell">
+                    <div class="content-block-head">
+                      <div class="content-block-head-main"><span class="content-kind">文本</span></div>
+                      <div class="content-block-actions">
+                        <button type="button" class="content-action-button" @click="addBlock('image',bi)" :disabled="saving">下方加图片</button>
+                        <button type="button" class="content-action-button" @click="addBlock('video',bi)" :disabled="saving">下方加视频</button>
+                        <button type="button" class="content-action-button danger" @click="removeContentBlock(bi)" :disabled="saving" :aria-label="'删除第 '+(bi+1)+' 个文本块'">删除</button>
                       </div>
-                      <!-- 上传中/有预览 -->
-                      <div v-else-if="ch.preview" style="display:flex;gap:8px;align-items:flex-start">
-                        <div v-if="ch.type==='image'" class="img-thumb-wrap">
-                          <img :src="ch.preview" @error="$event.target.style.display='none'">
-                          <div class="img-mask">{{ch.uploading?'上传中':'预览'}}</div>
-                        </div>
-                        <div v-else class="vid-thumb-wrap">
-                          <video :src="ch.preview" muted preload="metadata"></video>
-                          <div class="vid-mask">{{ch.uploading?'上传中':'▶'}}</div>
-                        </div>
-                        <div style="flex:1;display:flex;flex-direction:column;gap:3px;min-width:0">
-                          <input class="fi" v-model="ch.alt" :disabled="viewOnly" :placeholder="ch.type==='image'?'图片标题':'视频标题'" style="font-size:11px;padding:4px 6px">
-                          <input class="fi" v-model="ch.caption" :disabled="viewOnly" :placeholder="ch.type==='image'?'图片说明':'视频说明'" style="font-size:11px;padding:4px 6px">
-                          <span v-if="ch.uploading" style="font-size:10px;color:#3370ff">上传中...</span>
-                          <span v-else style="font-size:10px;color:#ff7d00">待上传</span>
-                        </div>
+                    </div>
+                    <label class="content-text-label" :for="'content-text-'+b._uid">文本内容</label>
+                    <textarea class="content-textarea" :id="'content-text-'+b._uid" v-model="b.value" :disabled="saving" placeholder="输入正文内容" @paste="handleRichTextPaste($event,b._uid)" @blur="syncInlineMediaFromText(b._uid)"></textarea>
+                  </div>
+                  <div v-else-if="richTextHasContent(b.value)" class="content-article-text" v-html="linkifyText(b.value)"></div>
+                </template>
+                <template v-else-if="b.type==='image' || b.type==='video'">
+                  <article v-if="!viewOnly" class="content-media-card">
+                    <div class="content-block-head">
+                      <div class="content-block-head-main">
+                        <span class="content-kind" :class="b.type">{{b.type==='image'?'图片':'视频'}}</span>
+                        <span class="content-source-badge" :class="{external:!!b.external_url}">{{mediaSourceLabel(b)}}</span>
                       </div>
-                      <!-- 空白：上传区 -->
-                      <div v-else>
-                        <label class="upload-zone" v-if="!viewOnly" :data-ch-ref="bi+':'+ci">
-                          <span style="font-size:18px">{{ch.type==='image'?'📷':'🎬'}}</span>
-                          <span style="font-size:12px">点击选择{{ch.type==='image'?'图片':'视频'}}，或 Ctrl+V 粘贴</span>
-                          <input type="file" :accept="ch.type==='image'?'image/*':'video/*'" :disabled="saving" style="display:none" @change="pickFile($event,ch)">
-                        </label>
-                        <div style="display:flex;gap:5px">
-                          <input class="fi" v-model="ch.alt" :disabled="viewOnly" :placeholder="ch.type==='image'?'图片标题':'视频标题'" style="font-size:11px;padding:4px 6px;flex:1">
-                          <input class="fi" v-model="ch.caption" :disabled="viewOnly" :placeholder="ch.type==='image'?'图片说明':'视频说明'" style="font-size:11px;padding:4px 6px;flex:1">
+                      <div class="content-block-actions">
+                        <label v-if="childMediaUrl(b)" class="content-action-button" :class="{disabled:saving}">更换文件<input type="file" :accept="b.type==='image'?'image/*':'video/*'" :disabled="saving" class="sr-only" @change="pickFile($event,b)"></label>
+                        <button v-if="childMediaUrl(b)" type="button" class="content-action-button" @click="showFull(childMediaUrl(b),b.type==='video')" :disabled="saving">{{b.type==='image'?'查看原图':'播放视频'}}</button>
+                        <button type="button" class="content-action-button danger" @click="removeContentBlock(bi)" :disabled="saving" :aria-label="'删除第 '+(bi+1)+' 个媒体块'">删除</button>
+                      </div>
+                    </div>
+                    <div class="content-media-body">
+                      <button v-if="childMediaUrl(b)" type="button" class="content-media-preview" :aria-label="b.type==='image'?'查看原图':'播放视频'" @click="showFull(childMediaUrl(b),b.type==='video')">
+                        <img v-if="b.type==='image' && !b.load_error" :src="childMediaUrl(b)" :alt="b.alt || '图片预览'" loading="lazy" decoding="async" referrerpolicy="no-referrer" @load="b.load_error=false" @error="b.load_error=true">
+                        <video v-else-if="b.type==='video' && !b.load_error" :src="childMediaUrl(b)" muted preload="metadata" playsinline controlsList="nodownload nofullscreen noremoteplayback" disablePictureInPicture @loadedmetadata="b.load_error=false" @error="b.load_error=true"></video>
+                        <span v-if="b.load_error" class="media-thumb-error">{{b.type==='image'?'图片':'视频'}}不可用</span>
+                        <span v-else class="content-media-preview-overlay">{{b.type==='image'?'查看原图':'播放视频'}}</span>
+                      </button>
+                      <label v-else class="upload-zone" :data-block-uid="b._uid">
+                        <span class="upload-zone-title">选择{{b.type==='image'?'图片':'视频'}}</span>
+                        <span class="upload-zone-note">点击选择文件，或将剪贴板文件粘贴到此处</span>
+                        <input type="file" :accept="b.type==='image'?'image/*':'video/*'" :disabled="saving" class="sr-only" @change="pickFile($event,b)">
+                      </label>
+                      <div class="content-media-meta">
+                        <div class="content-media-fields">
+                          <div class="content-media-field">
+                            <label :for="'content-alt-'+b._uid">{{b.type==='image'?'图片':'视频'}}标题</label>
+                            <input class="fi" :id="'content-alt-'+b._uid" v-model="b.alt" :disabled="saving" :placeholder="'输入'+(b.type==='image'?'图片':'视频')+'标题（选填）'">
+                          </div>
+                          <div class="content-media-field">
+                            <label :for="'content-caption-'+b._uid">{{b.type==='image'?'图片':'视频'}}说明</label>
+                            <input class="fi" :id="'content-caption-'+b._uid" v-model="b.caption" :disabled="saving" :placeholder="'输入'+(b.type==='image'?'图片':'视频')+'说明（选填）'">
+                          </div>
+                        </div>
+                        <div class="content-media-status">
+                          <span class="content-media-status-text" :title="b.external_url || ''">{{mediaStatusText(b)}}</span>
+                          <button v-if="childMediaUrl(b)" type="button" class="content-media-link" @click="showFull(childMediaUrl(b),b.type==='video')">{{b.type==='image'?'打开预览':'播放预览'}}</button>
+                          <a v-if="b.external_url" class="content-media-link" :href="childMediaUrl(b)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">打开外链</a>
                         </div>
                       </div>
                     </div>
-                    <button class="blk-rm" v-if="!viewOnly" @click="b.children.splice(ci,1)">&times;</button>
-                  </div>
-                </div>
+                  </article>
+                  <figure v-else class="content-article-media">
+                    <button v-if="childMediaUrl(b)" type="button" class="content-media-preview" :aria-label="b.type==='image'?'查看原图':'播放视频'" @click="showFull(childMediaUrl(b),b.type==='video')">
+                      <img v-if="b.type==='image' && !b.load_error" :src="childMediaUrl(b)" :alt="b.alt || '图片预览'" loading="lazy" decoding="async" referrerpolicy="no-referrer" @load="b.load_error=false" @error="b.load_error=true">
+                      <video v-else-if="b.type==='video' && !b.load_error" :src="childMediaUrl(b)" muted preload="metadata" playsinline controlsList="nodownload nofullscreen noremoteplayback" disablePictureInPicture @loadedmetadata="b.load_error=false" @error="b.load_error=true"></video>
+                      <span v-if="b.load_error" class="media-thumb-error">{{b.type==='image'?'图片':'视频'}}不可用</span>
+                      <span v-else class="content-media-preview-overlay">{{b.type==='image'?'查看原图':'播放视频'}}</span>
+                    </button>
+                    <div v-else class="media-thumb-error" style="position:relative;min-height:112px">{{b.type==='image'?'图片':'视频'}}不可用</div>
+                    <figcaption class="content-article-caption">
+                      <strong v-if="b.alt">{{b.alt}}</strong>
+                      <span v-if="b.caption">{{b.caption}}</span>
+                      <span v-if="!b.alt && !b.caption">{{b.type==='image'?'图片内容':'视频内容'}}</span>
+                      <button v-if="childMediaUrl(b)" type="button" class="content-media-link" @click="showFull(childMediaUrl(b),b.type==='video')">{{b.type==='image'?'查看原图':'播放视频'}}</button>
+                      <a v-if="b.external_url" class="content-media-link" :href="childMediaUrl(b)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">打开外链</a>
+                    </figcaption>
+                  </figure>
+                </template>
               </div>
-              <button class="blk-rm" v-if="!viewOnly" @click="fm.blocks.splice(bi,1)">&times;</button>
+            </div>
+            <div v-if="!viewOnly" class="content-toolbar" aria-label="添加知识内容">
+              <button type="button" class="content-toolbar-button" @click="addBlock('text')" :disabled="saving">添加文本</button>
+              <button type="button" class="content-toolbar-button" @click="addBlock('image')" :disabled="saving">添加图片</button>
+              <button type="button" class="content-toolbar-button" @click="addBlock('video')" :disabled="saving">添加视频</button>
             </div>
           </div>
-          <button class="btn bd bsm" v-if="!viewOnly" @click="addBlock" style="margin-top:4px">+ 文本</button>
         </div>
       </div>
       <div class="dlg-f">
@@ -1584,6 +1631,7 @@ Vue.createApp({
       importTaskCancellingId: '',
       importTaskDetailRequestId: 0,
       importTaskDetail: {open:false, loading:false, error:'', task:null},
+      contentBlockUidSeed: 0,
       ns: '',
       relatedStandardItemInput: '',
       drop: '',
@@ -1597,7 +1645,7 @@ Vue.createApp({
       mhCaches: {},
       option: {applicableCategories:[], brands:[], models:[]},
       optErr: {applicableCategories:'', brands:'', models:''},
-      fm: {title:'', subtitles:[], knowledgeOrigin:'', businessType:'', cat:'', by:'', scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]},
+      fm: {title:'', subtitles:[], knowledgeOrigin:'', businessType:'', cat:'', by:'', scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[]},
       dedupCompare: {open:false, loading:false, allowSubmit:false, feedbackEnabled:false, feedbackRecorded:false, reason:'', submitting:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', knowledge_origin:'', business_type:'', category_id:'', content:{blocks:[]}}, target:{}},
       full:{show:false, src:'', isVideo:false, error:false}
     }
@@ -4312,18 +4360,22 @@ Vue.createApp({
     },
     closeDlg: function() {
       if (this.saving) return;
+      this.releaseContentPreviews(this.fm.blocks);
       this.dlg = false;
       this.auditMode = false;
+      this._hoverTarget = null;
     },
     openNew: function() {
       if (this.saving) return;
       if (!this.can('knowledge:create')) { alert('没有新建权限'); return; }
+      this.releaseContentPreviews(this.fm.blocks);
       this.viewOnly = false;
       this.auditMode = false;
       this.eid = '';
-      this.fm = {title:'', subtitles:[], knowledgeOrigin:'', businessType:'', cat:'', by:(this.currentUser.username || ''), scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[{type:'text', value:'', children:[]}]};
+      this.fm = {title:'', subtitles:[], knowledgeOrigin:'', businessType:'', cat:'', by:(this.currentUser.username || ''), scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[this.createTextEditorBlock('')]};
       this.ns = '';
       this.relatedStandardItemInput = '';
+      this._hoverTarget = null;
       this.dlg = true;
       if (!this.knowledgeOrigins.length) this.loadKnowledgeOrigins();
       if (!this.businessTypes.length) this.loadBusinessTypes();
@@ -4347,58 +4399,11 @@ Vue.createApp({
       if (!this.knowledgeOrigins.length) this.loadKnowledgeOrigins();
       if (!this.businessTypes.length) this.loadBusinessTypes();
       var self = this;
+      self.releaseContentPreviews(self.fm.blocks);
+      self._hoverTarget = null;
       self.eid = r.id;
-      var blocks = [];
       var mediaList = Array.isArray(r.media) ? r.media.slice() : [];
-      var mediaByFile = {};
-      mediaList.forEach(function(m) { if (m && m.filename) mediaByFile[m.filename] = m; });
-      var contentBlocks = [];
-      if (r.content && r.content.blocks && r.content.blocks.length) {
-        contentBlocks = r.content.blocks;
-      } else if (r.content && Array.isArray(r.content.blocks)) {
-        contentBlocks = r.content.blocks;
-      }
-      if (contentBlocks.length) {
-        var attachChild = function(type, src, externalUrl, blockAlt, blockCaption) {
-          var safeExternalUrl = self.normalizeExternalMediaUrl(externalUrl, type);
-          var m = null;
-          if (!safeExternalUrl) {
-            m = mediaByFile[src] || null;
-          }
-          var id = '';
-          var alt = blockAlt || '';
-          var caption = blockCaption || '';
-          var preview = safeExternalUrl;
-          if (m) {
-            id = m.filename || '';
-            if (!alt) alt = m.alt || '';
-            if (!caption) caption = m.caption || '';
-            preview = m.filename ? (BASE + '/uploads/' + m.filename) : '';
-          } else if (src) {
-            id = src;
-            preview = BASE + '/uploads/' + src;
-          }
-          return {type: type, media_id: id, external_url: safeExternalUrl, alt: alt, caption: caption, file: null, preview: preview, uploading: false, load_error: false, _saved: !!(id || safeExternalUrl)};
-        };
-        var last = null;
-        contentBlocks.forEach(function(b) {
-          if (b.type === 'text') {
-            var nb = {type:'text', value:self.richTextToPlainText(b.value||''), children:[]};
-            blocks.push(nb);
-            last = nb;
-          } else if (b.type === 'image' || b.type === 'video') {
-            var child = attachChild(b.type, b.media_id || '', b.external_url || b.url || '', b.alt || '', b.caption || '');
-            if (last) {
-              last.children.push(child);
-            } else {
-              var wrapper = {type:'text', value:'', children:[child]};
-              blocks.push(wrapper);
-              last = wrapper;
-            }
-          }
-        });
-      }
-      if (!blocks.length) blocks = [{type:'text', value:'', children:[]}];
+      var blocks = self.editorBlocksFromContent(r.content, mediaList);
       self.fm = {
         title: r.title,
         subtitles: r.subtitles ? r.subtitles.slice() : [],
@@ -4689,14 +4694,182 @@ Vue.createApp({
         return '';
       }
     },
+    nextContentBlockUid: function() {
+      this.contentBlockUidSeed += 1;
+      return 'content-block-' + this.contentBlockUidSeed;
+    },
+    createTextEditorBlock: function(value) {
+      return {
+        _uid: this.nextContentBlockUid(),
+        type: 'text',
+        value: this.richTextToPlainText(value || '')
+      };
+    },
+    createMediaEditorBlock: function(type, source) {
+      source = source || {};
+      var normalizedType = type === 'video' ? 'video' : 'image';
+      var mediaId = String(source.media_id || '').replace(/^\/uploads\//i, '');
+      var externalUrl = this.normalizeExternalMediaUrl(
+        source.external_url || source.url || '',
+        normalizedType
+      );
+      if (externalUrl) mediaId = '';
+      var preview = String(source.preview || '');
+      if (!preview) {
+        preview = externalUrl || (mediaId ? this.mediaUrl(mediaId) : '');
+      }
+      return {
+        _uid: this.nextContentBlockUid(),
+        type: normalizedType,
+        media_id: mediaId,
+        external_url: externalUrl,
+        alt: String(source.alt || ''),
+        caption: String(source.caption || ''),
+        file: source.file || null,
+        preview: preview,
+        uploading: !!source.uploading,
+        load_error: !!source.load_error,
+        _saved: source._saved !== undefined
+          ? !!source._saved
+          : !!(mediaId || externalUrl)
+      };
+    },
+    isMediaEditorBlock: function(block) {
+      return !!block && (block.type === 'image' || block.type === 'video');
+    },
+    isBlobPreview: function(value) {
+      return /^blob:/i.test(String(value || ''));
+    },
+    revokeContentBlockPreview: function(block) {
+      if (!block) return;
+      if (this.isBlobPreview(block.preview)) {
+        if (
+          this.full.show
+          && String(this.full.src || '') === String(block.preview)
+        ) {
+          this.closeFullPreview();
+        }
+        try { URL.revokeObjectURL(block.preview); } catch (e) {}
+      }
+      block.preview = '';
+    },
+    releaseContentPreviews: function(blocks) {
+      var self = this;
+      (blocks || []).forEach(function(block) {
+        self.revokeContentBlockPreview(block);
+      });
+    },
+    removeContentBlock: function(index) {
+      if (this.saving || index < 0 || index >= this.fm.blocks.length) return;
+      var removed = this.fm.blocks.splice(index, 1)[0];
+      this.revokeContentBlockPreview(removed);
+      if (removed && removed._uid === this._hoverTarget) this._hoverTarget = null;
+    },
+    isMediaDecorationLine: function(value) {
+      return /^[+\-‐‑‒–—―*•·●○▪▫]$/.test(String(value || '').trim());
+    },
+    trimMediaPlaceholderLines: function(value, hasMediaBefore, hasMediaAfter) {
+      var text = this.richTextToPlainText(value).replace(/\r\n?/g, '\n');
+      var lines = text.split('\n');
+
+      if (hasMediaBefore) {
+        while (lines.length && !lines[0].trim()) lines.shift();
+        while (lines.length && this.isMediaDecorationLine(lines[0])) {
+          lines.shift();
+          while (lines.length && !lines[0].trim()) lines.shift();
+        }
+      }
+      if (hasMediaAfter) {
+        while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+        while (
+          lines.length
+          && this.isMediaDecorationLine(lines[lines.length - 1])
+        ) {
+          lines.pop();
+          while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+        }
+      }
+      return lines.join('\n');
+    },
+    normalizeAdjacentMediaDecorators: function(blocks) {
+      var index = 0;
+      while (index < blocks.length) {
+        var block = blocks[index];
+        if (block && block.type === 'text') {
+          var hasMediaBefore = index > 0
+            && this.isMediaEditorBlock(blocks[index - 1]);
+          var hasMediaAfter = index < blocks.length - 1
+            && this.isMediaEditorBlock(blocks[index + 1]);
+          if (!hasMediaBefore && !hasMediaAfter) {
+            index += 1;
+            continue;
+          }
+          var cleaned = this.trimMediaPlaceholderLines(
+            block.value,
+            hasMediaBefore,
+            hasMediaAfter
+          );
+          if (cleaned !== block.value) block.value = cleaned;
+          if (!cleaned.trim()) {
+            blocks.splice(index, 1);
+            continue;
+          }
+        }
+        index += 1;
+      }
+      return blocks;
+    },
+    editorBlocksFromContent: function(content, mediaList) {
+      var self = this;
+      var mediaByFile = {};
+      (mediaList || []).forEach(function(media) {
+        if (!media || !media.filename) return;
+        mediaByFile[String(media.filename)] = media;
+      });
+      var sourceBlocks = [];
+      if (typeof content === 'string') {
+        sourceBlocks = [{type:'text', value:content}];
+      } else if (content && Array.isArray(content.blocks)) {
+        sourceBlocks = content.blocks;
+      }
+      var blocks = [];
+      sourceBlocks.forEach(function(source) {
+        if (!source || typeof source !== 'object') return;
+        if (source.type === 'text') {
+          blocks.push(self.createTextEditorBlock(source.value || source.text || ''));
+          return;
+        }
+        if (source.type !== 'image' && source.type !== 'video') return;
+        var mediaId = String(source.media_id || '').replace(/^\/uploads\//i, '');
+        var media = mediaByFile[mediaId] || null;
+        blocks.push(self.createMediaEditorBlock(source.type, {
+          media_id: media ? media.filename : mediaId,
+          external_url: source.external_url || source.url || '',
+          alt: source.alt || (media && media.alt) || '',
+          caption: source.caption || (media && media.caption) || '',
+          _saved: true
+        }));
+      });
+      self.normalizeAdjacentMediaDecorators(blocks);
+      if (!blocks.length && !self.viewOnly) blocks.push(self.createTextEditorBlock(''));
+      return blocks;
+    },
     parseInlineExternalMedia: function(value) {
       var text = this.richTextToPlainText(value).replace(/\r\n?/g, '\n');
       var blocks = [];
       var foundMedia = false;
       var cursor = 0;
       var self = this;
-      var appendText = function(segment) {
-        segment = segment.replace(/^\n+|\n+$/g, '');
+      var appendText = function(
+        segment,
+        hasMediaBefore,
+        hasMediaAfter
+      ) {
+        segment = self.trimMediaPlaceholderLines(
+          segment,
+          hasMediaBefore,
+          hasMediaAfter
+        );
         if (segment.trim()) blocks.push({type:'text', value:segment});
       };
       var tokenPattern = /\[(img|video):[ \t]*(https:\/\/[^\s\[\]<>\"']+)\]/gi;
@@ -4704,117 +4877,157 @@ Vue.createApp({
         var mediaType = tokenType.toLowerCase() === 'img' ? 'image' : 'video';
         var safeExternalUrl = self.normalizeExternalMediaUrl(externalUrl, mediaType);
         if (!safeExternalUrl) return full;
-        appendText(text.slice(cursor, offset));
+        appendText(text.slice(cursor, offset), foundMedia, true);
         blocks.push({type:mediaType, external_url:safeExternalUrl, alt:'', caption:''});
         cursor = offset + full.length;
         foundMedia = true;
         return full;
       });
-      appendText(text.slice(cursor));
+      appendText(text.slice(cursor), foundMedia, false);
       return {foundMedia:foundMedia, blocks:blocks};
     },
-    externalMediaChild: function(type, url) {
-      var externalUrl = this.normalizeExternalMediaUrl(url, type);
-      return {type:type, media_id:'', external_url:externalUrl, alt:'', caption:'', file:null, preview:externalUrl, uploading:false, load_error:false, _saved:true};
-    },
-    editorBlocksFromParsedMedia: function(contentBlocks, trailingChildren) {
+    editorBlocksFromParsedMedia: function(contentBlocks) {
       var blocks = [];
-      var last = null;
       var self = this;
       (contentBlocks || []).forEach(function(block) {
         if (block.type === 'text') {
-          last = {type:'text', value:block.value || '', children:[]};
-          blocks.push(last);
+          blocks.push(self.createTextEditorBlock(block.value || ''));
           return;
         }
         if (block.type !== 'image' && block.type !== 'video') return;
-        if (!last) {
-          last = {type:'text', value:'', children:[]};
-          blocks.push(last);
-        }
-        last.children.push(self.externalMediaChild(block.type, block.external_url));
+        blocks.push(self.createMediaEditorBlock(block.type, {
+          external_url: block.external_url,
+          alt: block.alt || '',
+          caption: block.caption || '',
+          _saved: true
+        }));
       });
-      if (!blocks.length) blocks.push({type:'text', value:'', children:[]});
-      if (trailingChildren && trailingChildren.length) {
-        blocks[blocks.length - 1].children = blocks[blocks.length - 1].children.concat(trailingChildren);
-      }
       return blocks;
     },
-    syncInlineMediaFromText: function(index) {
+    contentBlockIndex: function(uidOrIndex) {
+      if (typeof uidOrIndex === 'number') return uidOrIndex;
+      var uid = String(uidOrIndex || '');
+      return this.fm.blocks.findIndex(function(block) {
+        return block && block._uid === uid;
+      });
+    },
+    syncInlineMediaFromText: function(uidOrIndex) {
+      var index = this.contentBlockIndex(uidOrIndex);
       var block = this.fm.blocks[index];
-      if (!block) return 0;
+      if (!block || block.type !== 'text') return 0;
       var parsed = this.parseInlineExternalMedia(block.value);
       if (!parsed.foundMedia) return 0;
-      var replacements = this.editorBlocksFromParsedMedia(parsed.blocks, block.children || []);
+      var replacements = this.editorBlocksFromParsedMedia(parsed.blocks);
       Array.prototype.splice.apply(this.fm.blocks, [index, 1].concat(replacements));
+      this.normalizeAdjacentMediaDecorators(this.fm.blocks);
       return replacements.length;
     },
     syncAllInlineMedia: function() {
       var index = 0;
       while (index < this.fm.blocks.length) {
-        var replacementCount = this.syncInlineMediaFromText(index);
+        var block = this.fm.blocks[index];
+        var replacementCount = block && block.type === 'text'
+          ? this.syncInlineMediaFromText(block._uid)
+          : 0;
         index += replacementCount || 1;
       }
     },
-    handleRichTextPaste: function(event, index) {
+    handleRichTextPaste: function(event, uid) {
       if (this.saving) return;
       var text = event.clipboardData && event.clipboardData.getData('text/plain');
       if (!text || !this.parseInlineExternalMedia(text).foundMedia) return;
       var self = this;
       window.setTimeout(function() {
         if (self.saving) return;
-        self.syncInlineMediaFromText(index);
+        self.syncInlineMediaFromText(uid);
       }, 0);
     },
-    addBlock: function() {
+    addBlock: function(type, afterIndex) {
       if (this.saving) return;
-      this.fm.blocks.push({type:'text', value:'', children:[]});
+      var block = type === 'image' || type === 'video'
+        ? this.createMediaEditorBlock(type)
+        : this.createTextEditorBlock('');
+      if (
+        typeof afterIndex === 'number'
+        && afterIndex >= 0
+        && afterIndex < this.fm.blocks.length
+      ) {
+        this.fm.blocks.splice(afterIndex + 1, 0, block);
+        return;
+      }
+      this.fm.blocks.push(block);
     },
-    addImg: function(b) {
-      if (this.saving) return;
-      b.children.push({type:'image', media_id:'', external_url:'', alt:'', caption:'', file:null, preview:'', load_error:false});
+    mediaSourceLabel: function(block) {
+      if (!block) return '未选择';
+      if (block.external_url) return 'CDN';
+      if (String(block.media_id || '').indexOf('temp-') === 0) return '临时文件';
+      if (block.media_id) return '本地文件';
+      if (block.file) return '待上传';
+      return '未选择';
     },
-    addVid: function(b) {
-      if (this.saving) return;
-      b.children.push({type:'video', media_id:'', external_url:'', alt:'', caption:'', file:null, preview:'', load_error:false});
+    mediaStatusText: function(block) {
+      if (!block) return '';
+      if (block.uploading) return '正在上传媒体文件';
+      if (block.external_url) return 'CDN 外链已关联';
+      if (String(block.media_id || '').indexOf('temp-') === 0) return '媒体已暂存，等待保存知识';
+      if (block.media_id) return '本地媒体已关联';
+      if (block.file) return '本地文件待保存';
+      return '尚未选择媒体文件';
     },
-    pickFile: function(e, ch) {
+    pickFile: function(e, block) {
       if (this.saving) {
         e.target.value = '';
         return;
       }
       var file = e.target.files[0];
       if (!file) return;
-      ch.external_url = '';
-      ch.media_id = '';
-      ch.load_error = false;
-      ch.preview = URL.createObjectURL(file);
-      if (!ch.alt) ch.alt = file.name;
-      ch.file = file;
-      ch.uploading = false;
-      ch._saved = false;
+      this.revokeContentBlockPreview(block);
+      block.external_url = '';
+      block.media_id = '';
+      block.load_error = false;
+      block.preview = URL.createObjectURL(file);
+      if (!block.alt) block.alt = file.name;
+      block.file = file;
+      block.uploading = false;
+      block._saved = false;
       e.target.value = '';
     },
     buildContentBlocks: function(form) {
       var blocks = [];
       var self = this;
       var activeForm = form || this.fm;
+      self.normalizeAdjacentMediaDecorators(activeForm.blocks || []);
       (activeForm.blocks || []).forEach(function(block) {
-        var textValue = self.richTextToPlainText(block.value);
-        var parsed = self.parseInlineExternalMedia(textValue);
-        if (parsed.foundMedia) {
-          parsed.blocks.forEach(function(contentBlock) { blocks.push(contentBlock); });
-        } else if (self.richTextHasContent(textValue)) {
-          blocks.push({type:'text', value:textValue});
-        }
-        if (block.children) block.children.forEach(function(child) {
-          if (child.media_id) {
-            blocks.push({type:child.type, media_id:child.media_id, alt:child.alt||'', caption:child.caption||''});
-            return;
+        if (!block) return;
+        if (block.type === 'text') {
+          var textValue = self.richTextToPlainText(block.value);
+          var parsed = self.parseInlineExternalMedia(textValue);
+          if (parsed.foundMedia) {
+            parsed.blocks.forEach(function(contentBlock) { blocks.push(contentBlock); });
+          } else if (self.richTextHasContent(textValue)) {
+            blocks.push({type:'text', value:textValue});
           }
-          var externalUrl = self.normalizeExternalMediaUrl(child.external_url, child.type);
-          if (externalUrl) blocks.push({type:child.type, external_url:externalUrl, alt:child.alt||'', caption:child.caption||''});
-        });
+          return;
+        }
+        if (!self.isMediaEditorBlock(block)) return;
+        if (block.media_id) {
+          blocks.push({
+            type:block.type,
+            media_id:String(block.media_id).replace(/^\/uploads\//i, ''),
+            alt:block.alt || '',
+            caption:block.caption || ''
+          });
+          return;
+        }
+        var externalUrl = self.normalizeExternalMediaUrl(block.external_url, block.type);
+        if (externalUrl) {
+          blocks.push({
+            type:block.type,
+            external_url:externalUrl,
+            alt:block.alt || '',
+            caption:block.caption || ''
+          });
+        }
       });
       return blocks;
     },
@@ -4849,16 +5062,13 @@ Vue.createApp({
       }
       this.syncAllInlineMedia();
       operation.form.blocks.forEach(function(block) {
-        if (block.children) block.children.forEach(function(child) {
-          if (child.file && !child.media_id) {
-            operation.uploads.push({
-              child: child,
-              file: child.file,
-              type: child.type,
-              alt: child.alt || child.file.name,
-              caption: child.caption || ''
-            });
-          }
+        if (!self.isMediaEditorBlock(block) || !block.file || block.media_id) return;
+        operation.uploads.push({
+          block: block,
+          file: block.file,
+          type: block.type,
+          alt: block.alt || block.file.name,
+          caption: block.caption || ''
         });
       });
 
@@ -4904,25 +5114,22 @@ Vue.createApp({
           ? detail.temp_ids
           : [];
         operation.form.blocks.forEach(function(block) {
-          (block.children || []).forEach(function(child) {
-            var mediaId = String(child.media_id || '');
-            if (
-              mediaId.indexOf('temp-') === 0
-              && (!requested.length || requested.indexOf(mediaId) !== -1)
-            ) {
-              child.media_id = '';
-              child.uploading = false;
-            }
-          });
+          if (!self.isMediaEditorBlock(block)) return;
+          var mediaId = String(block.media_id || '');
+          if (
+            mediaId.indexOf('temp-') === 0
+            && (!requested.length || requested.indexOf(mediaId) !== -1)
+          ) {
+            block.media_id = '';
+            block.uploading = false;
+          }
         });
       }
 
       function handleSaveError(error, body) {
         if (!isCurrentOperation()) return;
         operation.form.blocks.forEach(function(block) {
-          (block.children || []).forEach(function(child) {
-            child.uploading = false;
-          });
+          if (self.isMediaEditorBlock(block)) block.uploading = false;
         });
         self.saving = false;
         if (
@@ -4963,13 +5170,14 @@ Vue.createApp({
         if (!isCurrentOperation()) return;
         if (!operation.eid && result && result.id) self.eid = result.id;
         operation.form.blocks.forEach(function(block) {
-          (block.children || []).forEach(function(child) {
-            child.file = null;
-            child.uploading = false;
-            child._saved = !!(child.media_id || child.external_url);
-          });
+          if (!self.isMediaEditorBlock(block)) return;
+          block.file = null;
+          block.uploading = false;
+          block._saved = !!(block.media_id || block.external_url);
+          self.revokeContentBlockPreview(block);
         });
         self.dlg = false;
+        self._hoverTarget = null;
         self.load();
         self.loadStats();
         self.saving = false;
@@ -5003,13 +5211,13 @@ Vue.createApp({
           return;
         }
         var upload = operation.uploads[index];
-        var child = upload.child;
+        var block = upload.block;
         var form = new FormData();
         form.append('file', upload.file);
         form.append('media_type', upload.type);
         form.append('alt', upload.alt);
         form.append('caption', upload.caption);
-        child.uploading = true;
+        block.uploading = true;
         fetch(API + '/knowledge/upload-temp', {
           method:'POST',
           headers:self.authHeaders(),
@@ -5022,13 +5230,13 @@ Vue.createApp({
             if (!isCurrentOperation()) return;
             var tempId = data.id || data.filename;
             if (!tempId) throw new Error('媒体暂存响应缺少临时文件 ID');
-            child.media_id = tempId;
-            child.uploading = false;
+            block.media_id = tempId;
+            block.uploading = false;
             uploadNext(index + 1);
           })
           .catch(function(error) {
             if (!isCurrentOperation()) return;
-            child.uploading = false;
+            block.uploading = false;
             handleSaveError(error, null);
           });
       }
@@ -5038,6 +5246,7 @@ Vue.createApp({
     normalizePreviewUrl: function(value) {
       try {
         var raw = String(value || '').trim();
+        if (/^blob:/i.test(raw)) return raw;
         if (!/^https?:\/\//i.test(raw)) return '';
         var parsed = new URL(raw);
         if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
@@ -5049,6 +5258,7 @@ Vue.createApp({
     mediaUrl: function(id) { return BASE + '/uploads/' + String(id || '').replace(/^\/uploads\//i, ''); },
     childMediaUrl: function(child) {
       if (!child) return '';
+      if (this.isBlobPreview(child.preview)) return child.preview;
       var externalUrl = this.normalizeExternalMediaUrl(child.external_url, child.type);
       return externalUrl || (child.media_id ? this.mediaUrl(child.media_id) : (child.preview || ''));
     },
@@ -5113,12 +5323,7 @@ Vue.createApp({
       self._hoverTarget = null;
       document.addEventListener('mouseover', function(e) {
         var zone = e.target.closest('.upload-zone');
-        if (zone) {
-          self._hoverTarget = zone.getAttribute('data-ch-ref');
-        } else {
-          var childEl = e.target.closest('.child');
-          if (!childEl) self._hoverTarget = null;
-        }
+        self._hoverTarget = zone ? zone.getAttribute('data-block-uid') : null;
       });
       // 全局粘贴监听（支持图片和视频）
       document.addEventListener('paste', function(e) {
@@ -5137,30 +5342,30 @@ Vue.createApp({
           var fileType = isImage ? 'image' : 'video';
           // 悬停在上传区：替换那个模块
           if (self._hoverTarget) {
-            var parts = self._hoverTarget.split(':');
-            var bi = parseInt(parts[0]), ci = parseInt(parts[1]);
-            if (self.fm.blocks[bi] && self.fm.blocks[bi].children[ci]) {
-              var ch = self.fm.blocks[bi].children[ci];
-              ch.type = fileType;
-              ch.preview = preview;
-              ch.uploading = false;
-              ch.media_id = '';
-              ch.external_url = '';
-              ch.load_error = false;
-              ch.file = file;
-              if (!ch.alt) ch.alt = file.name;
+            var targetIndex = self.contentBlockIndex(self._hoverTarget);
+            var targetBlock = self.fm.blocks[targetIndex];
+            if (self.isMediaEditorBlock(targetBlock)) {
+              self.revokeContentBlockPreview(targetBlock);
+              targetBlock.type = fileType;
+              targetBlock.preview = preview;
+              targetBlock.uploading = false;
+              targetBlock.media_id = '';
+              targetBlock.external_url = '';
+              targetBlock.load_error = false;
+              targetBlock.file = file;
+              targetBlock._saved = false;
+              if (!targetBlock.alt) targetBlock.alt = file.name;
               self._hoverTarget = null;
               return;
             }
           }
-          // 否则在末尾新建模块，保存时统一暂存并入库
-          var last = self.fm.blocks[self.fm.blocks.length - 1];
-          if (!last || last.value || (last.children && last.children.length)) {
-            last = {type:'text', value:'', children:[]};
-            self.fm.blocks.push(last);
-          }
-          var newCh = {type:fileType, media_id:'', external_url:'', alt:file.name, caption:'', file:file, preview:preview, uploading:false, load_error:false, _saved:false};
-          last.children.push(newCh);
+          // 否则在内容流末尾新建媒体块，保存时统一暂存并入库
+          self.fm.blocks.push(self.createMediaEditorBlock(fileType, {
+            alt:file.name,
+            file:file,
+            preview:preview,
+            _saved:false
+          }));
           return;
         }
       });
