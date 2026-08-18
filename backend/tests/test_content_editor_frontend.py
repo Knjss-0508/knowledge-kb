@@ -42,3 +42,13 @@ def test_content_editor_has_one_hint_and_visible_media_field_labels() -> None:
     assert "{{b.type==='image'?'图片':'视频'}}说明" in FRONTEND
     assert "📷" not in FRONTEND
     assert "🎬" not in FRONTEND
+
+
+def test_view_mode_media_uses_thumbnail_as_the_only_preview_entry() -> None:
+    start = FRONTEND.index('<figure v-else class="content-article-media">')
+    end = FRONTEND.index("</figure>", start)
+    view_markup = FRONTEND[start:end]
+
+    assert view_markup.count('@click="showFull(') == 1
+    assert "content-media-preview-overlay" in view_markup
+    assert "打开外链" in view_markup

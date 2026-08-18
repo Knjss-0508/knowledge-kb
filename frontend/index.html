@@ -81,6 +81,8 @@
     .change-log-arrow{display:flex;align-items:center;justify-content:center;color:#009b83;font-size:18px;font-weight:700}
     @media(max-width:760px){.change-log-values{grid-template-columns:1fr}.change-log-arrow{min-height:18px;transform:rotate(90deg)}}
     .import-task-panel{margin:14px 0;padding:12px 14px;border:1px solid #d9ebe6;border-radius:7px;background:#f7fbfa}
+    .import-task-panel.has-warning{border-color:#f3d19e;background:#fffaf2}
+    .import-task-panel.has-error{border-color:#ffc9c2;background:#fff7f5}
     .import-task-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;color:#344054;font-size:13px;font-weight:700}
     .import-task-notice{margin-bottom:8px;color:#067a6a;font-size:12px;line-height:1.5}
     .import-task-list{display:grid;gap:7px}
@@ -467,14 +469,19 @@
       <button class="btn bd" v-if="can('knowledge:view')" @click="exportKnowledgeExcel">导出知识</button>
       <button class="btn bp" v-if="can('knowledge:create')" @click="openNew">+ 新建知识</button>
     </div>
-    <div class="import-task-panel" v-if="can('knowledge:create') && (importing || visibleImportTasks().length || showImportHistory)">
-      <div class="import-task-head"><span>{{showImportHistory?'导入记录（最近 100 条）':'当前/最近导入任务'}}</span><button class="btn bd bsm" @click="loadImportTasks">刷新</button></div>
+    <div class="import-task-panel" :class="importTaskPanelTone()" v-if="can('knowledge:create') && (importing || importUploadError || visibleImportTasks().length || showImportHistory)">
+      <div class="import-task-head"><span>{{importTaskPanelTitle()}}</span><button class="btn bd bsm" @click="loadImportTasks">刷新</button></div>
       <div class="import-task-notice" v-if="importTaskNotice">{{importTaskNotice}}</div>
       <div class="import-task-list">
         <div class="import-task-row" v-if="importing && !importTaskNotice">
           <span class="tg tg-l">上传中</span>
           <span class="import-task-file" :title="importUploadName">{{importUploadName || '正在上传文件'}}</span>
           <span class="import-task-meta">正在上传并创建后台任务...</span>
+        </div>
+        <div class="import-task-row" v-if="importUploadError">
+          <span class="tg tg-x">上传失败</span>
+          <span class="import-task-error" :title="importUploadError">{{importUploadError}}</span>
+          <span class="import-task-actions"><button class="btn bd bsm" @click="dismissImportUploadError">关闭提醒</button></span>
         </div>
         <div class="import-task-row" v-for="task in visibleImportTasks()" :key="task.id">
           <span class="tg" :class="importTaskStatusClass(task.status)">{{importTaskStatusLabel(task.status)}}</span>
@@ -485,9 +492,10 @@
           <span class="import-task-actions">
             <button class="btn br bsm" v-if="isImportTaskActive(task)" @click="cancelImportTask(task)" :disabled="importTaskCancellingId===task.id">{{importTaskCancellingId===task.id?'取消中...':'取消'}}</button>
             <button class="btn bd bsm" v-if="isImportTaskTerminal(task)" @click="openImportTaskDetail(task)">查看</button>
+            <button class="btn bd bsm" v-if="!showImportHistory && isImportTaskAttention(task)" @click="dismissImportTaskAttention(task)">关闭提醒</button>
           </span>
         </div>
-        <div class="import-task-empty" v-if="!importing && !visibleImportTasks().length">{{showImportHistory?'暂无导入记录':'暂无当前导入任务'}}</div>
+        <div class="import-task-empty" v-if="!importing && !importUploadError && !visibleImportTasks().length">{{showImportHistory?'暂无导入记录':'暂无当前导入任务'}}</div>
       </div>
     </div>
     <div class="filter-tabs">
@@ -1335,7 +1343,6 @@
                       <strong v-if="b.alt">{{b.alt}}</strong>
                       <span v-if="b.caption">{{b.caption}}</span>
                       <span v-if="!b.alt && !b.caption">{{b.type==='image'?'图片内容':'视频内容'}}</span>
-                      <button v-if="childMediaUrl(b)" type="button" class="content-media-link" @click="showFull(childMediaUrl(b),b.type==='video')">{{b.type==='image'?'查看原图':'播放视频'}}</button>
                       <a v-if="b.external_url" class="content-media-link" :href="childMediaUrl(b)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">打开外链</a>
                     </figcaption>
                   </figure>
@@ -1672,6 +1679,11 @@ Vue.createApp({
       showImportHistory: false,
       currentImportTaskId: '',
       importTaskNotice: '',
+      importUploadError: '',
+      importTaskAttentionIds: [],
+      importTaskTransientIds: [],
+      importTaskTransientTimers: {},
+      importTaskStatusById: {},
       importTaskCancellingId: '',
       importTaskDetailRequestId: 0,
       importTaskDetail: {open:false, loading:false, error:'', task:null},
@@ -1707,6 +1719,7 @@ Vue.createApp({
         .then(function(r) { if (!r.ok) throw new Error('login required'); return r.json(); })
         .then(function(u) {
           self.currentUser = u;
+          self.restoreImportTaskUiState();
           if (u.role === 'visitor') self.f.status = 'published';
           self.ready = true;
           self.loadRoles();
@@ -2055,6 +2068,7 @@ Vue.createApp({
       self.importing = true;
       self.importUploadName = file.name;
       self.importTaskNotice = '';
+      self.importUploadError = '';
       fetch(API + '/knowledge/import/excel', {
         method:'POST',
         headers:self.authHeaders(),
@@ -2067,16 +2081,20 @@ Vue.createApp({
           });
         })
         .then(function(data) {
-          self.currentImportTaskId = String(data && data.id || '');
+          self.trackCurrentImportTask(data && data.id);
           self.upsertImportTask(data);
           self.importTaskNotice = '导入任务已创建，处理进度会自动更新。';
           self.startImportTaskPolling();
           return self.loadImportTasks();
         })
-        .catch(function(error) { alert(error.message); })
+        .catch(function(error) {
+          self.importTaskNotice = '';
+          self.importUploadError = error.message || '批量导入失败';
+        })
         .finally(function() {
           self.importing = false;
           self.importUploadName = '';
+          self.importTaskNotice = '';
           input.value = '';
         });
     },
@@ -2106,18 +2124,144 @@ Vue.createApp({
     isImportTaskTerminal: function(task) {
       return !!task && ['completed','completed_with_errors','failed','cancelled'].indexOf(task.status) !== -1;
     },
+    importTaskPanelTitle: function() {
+      if (this.showImportHistory) return '导入记录（最近 100 条）';
+      if (this.importing || this.hasActiveImportTasks()) return '导入进度';
+      if (this.importUploadError || this.visibleImportTasks().some(function(task) {
+        return task.status === 'failed' || task.status === 'completed_with_errors';
+      })) return '导入异常';
+      return '导入结果';
+    },
+    importTaskPanelTone: function() {
+      if (this.showImportHistory) return '';
+      if (this.importUploadError || this.visibleImportTasks().some(function(task) {
+        return task.status === 'failed';
+      })) return 'has-error';
+      if (this.visibleImportTasks().some(function(task) {
+        return task.status === 'completed_with_errors';
+      })) return 'has-warning';
+      return '';
+    },
+    restoreImportTaskUiState: function() {
+      try {
+        this.currentImportTaskId = String(
+          window.sessionStorage.getItem('kb_current_import_task_id') || ''
+        );
+        var storedAttention = JSON.parse(
+          window.sessionStorage.getItem('kb_import_task_attention_ids') || '[]'
+        );
+        this.importTaskAttentionIds = Array.isArray(storedAttention)
+          ? storedAttention.map(function(id) { return String(id || ''); }).filter(function(id) { return !!id; })
+          : [];
+      } catch (error) {
+        this.currentImportTaskId = '';
+        this.importTaskAttentionIds = [];
+      }
+    },
+    persistImportTaskUiState: function() {
+      try {
+        if (this.currentImportTaskId) {
+          window.sessionStorage.setItem(
+            'kb_current_import_task_id',
+            this.currentImportTaskId
+          );
+        } else {
+          window.sessionStorage.removeItem('kb_current_import_task_id');
+        }
+        window.sessionStorage.setItem(
+          'kb_import_task_attention_ids',
+          JSON.stringify(this.importTaskAttentionIds)
+        );
+      } catch (error) {}
+    },
+    trackCurrentImportTask: function(taskId) {
+      this.currentImportTaskId = String(taskId || '');
+      this.persistImportTaskUiState();
+    },
+    clearTrackedImportTask: function(taskId) {
+      if (taskId && String(taskId) !== this.currentImportTaskId) return;
+      this.currentImportTaskId = '';
+      this.persistImportTaskUiState();
+    },
+    isImportTaskAttention: function(task) {
+      return !!task && this.importTaskAttentionIds.indexOf(String(task.id || '')) !== -1;
+    },
+    addImportTaskAttention: function(task) {
+      var id = String(task && task.id || '');
+      if (!id || this.importTaskAttentionIds.indexOf(id) !== -1) return;
+      this.importTaskAttentionIds = this.importTaskAttentionIds.concat(id);
+      this.persistImportTaskUiState();
+    },
+    dismissImportTaskAttention: function(task) {
+      var id = String(task && task.id || '');
+      this.importTaskAttentionIds = this.importTaskAttentionIds.filter(function(item) {
+        return item !== id;
+      });
+      this.persistImportTaskUiState();
+    },
+    dismissImportUploadError: function() {
+      this.importUploadError = '';
+    },
+    showImportTaskTransient: function(task, duration) {
+      var self = this;
+      var id = String(task && task.id || '');
+      if (!id) return;
+      if (self.importTaskTransientIds.indexOf(id) === -1) {
+        self.importTaskTransientIds = self.importTaskTransientIds.concat(id);
+      }
+      if (self.importTaskTransientTimers[id]) {
+        window.clearTimeout(self.importTaskTransientTimers[id]);
+      }
+      self.importTaskTransientTimers[id] = window.setTimeout(function() {
+        self.importTaskTransientIds = self.importTaskTransientIds.filter(function(item) {
+          return item !== id;
+        });
+        delete self.importTaskTransientTimers[id];
+      }, duration);
+    },
+    handleImportTaskTerminal: function(task) {
+      if (!task || !task.id) return;
+      if (task.status === 'failed' || task.status === 'completed_with_errors') {
+        this.addImportTaskAttention(task);
+      } else if (task.status === 'completed') {
+        this.dismissImportTaskAttention(task);
+        this.showImportTaskTransient(task, 3000);
+      } else if (task.status === 'cancelled') {
+        this.dismissImportTaskAttention(task);
+        this.showImportTaskTransient(task, 2000);
+      }
+      this.clearTrackedImportTask(task.id);
+    },
+    reconcileImportTaskPresentation: function(previousStatuses) {
+      var self = this;
+      var nextStatuses = {};
+      (self.importTasks || []).forEach(function(task) {
+        var id = String(task && task.id || '');
+        if (!id) return;
+        var previousStatus = previousStatuses && previousStatuses[id];
+        nextStatuses[id] = task.status;
+        if (
+          self.isImportTaskTerminal(task) &&
+          (
+            previousStatus === 'queued' ||
+            previousStatus === 'running' ||
+            id === self.currentImportTaskId
+          )
+        ) {
+          self.handleImportTaskTerminal(task);
+        }
+      });
+      self.importTaskStatusById = nextStatuses;
+    },
     visibleImportTasks: function() {
       var self = this;
       if (self.showImportHistory) return self.importTasks;
-      var visible = self.importTasks.filter(function(task) {
-        return self.isImportTaskActive(task);
+      return self.importTasks.filter(function(task) {
+        var id = String(task && task.id || '');
+        return self.isImportTaskActive(task) ||
+          self.importTaskAttentionIds.indexOf(id) !== -1 ||
+          self.importTaskTransientIds.indexOf(id) !== -1;
       });
-      var currentTask = self.importTasks.filter(function(task) {
-        return !!self.currentImportTaskId && task.id === self.currentImportTaskId;
-      })[0];
-      if (currentTask && visible.indexOf(currentTask) === -1) visible.unshift(currentTask);
-      if (!visible.length && self.importTasks.length) return [self.importTasks[0]];
-      return visible;
     },
     upsertImportTask: function(task) {
       if (!task || !task.id) return;
@@ -2186,10 +2330,7 @@ Vue.createApp({
             return data;
           });
         })
-        .then(function() {
-          alert('导入任务已取消。');
-          return self.loadImportTasks();
-        })
+        .then(function() { return self.loadImportTasks(); })
         .then(function() {
           self.load();
           self.loadStats();
@@ -2262,7 +2403,9 @@ Vue.createApp({
         .then(function(data) {
           if (requestId !== self.importTaskListRequestId) return;
           var hadActiveTasks = self.hasActiveImportTasks();
+          var previousStatuses = self.importTaskStatusById;
           self.importTasks = Array.isArray(data.tasks) ? data.tasks : [];
+          self.reconcileImportTaskPresentation(previousStatuses);
           if (self.hasActiveImportTasks()) self.startImportTaskPolling();
           else self.stopImportTaskPolling();
           if (hadActiveTasks && !self.hasActiveImportTasks()) {
@@ -2279,6 +2422,10 @@ Vue.createApp({
       fetch(API + '/auth/logout', {method:'DELETE', headers:this.authHeaders()}).catch(function(){});
       localStorage.removeItem('kb_token');
       localStorage.removeItem('kb_user');
+      try {
+        window.sessionStorage.removeItem('kb_current_import_task_id');
+        window.sessionStorage.removeItem('kb_import_task_attention_ids');
+      } catch (error) {}
       location.href = BASE + '/login';
     },
     openUsers: function() {
