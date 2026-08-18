@@ -23,7 +23,10 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.database import SessionLocal, get_db
 from app.routes.auth import get_current_user, has_permission, require_permission
-from app.routes.manhattan import cached_applicable_category_keys
+from app.routes.manhattan import (
+    cached_applicable_category_keys,
+    cached_manhattan_options_snapshot,
+)
 from app.models.user import User
 from app.models.knowledge import (
     Category, Knowledge, KnowledgeStatus,
@@ -32,6 +35,7 @@ from app.models.knowledge import (
 )
 from app.core.config import settings
 from app.services.embedding import EmbeddingServiceUnavailable, embed_texts
+from app.services.applicability import build_applicability_canonicalizer
 from app.services.knowledge_dedup import (
     DedupDecision,
     build_dedup_documents,
@@ -1311,6 +1315,29 @@ def _excel_row_body(row) -> KnowledgeCreate:
     )
 
 
+def _canonicalize_excel_rows_applicability(rows: list, cache: dict) -> None:
+    """用同一缓存快照规范化一次任务内的全部有效行。"""
+    canonicalizers = {}
+    for row in rows:
+        if not row.is_valid or row.source_status == DEPRECATED_SOURCE_STATUS:
+            continue
+        canonicalizer = canonicalizers.get(row.business_type)
+        if canonicalizer is None:
+            canonicalizer = build_applicability_canonicalizer(
+                cache,
+                row.business_type,
+            )
+            canonicalizers[row.business_type] = canonicalizer
+        applicability = canonicalizer.canonicalize(
+            category_values=row.applicable_categories,
+            brand_values=row.applicable_brands,
+            model_values=row.applicable_models,
+        )
+        row.applicable_categories = applicability["categories"]
+        row.applicable_brands = applicability["brands"]
+        row.applicable_models = applicability["models"]
+
+
 def _build_import_embedding_plan(row) -> _ImportEmbeddingPlan:
     body = _excel_row_body(row)
     normalized_content = _normalize_content(body.content)
@@ -1708,6 +1735,10 @@ def process_knowledge_import_task(
         ).all()
         try:
             rows = parse_knowledge_workbook(task.file_content, categories)
+            _canonicalize_excel_rows_applicability(
+                rows,
+                cached_manhattan_options_snapshot(),
+            )
         except KnowledgeExcelError as exc:
             current_task = _lock_import_task_attempt(
                 db,

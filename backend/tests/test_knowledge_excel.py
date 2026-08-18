@@ -367,10 +367,30 @@ class KnowledgeExcelTests(unittest.TestCase):
             },
         )
         self.assertEqual(rows[0].applicable_scenes, ["适用范围：苹果"])
+        self.assertEqual(rows[0].applicable_brands, ["苹果"])
         self.assertEqual(rows[0].source_status, "生效中")
         self.assertEqual(rows[0].source_scope, "苹果")
         self.assertTrue(rows[1].is_valid)
+        self.assertEqual(rows[1].applicable_brands, [])
         self.assertEqual(rows[1].source_status, "待审核")
+
+    def test_legacy_scope_maps_only_explicit_brand_names(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识内容", "知识分类", "适用范围", "生效状态"],
+            [
+                ["组合品牌", "正文。", "场景判定", "小米/红米", "生效中"],
+                ["安卓范围", "正文。", "场景判定", "安卓", "生效中"],
+                ["其他品牌", "正文。", "场景判定", "其他品牌", "生效中"],
+                ["普通场景", "正文。", "场景判定", "线下质检", "生效中"],
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(rows[0].applicable_brands, ["小米", "红米"])
+        self.assertEqual(rows[1].applicable_brands, [])
+        self.assertEqual(rows[2].applicable_brands, ["其他品牌"])
+        self.assertEqual(rows[3].applicable_brands, [])
 
     def test_parse_binds_optional_source_identifiers(self):
         payload = self.workbook_bytes(

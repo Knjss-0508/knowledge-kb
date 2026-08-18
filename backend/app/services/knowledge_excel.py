@@ -124,6 +124,19 @@ IMPORTABLE_SOURCE_STATUS = "生效中"
 REVIEW_SOURCE_STATUS = "待审核"
 DEPRECATED_SOURCE_STATUS = "已禁用"
 UNRESTRICTED_SCOPES = {"通用"}
+LEGACY_SCOPE_BRAND_VALUES = {
+    "苹果",
+    "华为",
+    "OPPO",
+    "VIVO",
+    "vivo",
+    "三星",
+    "其他品牌",
+}
+LEGACY_SCOPE_BRAND_ALIASES = {
+    "小米/红米": ["小米", "红米"],
+    "小米／红米": ["小米", "红米"],
+}
 EXTERNAL_MEDIA_TOKEN_PATTERN = re.compile(
     r"\[(?P<kind>img|video):[ \t]*"
     r"(?P<url>https://[^\s\[\]<>\"']+)\]",
@@ -199,6 +212,17 @@ def _merge_values(*groups: list[str]) -> list[str]:
                 seen.add(value)
                 merged.append(value)
     return merged
+
+
+def _legacy_scope_brands(value) -> list[str]:
+    """兼容旧主表：仅将明确品牌值从“适用范围”补入适用品牌。"""
+    brands: list[str] = []
+    for scope in _split_values(value):
+        if scope in LEGACY_SCOPE_BRAND_ALIASES:
+            brands.extend(LEGACY_SCOPE_BRAND_ALIASES[scope])
+        elif scope in LEGACY_SCOPE_BRAND_VALUES:
+            brands.append(scope)
+    return _merge_values(brands)
 
 
 def _is_safe_external_url(value: str) -> bool:
@@ -560,7 +584,12 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
             result.applicable_categories = _split_values(
                 value_at(values, "applicable_categories")
             )
-            result.applicable_brands = _split_values(value_at(values, "brands"))
+            explicit_brands = _split_values(value_at(values, "brands"))
+            result.applicable_brands = (
+                explicit_brands
+                if explicit_brands
+                else _legacy_scope_brands(source_scope)
+            )
             result.applicable_models = _split_values(value_at(values, "models"))
             result.related_standard_items = _split_values(
                 value_at(values, "related_standard_items")

@@ -160,6 +160,11 @@ def cached_applicable_category_keys(business_type: str) -> set[str]:
     return keys
 
 
+def cached_manhattan_options_snapshot() -> dict:
+    """返回当前不可变缓存对象，供一次后台任务固定使用。"""
+    return _read_cache()
+
+
 def _write_cache(data: dict) -> None:
     global _cache_snapshot_signature, _cache_snapshot
 
