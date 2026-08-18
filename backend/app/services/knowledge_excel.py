@@ -10,12 +10,44 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 
+from app.services.model_configuration import (
+    MODEL_CONFIGURATION_CATEGORY_NAME,
+    MODEL_CONFIGURATION_CATEGORY_SOURCE_ID,
+    ModelConfigurationRecord,
+    ModelConfigurationSyncError,
+    parse_model_configuration_payload,
+)
+
 
 MAX_IMPORT_ROWS = 500
+MAX_MODEL_CONFIGURATION_IMPORT_ROWS = 5000
 MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 IMPORT_SHEET_NAME = "知识导入"
+MODEL_CONFIGURATION_IMPORT_SHEET_NAME = "机型配置信息"
+MODEL_CONFIGURATION_LEGACY_SHEET_NAME = "个性化配置信息"
 EXPORT_SHEET_NAME = "知识库主表"
+
+MODEL_CONFIGURATION_HEADER_ALIASES = {
+    "source_record_id": {"来源知识ID", "知识ID", "记录ID"},
+    "title": {"标题", "主标题"},
+    "category_id": {"品类ID"},
+    "category_name": {"品类", "品类名称"},
+    "brand_id": {"品牌ID"},
+    "brand_name": {"品牌", "品牌名称"},
+    "model_id": {"型号ID"},
+    "model_name": {"型号", "机型", "机型名称"},
+    "content": {"综合内容", "正文", "知识内容"},
+}
+MODEL_CONFIGURATION_REQUIRED_HEADER_LABELS = {
+    "source_record_id": "来源知识ID",
+    "title": "标题",
+    "brand_id": "品牌ID",
+    "brand_name": "品牌",
+    "model_id": "型号ID",
+    "model_name": "型号",
+    "content": "综合内容",
+}
 
 EXPORT_HEADERS = [
     "知识ID",
@@ -186,6 +218,12 @@ class ExcelKnowledgeRow:
     @property
     def is_valid(self) -> bool:
         return self.error_code is None
+
+
+@dataclass(frozen=True)
+class ParsedModelConfigurationWorkbook:
+    records: list[ModelConfigurationRecord]
+    row_numbers: list[int]
 
 
 def _cell_text(value) -> str:
@@ -514,6 +552,237 @@ def _validate_xlsx_container(data: bytes) -> None:
         raise KnowledgeExcelError("Excel 解压后体积过大，请拆分后导入。")
 
 
+def _model_configuration_header_indexes(header_row) -> dict[str, int]:
+    normalized_headers: dict[str, list[int]] = {}
+    for index, value in enumerate(header_row):
+        normalized = _normalize_header(value)
+        if normalized:
+            normalized_headers.setdefault(normalized, []).append(index)
+    duplicated_headers = [
+        header
+        for header, indexes in normalized_headers.items()
+        if len(indexes) > 1
+    ]
+    if duplicated_headers:
+        raise KnowledgeExcelError(
+            "机型配置信息存在重复表头："
+            + "、".join(duplicated_headers[:10])
+            + "。"
+        )
+
+    indexes: dict[str, int] = {}
+    for field, aliases in MODEL_CONFIGURATION_HEADER_ALIASES.items():
+        matches = [
+            normalized_headers[alias][0]
+            for alias in aliases
+            if alias in normalized_headers
+        ]
+        if len(matches) > 1:
+            raise KnowledgeExcelError(
+                f"机型配置信息中字段“{field}”存在多个兼容列，请只保留一列。"
+            )
+        if matches:
+            indexes[field] = matches[0]
+
+    missing = [
+        label
+        for field, label in MODEL_CONFIGURATION_REQUIRED_HEADER_LABELS.items()
+        if field not in indexes
+    ]
+    if missing:
+        raise KnowledgeExcelError(
+            "机型配置信息缺少必填列："
+            + "、".join(missing)
+            + "。请使用系统下载的最新模板。"
+        )
+    has_category_id = "category_id" in indexes
+    has_category_name = "category_name" in indexes
+    if has_category_id != has_category_name:
+        raise KnowledgeExcelError(
+            "品类ID和品类必须同时提供；原始飞书表可同时省略这两列。"
+        )
+    return indexes
+
+
+def _worksheet_has_data(sheet) -> bool:
+    return any(
+        any(_cell_text(value) for value in values)
+        for values in sheet.iter_rows(min_row=2, values_only=True)
+    )
+
+
+def parse_model_configuration_workbook(
+    data: bytes,
+) -> ParsedModelConfigurationWorkbook:
+    if not data:
+        raise KnowledgeExcelError("Excel 文件为空。")
+    if len(data) > MAX_IMPORT_FILE_BYTES:
+        raise KnowledgeExcelError("Excel 文件不能超过 5MB。")
+    _validate_xlsx_container(data)
+
+    try:
+        workbook = load_workbook(
+            BytesIO(data),
+            read_only=True,
+            data_only=True,
+            keep_links=False,
+        )
+    except Exception as exc:
+        raise KnowledgeExcelError("Excel 文件损坏或无法读取。") from exc
+
+    matching_sheets = [
+        name
+        for name in (
+            MODEL_CONFIGURATION_IMPORT_SHEET_NAME,
+            MODEL_CONFIGURATION_LEGACY_SHEET_NAME,
+        )
+        if name in workbook.sheetnames
+    ]
+    if not matching_sheets:
+        raise KnowledgeExcelError(
+            "未找到“机型配置信息”工作表；也未找到兼容的"
+            "“个性化配置信息”工作表。"
+        )
+    populated_matching_sheets = [
+        name
+        for name in matching_sheets
+        if _worksheet_has_data(workbook[name])
+    ]
+    if len(populated_matching_sheets) > 1:
+        raise KnowledgeExcelError(
+            "工作簿同时包含“机型配置信息”和“个性化配置信息”，"
+            "请一次只保留一个待导入工作表。"
+        )
+    selected_sheet_name = (
+        populated_matching_sheets[0]
+        if populated_matching_sheets
+        else matching_sheets[0]
+    )
+    if (
+        IMPORT_SHEET_NAME in workbook.sheetnames
+        and _worksheet_has_data(workbook[IMPORT_SHEET_NAME])
+    ):
+        raise KnowledgeExcelError(
+            "工作簿同时包含普通知识和机型配置信息数据，"
+            "请拆分为两个文件分别导入。"
+        )
+
+    sheet = workbook[selected_sheet_name]
+    rows = sheet.iter_rows(values_only=True)
+    try:
+        header_row = next(rows)
+    except StopIteration as exc:
+        raise KnowledgeExcelError("机型配置信息中没有可读取的表头。") from exc
+    indexes = _model_configuration_header_indexes(header_row)
+    data_column_indexes = [
+        index
+        for index, header in enumerate(header_row)
+        if _normalize_header(header)
+    ]
+
+    def value_at(values, field: str):
+        index = indexes.get(field)
+        return values[index] if index is not None and index < len(values) else None
+
+    raw_records: list[dict[str, Any]] = []
+    row_numbers: list[int] = []
+    seen_record_rows: dict[str, int] = {}
+    seen_model_key_rows: dict[tuple[str, str, str], int] = {}
+    category_columns_present = (
+        "category_id" in indexes and "category_name" in indexes
+    )
+    for row_number, values in enumerate(rows, start=2):
+        if not any(
+            _cell_text(values[index])
+            for index in data_column_indexes
+            if index < len(values)
+        ):
+            continue
+        source_fields = _source_fields(header_row, values)
+        if len(raw_records) >= MAX_MODEL_CONFIGURATION_IMPORT_ROWS:
+            raise KnowledgeExcelError(
+                "机型配置信息单次最多导入 "
+                f"{MAX_MODEL_CONFIGURATION_IMPORT_ROWS} 条，请拆分文件后重试。"
+            )
+
+        category_id = (
+            _cell_text(value_at(values, "category_id"))
+            if category_columns_present
+            else MODEL_CONFIGURATION_CATEGORY_SOURCE_ID
+        )
+        category_name = (
+            _cell_text(value_at(values, "category_name"))
+            if category_columns_present
+            else MODEL_CONFIGURATION_CATEGORY_NAME
+        )
+        if category_columns_present and (not category_id or not category_name):
+            raise KnowledgeExcelError(
+                f"机型配置信息第 {row_number} 行：品类ID和品类不能为空。"
+            )
+
+        source_fields["来源工作表"] = sheet.title
+        source_fields["来源行号"] = str(row_number)
+        raw_record = {
+            "source_record_id": _cell_text(
+                value_at(values, "source_record_id")
+            ),
+            "title": _cell_text(value_at(values, "title")),
+            "category_id": category_id,
+            "category_name": category_name,
+            "brand_id": _cell_text(value_at(values, "brand_id")),
+            "brand_name": _cell_text(value_at(values, "brand_name")),
+            "model_id": _cell_text(value_at(values, "model_id")),
+            "model_name": _cell_text(value_at(values, "model_name")),
+            "content": _cell_text(value_at(values, "content")),
+            "source_fields": source_fields,
+        }
+        try:
+            record = parse_model_configuration_payload(
+                {"records": [raw_record]}
+            )[0]
+        except ModelConfigurationSyncError as exc:
+            raise KnowledgeExcelError(
+                f"机型配置信息第 {row_number} 行：{exc}"
+            ) from exc
+
+        previous_record_row = seen_record_rows.get(record.source_record_id)
+        if previous_record_row is not None:
+            raise KnowledgeExcelError(
+                f"机型配置信息第 {row_number} 行：来源知识ID "
+                f"{record.source_record_id} 与第 {previous_record_row} 行重复。"
+            )
+        model_key = (
+            record.category_id,
+            record.brand_id,
+            record.model_id,
+        )
+        previous_model_row = seen_model_key_rows.get(model_key)
+        if previous_model_row is not None:
+            raise KnowledgeExcelError(
+                f"机型配置信息第 {row_number} 行：品类/品牌/型号ID组合 "
+                f"{record.category_id}/{record.brand_id}/{record.model_id} "
+                f"与第 {previous_model_row} 行重复。"
+            )
+        seen_record_rows[record.source_record_id] = row_number
+        seen_model_key_rows[model_key] = row_number
+        raw_records.append(raw_record)
+        row_numbers.append(row_number)
+
+    if not raw_records:
+        raise KnowledgeExcelError("机型配置信息中没有可导入的数据行。")
+
+    try:
+        records = parse_model_configuration_payload(
+            {"records": raw_records}
+        )
+    except ModelConfigurationSyncError as exc:
+        raise KnowledgeExcelError(f"机型配置工作簿校验失败：{exc}") from exc
+    return ParsedModelConfigurationWorkbook(
+        records=records,
+        row_numbers=row_numbers,
+    )
+
+
 def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]:
     if not data:
         raise KnowledgeExcelError("Excel 文件为空。")
@@ -530,6 +799,27 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
         )
     except Exception as exc:
         raise KnowledgeExcelError("Excel 文件损坏或无法读取。") from exc
+
+    populated_model_configuration_sheets = [
+        name
+        for name in (
+            MODEL_CONFIGURATION_IMPORT_SHEET_NAME,
+            MODEL_CONFIGURATION_LEGACY_SHEET_NAME,
+        )
+        if (
+            name in workbook.sheetnames
+            and _worksheet_has_data(workbook[name])
+        )
+    ]
+    if (
+        IMPORT_SHEET_NAME in workbook.sheetnames
+        and _worksheet_has_data(workbook[IMPORT_SHEET_NAME])
+        and populated_model_configuration_sheets
+    ):
+        raise KnowledgeExcelError(
+            "工作簿同时包含普通知识和机型配置信息数据，"
+            "请拆分为两个文件分别导入。"
+        )
 
     sheet = (
         workbook[IMPORT_SHEET_NAME]
@@ -1066,6 +1356,141 @@ def build_knowledge_import_template(categories) -> bytes:
         instructions_sheet.append(item)
     instructions_sheet.column_dimensions["A"].width = 18
     instructions_sheet.column_dimensions["B"].width = 90
+    instructions_sheet.freeze_panes = "A2"
+    for cell in instructions_sheet[1]:
+        cell.fill = required_fill
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(horizontal="center")
+    for row in instructions_sheet.iter_rows(min_row=2, max_col=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def build_model_configuration_import_template() -> bytes:
+    workbook = Workbook()
+    import_sheet = workbook.active
+    import_sheet.title = MODEL_CONFIGURATION_IMPORT_SHEET_NAME
+    instructions_sheet = workbook.create_sheet("填写说明")
+
+    headers = [
+        "来源知识ID（必填）",
+        "标题（必填）",
+        "品类ID（必填）",
+        "品类（必填）",
+        "品牌ID（必填）",
+        "品牌（必填）",
+        "型号ID（必填）",
+        "型号（必填）",
+        "是否有卡槽（选填）",
+        "Home键（选填）",
+        "指纹识别（选填）",
+        "3D面容（选填）",
+        "内置手写笔（选填）",
+        "闪光灯（选填）",
+        "蜂窝网络（选填）",
+        "光线传感器（选填）",
+        "综合内容（必填）",
+    ]
+    import_sheet.append(headers)
+    import_sheet.freeze_panes = "A2"
+    import_sheet.auto_filter.ref = "A1:Q1"
+    import_sheet.row_dimensions[1].height = 28
+
+    required_columns = {1, 2, 3, 4, 5, 6, 7, 8, 17}
+    required_fill = PatternFill("solid", fgColor="0F766E")
+    optional_fill = PatternFill("solid", fgColor="475569")
+    for index, cell in enumerate(import_sheet[1], start=1):
+        cell.fill = (
+            required_fill if index in required_columns else optional_fill
+        )
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+            wrap_text=True,
+        )
+
+    widths = {
+        "A": 20,
+        "B": 42,
+        "C": 14,
+        "D": 18,
+        "E": 14,
+        "F": 18,
+        "G": 14,
+        "H": 34,
+        "I": 24,
+        "J": 20,
+        "K": 20,
+        "L": 24,
+        "M": 24,
+        "N": 20,
+        "O": 24,
+        "P": 24,
+        "Q": 72,
+    }
+    for column, width in widths.items():
+        import_sheet.column_dimensions[column].width = width
+
+    import_sheet["A1"].comment = Comment(
+        "上游来源知识ID，用于重复导入时幂等更新，不是中台 A-xxxxx 知识ID。",
+        "知识库",
+    )
+    import_sheet["C1"].comment = Comment(
+        f"原始“个性化配置信息”工作表没有品类列时，系统默认 "
+        f"{MODEL_CONFIGURATION_CATEGORY_SOURCE_ID}。",
+        "知识库",
+    )
+    import_sheet["D1"].comment = Comment(
+        f"原始“个性化配置信息”工作表没有品类列时，系统默认"
+        f"“{MODEL_CONFIGURATION_CATEGORY_NAME}”。",
+        "知识库",
+    )
+    import_sheet["Q1"].comment = Comment(
+        "完整机型配置正文，最多 100000 个字符。",
+        "知识库",
+    )
+
+    instructions = [
+        ("导入类型", "上传时请选择“机型配置信息”。"),
+        (
+            "必填列",
+            "来源知识ID、标题、品类ID、品类、品牌ID、品牌、"
+            "型号ID、型号、综合内容。",
+        ),
+        (
+            "原表兼容",
+            "兼容工作表名“个性化配置信息”和第一列“知识ID”；"
+            "原表同时缺少品类ID、品类时默认使用 119 / 平板电脑。",
+        ),
+        (
+            "同步规则",
+            "整本工作簿先完整校验，再在单个事务中同步；任一字段、"
+            "重复键或数据库冲突都会整批回滚。",
+        ),
+        (
+            "幂等规则",
+            "重复上传不会新增重复知识；内容变化会保留中台知识ID并原地更新。",
+        ),
+        (
+            "发布规则",
+            "成功记录直接发布为机型配置信息，不进入普通审核、查重或向量流程。",
+        ),
+        (
+            "单次上限",
+            f"每个文件最多 {MAX_MODEL_CONFIGURATION_IMPORT_ROWS} 条、"
+            "文件最大 5MB，仅支持 .xlsx。",
+        ),
+    ]
+    instructions_sheet.append(["项目", "说明"])
+    for item in instructions:
+        instructions_sheet.append(item)
+    instructions_sheet.column_dimensions["A"].width = 18
+    instructions_sheet.column_dimensions["B"].width = 96
     instructions_sheet.freeze_panes = "A2"
     for cell in instructions_sheet[1]:
         cell.fill = required_fill

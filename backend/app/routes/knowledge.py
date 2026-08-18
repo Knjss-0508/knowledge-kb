@@ -52,9 +52,15 @@ from app.services.knowledge_excel import (
     MAX_IMPORT_FILE_BYTES,
     KnowledgeExcelError,
     IMPORTABLE_SOURCE_STATUS,
+    build_model_configuration_import_template,
     build_knowledge_export_workbook,
     build_knowledge_import_template,
+    parse_model_configuration_workbook,
     parse_knowledge_workbook,
+)
+from app.services.model_configuration import (
+    ModelConfigurationSyncError,
+    sync_model_configurations,
 )
 from app.services.media_deletion import (
     delete_media_immediately_or_enqueue,
@@ -63,6 +69,7 @@ from app.services.media_deletion import (
 from app.services.media_storage import MediaStorageError, get_media_storage
 from app.schemas.knowledge import (
     BusinessType,
+    KnowledgeImportType,
     KnowledgeOrigin,
     KnowledgeCreate, KnowledgeUpdate, KnowledgeResponse,
     CandidateSubmit, DeduplicationFeedbackSubmit, FeedbackSubmit,
@@ -791,16 +798,28 @@ def create_knowledge(
 
 @router.get("/import/template", summary="下载知识批量导入模板")
 def download_knowledge_import_template(
+    import_type: KnowledgeImportType = Query(
+        "knowledge",
+        description="导入类型：knowledge=普通知识，model_configuration=机型配置信息",
+    ),
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("knowledge:create")),
 ):
-    categories = db.query(Category).order_by(Category.level, Category.sort_order).all()
-    payload = build_knowledge_import_template(categories)
+    if import_type == "model_configuration":
+        payload = build_model_configuration_import_template()
+        filename = "model-configuration-import-template.xlsx"
+    else:
+        categories = db.query(Category).order_by(
+            Category.level,
+            Category.sort_order,
+        ).all()
+        payload = build_knowledge_import_template(categories)
+        filename = "knowledge-import-template.xlsx"
     return StreamingResponse(
         BytesIO(payload),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": 'attachment; filename="knowledge-import-template.xlsx"'
+            "Content-Disposition": f'attachment; filename="{filename}"'
         },
     )
 
@@ -813,6 +832,7 @@ def download_knowledge_import_template(
 )
 async def import_knowledge_excel(
     file: UploadFile = File(...),
+    import_type: KnowledgeImportType = Form("knowledge"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("knowledge:create")),
 ):
@@ -829,6 +849,7 @@ async def import_knowledge_excel(
 
     task = KnowledgeImportTask(
         id=f"import-{uuid.uuid4().hex}",
+        import_type=import_type,
         created_by=current_user.username,
         original_filename=filename[:256],
         file_size=len(data),
@@ -851,6 +872,10 @@ def _to_import_task_response(
 ) -> KnowledgeImportTaskResponse:
     return KnowledgeImportTaskResponse(
         id=task.id,
+        import_type=(
+            getattr(task, "import_type", None)
+            or "knowledge"
+        ),
         original_filename=task.original_filename,
         file_size=task.file_size,
         status=task.status,
@@ -861,6 +886,9 @@ def _to_import_task_response(
         pending_review=task.pending_review,
         deprecated=task.deprecated,
         failed=task.failed,
+        created=int(getattr(task, "created", 0) or 0),
+        updated=int(getattr(task, "updated", 0) or 0),
+        unchanged=int(getattr(task, "unchanged", 0) or 0),
         retry_rows=[
             int(row_number)
             for row_number in (task.retry_rows or [])
@@ -873,7 +901,9 @@ def _to_import_task_response(
         completed_at=task.completed_at,
         results=[
             ExcelImportRowResult.model_validate(result)
-            for result in (task.results or [])[:max(1, min(result_limit, 500))]
+            for result in (
+                task.results or []
+            )[:max(1, min(result_limit, 5000))]
         ]
         if include_results
         else [],
@@ -918,7 +948,12 @@ def list_knowledge_import_tasks(
 def get_knowledge_import_task(
     task_id: str,
     include_results: bool = Query(False, description="是否返回逐行处理结果"),
-    result_limit: int = Query(100, ge=1, le=500, description="最多返回的逐行结果数"),
+    result_limit: int = Query(
+        100,
+        ge=1,
+        le=5000,
+        description="最多返回的逐行结果数",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("knowledge:create")),
 ):
@@ -1708,6 +1743,185 @@ def _lock_import_task_attempt(
     )
 
 
+def _owns_import_task_attempt(
+    task: KnowledgeImportTask | None,
+    claimed_attempt: int,
+) -> bool:
+    return bool(
+        task
+        and task.status == "running"
+        and int(task.attempt_count or 0) == claimed_attempt
+    )
+
+
+def _process_model_configuration_import_task(
+    db: Session,
+    task_id: str,
+    claimed_attempt: int,
+) -> None:
+    task = _lock_import_task_attempt(
+        db,
+        task_id,
+        claimed_attempt,
+    )
+    if not _owns_import_task_attempt(task, claimed_attempt):
+        return
+
+    try:
+        workbook = parse_model_configuration_workbook(
+            bytes(task.file_content or b"")
+        )
+    except KnowledgeExcelError as exc:
+        _mark_import_task_failed(
+            task,
+            str(exc),
+            now=datetime.utcnow(),
+        )
+        db.commit()
+        return
+
+    if task.total_rows and task.total_rows != len(workbook.records):
+        _mark_import_task_failed(
+            task,
+            "机型配置文件解析结果发生变化，任务已停止以避免重复写入。",
+            now=datetime.utcnow(),
+        )
+        db.commit()
+        return
+    if int(task.processed_rows or 0) or list(task.results or []):
+        _mark_import_task_failed(
+            task,
+            "机型配置整批任务存在非原子历史进度，已停止以避免部分覆盖。",
+            now=datetime.utcnow(),
+        )
+        db.commit()
+        return
+
+    task.total_rows = len(workbook.records)
+    task.error_message = ""
+    task.lease_expires_at = _task_lease_expiry(datetime.utcnow())
+    task.updated_at = datetime.utcnow()
+    db.commit()
+
+    task = _lock_import_task_attempt(
+        db,
+        task_id,
+        claimed_attempt,
+    )
+    if not _owns_import_task_attempt(task, claimed_attempt):
+        return
+    # 机型配置必须整批原子提交，因此从同步开始到完成始终持有任务行锁。
+    # 此阶段取消请求会等待事务结束；调用端只应向 queued 任务提供取消入口。
+    try:
+        sync_result = sync_model_configurations(
+            db,
+            workbook.records,
+            actor=task.created_by,
+        )
+        if len(sync_result.items) != len(workbook.records):
+            raise RuntimeError(
+                "机型配置同步结果数量与工作簿记录数不一致。"
+            )
+        if (
+            sync_result.total != len(workbook.records)
+            or (
+                sync_result.created
+                + sync_result.updated
+                + sync_result.unchanged
+            )
+            != sync_result.total
+        ):
+            raise RuntimeError("机型配置同步汇总数量不一致。")
+
+        results: list[dict] = []
+        for row_number, record, item_result in zip(
+            workbook.row_numbers,
+            workbook.records,
+            sync_result.items,
+            strict=True,
+        ):
+            if item_result.source_record_id != record.source_record_id:
+                raise RuntimeError(
+                    "机型配置同步结果顺序与工作簿记录不一致。"
+                )
+            results.append(
+                ExcelImportRowResult(
+                    row=row_number,
+                    title=record.title,
+                    status="imported",
+                    knowledge_id=item_result.knowledge_id,
+                    operation=item_result.operation,
+                ).model_dump(mode="json")
+            )
+
+        completed_at = datetime.utcnow()
+        task.results = results
+        task.retry_rows = []
+        task.processed_rows = sync_result.total
+        task.imported = sync_result.total
+        task.review_required = 0
+        task.pending_review = 0
+        task.deprecated = 0
+        task.failed = 0
+        task.created = sync_result.created
+        task.updated = sync_result.updated
+        task.unchanged = sync_result.unchanged
+        task.status = "completed"
+        task.error_message = ""
+        task.lease_expires_at = None
+        task.completed_at = completed_at
+        task.updated_at = completed_at
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        task = _lock_import_task_attempt(
+            db,
+            task_id,
+            claimed_attempt,
+        )
+        if not _owns_import_task_attempt(task, claimed_attempt):
+            return
+        task.results = []
+        task.retry_rows = []
+        task.processed_rows = int(task.total_rows or 0)
+        task.imported = 0
+        task.review_required = 0
+        task.pending_review = 0
+        task.deprecated = 0
+        task.failed = int(task.total_rows or 0)
+        task.created = 0
+        task.updated = 0
+        task.unchanged = 0
+        if isinstance(exc, ModelConfigurationSyncError):
+            row_by_source_record_id = {
+                record.source_record_id: row_number
+                for row_number, record in zip(
+                    workbook.row_numbers,
+                    workbook.records,
+                    strict=True,
+                )
+            }
+            excel_row = row_by_source_record_id.get(
+                exc.source_record_id or ""
+            )
+            row_prefix = f"Excel 第 {excel_row} 行，" if excel_row else ""
+            message = f"{row_prefix}{exc.code}：{exc}"
+        elif isinstance(exc, IntegrityError):
+            message = "数据库唯一键冲突，请检查来源知识ID和机型ID组合。"
+        else:
+            logger.exception(
+                "Model configuration import task %s failed.",
+                task_id,
+            )
+            message = "机型配置信息整批同步失败，请检查服务日志。"
+        _mark_import_task_failed(
+            task,
+            f"机型配置信息整批导入失败，全部数据已回滚：{message}",
+            now=datetime.utcnow(),
+        )
+        db.commit()
+
+
 def process_knowledge_import_task(
     task_id: str,
     *,
@@ -1733,6 +1947,14 @@ def process_knowledge_import_task(
         if not task or task.status != "running":
             return
         claimed_attempt = int(task.attempt_count or 0)
+
+        if task.import_type == "model_configuration":
+            _process_model_configuration_import_task(
+                db,
+                task_id,
+                claimed_attempt,
+            )
+            return
 
         categories = db.query(Category).order_by(
             Category.level,

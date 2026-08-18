@@ -1,13 +1,16 @@
 import unittest
 from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 
 from app.services.knowledge_excel import (
     KnowledgeExcelError,
+    build_model_configuration_import_template,
     build_knowledge_export_workbook,
     build_knowledge_import_template,
+    parse_model_configuration_workbook,
     parse_knowledge_workbook,
 )
 
@@ -78,6 +81,31 @@ class KnowledgeExcelTests(unittest.TestCase):
         workbook.save(output)
         return output.getvalue()
 
+    @staticmethod
+    def model_configuration_workbook_bytes(
+        headers,
+        rows,
+        *,
+        sheet_name="机型配置信息",
+        generic_rows=None,
+    ):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = sheet_name
+        sheet.append(headers)
+        for row in rows:
+            sheet.append(row)
+        if generic_rows is not None:
+            generic_sheet = workbook.create_sheet("知识导入")
+            generic_sheet.append(
+                ["知识来源", "业务类型", "标题", "知识分类", "正文"]
+            )
+            for row in generic_rows:
+                generic_sheet.append(row)
+        output = BytesIO()
+        workbook.save(output)
+        return output.getvalue()
+
     def test_template_contains_category_dictionary_and_no_layer_column(self):
         payload = build_knowledge_import_template(self.categories)
         workbook = load_workbook(BytesIO(payload), read_only=True)
@@ -133,6 +161,219 @@ class KnowledgeExcelTests(unittest.TestCase):
                 ("aggregated", "聚合回收"),
             ],
         )
+
+    def test_model_configuration_template_has_dedicated_contract(self):
+        payload = build_model_configuration_import_template()
+        workbook = load_workbook(BytesIO(payload), read_only=True)
+
+        self.assertEqual(
+            workbook.sheetnames,
+            ["机型配置信息", "填写说明"],
+        )
+        headers = [
+            cell.value
+            for cell in next(
+                workbook["机型配置信息"].iter_rows(max_row=1)
+            )
+        ]
+        self.assertEqual(
+            headers,
+            [
+                "来源知识ID（必填）",
+                "标题（必填）",
+                "品类ID（必填）",
+                "品类（必填）",
+                "品牌ID（必填）",
+                "品牌（必填）",
+                "型号ID（必填）",
+                "型号（必填）",
+                "是否有卡槽（选填）",
+                "Home键（选填）",
+                "指纹识别（选填）",
+                "3D面容（选填）",
+                "内置手写笔（选填）",
+                "闪光灯（选填）",
+                "蜂窝网络（选填）",
+                "光线传感器（选填）",
+                "综合内容（必填）",
+            ],
+        )
+
+    def test_parse_model_configuration_template_preserves_source_fields(self):
+        payload = self.model_configuration_workbook_bytes(
+            [
+                "来源知识ID（必填）",
+                "标题（必填）",
+                "品类ID（必填）",
+                "品类（必填）",
+                "品牌ID（必填）",
+                "品牌（必填）",
+                "型号ID（必填）",
+                "型号（必填）",
+                "是否有卡槽（选填）",
+                "Home键（选填）",
+                "综合内容（必填）",
+            ],
+            [
+                [
+                    "56383",
+                    "iPad 10 配置信息",
+                    "119",
+                    "平板电脑",
+                    "10530",
+                    "苹果",
+                    "97519",
+                    "iPad 10 (2022) 10.9英寸",
+                    "蜂窝版有卡槽",
+                    "不支持",
+                    "Home键：不支持；",
+                ]
+            ],
+        )
+
+        parsed = parse_model_configuration_workbook(payload)
+
+        self.assertEqual(parsed.row_numbers, [2])
+        self.assertEqual(len(parsed.records), 1)
+        record = parsed.records[0]
+        self.assertEqual(record.source_record_id, "56383")
+        self.assertEqual(record.category_id, "119")
+        self.assertEqual(record.brand_id, "10530")
+        self.assertEqual(record.model_id, "97519")
+        self.assertEqual(record.source_fields["是否有卡槽"], "蜂窝版有卡槽")
+        self.assertEqual(record.source_fields["来源工作表"], "机型配置信息")
+        self.assertEqual(record.source_fields["来源行号"], "2")
+
+    def test_parse_legacy_model_configuration_defaults_category_and_ignores_unheaded_cells(self):
+        payload = self.model_configuration_workbook_bytes(
+            [
+                "知识ID",
+                "标题",
+                "品牌ID",
+                "品牌",
+                "型号ID",
+                "型号",
+                "综合内容",
+                "是否更新",
+                None,
+            ],
+            [
+                [
+                    "56362",
+                    "Acer A510 配置信息",
+                    "11427",
+                    "宏碁",
+                    "252285",
+                    "Acer A510 10.4英寸",
+                    "指纹识别：不支持；",
+                    "",
+                    "有表头数据行上的残留",
+                ],
+                [None, None, None, None, None, None, None, None, "仅无表头残留"],
+                [None] * 9,
+            ],
+            sheet_name="个性化配置信息",
+        )
+
+        parsed = parse_model_configuration_workbook(payload)
+
+        self.assertEqual(len(parsed.records), 1)
+        record = parsed.records[0]
+        self.assertEqual(record.category_id, "119")
+        self.assertEqual(record.category_name, "平板电脑")
+        self.assertNotIn("", record.source_fields)
+        self.assertNotIn("有表头数据行上的残留", record.source_fields.values())
+
+    def test_model_configuration_rejects_mixed_or_duplicate_rows_before_sync(self):
+        mixed_payload = self.model_configuration_workbook_bytes(
+            [
+                "知识ID",
+                "标题",
+                "品牌ID",
+                "品牌",
+                "型号ID",
+                "型号",
+                "综合内容",
+            ],
+            [["1", "配置", "2", "品牌", "3", "型号", "正文"]],
+            generic_rows=[
+                ["业务沉淀", "自营回收", "普通", "cat-process", "正文"]
+            ],
+        )
+        with self.assertRaisesRegex(
+            KnowledgeExcelError,
+            "同时包含普通知识和机型配置信息",
+        ):
+            parse_model_configuration_workbook(mixed_payload)
+
+        duplicate_payload = self.model_configuration_workbook_bytes(
+            [
+                "知识ID",
+                "标题",
+                "品牌ID",
+                "品牌",
+                "型号ID",
+                "型号",
+                "综合内容",
+            ],
+            [
+                ["1", "配置一", "2", "品牌", "3", "型号一", "正文一"],
+                ["1", "配置二", "2", "品牌", "4", "型号二", "正文二"],
+            ],
+        )
+        with self.assertRaisesRegex(
+            KnowledgeExcelError,
+            "第 3 行.*第 2 行重复",
+        ):
+            parse_model_configuration_workbook(duplicate_payload)
+
+    def test_regular_import_rejects_workbook_with_model_configuration_data(self):
+        payload = self.model_configuration_workbook_bytes(
+            [
+                "知识ID",
+                "标题",
+                "品牌ID",
+                "品牌",
+                "型号ID",
+                "型号",
+                "综合内容",
+            ],
+            [["1", "配置", "2", "品牌", "3", "型号", "正文"]],
+            generic_rows=[
+                ["业务沉淀", "自营回收", "普通", "cat-process", "正文"]
+            ],
+        )
+
+        with self.assertRaisesRegex(
+            KnowledgeExcelError,
+            "同时包含普通知识和机型配置信息",
+        ):
+            parse_knowledge_workbook(payload, self.categories)
+
+    def test_model_configuration_has_independent_row_limit(self):
+        payload = self.model_configuration_workbook_bytes(
+            [
+                "知识ID",
+                "标题",
+                "品牌ID",
+                "品牌",
+                "型号ID",
+                "型号",
+                "综合内容",
+            ],
+            [
+                ["1", "配置一", "2", "品牌", "3", "型号一", "正文一"],
+                ["2", "配置二", "2", "品牌", "4", "型号二", "正文二"],
+            ],
+        )
+        with patch(
+            "app.services.knowledge_excel.MAX_MODEL_CONFIGURATION_IMPORT_ROWS",
+            1,
+        ), self.assertRaisesRegex(
+            KnowledgeExcelError,
+            "单次最多导入 1 条",
+        ):
+            parse_model_configuration_workbook(payload)
 
     def test_export_matches_knowledge_main_sheet_format_and_maps_supported_fields(self):
         item = SimpleNamespace(

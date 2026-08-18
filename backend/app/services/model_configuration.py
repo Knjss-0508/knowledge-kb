@@ -36,6 +36,17 @@ _SOURCE_FIELD_NAMES = {
     "model_id": "型号ID",
     "model_name": "型号",
 }
+_PAYLOAD_FIELD_LABELS = {
+    "source_record_id": "来源知识ID",
+    "title": "标题",
+    "category_id": "品类ID",
+    "category_name": "品类",
+    "brand_id": "品牌ID",
+    "brand_name": "品牌",
+    "model_id": "型号ID",
+    "model_name": "型号",
+    "content": "综合内容",
+}
 _NORMALIZED_NAME_KEY_FIELD = "_model_configuration_normalized_name_key"
 
 
@@ -48,9 +59,16 @@ def _model_configuration_source_knowledge_key(
 
 
 class ModelConfigurationSyncError(ValueError):
-    def __init__(self, code: str, message: str):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        source_record_id: str | None = None,
+    ):
         super().__init__(message)
         self.code = code
+        self.source_record_id = source_record_id
 
 
 @dataclass(frozen=True)
@@ -76,11 +94,19 @@ class ModelConfigurationRecord:
 
 
 @dataclass(frozen=True)
+class ModelConfigurationSyncItemResult:
+    source_record_id: str
+    knowledge_id: str
+    operation: str
+
+
+@dataclass(frozen=True)
 class ModelConfigurationSyncResult:
     total: int
     created: int
     updated: int
     unchanged: int
+    items: tuple[ModelConfigurationSyncItemResult, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,15 +157,16 @@ def _required_text(
     max_length: int,
 ) -> str:
     value = _clean_text(payload.get(key))
+    label = _PAYLOAD_FIELD_LABELS.get(key, key)
     if not value:
         raise ModelConfigurationSyncError(
             "MODEL_CONFIGURATION_FIELD_REQUIRED",
-            f"机型配置字段 {key} 不能为空。",
+            f"机型配置字段“{label}”不能为空。",
         )
     if len(value) > max_length:
         raise ModelConfigurationSyncError(
             "MODEL_CONFIGURATION_FIELD_TOO_LONG",
-            f"机型配置字段 {key} 超过 {max_length} 个字符。",
+            f"机型配置字段“{label}”超过 {max_length} 个字符。",
         )
     return value
 
@@ -330,6 +357,7 @@ def _find_existing_record(
                 f"机型配置 {record.source_record_id}/{record.source_knowledge_key} "
                 "匹配到多条知识。"
             ),
+            source_record_id=record.source_record_id,
         )
     record_match = by_record_id[0] if by_record_id else None
     key_match = by_knowledge_key[0] if by_knowledge_key else None
@@ -340,6 +368,7 @@ def _find_existing_record(
                 f"上游知识ID {record.source_record_id} 与机型键 "
                 f"{record.source_knowledge_key} 指向不同知识。"
             ),
+            source_record_id=record.source_record_id,
         )
     if record_match and (
         record_match.source_knowledge_key
@@ -351,6 +380,7 @@ def _find_existing_record(
                 f"上游知识ID {record.source_record_id} 已绑定其他机型键，"
                 "拒绝覆盖。"
             ),
+            source_record_id=record.source_record_id,
         )
     return record_match or key_match
 
@@ -398,27 +428,37 @@ def sync_model_configurations(
         )
 
     created = updated = unchanged = 0
+    item_results: list[ModelConfigurationSyncItemResult] = []
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    for record in records:
-        existing = _find_existing_record(db, record)
+    existing_records = [
+        (record, _find_existing_record(db, record))
+        for record in records
+    ]
+    for record, existing in existing_records:
         values = _record_values(record)
         if existing is None:
-            db.add(
-                Knowledge(
-                    id=_generate_knowledge_id(db),
-                    knowledge_origin=MODEL_CONFIGURATION_ORIGIN,
-                    business_type=MODEL_CONFIGURATION_BUSINESS_TYPE,
-                    subtitles=[],
-                    source_topic_key=None,
-                    deduplication_metadata={},
-                    created_by=actor,
-                    updated_by=actor,
-                    created_at=now,
-                    updated_at=now,
-                    **values,
+            existing = Knowledge(
+                id=_generate_knowledge_id(db),
+                knowledge_origin=MODEL_CONFIGURATION_ORIGIN,
+                business_type=MODEL_CONFIGURATION_BUSINESS_TYPE,
+                subtitles=[],
+                source_topic_key=None,
+                deduplication_metadata={},
+                created_by=actor,
+                updated_by=actor,
+                created_at=now,
+                updated_at=now,
+                **values,
+            )
+            db.add(existing)
+            created += 1
+            item_results.append(
+                ModelConfigurationSyncItemResult(
+                    source_record_id=record.source_record_id,
+                    knowledge_id=existing.id,
+                    operation="created",
                 )
             )
-            created += 1
             continue
 
         before = _snapshot(existing)
@@ -435,6 +475,13 @@ def sync_model_configurations(
             changed_fields.append("business_type")
         if not changed_fields:
             unchanged += 1
+            item_results.append(
+                ModelConfigurationSyncItemResult(
+                    source_record_id=record.source_record_id,
+                    knowledge_id=existing.id,
+                    operation="unchanged",
+                )
+            )
             continue
 
         existing.updated_by = actor
@@ -451,12 +498,20 @@ def sync_model_configurations(
             )
         )
         updated += 1
+        item_results.append(
+            ModelConfigurationSyncItemResult(
+                source_record_id=record.source_record_id,
+                knowledge_id=existing.id,
+                operation="updated",
+            )
+        )
     db.flush()
     return ModelConfigurationSyncResult(
         total=len(records),
         created=created,
         updated=updated,
         unchanged=unchanged,
+        items=tuple(item_results),
     )
 
 

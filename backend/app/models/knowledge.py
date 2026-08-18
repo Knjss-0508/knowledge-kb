@@ -285,6 +285,12 @@ class KnowledgeImportTask(Base):
     __tablename__ = "knowledge_import_tasks"
 
     id = Column(String(64), primary_key=True)
+    import_type = Column(
+        String(32),
+        nullable=False,
+        default="knowledge",
+        index=True,
+    )
     created_by = Column(String(128), nullable=False, index=True)
     original_filename = Column(String(256), nullable=False)
     file_size = Column(Integer, nullable=False, default=0)
@@ -298,6 +304,9 @@ class KnowledgeImportTask(Base):
     pending_review = Column(Integer, nullable=False, default=0)
     deprecated = Column(Integer, nullable=False, default=0)
     failed = Column(Integer, nullable=False, default=0)
+    created = Column(Integer, nullable=False, default=0)
+    updated = Column(Integer, nullable=False, default=0)
+    unchanged = Column(Integer, nullable=False, default=0)
     results = Column(JSON, nullable=False, default=list)
     retry_rows = Column(JSON, nullable=False, default=list)
     error_message = Column(Text, nullable=False, default="")
@@ -313,6 +322,10 @@ class KnowledgeImportTask(Base):
         CheckConstraint(
             "status IN ('queued', 'running', 'completed', 'completed_with_errors', 'failed', 'cancelled')",
             name="ck_knowledge_import_task_status",
+        ),
+        CheckConstraint(
+            "import_type IN ('knowledge', 'model_configuration')",
+            name="ck_knowledge_import_task_import_type",
         ),
     )
 
