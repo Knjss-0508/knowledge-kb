@@ -689,6 +689,11 @@ def _create_knowledge_item(
     search_embedding_vectors: dict[tuple[str, int, str], list[float]] | None = None,
     ensure_search_index: bool = True,
 ) -> Knowledge:
+    if body.knowledge_origin == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工创建或普通导入。",
+        )
     _require_manual_applicable_category(
         source=source,
         category_id=body.category_id,
@@ -2580,6 +2585,20 @@ def update_knowledge(
         allowed = is_admin
     if not allowed:
         raise HTTPException(403, "You do not have permission to edit this knowledge item.")
+    body_fields_set = getattr(body, "model_fields_set", set())
+    requested_origin = (
+        getattr(body, "knowledge_origin", None)
+        if "knowledge_origin" in body_fields_set
+        else getattr(item, "knowledge_origin", "business_accumulation")
+    )
+    if (
+        getattr(item, "knowledge_origin", "") == "model_configuration"
+        or requested_origin == "model_configuration"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工修改知识来源或内容。",
+        )
     was_published = item.status == KnowledgeStatus.PUBLISHED
     updates = body.model_dump(exclude_unset=True)
     updated_fields = set(updates)
@@ -2722,6 +2741,11 @@ def delete_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if getattr(item, "knowledge_origin", "") == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工删除。",
+        )
     try:
         for media in item.media:
             enqueue_media_deletion(
@@ -2754,6 +2778,14 @@ def submit_deduplication_feedback(
     matched_item = db.query(Knowledge).filter(Knowledge.id == body.matched_knowledge_id).first()
     if not matched_item:
         raise HTTPException(404, "命中的知识条目不存在")
+    if (
+        item.knowledge_origin == "model_configuration"
+        or matched_item.knowledge_origin == "model_configuration"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息不参与查重反馈或向量训练。",
+        )
 
     metadata = item.deduplication_metadata or {}
     matches = metadata.get("matches") if isinstance(metadata, dict) else []
@@ -3048,6 +3080,11 @@ def deprecate_knowledge(
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if getattr(item, "knowledge_origin", "") == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工废弃。",
+        )
     before_data = _knowledge_snapshot(item)
     changed_at = datetime.utcnow()
     item.status = KnowledgeStatus.DEPRECATED
@@ -3077,6 +3114,11 @@ def restore_knowledge(
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if getattr(item, "knowledge_origin", "") == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工恢复。",
+        )
     if item.status != KnowledgeStatus.DEPRECATED:
         raise HTTPException(400, "Only deprecated knowledge items can be restored.")
     before_data = _knowledge_snapshot(item)
@@ -3114,6 +3156,11 @@ async def upload_media(
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if getattr(item, "knowledge_origin", "") == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工上传媒体。",
+        )
     if not _can_edit_knowledge(item, current_user):
         raise HTTPException(403, "Permission denied.")
 
@@ -3298,6 +3345,11 @@ def update_media(knowledge_id: str, media_file: str, alt: str = Form(""), captio
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if getattr(item, "knowledge_origin", "") == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工修改媒体。",
+        )
     if not _can_edit_knowledge(item, current_user):
         raise HTTPException(403, "Permission denied.")
     media = db.query(KnowledgeMedia).filter(
@@ -3316,6 +3368,11 @@ def delete_media(knowledge_id: str, media_file: str, db: Session = Depends(get_d
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if getattr(item, "knowledge_origin", "") == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工删除媒体。",
+        )
     if not _can_edit_knowledge(item, current_user):
         raise HTTPException(403, "Permission denied.")
     media = db.query(KnowledgeMedia).filter(

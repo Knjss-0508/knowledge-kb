@@ -34,6 +34,8 @@ from app.schemas.integration import (
     IntegrationDedupMatch,
     IntegrationDedupResponse,
     IntegrationIngestionResponse,
+    IntegrationModelConfigurationItem,
+    IntegrationModelConfigurationResult,
     IntegrationStandardSearchCandidate,
     IntegrationStandardSearchRequest,
     IntegrationStandardSearchResponse,
@@ -64,6 +66,11 @@ from app.services.knowledge_dedup import (
     save_embedding,
     search_embeddings,
 )
+from app.services.model_configuration import (
+    MODEL_CONFIGURATION_ORIGIN,
+    ModelConfigurationMatch,
+    find_exact_model_configuration,
+)
 from app.services.retrieval_quality import (
     latest_retrieval_quality_request_event_ids,
 )
@@ -71,7 +78,7 @@ from app.services.retrieval_quality import (
 router = APIRouter(prefix="/integration", tags=["自动化接入"])
 logger = logging.getLogger(__name__)
 
-TAXONOMY_VERSION = "automation-v5"
+TAXONOMY_VERSION = "automation-v6"
 STANDARD_SEARCH_DEFAULT_RESULTS = 5
 STANDARD_SEARCH_MAX_RESULTS = 10
 RETRIEVAL_NEAR_THRESHOLD_MARGIN = 0.05
@@ -169,6 +176,14 @@ def _candidate_payload_with_taxonomy_defaults(
     knowledge.setdefault("business_type", "self_operated")
     payload["knowledge"] = knowledge
     return payload, knowledge
+
+
+def _ensure_candidate_origin_is_writable(knowledge: dict) -> None:
+    if (
+        str(knowledge.get("knowledge_origin") or "").strip()
+        == MODEL_CONFIGURATION_ORIGIN
+    ):
+        raise ValueError("KNOWLEDGE_ORIGIN_MANAGED")
 
 
 def _candidate_review_item(item: IntegrationIngestion) -> CandidateReviewListItem:
@@ -1022,6 +1037,62 @@ def _to_standard_search_candidate(
     )
 
 
+_MODEL_CONFIGURATION_ATTRIBUTE_FIELDS = (
+    "是否有卡槽",
+    "Home键",
+    "指纹识别",
+    "3D面容",
+    "内置手写笔",
+    "闪光灯",
+    "蜂窝网络",
+    "光线传感器",
+)
+
+
+def _model_configuration_source_field(
+    item: Knowledge,
+    field: str,
+) -> str:
+    source_fields = (
+        item.source_fields if isinstance(item.source_fields, dict) else {}
+    )
+    return str(source_fields.get(field) or "").strip()
+
+
+def _to_model_configuration_result(
+    match: ModelConfigurationMatch | None,
+) -> IntegrationModelConfigurationResult:
+    if match is None:
+        return IntegrationModelConfigurationResult(
+            status="no_match",
+            match_mode="none",
+            item=None,
+        )
+    item = match.item
+    attributes = {
+        field: value
+        for field in _MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
+        if (value := _model_configuration_source_field(item, field))
+    }
+    return IntegrationModelConfigurationResult(
+        status="success",
+        match_mode=match.match_mode,
+        item=IntegrationModelConfigurationItem(
+            knowledge_id=item.id,
+            category_id=_model_configuration_source_field(item, "品类ID"),
+            category=_model_configuration_source_field(item, "品类"),
+            brand_id=_model_configuration_source_field(item, "品牌ID"),
+            brand=_model_configuration_source_field(item, "品牌"),
+            model_id=_model_configuration_source_field(item, "型号ID"),
+            model=_model_configuration_source_field(item, "型号"),
+            title=item.title,
+            content=_content_to_text(item.content),
+            attributes=attributes,
+            source_ref=f"knowledge-kb://knowledge/{item.id}",
+        ),
+    )
+
+
 @router.post(
     "/standard-search",
     response_model=IntegrationStandardSearchResponse,
@@ -1105,6 +1176,36 @@ def search_standard_provider_knowledge(
             body.order_info.model,
         ),
     )
+    model_configuration_match = find_exact_model_configuration(
+        db,
+        category_id=(
+            body.category_id
+            or body.order_info.category_id
+        ),
+        category_name=(
+            body.order_info.category
+            or body.product_type
+        ),
+        brand_id=(
+            body.brand_id
+            or body.order_info.brand_id
+        ),
+        brand_name=(
+            body.brand
+            or body.order_info.brand
+        ),
+        model_id=(
+            body.model_id
+            or body.order_info.model_id
+        ),
+        model_name=(
+            body.model
+            or body.order_info.model
+        ),
+    )
+    model_configuration = _to_model_configuration_result(
+        model_configuration_match
+    )
     try:
         ranked_by_origin = {
             knowledge_origin: search_embeddings(
@@ -1120,6 +1221,25 @@ def search_standard_provider_knowledge(
             for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS
         }
     except EmbeddingServiceUnavailable as exc:
+        if model_configuration.status == "success":
+            logger.warning(
+                "Embedding unavailable but exact model configuration matched: "
+                "conversation_id=%s request_id=%s error=%s",
+                body.conversation_id,
+                body.request_id,
+                exc,
+            )
+            return IntegrationStandardSearchResponse(
+                conversation_id=body.conversation_id,
+                request_id=body.request_id,
+                provider="knowledge-kb",
+                status="success",
+                retrieval_mode="exact_scope_fallback",
+                knowledge_version=settings.VERSION,
+                score_threshold=score_threshold,
+                candidates=[],
+                model_configuration=model_configuration,
+            )
         logger.warning(
             "Embedding unavailable during standard provider search: "
             "conversation_id=%s request_id=%s error=%s",
@@ -1157,11 +1277,24 @@ def search_standard_provider_knowledge(
         conversation_id=body.conversation_id,
         request_id=body.request_id,
         provider="knowledge-kb",
-        status="success" if candidates else "no_match",
-        retrieval_mode="semantic_pgvector",
+        status=(
+            "success"
+            if candidates or model_configuration.status == "success"
+            else "no_match"
+        ),
+        retrieval_mode=(
+            "hybrid_exact_scope_pgvector"
+            if candidates and model_configuration.status == "success"
+            else (
+                "exact_scope"
+                if model_configuration.status == "success"
+                else "semantic_pgvector"
+            )
+        ),
         knowledge_version=settings.VERSION,
         score_threshold=score_threshold,
         candidates=candidates,
+        model_configuration=model_configuration,
     )
 
 
@@ -1556,6 +1689,10 @@ def get_taxonomy(
             KnowledgeOriginOption(
                 value="business_accumulation",
                 label="业务沉淀",
+            ),
+            KnowledgeOriginOption(
+                value="model_configuration",
+                label="机型配置信息",
             ),
         ],
         business_types=[
@@ -2058,6 +2195,13 @@ def update_candidate_review(
     payload, knowledge = _candidate_payload_with_taxonomy_defaults(
         item.candidate_payload
     )
+    try:
+        _ensure_candidate_origin_is_writable(knowledge)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="机型配置信息由飞书专用同步维护，历史候选不能人工修改。",
+        ) from exc
     updates = body.model_dump(exclude_unset=True)
     confirm_dedup_review = updates.pop("confirm_dedup_review", None)
     deduplication_sensitive_changed = False
@@ -2196,6 +2340,9 @@ def submit_candidate_reviews(
             normalized_payload, _ = _candidate_payload_with_taxonomy_defaults(
                 item.candidate_payload
             )
+            _ensure_candidate_origin_is_writable(
+                normalized_payload["knowledge"]
+            )
             candidate = IntegrationCandidate.model_validate(normalized_payload)
             category = (
                 db.query(Category)
@@ -2325,12 +2472,20 @@ def submit_candidate_reviews(
             raw_error = str(exc)
             error_code = (
                 raw_error
-                if raw_error in {"CATEGORY_NOT_FOUND", "DUPLICATE_BLOCKED"}
+                if raw_error
+                in {
+                    "CATEGORY_NOT_FOUND",
+                    "DUPLICATE_BLOCKED",
+                    "KNOWLEDGE_ORIGIN_MANAGED",
+                }
                 else "CANDIDATE_PAYLOAD_INVALID"
             )
             error_message = {
                 "CATEGORY_NOT_FOUND": "category_id does not exist in the current taxonomy.",
                 "DUPLICATE_BLOCKED": "Candidate matches an existing knowledge item and was not ingested.",
+                "KNOWLEDGE_ORIGIN_MANAGED": (
+                    "机型配置信息由飞书专用同步维护，历史候选不能提交入库。"
+                ),
             }.get(error_code, raw_error)
             item = db.query(IntegrationIngestion).filter(IntegrationIngestion.id == ingestion_id).first()
             if item:

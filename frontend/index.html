@@ -587,8 +587,8 @@
               <button class="btn bd bsm" v-if="r.status==='published' || r.status==='deprecated'" @click="openChangeLogs(r)">变更日志</button>
               <button class="btn bw bsm" v-if="can('knowledge:submit') && r.status==='draft'" @click="act(r,'submit-review')">提交发布审核</button>
               <button class="btn bs bsm" v-if="can('knowledge:approve') && r.status==='review'" @click="openReview(r)">发布审核</button>
-              <button class="btn bs bsm" v-if="can('knowledge:deprecate') && r.status==='deprecated'" @click="act(r,'restore')">重新启用</button>
-              <button class="btn br bsm" v-if="can('knowledge:deprecate') && r.status!=='deprecated'" @click="act(r,'deprecate')">废弃</button>
+              <button class="btn bs bsm" v-if="can('knowledge:deprecate') && r.knowledge_origin!=='model_configuration' && r.status==='deprecated'" @click="act(r,'restore')">重新启用</button>
+              <button class="btn br bsm" v-if="can('knowledge:deprecate') && r.knowledge_origin!=='model_configuration' && r.status!=='deprecated'" @click="act(r,'deprecate')">废弃</button>
             </td>
           </tr>
           <tr v-if="!list.length"><td :colspan="can('knowledge:approve') ? 9 : 8" style="text-align:center;padding:40px;color:#c9cdd4">暂无数据</td></tr>
@@ -1168,7 +1168,7 @@
             </div>
             <div class="review-form-grid">
               <div class="fg span-2"><label class="fl"><span class="req">*</span> 知识标题</label><input class="fi" v-model="candidateReviews.form.title" :disabled="reviewReadonly()" placeholder="输入知识标题"></div>
-              <div class="fg span-2"><label class="fl"><span class="req">*</span> 知识来源</label><select class="fi" v-model="candidateReviews.form.knowledge_origin" :disabled="reviewReadonly()"><option value="" disabled>请选择知识来源</option><option v-for="origin in knowledgeOrigins" :key="origin.value" :value="origin.value">{{origin.label}}</option></select></div>
+              <div class="fg span-2"><label class="fl"><span class="req">*</span> 知识来源</label><select class="fi" v-model="candidateReviews.form.knowledge_origin" :disabled="reviewReadonly()"><option value="" disabled>请选择知识来源</option><option v-for="origin in assignableKnowledgeOrigins(candidateReviews.form.knowledge_origin)" :key="origin.value" :value="origin.value">{{origin.label}}</option></select></div>
               <div class="fg"><label class="fl"><span class="req">*</span> 业务类型</label><select class="fi" v-model="candidateReviews.form.business_type" :disabled="reviewReadonly()" @change="onCandidateBusinessTypeChange"><option value="" disabled>请选择业务类型</option><option v-for="businessType in businessTypes" :key="businessType.value" :value="businessType.value">{{businessType.label}}</option></select></div>
               <div class="fg"><label class="fl"><span class="req">*</span> 所属分类</label><select class="fi" v-model="candidateReviews.form.category_id" :disabled="reviewReadonly() || !candidateReviews.form.business_type"><option value="" disabled>{{candidateReviews.form.business_type?'请选择分类':'请先选择业务类型'}}</option><option v-for="cat in cats" :key="cat.id" :value="cat.id">{{cat.name}}</option></select></div>
               <div class="fg"><label class="fl">进入训练集</label><select class="fi" v-model="candidateReviews.form.training_eligible" :disabled="reviewReadonly()"><option value="">未标注</option><option value="是">是</option><option value="否">否</option></select></div>
@@ -1201,7 +1201,7 @@
       <div class="dlg-b" :class="{'save-locked':saving}" :inert="saving ? '' : null">
         <div class="sec">
           <div class="sec-t">知识信息</div>
-          <div class="fg"><label class="fl"><span class="req">*</span> 知识来源</label><select class="fi" v-model="fm.knowledgeOrigin" :disabled="viewOnly"><option value="" disabled>请选择知识来源</option><option v-for="origin in knowledgeOrigins" :key="origin.value" :value="origin.value">{{origin.label}}</option></select></div>
+          <div class="fg"><label class="fl"><span class="req">*</span> 知识来源</label><select class="fi" v-model="fm.knowledgeOrigin" :disabled="viewOnly"><option value="" disabled>请选择知识来源</option><option v-for="origin in assignableKnowledgeOrigins(fm.knowledgeOrigin)" :key="origin.value" :value="origin.value">{{origin.label}}</option></select></div>
           <div class="row" style="grid-template-columns:repeat(2,minmax(0,1fr))">
             <div class="fg"><label class="fl"><span class="req">*</span> 业务类型</label><select class="fi" v-model="fm.businessType" :disabled="viewOnly" @change="onKnowledgeBusinessTypeChange"><option value="" disabled>请选择业务类型</option><option v-for="businessType in businessTypes" :key="businessType.value" :value="businessType.value">{{businessType.label}}</option></select></div>
             <div class="fg"><label class="fl"><span class="req">*</span> 所属分类</label><select class="fi" v-model="fm.cat" :disabled="viewOnly || !fm.businessType" @change="onKnowledgeCategoryChange"><option value="" disabled>{{fm.businessType?'请选择分类':'请先选择业务类型'}}</option><option v-for="c in cats" :key="c.id" :value="c.id">{{c.name}}</option></select></div>
@@ -1567,7 +1567,8 @@ Vue.createApp({
       businessTypes: [],
       knowledgeOrigins: [
         {value:'headquarters_standard', label:'总部标准'},
-        {value:'business_accumulation', label:'业务沉淀'}
+        {value:'business_accumulation', label:'业务沉淀'},
+        {value:'model_configuration', label:'机型配置信息'}
       ],
       stats: {total:0, published:0, review:0, draft:0},
       dashboard: {pending:[], recentUpdates:[], updatedAt:'-'},
@@ -1751,6 +1752,7 @@ Vue.createApp({
     },
     canEditKnowledge: function(item) {
       if (!item) return false;
+      if (item.knowledge_origin === 'model_configuration') return false;
       if (this.can('account:manage')) return true;
       var isOwner = item.created_by === (this.currentUser && this.currentUser.username);
       if (item.status === 'draft') return isOwner && this.can('knowledge:create');
@@ -3953,6 +3955,20 @@ Vue.createApp({
       if (found) return found.label;
       return {self_operated:'自营回收', aggregated:'聚合回收'}[key] || key || '-';
     },
+    assignableKnowledgeOrigins: function(currentValue) {
+      var currentKey = String(currentValue || '');
+      var origins = (this.knowledgeOrigins || []).filter(function(item) {
+        var key = String(item && item.value || '');
+        return key !== 'model_configuration' || currentKey === key;
+      });
+      if (
+        currentKey === 'model_configuration' &&
+        !origins.some(function(item) { return item.value === currentKey; })
+      ) {
+        origins.push({value:'model_configuration', label:'机型配置信息'});
+      }
+      return origins;
+    },
     knowledgeOriginLabel: function(value) {
       var key = String(value || '');
       var found = (this.knowledgeOrigins || []).find(function(item) {
@@ -3961,7 +3977,8 @@ Vue.createApp({
       if (found) return found.label;
       return {
         headquarters_standard:'总部标准',
-        business_accumulation:'业务沉淀'
+        business_accumulation:'业务沉淀',
+        model_configuration:'机型配置信息'
       }[key] || key || '-';
     },
     loadKnowledgeOrigins: function() {
@@ -3981,7 +3998,8 @@ Vue.createApp({
           // 保留内置字典，保证后端短暂不可用时筛选和表单仍可操作。
           self.knowledgeOrigins = [
             {value:'headquarters_standard', label:'总部标准'},
-            {value:'business_accumulation', label:'业务沉淀'}
+            {value:'business_accumulation', label:'业务沉淀'},
+            {value:'model_configuration', label:'机型配置信息'}
           ];
         });
     },
@@ -4564,7 +4582,7 @@ Vue.createApp({
     },
     openEdit: function(r, readonly) {
       if (this.saving) return;
-      this.viewOnly = !!readonly;
+      this.viewOnly = !!readonly || r.knowledge_origin === 'model_configuration';
       if (!this.viewOnly) this.auditMode = false;
       if (!this.viewOnly && !this.can('knowledge:create')) { alert('没有编辑权限'); return; }
       if (!this.knowledgeOrigins.length) this.loadKnowledgeOrigins();

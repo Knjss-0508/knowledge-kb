@@ -5,7 +5,15 @@ from pydantic import BaseModel, Field, field_validator
 
 
 BusinessType = Literal["self_operated", "aggregated"]
-KnowledgeOrigin = Literal["headquarters_standard", "business_accumulation"]
+KnowledgeOrigin = Literal[
+    "headquarters_standard",
+    "business_accumulation",
+    "model_configuration",
+]
+WritableKnowledgeOrigin = Literal[
+    "headquarters_standard",
+    "business_accumulation",
+]
 
 
 # ---- 富文本内容块 ----
@@ -59,7 +67,7 @@ class KnowledgeOriginOption(BaseModel):
 
 
 class KnowledgeCreate(BaseModel):
-    knowledge_origin: KnowledgeOrigin = Field(..., description="知识来源")
+    knowledge_origin: WritableKnowledgeOrigin = Field(..., description="知识来源")
     business_type: BusinessType = Field(..., description="业务类型")
     title: str = Field(..., max_length=256, description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表，可多条")
@@ -90,7 +98,10 @@ class KnowledgeCreate(BaseModel):
 
 
 class KnowledgeUpdate(BaseModel):
-    knowledge_origin: Optional[KnowledgeOrigin] = Field(None, description="知识来源")
+    knowledge_origin: Optional[WritableKnowledgeOrigin] = Field(
+        None,
+        description="可人工维护的知识来源",
+    )
     business_type: Optional[BusinessType] = Field(None, description="业务类型")
     title: Optional[str] = Field(None, description="知识标题")
     subtitles: Optional[list[str]] = Field(None, description="副标题列表")
@@ -120,8 +131,8 @@ class KnowledgeUpdate(BaseModel):
     @classmethod
     def knowledge_origin_must_not_be_null(
         cls,
-        value: Optional[KnowledgeOrigin],
-    ) -> Optional[KnowledgeOrigin]:
+        value: Optional[WritableKnowledgeOrigin],
+    ) -> Optional[WritableKnowledgeOrigin]:
         if value is None:
             raise ValueError("知识来源不能为空")
         return value
@@ -233,7 +244,10 @@ class TagDimensionResponse(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, description="搜索关键词")
-    knowledge_origin: KnowledgeOrigin = Field(..., description="限定知识来源")
+    knowledge_origin: WritableKnowledgeOrigin = Field(
+        ...,
+        description="限定语义知识来源",
+    )
     business_type: BusinessType = Field(..., description="限定业务类型")
     category_id: Optional[str] = Field(None, description="限定分类ID")
     tags: Optional[list[str]] = Field(None, description="限定标签")
@@ -260,7 +274,10 @@ class SearchResponse(BaseModel):
 # ---- 候选池 ----
 
 class CandidateSubmit(BaseModel):
-    knowledge_origin: KnowledgeOrigin = Field(..., description="知识来源")
+    knowledge_origin: WritableKnowledgeOrigin = Field(
+        ...,
+        description="可人工维护的知识来源",
+    )
     business_type: BusinessType = Field(..., description="业务类型")
     title: str = Field(..., description="标题")
     content: Any = Field(..., description="内容")

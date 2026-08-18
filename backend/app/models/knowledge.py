@@ -3,7 +3,8 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, String, Text, Enum, Float, Integer, DateTime,
-    CheckConstraint, ForeignKey, JSON, LargeBinary, UniqueConstraint,
+    CheckConstraint, ForeignKey, Index, JSON, LargeBinary, UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
@@ -72,12 +73,40 @@ class Knowledge(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "knowledge_origin IN ('headquarters_standard', 'business_accumulation')",
+            "knowledge_origin IN "
+            "('headquarters_standard', 'business_accumulation', "
+            "'model_configuration')",
             name="ck_knowledge_items_knowledge_origin",
         ),
         CheckConstraint(
             "business_type IN ('self_operated', 'aggregated')",
             name="ck_knowledge_items_business_type",
+        ),
+        Index(
+            "uq_knowledge_items_model_configuration_source_record_id",
+            "source_record_id",
+            unique=True,
+            sqlite_where=text(
+                "knowledge_origin = 'model_configuration' "
+                "AND source_record_id IS NOT NULL"
+            ),
+            postgresql_where=text(
+                "knowledge_origin = 'model_configuration' "
+                "AND source_record_id IS NOT NULL"
+            ),
+        ),
+        Index(
+            "uq_knowledge_items_model_configuration_source_knowledge_key",
+            "source_knowledge_key",
+            unique=True,
+            sqlite_where=text(
+                "knowledge_origin = 'model_configuration' "
+                "AND source_knowledge_key IS NOT NULL"
+            ),
+            postgresql_where=text(
+                "knowledge_origin = 'model_configuration' "
+                "AND source_knowledge_key IS NOT NULL"
+            ),
         ),
     )
 

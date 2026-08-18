@@ -10,6 +10,7 @@ from app.schemas.knowledge import (
     KnowledgeOrigin,
     KnowledgeOriginOption,
     TagDimensionResponse,
+    WritableKnowledgeOrigin,
 )
 
 
@@ -93,7 +94,10 @@ class IntegrationKnowledgePayload(BaseModel):
     title: str = Field(..., min_length=1, max_length=256, description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表")
     content: Any = Field(..., description="改写后的知识内容，支持富文本 blocks 结构")
-    knowledge_origin: KnowledgeOrigin = Field(..., description="知识来源")
+    knowledge_origin: WritableKnowledgeOrigin = Field(
+        ...,
+        description="可由上游候选维护的知识来源",
+    )
     business_type: BusinessType = Field(..., description="知识所属业务类型")
     category_id: str = Field(..., min_length=1, max_length=64, description="知识库分类ID")
     scene_tags: list[str] = Field(default=[], description="场景标签")
@@ -206,7 +210,7 @@ class CandidateReviewUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=256)
     subtitles: list[str] | None = None
     content: Any | None = None
-    knowledge_origin: KnowledgeOrigin | None = None
+    knowledge_origin: WritableKnowledgeOrigin | None = None
     business_type: BusinessType | None = None
     category_id: str | None = Field(None, min_length=1, max_length=64)
     applicable_scenes: list[str] | None = None
@@ -232,8 +236,8 @@ class CandidateReviewUpdate(BaseModel):
     @classmethod
     def taxonomy_field_must_not_be_null(
         cls,
-        value: KnowledgeOrigin | BusinessType | None,
-    ) -> KnowledgeOrigin | BusinessType | None:
+        value: WritableKnowledgeOrigin | BusinessType | None,
+    ) -> WritableKnowledgeOrigin | BusinessType | None:
         if value is None:
             raise ValueError("taxonomy field must not be null")
         return value
@@ -380,8 +384,8 @@ class IntegrationStandardSearchRequest(BaseModel):
         None,
         alias="knowledgeOrigin",
         description=(
-            "兼容旧客户端的知识来源字段；标准检索当前固定同时检索"
-            "总部标准和业务沉淀。"
+            "兼容旧客户端的知识来源字段；标准检索固定同时检索"
+            "总部标准和业务沉淀，并独立精确匹配机型配置信息。"
         ),
     )
     business_type: BusinessType | None = Field(None, alias="businessType")
@@ -411,8 +415,8 @@ class IntegrationStandardSearchRequest(BaseModel):
         ge=1,
         le=20,
         description=(
-            "每个知识来源的兼容上限，实际还受中台对应知识池 "
-            "1～10 条返回数量配置约束。"
+            "每个语义知识来源的兼容上限，实际还受总部标准、业务沉淀 "
+            "各自 1～10 条返回数量配置约束；不限制独立机型配置结果。"
         ),
     )
 
@@ -459,7 +463,7 @@ class IntegrationStandardSearchCandidate(BaseModel):
     score: float = Field(ge=0, le=1)
     final_score: float = Field(alias="finalScore", ge=0, le=1)
     status: Literal["published"] = "published"
-    knowledge_origin: KnowledgeOrigin = Field(alias="knowledgeOrigin")
+    knowledge_origin: WritableKnowledgeOrigin = Field(alias="knowledgeOrigin")
     business_type: BusinessType = Field(alias="businessType")
     category_id: str | None = Field(None, alias="categoryId")
     level1_label: str = Field("", alias="level1Label")
@@ -469,8 +473,57 @@ class IntegrationStandardSearchCandidate(BaseModel):
     source_ref: str = Field(alias="sourceRef")
 
 
+class IntegrationModelConfigurationItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+        protected_namespaces=(),
+    )
+
+    knowledge_id: str = Field(alias="knowledgeId")
+    knowledge_origin: Literal["model_configuration"] = Field(
+        "model_configuration",
+        alias="knowledgeOrigin",
+    )
+    category_id: str = Field("", alias="categoryId")
+    category: str = ""
+    brand_id: str = Field("", alias="brandId")
+    brand: str = ""
+    model_id: str = Field("", alias="modelId")
+    model: str = ""
+    title: str
+    content: str
+    attributes: dict[str, str] = Field(default_factory=dict)
+    source_ref: str = Field(alias="sourceRef")
+
+
+class IntegrationModelConfigurationResult(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+        protected_namespaces=(),
+    )
+
+    status: Literal["success", "no_match"]
+    match_mode: Literal["id", "name", "none"] = Field(alias="matchMode")
+    item: IntegrationModelConfigurationItem | None = None
+
+    @model_validator(mode="after")
+    def validate_match_state(self):
+        if self.status == "success" and (
+            self.match_mode == "none" or self.item is None
+        ):
+            raise ValueError("successful model configuration requires an item")
+        if self.status == "no_match" and (
+            self.match_mode != "none" or self.item is not None
+        ):
+            raise ValueError("no-match model configuration cannot include an item")
+        return self
+
+
 class IntegrationStandardSearchResponse(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(
+        populate_by_name=True,
+        protected_namespaces=(),
+    )
 
     conversation_id: str = Field(
         alias="conversationId",
@@ -490,6 +543,9 @@ class IntegrationStandardSearchResponse(BaseModel):
     knowledge_version: str = Field(alias="knowledgeVersion")
     score_threshold: float = Field(alias="scoreThreshold", ge=0, le=1)
     candidates: list[IntegrationStandardSearchCandidate]
+    model_configuration: IntegrationModelConfigurationResult = Field(
+        alias="modelConfiguration",
+    )
 
 
 class RetrievalQualityCandidatePayload(BaseModel):
