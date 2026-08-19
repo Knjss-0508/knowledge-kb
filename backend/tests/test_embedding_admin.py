@@ -4,11 +4,6 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from fastapi import HTTPException
-from pydantic import ValidationError
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from app.core.config import settings
 from app.models.embedding_admin import (
     EmbeddingModelVersion,
@@ -17,6 +12,8 @@ from app.models.embedding_admin import (
     EmbeddingTrainingRunner,
     EmbeddingTrainingSample,
 )
+from app.models.integration import RetrievalQualityEvent
+from app.models.knowledge import Category, Knowledge, KnowledgeStatus
 from app.routes.embedding_admin import (
     _task_runner_url,
     activate_embedding_config,
@@ -34,10 +31,11 @@ from app.routes.embedding_admin import (
     regenerate_training_job_runner_access,
     review_retrieval_event,
     runner_heartbeat,
+    update_training_sample,
 )
 from app.schemas.embedding_admin import (
-    EmbeddingModelDecision,
     EmbeddingLabSearchRequest,
+    EmbeddingModelDecision,
     EmbeddingRunnerClaim,
     EmbeddingRunnerComplete,
     EmbeddingRunnerFailure,
@@ -45,6 +43,7 @@ from app.schemas.embedding_admin import (
     EmbeddingRuntimeConfigCreate,
     EmbeddingRuntimeConfigValues,
     EmbeddingTrainingJobCreate,
+    EmbeddingTrainingSampleUpdate,
     RetrievalQualityReview,
 )
 from app.services.embedding_admin import (
@@ -53,6 +52,10 @@ from app.services.embedding_admin import (
     import_retrieval_samples,
 )
 from app.services.embedding_runtime import default_embedding_runtime_config
+from fastapi import HTTPException
+from pydantic import ValidationError
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 
 class EmbeddingAdminTests(unittest.TestCase):
@@ -61,6 +64,9 @@ class EmbeddingAdminTests(unittest.TestCase):
         settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL = "https://kb.example.test"
         self.engine = create_engine("sqlite+pysqlite:///:memory:")
         for table in (
+            Category.__table__,
+            Knowledge.__table__,
+            RetrievalQualityEvent.__table__,
             EmbeddingRuntimeConfig.__table__,
             EmbeddingTrainingSample.__table__,
             EmbeddingTrainingJob.__table__,
@@ -333,7 +339,7 @@ class EmbeddingAdminTests(unittest.TestCase):
             event_metadata={},
         )
         event_query = MagicMock()
-        event_query.filter.return_value.first.return_value = event
+        event_query.filter.return_value.with_for_update.return_value.first.return_value = event
         expected_query = MagicMock()
         expected_query.filter.return_value.first.return_value = None
         db = MagicMock()
@@ -362,14 +368,325 @@ class EmbeddingAdminTests(unittest.TestCase):
         )
         db.commit.assert_not_called()
 
+    def _add_training_knowledge(self, knowledge_id: str, title: str) -> Knowledge:
+        category = self.db.get(Category, "cat-training")
+        if not category:
+            category = Category(id="cat-training", name="训练样本")
+            self.db.add(category)
+        item = Knowledge(
+            id=knowledge_id,
+            knowledge_origin="headquarters_standard",
+            business_type="self_operated",
+            title=title,
+            content={
+                "blocks": [
+                    {"type": "text", "value": f"{title}正文"},
+                ],
+            },
+            category_id=category.id,
+            status=KnowledgeStatus.PUBLISHED,
+            created_by="tester",
+        )
+        self.db.add(item)
+        self.db.flush()
+        return item
+
+    def _add_retrieval_event(
+        self,
+        event_id: str,
+        *,
+        conversation_id: str = "ticket-training",
+        request_id: str = "request-training",
+        expected_knowledge_id: str | None = None,
+        reviewed: bool = False,
+        created_at: datetime | None = None,
+    ) -> RetrievalQualityEvent:
+        event = RetrievalQualityEvent(
+            id=event_id,
+            idempotency_key=f"key-{event_id}",
+            source_system="qa-recommendation-plugin",
+            conversation_id=conversation_id,
+            request_id=request_id,
+            source_kind="standard",
+            query_text="该设备防水标签红应如何判定？",
+            candidate_count=1,
+            top_knowledge_id=expected_knowledge_id,
+            top_rerank_score=0.81,
+            score_threshold=0.42,
+            selected=False,
+            outcome="not_selected",
+            request_status="success",
+            threshold_status="passed",
+            selection_status="none_selected",
+            selected_knowledge_id=None,
+            expected_knowledge_id=expected_knowledge_id if reviewed else None,
+            feedback_type="helpful" if reviewed else "none",
+            candidate_snapshot=(
+                [
+                    {
+                        "knowledge_id": expected_knowledge_id,
+                        "rank": 1,
+                        "title": expected_knowledge_id,
+                        "final_score": 0.81,
+                    },
+                ]
+                if expected_knowledge_id
+                else []
+            ),
+            training_eligible=reviewed,
+            review_status="confirmed" if reviewed else "unreviewed",
+            created_at=created_at or datetime.utcnow(),
+        )
+        self.db.add(event)
+        self.db.commit()
+        return event
+
+    def test_retrieval_review_immediately_creates_candidate_sample(self):
+        expected = self._add_training_knowledge("A-17873", "防水标签判定")
+        event = self._add_retrieval_event(
+            "rqe-training-create",
+            expected_knowledge_id=expected.id,
+        )
+
+        result = review_retrieval_event(
+            event.id,
+            RetrievalQualityReview(
+                review_status="confirmed",
+                expected_knowledge_id=expected.id,
+                feedback_type="helpful",
+                training_eligible=True,
+            ),
+            self.db,
+            self.user,
+        )
+
+        sample = self.db.query(EmbeddingTrainingSample).one()
+        self.assertEqual(sample.source_type, "retrieval_event")
+        self.assertEqual(sample.source_id, event.id)
+        self.assertEqual(sample.status, "candidate")
+        self.assertEqual(sample.query_text, event.query_text)
+        self.assertIn("防水标签判定", sample.positive_text)
+        self.assertIsNone(sample.sample_metadata["selected_knowledge_id"])
+        self.assertEqual(
+            sample.sample_metadata["expected_knowledge_id"],
+            expected.id,
+        )
+        self.assertEqual(result["training_sample_id"], sample.id)
+        self.assertEqual(result["training_sample_action"], "created")
+
+    def test_retrieval_review_updates_candidate_sample_idempotently(self):
+        first = self._add_training_knowledge("A-17873", "第一条正确知识")
+        second = self._add_training_knowledge("A-17874", "第二条正确知识")
+        event = self._add_retrieval_event(
+            "rqe-training-update",
+            expected_knowledge_id=first.id,
+        )
+        for expected in (first, second):
+            review_retrieval_event(
+                event.id,
+                RetrievalQualityReview(
+                    review_status="confirmed",
+                    expected_knowledge_id=expected.id,
+                    feedback_type="helpful",
+                    training_eligible=True,
+                ),
+                self.db,
+                self.user,
+            )
+
+        samples = self.db.query(EmbeddingTrainingSample).all()
+        self.assertEqual(len(samples), 1)
+        self.assertIn("第二条正确知识", samples[0].positive_text)
+        self.assertEqual(
+            samples[0].sample_metadata["expected_knowledge_id"],
+            second.id,
+        )
+
+    def test_retrieval_review_excludes_unconfirmed_candidate_sample(self):
+        expected = self._add_training_knowledge("A-17873", "防水标签判定")
+        event = self._add_retrieval_event(
+            "rqe-training-exclude",
+            expected_knowledge_id=expected.id,
+        )
+        review_retrieval_event(
+            event.id,
+            RetrievalQualityReview(
+                review_status="confirmed",
+                expected_knowledge_id=expected.id,
+                feedback_type="helpful",
+                training_eligible=True,
+            ),
+            self.db,
+            self.user,
+        )
+
+        result = review_retrieval_event(
+            event.id,
+            RetrievalQualityReview(
+                review_status="confirmed",
+                expected_knowledge_id=expected.id,
+                feedback_type="helpful",
+                training_eligible=False,
+            ),
+            self.db,
+            self.user,
+        )
+
+        sample = self.db.query(EmbeddingTrainingSample).one()
+        self.assertEqual(sample.status, "excluded")
+        self.assertEqual(result["training_sample_action"], "excluded")
+
+        result = review_retrieval_event(
+            event.id,
+            RetrievalQualityReview(
+                review_status="confirmed",
+                expected_knowledge_id=expected.id,
+                feedback_type="helpful",
+                training_eligible=True,
+            ),
+            self.db,
+            self.user,
+        )
+
+        self.db.refresh(sample)
+        self.assertEqual(sample.status, "candidate")
+        self.assertEqual(result["training_sample_action"], "updated")
+
+    def test_retrieval_review_rejects_changes_to_verified_sample(self):
+        first = self._add_training_knowledge("A-17873", "第一条正确知识")
+        second = self._add_training_knowledge("A-17874", "第二条正确知识")
+        event = self._add_retrieval_event(
+            "rqe-training-verified",
+            expected_knowledge_id=first.id,
+        )
+        review_retrieval_event(
+            event.id,
+            RetrievalQualityReview(
+                review_status="confirmed",
+                expected_knowledge_id=first.id,
+                feedback_type="helpful",
+                training_eligible=True,
+            ),
+            self.db,
+            self.user,
+        )
+        sample = self.db.query(EmbeddingTrainingSample).one()
+        sample.status = "verified"
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as raised:
+            review_retrieval_event(
+                event.id,
+                RetrievalQualityReview(
+                    review_status="confirmed",
+                    expected_knowledge_id=second.id,
+                    feedback_type="corrected",
+                    training_eligible=True,
+                ),
+                self.db,
+                self.user,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.db.refresh(event)
+        self.db.refresh(sample)
+        self.assertEqual(event.expected_knowledge_id, first.id)
+        self.assertIn("第一条正确知识", sample.positive_text)
+
+        update_training_sample(
+            sample.id,
+            EmbeddingTrainingSampleUpdate(status="excluded"),
+            self.db,
+            self.user,
+        )
+        result = review_retrieval_event(
+            event.id,
+            RetrievalQualityReview(
+                review_status="confirmed",
+                expected_knowledge_id=second.id,
+                feedback_type="corrected",
+                training_eligible=True,
+            ),
+            self.db,
+            self.user,
+        )
+
+        self.db.refresh(event)
+        self.db.refresh(sample)
+        self.assertEqual(result["training_sample_action"], "updated")
+        self.assertEqual(event.expected_knowledge_id, second.id)
+        self.assertEqual(sample.status, "candidate")
+        self.assertIn("第二条正确知识", sample.positive_text)
+
+    def test_training_import_preserves_manually_excluded_sample(self):
+        expected = self._add_training_knowledge("A-17873", "防水标签判定")
+        event = self._add_retrieval_event(
+            "rqe-training-manual-excluded",
+            expected_knowledge_id=expected.id,
+            reviewed=True,
+        )
+        self.db.add(
+            EmbeddingTrainingSample(
+                id="ets-manual-excluded",
+                task_type="retrieval",
+                query_text=event.query_text,
+                positive_text="已人工排除的样本",
+                negative_texts=[],
+                source_type="retrieval_event",
+                source_id=event.id,
+                status="excluded",
+                reason="人工排除",
+                sample_metadata={"expected_knowledge_id": expected.id},
+                created_by="admin",
+                reviewed_by="admin",
+                reviewed_at=datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+
+        imported = import_retrieval_samples(self.db, created_by="admin")
+
+        sample = self.db.get(EmbeddingTrainingSample, "ets-manual-excluded")
+        self.assertEqual(imported, 0)
+        self.assertEqual(sample.status, "excluded")
+        self.assertEqual(sample.positive_text, "已人工排除的样本")
+
+    def test_training_import_includes_confirmed_historical_request(self):
+        expected = self._add_training_knowledge("A-17873", "防水标签判定")
+        self._add_retrieval_event(
+            "rqe-training-old",
+            conversation_id="ticket-history",
+            request_id="request-old",
+            expected_knowledge_id=expected.id,
+            reviewed=True,
+            created_at=datetime.utcnow() - timedelta(minutes=10),
+        )
+        self._add_retrieval_event(
+            "rqe-training-new",
+            conversation_id="ticket-history",
+            request_id="request-new",
+            expected_knowledge_id=expected.id,
+            reviewed=False,
+            created_at=datetime.utcnow(),
+        )
+
+        imported = import_retrieval_samples(self.db, created_by="admin")
+
+        self.assertEqual(imported, 1)
+        sample = self.db.query(EmbeddingTrainingSample).one()
+        self.assertEqual(sample.source_id, "rqe-training-old")
+
     def test_training_import_skips_managed_exact_knowledge(self):
         event = SimpleNamespace(
             expected_knowledge_id="A-00001",
+            review_status="confirmed",
+            training_eligible=True,
         )
         event_query = MagicMock()
-        event_query.filter.return_value.order_by.return_value.all.return_value = [
-            event
-        ]
+        (
+            event_query.filter.return_value.order_by.return_value
+            .with_for_update.return_value.all.return_value
+        ) = [event]
         expected_query = MagicMock()
         expected_query.filter.return_value.first.return_value = SimpleNamespace(
             knowledge_origin="model_configuration",
@@ -377,17 +694,13 @@ class EmbeddingAdminTests(unittest.TestCase):
         retrieval_db = MagicMock()
         retrieval_db.query.side_effect = [event_query, expected_query]
 
-        with patch(
-            "app.services.embedding_admin.latest_retrieval_quality_event_ids",
-            return_value=[],
-        ):
-            self.assertEqual(
-                import_retrieval_samples(
-                    retrieval_db,
-                    created_by="admin",
-                ),
-                0,
-            )
+        self.assertEqual(
+            import_retrieval_samples(
+                retrieval_db,
+                created_by="admin",
+            ),
+            0,
+        )
         retrieval_db.add.assert_not_called()
         retrieval_db.commit.assert_called_once_with()
 

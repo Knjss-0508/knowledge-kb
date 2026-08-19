@@ -54,6 +54,7 @@ from app.services.embedding_admin import (
     import_deduplication_samples,
     import_retrieval_samples,
     next_runtime_config_version,
+    sync_retrieval_training_sample,
 )
 from app.services.embedding_runtime import (
     default_embedding_runtime_config,
@@ -701,6 +702,7 @@ def update_training_sample(
     sample = (
         db.query(EmbeddingTrainingSample)
         .filter(EmbeddingTrainingSample.id == sample_id)
+        .with_for_update()
         .first()
     )
     if not sample:
@@ -755,10 +757,12 @@ def review_retrieval_event(
     event = (
         db.query(RetrievalQualityEvent)
         .filter(RetrievalQualityEvent.id == event_id)
+        .with_for_update()
         .first()
     )
     if not event:
         raise HTTPException(404, "召回事件不存在")
+    expected = None
     if body.expected_knowledge_id:
         expected = (
             db.query(Knowledge)
@@ -771,6 +775,35 @@ def review_retrieval_event(
         )
         if not expected:
             raise HTTPException(422, "指定的正确知识不存在或尚未发布")
+    existing_sample = (
+        db.query(EmbeddingTrainingSample)
+        .filter(
+            EmbeddingTrainingSample.source_type == "retrieval_event",
+            EmbeddingTrainingSample.source_id == event.id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if existing_sample and existing_sample.status == "verified":
+        sample_expected_id = str(
+            (existing_sample.sample_metadata or {}).get(
+                "expected_knowledge_id",
+                "",
+            )
+        ).strip()
+        remains_eligible = (
+            body.review_status == "confirmed"
+            and body.training_eligible
+            and bool(body.expected_knowledge_id)
+        )
+        if (
+            not remains_eligible
+            or sample_expected_id != body.expected_knowledge_id
+        ):
+            raise HTTPException(
+                409,
+                "该事件的训练样本已确认，请先在纠错样本池排除后再修改标注",
+            )
     event.review_status = body.review_status
     event.expected_knowledge_id = body.expected_knowledge_id
     event.feedback_type = body.feedback_type
@@ -785,12 +818,21 @@ def review_retrieval_event(
         "reviewed_at": event.reviewed_at.isoformat(),
     }
     event.event_metadata = metadata
+    sample, sample_action = sync_retrieval_training_sample(
+        db,
+        event,
+        created_by=current_user.username,
+        expected=expected,
+    )
     db.commit()
     return {
         "status": "recorded",
         "event_id": event.id,
         "review_status": event.review_status,
         "training_eligible": event.training_eligible,
+        "training_sample_id": sample.id if sample else None,
+        "training_sample_status": sample.status if sample else None,
+        "training_sample_action": sample_action,
     }
 
 
