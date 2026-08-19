@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class EmbeddingRuntimeConfigValues(BaseModel):
@@ -38,14 +38,38 @@ class EmbeddingRuntimeConfigCreate(BaseModel):
 
 
 class EmbeddingLabSearchRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     query: str = Field(..., min_length=1, max_length=1000)
     top_k: int = Field(10, ge=1, le=50)
     knowledge_origin: Literal[
         "headquarters_standard",
         "business_accumulation",
     ] | None = None
-    business_type: str | None = Field(None, max_length=32)
+    business_type: Literal["self_operated", "aggregated"]
     category_id: str | None = Field(None, max_length=64)
+    applicable_category_ids: list[str] = Field(default_factory=list, max_length=50)
+    brand_ids: list[str] = Field(default_factory=list, max_length=50)
+    model_ids: list[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_scope_filters(self):
+        for field_name in (
+            "applicable_category_ids",
+            "brand_ids",
+            "model_ids",
+        ):
+            values: list[str] = getattr(self, field_name)
+            normalized: list[str] = []
+            for raw_value in values:
+                value = raw_value.strip()
+                if not value or value in normalized:
+                    continue
+                if len(value) > 128:
+                    raise ValueError("适用范围筛选值不能超过 128 个字符")
+                normalized.append(value)
+            setattr(self, field_name, normalized)
+        return self
 
 
 class EmbeddingTrainingSampleCreate(BaseModel):
