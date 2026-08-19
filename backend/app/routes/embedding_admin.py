@@ -32,6 +32,7 @@ from app.models.knowledge import (
 )
 from app.models.user import User
 from app.routes.auth import require_permission
+from app.routes.manhattan import _read_cache as _read_manhattan_cache
 from app.schemas.embedding_admin import (
     EmbeddingLabSearchRequest,
     EmbeddingModelDecision,
@@ -46,6 +47,10 @@ from app.schemas.embedding_admin import (
     EmbeddingTrainingSampleCreate,
     EmbeddingTrainingSampleUpdate,
     RetrievalQualityReview,
+)
+from app.services.applicability import (
+    filter_applicable_rows,
+    resolve_applicability_scope,
 )
 from app.services.embedding import EmbeddingServiceUnavailable, embed_texts
 from app.services.embedding_admin import (
@@ -577,19 +582,98 @@ def activate_embedding_config(
     return _config_payload(record)
 
 
+def _embedding_lab_match_reason(embedding_kind: str) -> str:
+    if embedding_kind == "subtitle":
+        return "命中副标题"
+    if embedding_kind == "content":
+        return "命中正文"
+    if embedding_kind == "title":
+        return "命中标题"
+    return "命中知识内容"
+
+
+def _embedding_lab_scope_ids(
+    db: Session,
+    body: EmbeddingLabSearchRequest,
+    knowledge_filters: list[Any],
+) -> list[str] | None:
+    if not (
+        body.applicable_category_ids
+        or body.brand_ids
+        or body.model_ids
+    ):
+        return None
+
+    try:
+        manhattan_cache = _read_manhattan_cache()
+    except (OSError, ValueError):
+        manhattan_cache = {}
+    applicability_scope = resolve_applicability_scope(
+        manhattan_cache,
+        body.business_type,
+        category_values=body.applicable_category_ids,
+        brand_values=body.brand_ids,
+        model_values=body.model_ids,
+    )
+    scope_rows = (
+        db.query(
+            Knowledge.id.label("knowledge_id"),
+            Knowledge.applicable_categories,
+            Knowledge.applicable_brands,
+            Knowledge.applicable_models,
+        )
+        .filter(*knowledge_filters)
+        .all()
+    )
+    return [
+        row.knowledge_id
+        for row in filter_applicable_rows(
+            scope_rows,
+            category_keys=applicability_scope["categories"],
+            brand_keys=applicability_scope["brands"],
+            model_keys=applicability_scope["models"],
+        )
+    ]
+
+
 @router.post("/lab/search")
 def embedding_lab_search(
     body: EmbeddingLabSearchRequest,
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("embedding:manage")),
 ):
+    knowledge_filters = [
+        Knowledge.status == KnowledgeStatus.PUBLISHED,
+        Knowledge.knowledge_origin != "model_configuration",
+    ]
+    if body.knowledge_origin:
+        knowledge_filters.append(
+            Knowledge.knowledge_origin == body.knowledge_origin
+        )
+    knowledge_filters.append(Knowledge.business_type == body.business_type)
+    if body.category_id:
+        knowledge_filters.append(Knowledge.category_id == body.category_id)
+
+    allowed_knowledge_ids = _embedding_lab_scope_ids(
+        db,
+        body,
+        knowledge_filters,
+    )
+    if allowed_knowledge_ids == []:
+        return {
+            "query": body.query,
+            "model": settings.EMBEDDING_MODEL,
+            "top_k": body.top_k,
+            "results": [],
+        }
+
     try:
         query_vector = embed_texts([body.query.strip()])[0]
     except EmbeddingServiceUnavailable as exc:
         raise HTTPException(503, "Embedding 服务不可用，无法运行召回实验") from exc
 
     distance = KnowledgeSearchEmbedding.embedding_vector.cosine_distance(query_vector)
-    query = (
+    candidate_query = (
         db.query(
             Knowledge,
             KnowledgeSearchEmbedding,
@@ -600,19 +684,41 @@ def embedding_lab_search(
             KnowledgeSearchEmbedding.knowledge_id == Knowledge.id,
         )
         .filter(
-            Knowledge.status == KnowledgeStatus.PUBLISHED,
-            Knowledge.knowledge_origin != "model_configuration",
+            *knowledge_filters,
             KnowledgeSearchEmbedding.embedding_model == settings.EMBEDDING_MODEL,
             KnowledgeSearchEmbedding.embedding_vector.is_not(None),
         )
     )
-    if body.knowledge_origin:
-        query = query.filter(Knowledge.knowledge_origin == body.knowledge_origin)
-    if body.business_type:
-        query = query.filter(Knowledge.business_type == body.business_type)
-    if body.category_id:
-        query = query.filter(Knowledge.category_id == body.category_id)
-    rows = query.order_by(distance).limit(body.top_k).all()
+    if allowed_knowledge_ids is not None:
+        candidate_query = candidate_query.filter(
+            Knowledge.id.in_(allowed_knowledge_ids)
+        )
+
+    candidate_limit = max(body.top_k * 12, 50)
+    best_rows: dict[
+        str,
+        tuple[Knowledge, KnowledgeSearchEmbedding, float],
+    ] = {}
+    while True:
+        rows = (
+            candidate_query.order_by(
+                distance.asc(),
+                Knowledge.id.asc(),
+                KnowledgeSearchEmbedding.embedding_kind.asc(),
+                KnowledgeSearchEmbedding.chunk_index.asc(),
+                KnowledgeSearchEmbedding.id.asc(),
+            )
+            .limit(candidate_limit)
+            .all()
+        )
+        for item, embedding, distance_value in rows:
+            if item.id not in best_rows:
+                best_rows[item.id] = (item, embedding, distance_value)
+        if len(best_rows) >= body.top_k or len(rows) < candidate_limit:
+            break
+        candidate_limit *= 2
+    ranked_rows = list(best_rows.values())[: body.top_k]
+
     return {
         "query": body.query,
         "model": settings.EMBEDDING_MODEL,
@@ -628,9 +734,15 @@ def embedding_lab_search(
                 "embedding_kind": embedding.embedding_kind,
                 "chunk_index": embedding.chunk_index,
                 "source_text": embedding.source_text,
+                "match_reason": _embedding_lab_match_reason(
+                    embedding.embedding_kind
+                ),
                 "score": round(max(0.0, 1.0 - float(distance_value)), 6),
             }
-            for index, (item, embedding, distance_value) in enumerate(rows, start=1)
+            for index, (item, embedding, distance_value) in enumerate(
+                ranked_rows,
+                start=1,
+            )
         ],
     }
 

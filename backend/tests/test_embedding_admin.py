@@ -2,7 +2,7 @@ import hashlib
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from app.core.config import settings
 from app.models.embedding_admin import (
@@ -247,7 +247,25 @@ class EmbeddingAdminTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             EmbeddingLabSearchRequest(
                 query="iPad 指纹",
+                business_type="self_operated",
                 knowledge_origin="model_configuration",
+            )
+
+    def test_vector_lab_scope_filters_are_normalized_and_require_business_type(self):
+        request = EmbeddingLabSearchRequest(
+            query="iPad 防水标签",
+            business_type="self_operated",
+            applicable_category_ids=[" 119 ", "119", ""],
+            brand_ids=[" 10530 "],
+            model_ids=[" iPad16,3 "],
+        )
+
+        self.assertEqual(request.applicable_category_ids, ["119"])
+        self.assertEqual(request.brand_ids, ["10530"])
+        self.assertEqual(request.model_ids, ["iPad16,3"])
+        with self.assertRaises(ValidationError):
+            EmbeddingLabSearchRequest(
+                query="iPad 防水标签",
             )
 
     def test_vector_coverage_excludes_managed_exact_knowledge(self):
@@ -311,6 +329,7 @@ class EmbeddingAdminTests(unittest.TestCase):
         query = MagicMock()
         query.join.return_value = query
         query.filter.return_value = query
+        query.select_from.return_value = query
         query.order_by.return_value.limit.return_value.all.return_value = []
         db.query.return_value = query
 
@@ -319,7 +338,10 @@ class EmbeddingAdminTests(unittest.TestCase):
             return_value=[[0.1] * settings.EMBEDDING_DIMENSIONS],
         ):
             result = embedding_lab_search(
-                EmbeddingLabSearchRequest(query="iPad 指纹"),
+                EmbeddingLabSearchRequest(
+                    query="iPad 指纹",
+                    business_type="self_operated",
+                ),
                 db,
                 None,
             )
@@ -327,12 +349,179 @@ class EmbeddingAdminTests(unittest.TestCase):
         self.assertEqual(result["results"], [])
         expression_text = " ".join(
             str(expression)
-            for expression in query.filter.call_args.args
+            for call in query.filter.call_args_list
+            for expression in call.args
         )
         self.assertIn(
             "knowledge_items.knowledge_origin !=",
             expression_text,
         )
+
+    def test_vector_lab_filters_scope_and_expands_until_top_k_unique_knowledge(self):
+        db = MagicMock()
+        scope_query = MagicMock()
+        scope_query.filter.return_value = scope_query
+        scope_query.all.return_value = [
+            SimpleNamespace(
+                knowledge_id="A-00154",
+                applicable_categories=["119"],
+                applicable_brands=["10530"],
+                applicable_models=["ipad163"],
+            ),
+            SimpleNamespace(
+                knowledge_id="A-17873",
+                applicable_categories=["120"],
+                applicable_brands=["10531"],
+                applicable_models=["other"],
+            ),
+        ]
+
+        first_item = SimpleNamespace(
+            id="A-00154",
+            title="平板机身内部有生锈/发霉/水渍",
+            knowledge_origin="headquarters_standard",
+            business_type="self_operated",
+            category_id="cat-1",
+        )
+        second_item = SimpleNamespace(
+            id="A-17873",
+            title="苹果设备内部防水标签变红",
+            knowledge_origin="headquarters_standard",
+            business_type="self_operated",
+            category_id="cat-1",
+        )
+        first_batch = [
+            (
+                first_item,
+                SimpleNamespace(
+                    embedding_kind="subtitle",
+                    chunk_index=index,
+                    source_text=(
+                        "平板机身内部防水标签变红怎么确认"
+                        if index == 0
+                        else f"同知识较低分分块 {index}"
+                    ),
+                ),
+                0.10 + index / 1000,
+            )
+            for index in range(50)
+        ]
+        second_batch = first_batch + [
+            (
+                second_item,
+                SimpleNamespace(
+                    embedding_kind="content",
+                    chunk_index=0,
+                    source_text="苹果设备防水标签变红需要判定",
+                ),
+                0.60,
+            )
+        ]
+        candidate_query = MagicMock()
+        candidate_query.join.return_value = candidate_query
+        candidate_query.filter.return_value = candidate_query
+        candidate_query.order_by.return_value = candidate_query
+        candidate_query.limit.return_value = candidate_query
+        candidate_query.all.side_effect = [first_batch, second_batch]
+        db.query.side_effect = [scope_query, candidate_query]
+
+        with (
+            patch(
+                "app.routes.embedding_admin._read_manhattan_cache",
+                return_value={},
+            ),
+            patch(
+                "app.routes.embedding_admin.resolve_applicability_scope",
+                return_value={
+                    "categories": {"119"},
+                    "brands": {"10530"},
+                    "models": {"ipad163"},
+                },
+            ),
+            patch(
+                "app.routes.embedding_admin.embed_texts",
+                return_value=[[0.1] * settings.EMBEDDING_DIMENSIONS],
+            ),
+        ):
+            result = embedding_lab_search(
+                EmbeddingLabSearchRequest(
+                    query="该设备防水标签红应如何判定",
+                    top_k=2,
+                    knowledge_origin="headquarters_standard",
+                    business_type="self_operated",
+                    applicable_category_ids=["119"],
+                    brand_ids=["10530"],
+                    model_ids=["ipad163"],
+                ),
+                db,
+                None,
+            )
+
+        candidate_expressions = " ".join(
+            str(expression)
+            for expression in db.query.call_args_list[1].args
+        )
+        self.assertIn("knowledge_search_embeddings", candidate_expressions)
+        candidate_filters = " ".join(
+            str(expression)
+            for filter_call in candidate_query.filter.call_args_list
+            for expression in filter_call.args
+        )
+        self.assertIn("knowledge_items.id IN", candidate_filters)
+        self.assertEqual(
+            candidate_query.limit.call_args_list,
+            [call(50), call(100)],
+        )
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(result["results"][0]["knowledge_id"], "A-00154")
+        self.assertEqual(result["results"][0]["score"], 0.9)
+        self.assertEqual(result["results"][0]["embedding_kind"], "subtitle")
+        self.assertEqual(result["results"][0]["chunk_index"], 0)
+        self.assertEqual(
+            result["results"][0]["source_text"],
+            "平板机身内部防水标签变红怎么确认",
+        )
+        self.assertEqual(
+            result["results"][0]["match_reason"],
+            "命中副标题",
+        )
+        self.assertEqual(result["results"][1]["knowledge_id"], "A-17873")
+        self.assertEqual(result["results"][1]["match_reason"], "命中正文")
+
+    def test_vector_lab_empty_scope_skips_embedding_and_returns_no_results(self):
+        db = MagicMock()
+        scope_query = MagicMock()
+        scope_query.filter.return_value = scope_query
+        scope_query.all.return_value = []
+        db.query.return_value = scope_query
+
+        with (
+            patch(
+                "app.routes.embedding_admin._read_manhattan_cache",
+                return_value={},
+            ),
+            patch(
+                "app.routes.embedding_admin.resolve_applicability_scope",
+                return_value={
+                    "categories": {"119"},
+                    "brands": set(),
+                    "models": set(),
+                },
+            ),
+            patch("app.routes.embedding_admin.embed_texts") as embed_texts,
+        ):
+            result = embedding_lab_search(
+                EmbeddingLabSearchRequest(
+                    query="该设备防水标签红应如何判定",
+                    business_type="self_operated",
+                    applicable_category_ids=["119"],
+                ),
+                db,
+                None,
+            )
+
+        self.assertEqual(result["results"], [])
+        embed_texts.assert_not_called()
 
     def test_retrieval_review_rejects_managed_exact_expected_knowledge(self):
         event = SimpleNamespace(
