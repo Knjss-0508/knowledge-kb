@@ -24,6 +24,7 @@ MAX_MODEL_CONFIGURATION_IMPORT_ROWS = 5000
 MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 IMPORT_SHEET_NAME = "知识导入"
+KNOWLEDGE_UPDATE_SHEET_NAME = "知识批量修改"
 MODEL_CONFIGURATION_IMPORT_SHEET_NAME = "机型配置信息"
 MODEL_CONFIGURATION_LEGACY_SHEET_NAME = "个性化配置信息"
 EXPORT_SHEET_NAME = "知识库主表"
@@ -89,6 +90,7 @@ EXPORT_SOURCE_LABELS = {
 }
 
 HEADER_ALIASES = {
+    "knowledge_id": {"知识ID", "知识库ID", "中台知识ID"},
     "title": {"标题", "知识标题", "主标题"},
     "knowledge_origin": {"知识来源", "业务来源"},
     "business_type": {"业务类型", "所属业务类型"},
@@ -180,6 +182,9 @@ EXTERNAL_MEDIA_TOKEN_PATTERN = re.compile(
 MEDIA_PLACEHOLDER_LINE_PATTERN = re.compile(
     r"^[+\-‐‑‒–—―*•·●○▪▫]$"
 )
+LOCAL_MEDIA_EXPORT_PLACEHOLDER_PATTERN = re.compile(
+    r"^\[(?:图片|视频)(?:：[^\]]*)?\]$"
+)
 
 
 class KnowledgeExcelError(ValueError):
@@ -196,6 +201,7 @@ class KnowledgeExcelRowError(ValueError):
 class ExcelKnowledgeRow:
     row_number: int
     title: str
+    knowledge_id: str = ""
     knowledge_origin: str = ""
     business_type: str = ""
     category_id: str = ""
@@ -212,6 +218,8 @@ class ExcelKnowledgeRow:
     source_fields: dict[str, str] = field(default_factory=dict)
     source_status: str = ""
     source_scope: str = ""
+    provided_fields: set[str] = field(default_factory=set)
+    import_mode: str = "knowledge"
     error_code: str | None = None
     error_message: str | None = None
 
@@ -482,7 +490,30 @@ def _resolve_knowledge_origin(value) -> str:
     )
 
 
-def _header_indexes(header_row) -> dict[str, int]:
+def _header_indexes(
+    header_row,
+    *,
+    require_knowledge_id: bool = False,
+) -> dict[str, int]:
+    if require_knowledge_id:
+        for field, aliases in HEADER_ALIASES.items():
+            matching_headers = [
+                _normalize_header(value)
+                for value in header_row
+                if _normalize_header(value) in aliases
+            ]
+            if len(matching_headers) <= 1:
+                continue
+            if field == "knowledge_id":
+                raise KnowledgeExcelError(
+                    "批量修改文件只能保留一个知识ID列，"
+                    "不能同时使用知识ID、知识库ID或中台知识ID。"
+                )
+            raise KnowledgeExcelError(
+                "批量修改文件中同一字段只能保留一个兼容列："
+                + "、".join(matching_headers)
+                + "。"
+            )
     normalized = {
         _normalize_header(value): index
         for index, value in enumerate(header_row)
@@ -496,6 +527,8 @@ def _header_indexes(header_row) -> dict[str, int]:
                 break
 
     is_source_deprecation_sheet = (
+        not require_knowledge_id
+        and
         "source_status" in indexes
         and any(
             field in indexes
@@ -507,11 +540,13 @@ def _header_indexes(header_row) -> dict[str, int]:
         )
     )
     missing = []
+    if require_knowledge_id and "knowledge_id" not in indexes:
+        missing.append("知识ID")
     if "knowledge_origin" not in indexes:
         missing.append("知识来源")
     if "business_type" not in indexes:
         missing.append("业务类型")
-    if not is_source_deprecation_sheet:
+    if require_knowledge_id or not is_source_deprecation_sheet:
         missing.extend(
             label
             for field, label in (
@@ -783,7 +818,12 @@ def parse_model_configuration_workbook(
     )
 
 
-def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]:
+def parse_knowledge_workbook(
+    data: bytes,
+    categories,
+    *,
+    update_mode: bool = False,
+) -> list[ExcelKnowledgeRow]:
     if not data:
         raise KnowledgeExcelError("Excel 文件为空。")
     if len(data) > MAX_IMPORT_FILE_BYTES:
@@ -821,17 +861,26 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
             "请拆分为两个文件分别导入。"
         )
 
-    sheet = (
-        workbook[IMPORT_SHEET_NAME]
-        if IMPORT_SHEET_NAME in workbook.sheetnames
-        else workbook.active
-    )
+    if update_mode and KNOWLEDGE_UPDATE_SHEET_NAME in workbook.sheetnames:
+        sheet = workbook[KNOWLEDGE_UPDATE_SHEET_NAME]
+    elif not update_mode and IMPORT_SHEET_NAME in workbook.sheetnames:
+        sheet = workbook[IMPORT_SHEET_NAME]
+    else:
+        sheet = workbook.active
+    if update_mode and sheet.title == EXPORT_SHEET_NAME:
+        raise KnowledgeExcelError(
+            "“知识库主表”普通导出文件不能直接用于批量修改；"
+            "请下载“知识批量修改”专用模板后填写。"
+        )
     rows = sheet.iter_rows(values_only=True)
     try:
         header_row = next(rows)
     except StopIteration as exc:
         raise KnowledgeExcelError("Excel 中没有可读取的表头。") from exc
-    indexes = _header_indexes(header_row)
+    indexes = _header_indexes(
+        header_row,
+        require_knowledge_id=update_mode,
+    )
     category_records = _category_records(categories)
 
     def value_at(values, field: str):
@@ -839,6 +888,9 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
         return values[index] if index is not None and index < len(values) else None
 
     parsed_rows: list[ExcelKnowledgeRow] = []
+    seen_knowledge_id_rows: dict[str, int] = {}
+    duplicate_knowledge_ids: list[tuple[str, int, int]] = []
+    regular_import_contains_knowledge_id = False
     for row_number, values in enumerate(rows, start=2):
         if not any(_cell_text(value) for value in values):
             continue
@@ -848,6 +900,9 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
             )
 
         title = _cell_text(value_at(values, "title"))
+        knowledge_id = _cell_text(value_at(values, "knowledge_id"))
+        if not update_mode and knowledge_id:
+            regular_import_contains_knowledge_id = True
         knowledge_origin = _cell_text(value_at(values, "knowledge_origin"))
         business_type = _cell_text(value_at(values, "business_type"))
         source_status = _cell_text(value_at(values, "source_status"))
@@ -858,17 +913,38 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
         result = ExcelKnowledgeRow(
             row_number=row_number,
             title=title,
+            knowledge_id=knowledge_id,
             source_fields=_source_fields(header_row, values),
             source_status=source_status,
             source_scope=source_scope,
             source_topic_key=source_topic_key,
             source_record_id=source_record_id,
             source_knowledge_key=source_knowledge_key,
+            provided_fields=set(indexes),
+            import_mode="knowledge_update" if update_mode else "knowledge",
         )
         try:
+            if update_mode:
+                if not knowledge_id:
+                    raise KnowledgeExcelRowError(
+                        "KNOWLEDGE_ID_REQUIRED",
+                        "知识ID不能为空。",
+                    )
+                if len(knowledge_id) > 64:
+                    raise KnowledgeExcelRowError(
+                        "KNOWLEDGE_ID_TOO_LONG",
+                        "知识ID不能超过 64 个字符。",
+                    )
+                previous_row = seen_knowledge_id_rows.get(knowledge_id)
+                if previous_row is not None:
+                    duplicate_knowledge_ids.append(
+                        (knowledge_id, previous_row, row_number)
+                    )
+                else:
+                    seen_knowledge_id_rows[knowledge_id] = row_number
             result.knowledge_origin = _resolve_knowledge_origin(knowledge_origin)
             result.business_type = _resolve_business_type(business_type)
-            if "source_status" in indexes:
+            if not update_mode and "source_status" in indexes:
                 if not source_status:
                     raise KnowledgeExcelRowError(
                         "SOURCE_STATUS_REQUIRED",
@@ -918,6 +994,19 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
                     "CONTENT_TOO_LONG",
                     "单条正文不能超过 100000 个字符。",
                 )
+            if update_mode and any(
+                LOCAL_MEDIA_EXPORT_PLACEHOLDER_PATTERN.fullmatch(
+                    line.strip()
+                )
+                for line in content.splitlines()
+                if line.strip()
+            ):
+                raise KnowledgeExcelRowError(
+                    "LOCAL_MEDIA_PLACEHOLDER_UNSUPPORTED",
+                    "检测到普通导出的本地图片或视频占位文本；"
+                    "该格式不能安全回填媒体，请使用专用模板，"
+                    "含本地媒体的知识请在页面中单条编辑。",
+                )
 
             result.category_id = _resolve_category(
                 value_at(values, "category"),
@@ -954,7 +1043,32 @@ def parse_knowledge_workbook(data: bytes, categories) -> list[ExcelKnowledgeRow]
 
     if not parsed_rows:
         raise KnowledgeExcelError("Excel 中没有可导入的数据行。")
+    if regular_import_contains_knowledge_id:
+        raise KnowledgeExcelError(
+            "检测到非空“知识ID”列；该文件属于批量修改数据，"
+            "请切换到“批量修改”模式，系统不会按知识ID执行普通新增导入。"
+        )
+    if duplicate_knowledge_ids:
+        details = "；".join(
+            f"{knowledge_id}（第 {first_row}、{duplicate_row} 行）"
+            for knowledge_id, first_row, duplicate_row
+            in duplicate_knowledge_ids[:10]
+        )
+        raise KnowledgeExcelError(
+            f"同一 Excel 中知识ID不能重复：{details}。"
+        )
     return parsed_rows
+
+
+def parse_knowledge_update_workbook(
+    data: bytes,
+    categories,
+) -> list[ExcelKnowledgeRow]:
+    return parse_knowledge_workbook(
+        data,
+        categories,
+        update_mode=True,
+    )
 
 
 def _export_cell_text(value: Any) -> str:
@@ -1364,6 +1478,87 @@ def build_knowledge_import_template(categories) -> bytes:
     for row in instructions_sheet.iter_rows(min_row=2, max_col=2):
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def build_knowledge_update_template(categories) -> bytes:
+    """生成仅按中台知识ID定位、整行覆盖可编辑字段的修改模板。"""
+
+    workbook = load_workbook(
+        BytesIO(build_knowledge_import_template(categories))
+    )
+    import_sheet = workbook[IMPORT_SHEET_NAME]
+    import_sheet.title = KNOWLEDGE_UPDATE_SHEET_NAME
+    import_sheet.insert_cols(1)
+    import_sheet["A1"] = "知识ID（必填）"
+    import_sheet["A1"].fill = PatternFill("solid", fgColor="0F766E")
+    import_sheet["A1"].font = Font(color="FFFFFF", bold=True)
+    import_sheet["A1"].alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+    )
+    import_sheet["A1"].comment = Comment(
+        "必填。仅使用中台知识ID精确匹配，例如 A-00001；"
+        "不存在的ID不会新增知识，同一文件内ID不能重复。",
+        "知识库",
+    )
+    import_sheet.freeze_panes = "A2"
+    import_sheet.auto_filter.ref = "A1:L1"
+    import_sheet.column_dimensions["A"].width = 18
+    import_sheet.column_dimensions["B"].width = 32
+    import_sheet.column_dimensions["C"].width = 22
+    import_sheet.column_dimensions["D"].width = 22
+    import_sheet.column_dimensions["E"].width = 28
+    import_sheet.column_dimensions["F"].width = 70
+    for column in ("G", "H", "I", "J", "K", "L"):
+        import_sheet.column_dimensions[column].width = 24
+
+    instructions_sheet = workbook["填写说明"]
+    if instructions_sheet.max_row > 1:
+        instructions_sheet.delete_rows(2, instructions_sheet.max_row - 1)
+    instructions = [
+        (
+            "唯一匹配规则",
+            "系统只按“知识ID”精确匹配现有知识，不按标题、主题键、"
+            "记录ID或知识键兜底；ID不存在时该行失败，不会自动新增。",
+        ),
+        (
+            "覆盖规则",
+            "标题、知识来源、业务类型、知识分类和正文必须填写；"
+            "副标题、场景标签、关联标准项、适用类目、品牌、机型为空时会清空原值。",
+        ),
+        (
+            "保留字段",
+            "知识ID、当前状态、录入方式、创建人、创建时间、"
+            "质量分、使用统计和系统标签保持不变。",
+        ),
+        (
+            "知识来源",
+            "仅支持总部标准和业务沉淀；机型配置信息继续使用"
+            "专用 Excel 同步，不能通过本模板修改。",
+        ),
+        (
+            "正文媒体",
+            "正文会整体替换，仅识别 [img:https://...] 和 "
+            "[video:https://...] 外链媒体标记。含本地上传图片或视频的知识"
+            "不支持 Excel 批量修改，请在页面中单条编辑；普通知识导出文件"
+            "中的 [图片：说明]、[视频：说明] 不能回填。",
+        ),
+        (
+            "修改结果",
+            "实际变化显示“已修改”，内容完全一致显示“未变化”，"
+            "校验失败会逐行展示原因；修改直接作用于原知识，不进入新增知识审核流程。",
+        ),
+        (
+            "单次上限",
+            f"每个文件最多 {MAX_IMPORT_ROWS} 条、文件最大 5MB，仅支持 .xlsx。",
+        ),
+    ]
+    for item in instructions:
+        instructions_sheet.append(item)
 
     output = BytesIO()
     workbook.save(output)

@@ -5,10 +5,12 @@
   <title>答疑中台 - 知识库管理</title>
   <link rel="icon" type="image/png" href="assets/knowledge-kb-favicon.png">
   <style>
+    :root{--sidebar-width:236px}
     *{margin:0;padding:0;box-sizing:border-box}
+    html,body{min-height:100%}
     body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",Arial,sans-serif;background:#f0f2f5;color:#1d2129;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
-    .layout{display:flex;min-height:100vh}
-    .side{width:210px;background:#061b2d;color:#b8c6d8;flex-shrink:0;display:flex;flex-direction:column}
+    .layout{display:block;min-height:100vh}
+    .side{position:fixed;top:0;left:0;z-index:300;width:var(--sidebar-width);min-width:var(--sidebar-width);max-width:var(--sidebar-width);height:100vh;height:100dvh;min-height:0;max-height:100vh;max-height:100dvh;background:#061b2d;color:#b8c6d8;display:flex;flex-direction:column;overflow:hidden}
     .brand{height:52px;display:flex;align-items:center;padding:0 18px;color:#fff;font-size:16px;font-weight:700;border-bottom:1px solid rgba(255,255,255,.08)}
     .nav{padding:12px 0;flex:1}
     .nav-item{height:38px;display:flex;align-items:center;padding:0 20px;font-size:13px;cursor:pointer;border-left:3px solid transparent}
@@ -16,7 +18,7 @@
     .nav-item.on{background:#1683ff;color:#fff;border-left-color:#58b5ff}
     .side-foot{padding:14px 18px;border-top:1px solid rgba(255,255,255,.08);font-size:12px}
     .logout{margin-top:8px;color:#8bbcff;cursor:pointer}
-    .main{flex:1;min-width:0}
+    .main{width:calc(100% - var(--sidebar-width));min-width:0;margin-left:var(--sidebar-width)}
     .hd{background:#fff;height:52px;display:flex;align-items:center;padding:0 28px;border-bottom:1px solid #e5e6eb;position:sticky;top:0;z-index:100}
     .hd h1{font-size:17px;font-weight:600}.hd .sub{font-size:12px;color:#86909c;margin-left:8px;background:#f2f3f5;padding:2px 8px;border-radius:4px}
     .mn{padding:20px 28px;max-width:1400px;margin:0 auto}
@@ -107,8 +109,8 @@
     .import-task-failure-table{min-width:680px}
     .import-task-failure-table th,.import-task-failure-table td{vertical-align:top}
     .import-task-failure-reason{max-width:460px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
-    .dlg.import-mode-dialog{width:min(680px,94vw)}
-    .import-mode-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .dlg.import-mode-dialog{width:min(880px,94vw)}
+    .import-mode-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
     .import-mode-option{min-height:126px;padding:16px;border:1px solid #dfe5ea;border-radius:8px;background:#fff;color:#344054;text-align:left;cursor:pointer;transition:border-color .18s ease,background-color .18s ease,box-shadow .18s ease}
     .import-mode-option:hover{border-color:#9bcfc5;background:#f8fcfb}
     .import-mode-option.on{border-color:#009b83;background:#f1fbf8;box-shadow:0 0 0 2px rgba(0,155,131,.1)}
@@ -259,7 +261,7 @@
     body{background:var(--canvas);color:var(--ink);font-family:var(--app-font)}
     button,input,textarea,select{font-family:var(--app-font)!important;font-size:inherit}
     .layout{min-height:100vh;background:var(--canvas)}
-    .side{width:236px;background:var(--nav);padding:22px 14px 16px;color:#fff}
+    .side{background:var(--nav);padding:22px 14px 16px;color:#fff}
     .brand{height:auto;padding:0 10px 26px;border:0;font-size:17px;gap:10px}
     .brand:before{content:"";width:26px;height:26px;flex:0 0 26px;border-radius:7px;background:#009b83;box-shadow:7px 7px 0 rgba(239,109,91,.88)}
     .nav{padding:0;display:flex;flex-direction:column;gap:4px;align-items:stretch}
@@ -343,6 +345,7 @@
     @media(max-width:760px){.embedding-topk-item{grid-template-columns:1fr}.embedding-topk-control{justify-content:flex-start}.embedding-candidate-pools,.retrieval-judgement-options{grid-template-columns:1fr}.embedding-candidate-pool.unclassified{grid-column:auto}.retrieval-period-filter{align-items:stretch}.retrieval-period-tabs{width:100%}.retrieval-period-btn{flex:1 1 auto}.retrieval-custom-range{width:100%}.retrieval-custom-range .inp{flex:1 1 130px;width:auto}.retrieval-period-caption{width:100%;margin-left:0}}
     @media(max-width:760px){.retrieval-review-dialog .dlg-b{padding:14px}.retrieval-review-layout{gap:12px}.retrieval-review-candidate-scroll{max-height:38vh}.retrieval-review-conclusion{max-height:42vh;overflow-y:auto;padding-right:4px}.retrieval-review-shortcuts{width:100%;margin-left:0}.retrieval-review-footer{align-items:stretch}.retrieval-review-nav,.retrieval-review-save-actions{width:100%;justify-content:center}.retrieval-review-save-actions{flex-wrap:wrap}.retrieval-review-save-actions .btn{flex:1 1 auto}}
     @media(max-width:1120px){.cards{grid-template-columns:repeat(2,1fr)}.review-metric-cards{grid-template-columns:repeat(4,1fr)}.dashboard-summary-grid{grid-template-columns:1fr}.dashboard-summary-grid>.dashboard-asset,.dashboard-summary-grid>.dashboard-flow{grid-column:1}.dashboard-work-grid,.dashboard-work-grid.without-candidates{grid-template-columns:1fr}.review-detail-grid{grid-template-columns:1fr}.embedding-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.embedding-two,.embedding-hero{grid-template-columns:1fr}.embedding-config-grid{grid-template-columns:1fr 1fr}.embedding-flow{grid-template-columns:repeat(3,minmax(0,1fr))}.embedding-flow-step:after{display:none}.embedding-control-grid{grid-template-columns:1fr}}@media(max-width:760px){.side{width:100%;min-height:auto;padding:12px 16px;display:block}.layout{display:block}.brand{padding:0}.nav{display:flex;flex-direction:row;overflow-x:auto;overflow-y:hidden;margin-top:12px;gap:6px;padding-bottom:2px;scrollbar-width:none;overscroll-behavior-inline:contain}.nav::-webkit-scrollbar{display:none}.nav-item{white-space:nowrap;flex:0 0 auto}.side-foot{display:none}.hd{height:58px;padding:0 16px}.mn{padding:24px 16px 32px}.overview{display:block}.overview h2{font-size:26px}.overview-status{margin-top:10px}.cards,.review-metric-cards{grid-template-columns:1fr 1fr;gap:10px}.card{min-height:124px;padding:15px}.dashboard-summary-grid,.dashboard-grid{gap:12px}.dashboard-asset,.dashboard-flow{padding:17px 16px}.flow-steps{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.flow-step:after{display:none}.insight-head{padding:17px 16px 0}.trend-chart{margin:14px 16px 18px}.todo-list{padding-left:16px;padding-right:16px}.todo-link{margin-left:16px;margin-right:16px}.filter-app-field{width:100%}.filter-app-field .ms{width:auto;flex:1 1 auto}.review-search{width:100%}.review-dialog .dlg-b{padding:14px}.review-panel{padding:14px}.review-form-grid,.review-meta{grid-template-columns:1fr}.review-form-grid .span-2{grid-column:auto}.review-gate{display:none}.embedding-grid,.embedding-config-grid,.embedding-flow{grid-template-columns:1fr}.embedding-hero-side{grid-template-columns:1fr 1fr}.embedding-lab-scope,.embedding-lab-applicability,.embedding-lab-form{grid-template-columns:1fr}.embedding-result{grid-template-columns:36px minmax(0,1fr)}.embedding-score{grid-column:2;text-align:left}.retrieval-review-grid{grid-template-columns:1fr}.retrieval-review-grid .span-2{grid-column:auto}.embedding-readiness{grid-template-columns:1fr}.embedding-release-stage{grid-template-columns:34px minmax(0,1fr)}.embedding-release-stage .btn{grid-column:2;justify-self:start}.embedding-access-input{grid-template-columns:1fr}.embedding-access-buttons{justify-content:flex-start}.embedding-access-meta{display:block}.embedding-access-steps{grid-template-columns:1fr}}@media(max-width:420px){.cards,.review-metric-cards{grid-template-columns:1fr}.asset-status-grid,.flow-steps{grid-template-columns:1fr}.period button{padding:0 7px}.embedding-hero-side{grid-template-columns:1fr}}
+    @media(max-width:760px){.layout{min-height:100vh}.side{position:static;top:auto;left:auto;z-index:auto;min-width:0;max-width:none;height:auto;max-height:none;overflow:visible}.main{width:100%;min-height:0;margin-left:0}}
     .import-validation-cell{max-width:210px}.import-validation-cell .tg{margin-bottom:4px}.import-validation-summary{color:#667085;font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.import-review-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px}.import-review-card{padding:11px 12px;border:1px solid #f1dfbd;border-radius:6px;background:#fffaf0}.import-review-card span{display:block;margin-bottom:5px;color:#a96800;font-size:11px;font-weight:700}.import-review-card div{color:#475467;font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.import-review-block{margin-top:10px}.import-review-block-label{margin-bottom:5px;color:#667085;font-size:11px;font-weight:700}.import-review-raw{padding:11px 12px;border:1px solid #edf0f2;border-radius:6px;background:#fafbfc;color:#475467;font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
     @media(max-width:760px){.import-review-grid{grid-template-columns:1fr}}
   </style>
@@ -482,14 +485,14 @@
       <button class="btn bd" v-if="dev.showManhattanUpdate && can('account:manage')" @click="openManhattanPanel">更新曼哈顿数据</button>
       <input class="inp" style="width:240px" v-model="f.kw" placeholder="搜索标题、副标题、正文..." @keyup.enter="searchKnowledge">
       <button class="btn bp" @click="searchKnowledge">搜索</button>
-      <button class="btn b-template" v-if="can('knowledge:create')" @click="openImportDialog">下载导入模板</button>
-      <button class="btn b-import" v-if="can('knowledge:create')" @click="openImportDialog" :disabled="importing">{{importing?'上传中...':'Excel 批量导入'}}</button>
+      <button class="btn b-template" v-if="canAccessExcelTasks()" @click="openImportDialog">下载 Excel 模板</button>
+      <button class="btn b-import" v-if="canAccessExcelTasks()" @click="openImportDialog" :disabled="importing">{{importing?'上传中...':'Excel 批量处理'}}</button>
       <input ref="knowledgeImportFile" type="file" accept=".xlsx" style="display:none" @change="importKnowledgeExcel">
-      <button class="btn bd" v-if="can('knowledge:create')" @click="toggleImportHistory">{{showImportHistory?'收起导入记录':'导入记录'}}</button>
+      <button class="btn bd" v-if="canAccessExcelTasks()" @click="toggleImportHistory">{{showImportHistory?'收起 Excel 记录':'Excel 记录'}}</button>
       <button class="btn bd" v-if="can('knowledge:view')" @click="exportKnowledgeExcel">导出知识</button>
       <button class="btn bp" v-if="can('knowledge:create')" @click="openNew">+ 新建知识</button>
     </div>
-    <div class="import-task-panel" :class="importTaskPanelTone()" v-if="can('knowledge:create') && (importing || importUploadError || visibleImportTasks().length || showImportHistory)">
+    <div class="import-task-panel" :class="importTaskPanelTone()" v-if="canAccessExcelTasks() && (importing || importUploadError || visibleImportTasks().length || showImportHistory)">
       <div class="import-task-head"><span>{{importTaskPanelTitle()}}</span><button class="btn bd bsm" @click="loadImportTasks">刷新</button></div>
       <div class="import-task-notice" v-if="importTaskNotice">{{importTaskNotice}}</div>
       <div class="import-task-list">
@@ -517,7 +520,7 @@
             <button class="btn bd bsm" v-if="!showImportHistory && isImportTaskAttention(task)" @click="dismissImportTaskAttention(task)">关闭提醒</button>
           </span>
         </div>
-        <div class="import-task-empty" v-if="!importing && !importUploadError && !visibleImportTasks().length">{{showImportHistory?'暂无导入记录':'暂无当前导入任务'}}</div>
+        <div class="import-task-empty" v-if="!importing && !importUploadError && !visibleImportTasks().length">{{showImportHistory?'暂无 Excel 任务记录':'暂无当前 Excel 任务'}}</div>
       </div>
     </div>
     <div class="filter-tabs">
@@ -1157,29 +1160,34 @@
     <div class="dlg import-mode-dialog">
       <div class="dlg-h">
         <div>
-          <h3 id="import-mode-dialog-title">Excel 批量导入</h3>
-          <p>请选择本次 Excel 对应的数据类型</p>
+          <h3 id="import-mode-dialog-title">Excel 批量处理</h3>
+          <p>请选择新增、修改或机型配置同步模式</p>
         </div>
-        <button class="dlg-x" @click="closeImportDialog" aria-label="关闭 Excel 批量导入">&times;</button>
+        <button class="dlg-x" @click="closeImportDialog" aria-label="关闭 Excel 批量处理">&times;</button>
       </div>
       <div class="dlg-b">
         <div class="import-mode-options">
-          <button type="button" class="import-mode-option" :class="{on:importType==='knowledge'}" @click="importType='knowledge'">
+          <button type="button" class="import-mode-option" v-if="can('knowledge:create')" :class="{on:importType==='knowledge'}" @click="importType='knowledge'">
             <b>普通知识</b>
             <span>用于总部标准、业务沉淀；知识来源和业务类型继续在 Excel 每一行中填写。</span>
           </button>
-          <button type="button" class="import-mode-option" :class="{on:importType==='model_configuration'}" @click="importType='model_configuration'">
+          <button type="button" class="import-mode-option" v-if="can('knowledge:edit_published')" :class="{on:importType==='knowledge_update'}" @click="importType='knowledge_update'">
+            <b>批量修改</b>
+            <span>只按中台知识ID匹配并覆盖可编辑内容；ID不存在不会新增，同一文件内ID不能重复。</span>
+          </button>
+          <button type="button" class="import-mode-option" v-if="can('knowledge:create')" :class="{on:importType==='model_configuration'}" @click="importType='model_configuration'">
             <b>机型配置信息</b>
             <span>用于按品类、品牌、机型精确匹配的个性化配置；导入后由系统直接维护。</span>
           </button>
         </div>
         <div class="import-mode-note" v-if="importType==='knowledge'">当前模式保留原有总部标准、业务沉淀导入规则和审核流程。</div>
+        <div class="import-mode-note" v-else-if="importType==='knowledge_update'">修改直接作用于原知识并保留知识ID、状态和创建信息；可选字段留空会清空原值。普通导出文件不能直接上传，含本地图片或视频的知识请在页面中单条编辑。</div>
         <div class="import-mode-note" v-else>当前模式固定写入“机型配置信息”，不进入向量、阈值、TOP 和召回反馈链路。</div>
       </div>
       <div class="dlg-f">
         <button class="btn bd" @click="closeImportDialog">取消</button>
         <button class="btn b-template" @click="downloadImportTemplate" :disabled="importTemplateDownloading">{{importTemplateDownloading?'下载中...':'下载当前模式模板'}}</button>
-        <button class="btn bp" @click="chooseImportFile" :disabled="importing">{{importing?'上传中...':'选择 Excel 并导入'}}</button>
+        <button class="btn bp" @click="chooseImportFile" :disabled="importing">{{importing?'上传中...':(importType==='knowledge_update'?'选择 Excel 并修改':'选择 Excel 并导入')}}</button>
       </div>
     </div>
   </div>
@@ -1187,8 +1195,8 @@
   <div class="mask" v-if="importTaskDetail.open" @click.self="closeImportTaskDetail" role="dialog" aria-modal="true" aria-labelledby="import-task-detail-title">
     <div class="dlg import-task-detail-dialog">
       <div class="dlg-h">
-        <h3 id="import-task-detail-title">导入任务详情</h3>
-        <button class="dlg-x" @click="closeImportTaskDetail" aria-label="关闭导入任务详情">&times;</button>
+        <h3 id="import-task-detail-title">Excel 任务详情</h3>
+        <button class="dlg-x" @click="closeImportTaskDetail" aria-label="关闭 Excel 任务详情">&times;</button>
       </div>
       <div class="dlg-b">
         <div class="import-task-detail-loading" v-if="importTaskDetail.loading">正在加载导入结果...</div>
@@ -1198,13 +1206,19 @@
             <span class="tg" :class="importTaskStatusClass(importTaskDetail.task.status)">{{importTaskStatusLabel(importTaskDetail.task.status)}}</span>
             <span class="tg tg-d">{{importTaskTypeLabel(importTaskDetail.task)}}</span>
             <span>{{importTaskProgress(importTaskDetail.task)}}</span>
-            <span v-if="isModelConfigurationImportTask(importTaskDetail.task) && importTaskDisplayedResultCount(importTaskDetail.task)">已展示 {{importTaskDisplayedResultCount(importTaskDetail.task)}}/{{importTaskDetailResultTotal(importTaskDetail.task)}} 条逐行结果</span>
-            <span v-if="!isModelConfigurationImportTask(importTaskDetail.task) && importTaskDetail.task.deprecated">已废弃 {{importTaskDetail.task.deprecated}} 条</span>
+            <span v-if="isOperationImportTask(importTaskDetail.task) && importTaskDisplayedResultCount(importTaskDetail.task)">已展示 {{importTaskDisplayedResultCount(importTaskDetail.task)}}/{{importTaskDetailResultTotal(importTaskDetail.task)}} 条逐行结果</span>
+            <span v-if="!isOperationImportTask(importTaskDetail.task) && importTaskDetail.task.deprecated">已废弃 {{importTaskDetail.task.deprecated}} 条</span>
             <span>创建时间 {{formatDate(importTaskDetail.task.created_at)}}</span>
           </div>
           <div class="import-task-summary-grid" v-if="isModelConfigurationImportTask(importTaskDetail.task)">
             <div class="import-task-summary-card"><span>新增</span><b>{{importTaskOperationCount(importTaskDetail.task,'created')}}</b></div>
             <div class="import-task-summary-card suspected"><span>更新</span><b>{{importTaskOperationCount(importTaskDetail.task,'updated')}}</b></div>
+            <div class="import-task-summary-card pending"><span>未变化</span><b>{{importTaskOperationCount(importTaskDetail.task,'unchanged')}}</b></div>
+            <div class="import-task-summary-card failed"><span>失败</span><b>{{importTaskResultCount(importTaskDetail.task,'failed')}}</b></div>
+          </div>
+          <div class="import-task-summary-grid" v-else-if="isKnowledgeUpdateImportTask(importTaskDetail.task)">
+            <div class="import-task-summary-card"><span>已处理</span><b>{{Number(importTaskDetail.task.processed_rows || 0)}}</b></div>
+            <div class="import-task-summary-card suspected"><span>已修改</span><b>{{importTaskOperationCount(importTaskDetail.task,'updated')}}</b></div>
             <div class="import-task-summary-card pending"><span>未变化</span><b>{{importTaskOperationCount(importTaskDetail.task,'unchanged')}}</b></div>
             <div class="import-task-summary-card failed"><span>失败</span><b>{{importTaskResultCount(importTaskDetail.task,'failed')}}</b></div>
           </div>
@@ -1216,16 +1230,16 @@
           </div>
           <div class="import-task-detail-error" v-if="importTaskDetail.task.error_message">{{importTaskDetail.task.error_message}}</div>
           <div v-if="importTaskDetailRows(importTaskDetail.task).length">
-            <div class="import-task-failure-title">{{isModelConfigurationImportTask(importTaskDetail.task)?'逐行处理结果':'失败行原因'}}</div>
+            <div class="import-task-failure-title">{{isOperationImportTask(importTaskDetail.task)?'逐行处理结果':'失败行原因'}}</div>
             <div class="import-task-failure-wrap">
               <table class="import-task-failure-table">
-                <thead><tr><th style="width:72px">Excel 行</th><th style="width:220px">标题</th><th style="width:100px" v-if="isModelConfigurationImportTask(importTaskDetail.task)">操作</th><th style="width:130px" v-if="isModelConfigurationImportTask(importTaskDetail.task)">知识ID</th><th style="width:150px">错误代码</th><th>失败原因</th></tr></thead>
+                <thead><tr><th style="width:72px">Excel 行</th><th style="width:220px">标题</th><th style="width:100px" v-if="isOperationImportTask(importTaskDetail.task)">操作</th><th style="width:130px" v-if="isOperationImportTask(importTaskDetail.task)">知识ID</th><th style="width:150px">错误代码</th><th>失败原因</th></tr></thead>
                 <tbody>
                   <tr v-for="row in importTaskDetailRows(importTaskDetail.task)" :key="row.row + ':' + row.title + ':' + (row.operation || '')">
                     <td>{{row.row}}</td>
                     <td>{{row.title || '-'}}</td>
-                    <td v-if="isModelConfigurationImportTask(importTaskDetail.task)">{{importTaskOperationLabel(row.operation)}}</td>
-                    <td v-if="isModelConfigurationImportTask(importTaskDetail.task)">{{row.knowledge_id || '-'}}</td>
+                    <td v-if="isOperationImportTask(importTaskDetail.task)">{{importTaskOperationLabel(row.operation)}}</td>
+                    <td v-if="isOperationImportTask(importTaskDetail.task)">{{row.knowledge_id || '-'}}</td>
                     <td>{{row.error_code || '-'}}</td>
                     <td><div class="import-task-failure-reason">{{row.error_message || (row.status==='failed'?'未返回失败原因':'-')}}</div></td>
                   </tr>
@@ -1233,7 +1247,7 @@
               </table>
             </div>
           </div>
-          <div class="import-task-detail-empty" v-else-if="!importTaskDetail.task.error_message">{{isModelConfigurationImportTask(importTaskDetail.task)?'没有逐行结果。':'没有失败行。'}}</div>
+          <div class="import-task-detail-empty" v-else-if="!importTaskDetail.task.error_message">{{isOperationImportTask(importTaskDetail.task)?'没有逐行结果。':'没有失败行。'}}</div>
         </template>
         <div class="import-task-detail-empty" v-else>{{importTaskDetail.error || '未能加载导入任务详情。'}}</div>
       </div>
@@ -1948,6 +1962,9 @@ Vue.createApp({
       var perms = (this.currentUser && this.currentUser.permissions) || [];
       return perms.indexOf('*') !== -1 || perms.indexOf(permission) !== -1;
     },
+    canAccessExcelTasks: function() {
+      return this.can('knowledge:create') || this.can('knowledge:edit_published');
+    },
     viewTitle: function() {
       return {
         overview:'运营总览',
@@ -2301,12 +2318,16 @@ Vue.createApp({
         .finally(function() { self.batchApproving = false; });
     },
     normalizeImportType: function(value) {
-      return value === 'model_configuration' ? 'model_configuration' : 'knowledge';
+      return ['knowledge','knowledge_update','model_configuration'].indexOf(value) !== -1
+        ? value
+        : 'knowledge';
     },
     importTypeLabel: function(value) {
-      return this.normalizeImportType(value) === 'model_configuration'
-        ? '机型配置信息'
-        : '普通知识';
+      return {
+        knowledge:'普通知识',
+        knowledge_update:'知识批量修改',
+        model_configuration:'机型配置信息'
+      }[this.normalizeImportType(value)];
     },
     importTaskTypeLabel: function(task) {
       return this.importTypeLabel(task && task.import_type);
@@ -2314,9 +2335,18 @@ Vue.createApp({
     isModelConfigurationImportTask: function(task) {
       return this.normalizeImportType(task && task.import_type) === 'model_configuration';
     },
+    isKnowledgeUpdateImportTask: function(task) {
+      return this.normalizeImportType(task && task.import_type) === 'knowledge_update';
+    },
+    isOperationImportTask: function(task) {
+      return this.isModelConfigurationImportTask(task)
+        || this.isKnowledgeUpdateImportTask(task);
+    },
     openImportDialog: function() {
       if (this.importing) return;
-      this.importType = 'knowledge';
+      this.importType = this.can('knowledge:create')
+        ? 'knowledge'
+        : 'knowledge_update';
       this.importDialogOpen = true;
     },
     closeImportDialog: function() {
@@ -2344,9 +2374,11 @@ Vue.createApp({
           var url = URL.createObjectURL(blob);
           var link = document.createElement('a');
           link.href = url;
-          link.download = selectedImportType === 'model_configuration'
-            ? '机型配置信息批量导入模板.xlsx'
-            : '知识批量导入模板.xlsx';
+          link.download = {
+            model_configuration:'机型配置信息批量导入模板.xlsx',
+            knowledge_update:'知识批量修改模板.xlsx',
+            knowledge:'知识批量导入模板.xlsx'
+          }[selectedImportType];
           document.body.appendChild(link);
           link.click();
           link.remove();
@@ -2425,7 +2457,7 @@ Vue.createApp({
       })
         .then(function(response) {
           return response.json().then(function(data) {
-            if (!response.ok) throw new Error(data.detail || '批量导入失败');
+            if (!response.ok) throw new Error(data.detail || 'Excel 批量处理失败');
             return data;
           });
         })
@@ -2434,13 +2466,14 @@ Vue.createApp({
           self.trackCurrentImportTask(data && data.id);
           self.upsertImportTask(data);
           self.importTaskNotice = self.importTypeLabel(selectedImportType)
-            + '导入任务已创建，处理进度会自动更新。';
+            + (selectedImportType === 'knowledge_update' ? '任务' : '导入任务')
+            + '已创建，处理进度会自动更新。';
           self.startImportTaskPolling();
           return self.loadImportTasks();
         })
         .catch(function(error) {
           self.importTaskNotice = '';
-          self.importUploadError = error.message || '批量导入失败';
+          self.importUploadError = error.message || 'Excel 批量处理失败';
         })
         .finally(function() {
           self.importing = false;
@@ -2470,6 +2503,11 @@ Vue.createApp({
       }[status] || 'tg-d';
     },
     importTaskSummary: function(task) {
+      if (this.isKnowledgeUpdateImportTask(task)) {
+        return '已修改 ' + this.importTaskOperationCount(task, 'updated')
+          + ' · 未变化 ' + this.importTaskOperationCount(task, 'unchanged')
+          + ' · 失败 ' + Number(task && task.failed || 0);
+      }
       if (this.isModelConfigurationImportTask(task)) {
         return '新增 ' + this.importTaskOperationCount(task, 'created')
           + ' · 更新 ' + this.importTaskOperationCount(task, 'updated')
@@ -2494,12 +2532,12 @@ Vue.createApp({
       return !!task && ['completed','completed_with_errors','failed','cancelled'].indexOf(task.status) !== -1;
     },
     importTaskPanelTitle: function() {
-      if (this.showImportHistory) return '导入记录（最近 100 条）';
-      if (this.importing || this.hasActiveImportTasks()) return '导入进度';
+      if (this.showImportHistory) return 'Excel 任务记录（最近 100 条）';
+      if (this.importing || this.hasActiveImportTasks()) return 'Excel 任务进度';
       if (this.importUploadError || this.visibleImportTasks().some(function(task) {
         return task.status === 'failed' || task.status === 'completed_with_errors';
-      })) return '导入异常';
-      return '导入结果';
+      })) return 'Excel 任务异常';
+      return 'Excel 任务结果';
     },
     importTaskPanelTone: function() {
       if (this.showImportHistory) return '';
@@ -2736,7 +2774,7 @@ Vue.createApp({
       return results.filter(function(row) { return row.status === 'failed'; });
     },
     importTaskDetailRows: function(task) {
-      if (this.isModelConfigurationImportTask(task)) {
+      if (this.isOperationImportTask(task)) {
         return task && Array.isArray(task.results) ? task.results : [];
       }
       return this.importTaskFailureRows(task);
@@ -2744,7 +2782,7 @@ Vue.createApp({
     cancelImportTask: function(task) {
       var self = this;
       if (!self.canCancelImportTask(task) || self.importTaskCancellingId) return;
-      if (!confirm('确认取消导入任务“' + (task.original_filename || task.id) + '”？已处理并保存的知识不会自动回滚。')) return;
+      if (!confirm('确认取消 Excel 任务“' + (task.original_filename || task.id) + '”？已处理并保存的知识不会自动回滚。')) return;
       self.importTaskCancellingId = task.id;
       fetch(API + '/knowledge/import/tasks/' + encodeURIComponent(task.id) + '/cancel', {
         method:'POST',
@@ -2756,7 +2794,7 @@ Vue.createApp({
             if (text) {
               try { data = JSON.parse(text); } catch (error) { data = {}; }
             }
-            if (!response.ok) throw new Error(data.detail || '取消导入任务失败');
+            if (!response.ok) throw new Error(data.detail || '取消 Excel 任务失败');
             return data;
           });
         })
@@ -2780,7 +2818,7 @@ Vue.createApp({
       )
         .then(function(response) {
           return response.json().then(function(data) {
-            if (!response.ok) throw new Error(data.detail || '加载导入任务详情失败');
+            if (!response.ok) throw new Error(data.detail || '加载 Excel 任务详情失败');
             return data;
           });
         })
@@ -2823,7 +2861,7 @@ Vue.createApp({
       var self = this;
       if (
         !self.token ||
-        !self.can('knowledge:create') ||
+        !self.canAccessExcelTasks() ||
         self.importTaskListLoading
       ) return Promise.resolve();
       self.importTaskListLoading = true;
@@ -2831,7 +2869,7 @@ Vue.createApp({
       return fetch(API + '/knowledge/import/tasks?limit=100', {headers:self.authHeaders()})
         .then(function(response) {
           return response.json().then(function(data) {
-            if (!response.ok) throw new Error(data.detail || '加载导入任务失败');
+            if (!response.ok) throw new Error(data.detail || '加载 Excel 任务失败');
             return data;
           });
         })

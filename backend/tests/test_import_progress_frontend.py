@@ -8,7 +8,7 @@ FRONTEND = (
 
 def test_import_panel_is_hidden_when_idle_and_visible_for_live_or_attention_tasks() -> None:
     assert (
-        "v-if=\"can('knowledge:create') && "
+        "v-if=\"canAccessExcelTasks() && "
         "(importing || importUploadError || visibleImportTasks().length || showImportHistory)\""
         in FRONTEND
     )
@@ -44,7 +44,7 @@ def test_created_import_task_is_rendered_before_polling() -> None:
         "self.importTaskNotice = self.importTypeLabel(selectedImportType)"
         in success_block
     )
-    assert "'导入任务已创建，处理进度会自动更新。';" in success_block
+    assert "+ '已创建，处理进度会自动更新。';" in success_block
 
 
 def test_terminal_import_tasks_follow_success_and_failure_visibility_rules() -> None:
@@ -58,7 +58,7 @@ def test_terminal_import_tasks_follow_success_and_failure_visibility_rules() -> 
 
 
 def test_upload_failures_are_non_blocking_and_dismissible() -> None:
-    assert "self.importUploadError = error.message || '批量导入失败';" in FRONTEND
+    assert "self.importUploadError = error.message || 'Excel 批量处理失败';" in FRONTEND
     assert "dismissImportUploadError: function()" in FRONTEND
     assert "上传失败" in FRONTEND
     assert "关闭提醒" in FRONTEND
@@ -78,7 +78,9 @@ def test_import_mode_dialog_defaults_to_regular_knowledge() -> None:
     assert "@click=\"openImportDialog\"" in FRONTEND
     assert "用于总部标准、业务沉淀" in FRONTEND
     assert "机型配置信息" in FRONTEND
-    assert "this.importType = 'knowledge';" in FRONTEND
+    assert "this.importType = this.can('knowledge:create')" in FRONTEND
+    assert "? 'knowledge'" in FRONTEND
+    assert ": 'knowledge_update';" in FRONTEND
 
 
 def test_template_and_upload_send_the_selected_import_type() -> None:
@@ -86,6 +88,7 @@ def test_template_and_upload_send_the_selected_import_type() -> None:
     assert "+ encodeURIComponent(selectedImportType)" in FRONTEND
     assert "form.append('import_type', selectedImportType);" in FRONTEND
     assert "机型配置信息批量导入模板.xlsx" in FRONTEND
+    assert "知识批量修改模板.xlsx" in FRONTEND
     assert "知识批量导入模板.xlsx" in FRONTEND
 
 
@@ -94,12 +97,20 @@ def test_legacy_tasks_fall_back_to_regular_knowledge() -> None:
     normalize_end = FRONTEND.index("importTypeLabel: function(value)", normalize_start)
     normalize_block = FRONTEND[normalize_start:normalize_end]
 
-    assert (
-        "return value === 'model_configuration' "
-        "? 'model_configuration' : 'knowledge';"
-        in normalize_block
-    )
+    assert "['knowledge','knowledge_update','model_configuration']" in normalize_block
+    assert ": 'knowledge';" in normalize_block
     assert "return this.importTypeLabel(task && task.import_type);" in FRONTEND
+
+
+def test_knowledge_update_mode_uses_id_only_contract_and_operation_results() -> None:
+    assert "importType==='knowledge_update'" in FRONTEND
+    assert "只按中台知识ID匹配" in FRONTEND
+    assert "ID不存在不会新增" in FRONTEND
+    assert "isKnowledgeUpdateImportTask: function(task)" in FRONTEND
+    assert "isOperationImportTask: function(task)" in FRONTEND
+    assert "knowledge_update:'知识批量修改'" in FRONTEND
+    assert "'已修改 ' + this.importTaskOperationCount(task, 'updated')" in FRONTEND
+    assert "if (this.isOperationImportTask(task))" in FRONTEND
 
 
 def test_model_configuration_tasks_have_separate_counts_and_operations() -> None:

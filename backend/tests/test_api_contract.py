@@ -107,7 +107,7 @@ class ApiContractTests(unittest.TestCase):
         }
         self.assertEqual(
             template_parameters["import_type"]["schema"]["enum"],
-            ["knowledge", "model_configuration"],
+            ["knowledge", "knowledge_update", "model_configuration"],
         )
         self.assertEqual(
             template_parameters["import_type"]["schema"]["default"],
@@ -122,7 +122,7 @@ class ApiContractTests(unittest.TestCase):
         upload_schema = schemas[upload_schema_ref.rsplit("/", 1)[-1]]
         self.assertEqual(
             upload_schema["properties"]["import_type"]["enum"],
-            ["knowledge", "model_configuration"],
+            ["knowledge", "knowledge_update", "model_configuration"],
         )
         self.assertEqual(
             upload_schema["properties"]["import_type"]["default"],
