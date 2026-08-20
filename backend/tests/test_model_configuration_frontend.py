@@ -146,6 +146,24 @@ const assert = function(condition, message) {{
             self.html,
         )
 
+    def test_model_configuration_only_displays_comprehensive_content(self):
+        self.assertNotIn(
+            '<div class="sec-t">个性属性</div>',
+            self.html,
+        )
+        self.assertNotIn(
+            "model-configuration-attribute-grid",
+            self.html,
+        )
+        self.assertNotIn(
+            'placeholder="留空表示无记录"',
+            self.html,
+        )
+        self.assertIn(
+            'v-model="fm.modelConfiguration.content"',
+            self.html,
+        )
+
     def test_model_configuration_save_requires_current_manhattan_options(self):
         self.assertIn(
             "var categorySelection = this.modelConfigurationScopeSelection('applicableCategories');",
