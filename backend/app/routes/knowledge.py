@@ -49,14 +49,17 @@ from app.services.knowledge_dedup import (
 )
 from app.services.knowledge_excel import (
     DEPRECATED_SOURCE_STATUS,
+    HEADER_ALIASES,
     MAX_IMPORT_FILE_BYTES,
     KnowledgeExcelError,
     IMPORTABLE_SOURCE_STATUS,
+    build_knowledge_update_template,
     build_model_configuration_import_template,
     build_knowledge_export_workbook,
     build_knowledge_import_template,
     parse_model_configuration_workbook,
     parse_knowledge_workbook,
+    parse_knowledge_update_workbook,
 )
 from app.services.model_configuration import (
     MODEL_CONFIGURATION_ATTRIBUTE_FIELDS,
@@ -1032,18 +1035,30 @@ def create_knowledge(
     return _to_response(item)
 
 
-@router.get("/import/template", summary="下载知识批量导入模板")
+@router.get("/import/template", summary="下载 Excel 批量处理模板")
 def download_knowledge_import_template(
     import_type: KnowledgeImportType = Query(
         "knowledge",
-        description="导入类型：knowledge=普通知识，model_configuration=机型配置信息",
+        description=(
+            "导入类型：knowledge=普通知识，"
+            "knowledge_update=按知识ID批量修改，"
+            "model_configuration=机型配置信息"
+        ),
     ),
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(get_current_user),
 ):
+    _require_import_type_permission(import_type, current_user)
     if import_type == "model_configuration":
         payload = build_model_configuration_import_template()
         filename = "model-configuration-import-template.xlsx"
+    elif import_type == "knowledge_update":
+        categories = db.query(Category).order_by(
+            Category.level,
+            Category.sort_order,
+        ).all()
+        payload = build_knowledge_update_template(categories)
+        filename = "knowledge-update-template.xlsx"
     else:
         categories = db.query(Category).order_by(
             Category.level,
@@ -1064,14 +1079,15 @@ def download_knowledge_import_template(
     "/import/excel",
     response_model=KnowledgeImportTaskResponse,
     status_code=202,
-    summary="上传 Excel 并创建后台导入任务",
+    summary="上传 Excel 并创建后台处理任务",
 )
 async def import_knowledge_excel(
     file: UploadFile = File(...),
     import_type: KnowledgeImportType = Form("knowledge"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(get_current_user),
 ):
+    _require_import_type_permission(import_type, current_user)
     filename = file.filename or ""
     if not filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="仅支持 .xlsx 文件。")
@@ -1153,15 +1169,43 @@ def _can_view_import_task(task: KnowledgeImportTask, current_user: User) -> bool
     )
 
 
+def _can_access_import_tasks(current_user: User) -> bool:
+    return (
+        has_permission(current_user, "knowledge:create")
+        or has_permission(current_user, "knowledge:edit_published")
+    )
+
+
+def _require_import_task_access(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if not _can_access_import_tasks(current_user):
+        raise HTTPException(status_code=403, detail="无权访问 Excel 后台任务。")
+    return current_user
+
+
+def _require_import_type_permission(
+    import_type: KnowledgeImportType,
+    current_user: User,
+) -> None:
+    permission = (
+        "knowledge:edit_published"
+        if import_type == "knowledge_update"
+        else "knowledge:create"
+    )
+    if not has_permission(current_user, permission):
+        raise HTTPException(status_code=403, detail="Permission denied.")
+
+
 @router.get(
     "/import/tasks",
     response_model=KnowledgeImportTaskListResponse,
-    summary="查看 Excel 后台导入任务",
+    summary="查看 Excel 后台任务",
 )
 def list_knowledge_import_tasks(
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(_require_import_task_access),
 ):
     query = db.query(KnowledgeImportTask)
     if current_user.role != "super_admin":
@@ -1179,7 +1223,7 @@ def list_knowledge_import_tasks(
 @router.get(
     "/import/tasks/{task_id}",
     response_model=KnowledgeImportTaskResponse,
-    summary="查看 Excel 后台导入任务详情",
+    summary="查看 Excel 后台任务详情",
 )
 def get_knowledge_import_task(
     task_id: str,
@@ -1191,7 +1235,7 @@ def get_knowledge_import_task(
         description="最多返回的逐行结果数",
     ),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(_require_import_task_access),
 ):
     task = db.query(KnowledgeImportTask).filter(
         KnowledgeImportTask.id == task_id
@@ -1224,12 +1268,12 @@ def _retryable_import_result(result: dict) -> bool:
 @router.post(
     "/import/tasks/{task_id}/cancel",
     response_model=KnowledgeImportTaskResponse,
-    summary="取消 Excel 后台导入任务",
+    summary="取消 Excel 后台任务",
 )
 def cancel_knowledge_import_task(
     task_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(_require_import_task_access),
 ):
     task = (
         db.query(KnowledgeImportTask)
@@ -1264,12 +1308,12 @@ def cancel_knowledge_import_task(
 @router.post(
     "/import/tasks/{task_id}/retry-failed",
     response_model=KnowledgeImportTaskResponse,
-    summary="重试 Excel 导入中的基础设施失败行",
+    summary="重试 Excel 任务中的基础设施失败行",
 )
 def retry_failed_knowledge_import_task(
     task_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(_require_import_task_access),
 ):
     task = (
         db.query(KnowledgeImportTask)
@@ -1367,10 +1411,12 @@ def retry_failed_knowledge_import_task(
         Category.sort_order,
     ).all()
     try:
-        workbook_rows = parse_knowledge_workbook(
-            file_content,
-            categories,
+        parser = (
+            parse_knowledge_update_workbook
+            if task.import_type == "knowledge_update"
+            else parse_knowledge_workbook
         )
+        workbook_rows = parser(file_content, categories)
     except KnowledgeExcelError as exc:
         raise HTTPException(
             status_code=409,
@@ -1431,6 +1477,18 @@ def retry_failed_knowledge_import_task(
     )
     task.deprecated = sum(
         result.status == "deprecated"
+        for _, result in remaining_pairs
+    )
+    task.created = sum(
+        result.operation == "created"
+        for _, result in remaining_pairs
+    )
+    task.updated = sum(
+        result.operation == "updated"
+        for _, result in remaining_pairs
+    )
+    task.unchanged = sum(
+        result.operation == "unchanged"
         for _, result in remaining_pairs
     )
     task.failed = 0
@@ -1496,6 +1554,12 @@ def _append_import_task_result(
         task.deprecated = (task.deprecated or 0) + 1
     if result.status == "failed":
         task.failed = (task.failed or 0) + 1
+    if result.operation == "created":
+        task.created = (task.created or 0) + 1
+    if result.operation == "updated":
+        task.updated = (task.updated or 0) + 1
+    if result.operation == "unchanged":
+        task.unchanged = (task.unchanged or 0) + 1
     task.lease_expires_at = _task_lease_expiry(now)
     task.updated_at = now
 
@@ -1506,6 +1570,7 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
             row=row.row_number,
             title=row.title,
             status="failed",
+            knowledge_id=getattr(row, "knowledge_id", None) or None,
             error_code=(
                 "EMBEDDING_UNAVAILABLE"
                 if exc.retryable
@@ -1525,6 +1590,7 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
             row=row.row_number,
             title=row.title,
             status="failed",
+            knowledge_id=getattr(row, "knowledge_id", None) or None,
             error_code=error_code,
             error_message=error_message,
             deduplication=(
@@ -1542,6 +1608,7 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
             row=row.row_number,
             title=row.title,
             status="failed",
+            knowledge_id=getattr(row, "knowledge_id", None) or None,
             error_code="INVALID_ROW",
             error_message="数据校验失败，请检查分类和字段格式。",
         )
@@ -1550,6 +1617,7 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
             row=row.row_number,
             title=row.title,
             status="failed",
+            knowledge_id=getattr(row, "knowledge_id", None) or None,
             error_code=exc.code,
             error_message=str(exc),
         )
@@ -1558,6 +1626,7 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
             row=row.row_number,
             title=row.title,
             status="failed",
+            knowledge_id=getattr(row, "knowledge_id", None) or None,
             error_code="INVALID_ROW",
             error_message=str(exc),
         )
@@ -1566,6 +1635,7 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
         row=row.row_number,
         title=row.title,
         status="failed",
+        knowledge_id=getattr(row, "knowledge_id", None) or None,
         error_code="IMPORT_FAILED",
         error_message="导入失败，请检查服务日志。",
     )
@@ -1873,6 +1943,229 @@ def _process_excel_import_row(
             else None
         ),
         deduplication=deduplication if is_review_required else None,
+    )
+
+
+_UPDATE_SNAPSHOT_TO_EXCEL_FIELD = {
+    "title": "title",
+    "subtitles": "subtitles",
+    "content": "content",
+    "knowledge_origin": "knowledge_origin",
+    "business_type": "business_type",
+    "category_id": "category",
+    "applicable_scenes": "scenes",
+    "applicable_categories": "applicable_categories",
+    "applicable_brands": "brands",
+    "applicable_models": "models",
+    "related_standard_items": "related_standard_items",
+}
+
+
+def _source_fields_after_excel_update(
+    item: Knowledge,
+    row,
+    changed_fields: list[str],
+) -> dict:
+    """同步已有追溯字段的对应值，不新增或覆盖系统字段。"""
+
+    source_fields = deepcopy(
+        item.source_fields
+        if isinstance(item.source_fields, dict)
+        else {}
+    )
+    for snapshot_field in changed_fields:
+        excel_field = _UPDATE_SNAPSHOT_TO_EXCEL_FIELD.get(snapshot_field)
+        if not excel_field:
+            continue
+        aliases = HEADER_ALIASES.get(excel_field, set())
+        raw_value = next(
+            (
+                row.source_fields[alias]
+                for alias in aliases
+                if alias in row.source_fields
+            ),
+            None,
+        )
+        if raw_value is None:
+            continue
+        for alias in aliases:
+            if alias in source_fields:
+                source_fields[alias] = raw_value
+
+    applicability_fields = {
+        "applicable_scenes",
+        "applicable_categories",
+        "applicable_brands",
+        "applicable_models",
+    }
+    if (
+        applicability_fields.intersection(changed_fields)
+        and "scope" not in row.provided_fields
+    ):
+        for alias in HEADER_ALIASES.get("scope", set()):
+            source_fields.pop(alias, None)
+    return source_fields
+
+
+def _process_excel_update_row(
+    db: Session,
+    row,
+    current_user: User,
+) -> ExcelImportRowResult:
+    if not row.is_valid:
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            knowledge_id=row.knowledge_id or None,
+            error_code=row.error_code,
+            error_message=row.error_message,
+        )
+
+    item = (
+        db.query(Knowledge)
+        .filter(Knowledge.id == row.knowledge_id)
+        .with_for_update()
+        .first()
+    )
+    if not item:
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            knowledge_id=row.knowledge_id,
+            error_code="KNOWLEDGE_ID_NOT_FOUND",
+            error_message=(
+                f"未找到知识ID“{row.knowledge_id}”，该行不会新增知识。"
+            ),
+        )
+    if item.knowledge_origin == "model_configuration":
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            knowledge_id=item.id,
+            error_code="KNOWLEDGE_ORIGIN_MANAGED",
+            error_message=(
+                "机型配置信息由专用 Excel 同步维护，"
+                "不能通过知识批量修改覆盖。"
+            ),
+        )
+    if not _can_edit_knowledge(item, current_user):
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            knowledge_id=item.id,
+            error_code="KNOWLEDGE_UPDATE_FORBIDDEN",
+            error_message="当前账号无权修改该状态下的知识。",
+        )
+    if item.media:
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            knowledge_id=item.id,
+            error_code="LOCAL_MEDIA_BATCH_UPDATE_UNSUPPORTED",
+            error_message=(
+                "该知识包含本地上传的图片或视频，"
+                "Excel 无法安全回填媒体，请在页面中单条编辑。"
+            ),
+        )
+
+    provided_fields = set(row.provided_fields or set())
+    next_values = {
+        "title": row.title,
+        "knowledge_origin": row.knowledge_origin,
+        "business_type": row.business_type,
+        "category_id": row.category_id,
+        "content": _normalize_content(row.content),
+    }
+    optional_values = {
+        "subtitles": row.subtitles or [],
+        "applicable_scenes": row.applicable_scenes or [],
+        "applicable_categories": row.applicable_categories or [],
+        "applicable_brands": row.applicable_brands or [],
+        "applicable_models": row.applicable_models or [],
+        "related_standard_items": row.related_standard_items or [],
+    }
+    optional_columns = {
+        "subtitles": {"subtitles"},
+        "applicable_scenes": {"scenes", "scope"},
+        "applicable_categories": {"applicable_categories"},
+        "applicable_brands": {"brands"},
+        "applicable_models": {"models"},
+        "related_standard_items": {"related_standard_items"},
+    }
+    for field, columns in optional_columns.items():
+        if columns.intersection(provided_fields):
+            next_values[field] = optional_values[field]
+
+    _require_manual_applicable_category(
+        source=item.source,
+        category_id=next_values["category_id"],
+        applicable_categories=next_values.get(
+            "applicable_categories",
+            item.applicable_categories,
+        ),
+    )
+    _validate_business_applicable_categories(
+        business_type=next_values["business_type"],
+        applicable_categories=next_values.get(
+            "applicable_categories",
+            item.applicable_categories,
+        ),
+    )
+
+    before_data = _knowledge_snapshot(item)
+    for field, value in next_values.items():
+        setattr(item, field, value)
+
+    core_after_data = _knowledge_snapshot(item)
+    core_changed_fields = [
+        field
+        for field, before_value in before_data.items()
+        if field != "source_fields"
+        and before_value != core_after_data.get(field)
+    ]
+    if not core_changed_fields:
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="imported",
+            knowledge_id=item.id,
+            operation="unchanged",
+        )
+
+    item.source_fields = _source_fields_after_excel_update(
+        item,
+        row,
+        core_changed_fields,
+    )
+    after_data = _knowledge_snapshot(item)
+    changed_at = datetime.utcnow()
+    item.updated_by = current_user.username
+    item.updated_at = changed_at
+    change_log = _change_log_from_snapshots(
+        item,
+        changed_by=current_user.username,
+        before_data=before_data,
+        after_data=after_data,
+        created_at=changed_at,
+    )
+    if change_log is not None:
+        db.add(change_log)
+
+    if {"title", "subtitles", "content"}.intersection(core_changed_fields):
+        ensure_embedding(db, item)
+        ensure_search_embeddings(db, item)
+
+    return ExcelImportRowResult(
+        row=row.row_number,
+        title=row.title,
+        status="imported",
+        knowledge_id=item.id,
+        operation="updated",
     )
 
 
@@ -2192,12 +2485,18 @@ def process_knowledge_import_task(
             )
             return
 
+        is_knowledge_update = task.import_type == "knowledge_update"
         categories = db.query(Category).order_by(
             Category.level,
             Category.sort_order,
         ).all()
         try:
-            rows = parse_knowledge_workbook(task.file_content, categories)
+            parser = (
+                parse_knowledge_update_workbook
+                if is_knowledge_update
+                else parse_knowledge_workbook
+            )
+            rows = parser(task.file_content, categories)
             _canonicalize_excel_rows_applicability(
                 rows,
                 cached_manhattan_options_snapshot(),
@@ -2244,7 +2543,38 @@ def process_knowledge_import_task(
         task.lease_expires_at = _task_lease_expiry(datetime.utcnow())
         db.commit()
 
-        background_user = SimpleNamespace(username=task.created_by)
+        if is_knowledge_update:
+            background_user = (
+                db.query(User)
+                .filter(
+                    User.username == task.created_by,
+                    User.is_active.is_(True),
+                )
+                .first()
+            )
+            if (
+                background_user is None
+                or not has_permission(
+                    background_user,
+                    "knowledge:edit_published",
+                )
+            ):
+                task = _lock_import_task_attempt(
+                    db,
+                    task_id,
+                    claimed_attempt,
+                )
+                if not owns_import_task(task):
+                    return
+                _mark_import_task_failed(
+                    task,
+                    "任务创建人不存在、已停用或已失去批量修改权限，任务未继续执行。",
+                    now=datetime.utcnow(),
+                )
+                db.commit()
+                return
+        else:
+            background_user = SimpleNamespace(username=task.created_by)
 
         def renew_import_task_lease(_processed: int, _total: int) -> None:
             current_task = _lock_import_task_attempt(
@@ -2298,7 +2628,12 @@ def process_knowledge_import_task(
             ]
         else:
             remaining_rows = rows[task.processed_rows:]
-        for row_batch in _import_embedding_batches(remaining_rows):
+        row_batches = (
+            [[(row, None)] for row in remaining_rows]
+            if is_knowledge_update
+            else _import_embedding_batches(remaining_rows)
+        )
+        for row_batch in row_batches:
             task = _lock_import_task_attempt(
                 db,
                 task_id,
@@ -2311,9 +2646,13 @@ def process_knowledge_import_task(
             db.commit()
 
             batch_rows = [row for row, _ in row_batch]
-            bundles = _precompute_import_embeddings(
-                batch_rows,
-                on_batch_complete=renew_import_task_lease,
+            bundles = (
+                {}
+                if is_knowledge_update
+                else _precompute_import_embeddings(
+                    batch_rows,
+                    on_batch_complete=renew_import_task_lease,
+                )
             )
 
             task = _lock_import_task_attempt(
@@ -2335,29 +2674,36 @@ def process_knowledge_import_task(
                 if not owns_import_task(task):
                     return
                 try:
-                    bundle = bundles.get(row.row_number)
-                    if (
-                        bundle is None
-                        or (
-                            bundle.error is not None
-                            and not isinstance(
-                                bundle.error,
-                                EmbeddingServiceUnavailable,
-                            )
-                        )
-                    ):
-                        result = _process_excel_import_row(
+                    if is_knowledge_update:
+                        result = _process_excel_update_row(
                             db,
                             row,
                             background_user,
                         )
                     else:
-                        result = _process_excel_import_row(
-                            db,
-                            row,
-                            background_user,
-                            embedding_bundle=bundle,
-                        )
+                        bundle = bundles.get(row.row_number)
+                        if (
+                            bundle is None
+                            or (
+                                bundle.error is not None
+                                and not isinstance(
+                                    bundle.error,
+                                    EmbeddingServiceUnavailable,
+                                )
+                            )
+                        ):
+                            result = _process_excel_import_row(
+                                db,
+                                row,
+                                background_user,
+                            )
+                        else:
+                            result = _process_excel_import_row(
+                                db,
+                                row,
+                                background_user,
+                                embedding_bundle=bundle,
+                            )
                 except Exception as exc:
                     db.rollback()
                     if _is_retryable_import_exception(exc):

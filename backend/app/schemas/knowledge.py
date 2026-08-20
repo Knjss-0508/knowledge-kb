@@ -5,7 +5,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 BusinessType = Literal["self_operated", "aggregated"]
-KnowledgeImportType = Literal["knowledge", "model_configuration"]
+KnowledgeImportType = Literal[
+    "knowledge",
+    "knowledge_update",
+    "model_configuration",
+]
 KnowledgeOrigin = Literal[
     "headquarters_standard",
     "business_accumulation",
@@ -403,7 +407,7 @@ class ExcelImportRowResult(BaseModel):
     )
     operation: Optional[Literal["created", "updated", "unchanged"]] = Field(
         None,
-        description="机型配置整批同步中的逐行幂等操作结果",
+        description="机型配置同步或知识批量修改中的逐行幂等操作结果",
     )
 
 
@@ -437,9 +441,9 @@ class KnowledgeImportTaskResponse(BaseModel):
     pending_review: int = Field(description="进入待发布审核的知识数")
     deprecated: int = Field(description="已同步为废弃的知识数")
     failed: int = Field(description="失败行数")
-    created: int = Field(description="机型配置新增数")
-    updated: int = Field(description="机型配置更新数")
-    unchanged: int = Field(description="机型配置无变化数")
+    created: int = Field(description="新增数")
+    updated: int = Field(description="更新数")
+    unchanged: int = Field(description="无变化数")
     retry_rows: list[int] = Field(
         default_factory=list,
         description="等待安全重试的 Excel 原始行号",

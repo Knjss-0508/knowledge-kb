@@ -324,7 +324,8 @@ class KnowledgeImportTask(Base):
             name="ck_knowledge_import_task_status",
         ),
         CheckConstraint(
-            "import_type IN ('knowledge', 'model_configuration')",
+            "import_type IN "
+            "('knowledge', 'knowledge_update', 'model_configuration')",
             name="ck_knowledge_import_task_import_type",
         ),
     )
