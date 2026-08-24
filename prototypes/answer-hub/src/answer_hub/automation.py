@@ -5,13 +5,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 import json
+import os
 import shutil
 import threading
 import time
 import uuid
 
 from .embedding import EmbeddingClient
-from .mimo import MimoClient, MimoError
+from .mimo import MimoClient, MimoError, load_dotenv
 from .operations import duration_seconds, evaluate_run_sla
 from .terminology import ensure_terminology_loaded
 from .version import AUTOMATION_MANIFEST_VERSION, release_metadata
@@ -463,10 +464,11 @@ def run_automation_pipeline(
     direct_mimo_progress_path: str | Path | None = None,
     cluster_media_policy: str | None = None,
 ) -> dict[str, Any]:
+    load_dotenv()
     source = Path(source_path)
-    standards = Path(standards_path) if standards_path else None
     if not source.is_file():
         raise FileNotFoundError(f"会话文件不存在：{source}")
+    standards = Path(standards_path) if standards_path else None
     if standards is not None and not standards.is_file():
         raise FileNotFoundError(f"标准文件不存在：{standards}")
     if source_row_limit is not None:
@@ -474,6 +476,8 @@ def run_automation_pipeline(
             raise ValueError("source_row_limit 必须是正整数")
         if not cluster_only:
             raise ValueError("source_row_limit 仅允许用于仅聚类小样本验证")
+    # 只有调用方明确传入标准文件时才开启标准引用；未传入时保持
+    # 无标准模式，避免隐式改变历史批量运行策略。
     use_standard_references = standards is not None
 
     effective_cluster_media_policy = resolve_cluster_media_policy(

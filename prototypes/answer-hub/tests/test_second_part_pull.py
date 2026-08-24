@@ -226,7 +226,7 @@ def test_pull_advances_only_through_successfully_queued_pages(tmp_path: Path) ->
     assert json.loads(state_path.read_text(encoding="utf-8"))["cursor"] == "cursor-2"
 
 
-def test_pull_rejects_records_missing_profile_required_fields(
+def test_pull_queues_valid_records_and_reports_rows_missing_required_fields(
     tmp_path: Path,
 ) -> None:
     profile = _write_profile(tmp_path / "profile.json")
@@ -243,69 +243,17 @@ def test_pull_rejects_records_missing_profile_required_fields(
                 "data": {
                     "items": [
                         {
-                            "work_order_id": "WO-MISSING-001",
+                            "work_order_id": "WO-VALID-001",
                             "conversation": "手机无法充电怎么处理？",
+                            "product_type": "手机",
+                        },
+                        {
+                            "work_order_id": "WO-MISSING-001",
+                            "conversation": "不应写入异常清单的聊天内容。",
                             "product_type": "",
                         }
                     ],
-                    "next_cursor": "",
-                    "has_more": False,
-                }
-            }
-        }
-    )
-
-    summary = pull_second_part_to_queue(
-        profile,
-        queue_root=tmp_path / "queue",
-        output_root=tmp_path / "runs",
-        state_path=tmp_path / "pull-state.json",
-        fetcher=fetcher,
-    )
-
-    assert summary["status"] == "rejected"
-    assert summary["rejected_records"] == 1
-    assert summary["queued_jobs"] == 0
-    assert not list((tmp_path / "queue" / "pending").glob("*.xlsx"))
-    report_path = Path(summary["rejection_reports"][0]["path"])
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["records"] == [
-        {
-            "source_index": 1,
-            "source_record_id": "WO-MISSING-001",
-            "missing_required_fields": ["产品类型"],
-            "reason": "missing_required_fields",
-        }
-    ]
-
-
-def test_pull_queues_valid_records_and_reports_invalid_ones(
-    tmp_path: Path,
-) -> None:
-    profile = _write_profile(tmp_path / "profile.json")
-    payload = json.loads(profile.read_text(encoding="utf-8"))
-    payload["required_fields"] = ["工单ID", "聊天内容", "产品类型"]
-    profile.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    fetcher = FakeFetcher(
-        {
-            "": {
-                "data": {
-                    "items": [
-                        {
-                            "work_order_id": "WO-MISSING-002",
-                            "conversation": "手机无法充电怎么处理？",
-                            "product_type": "",
-                        },
-                        {
-                            "work_order_id": "WO-VALID-001",
-                            "conversation": "平板无法开机怎么处理？",
-                            "product_type": "平板电脑",
-                        },
-                    ],
-                    "next_cursor": "",
+                    "next_cursor": "cursor-2",
                     "has_more": False,
                 }
             }
@@ -321,12 +269,28 @@ def test_pull_queues_valid_records_and_reports_invalid_ones(
     )
 
     assert summary["status"] == "queued"
+    assert summary["fetched_records"] == 2
     assert summary["queued_jobs"] == 1
     assert summary["rejected_records"] == 1
-    queue = AutomationQueue(tmp_path / "queue")
-    workbook = next(queue.pending.glob("*.xlsx"))
+    assert summary["cursor"] == "cursor-2"
+    assert json.loads(
+        (tmp_path / "pull-state.json").read_text(encoding="utf-8")
+    )["cursor"] == "cursor-2"
+
+    workbook = next((tmp_path / "queue" / "pending").glob("*.xlsx"))
     _columns, rows = read_workbook_rows(workbook)
     assert [row["工单ID"] for row in rows] == ["WO-VALID-001"]
+
+    rejection_report = Path(summary["rejection_reports"][0]["path"])
+    rejection_text = rejection_report.read_text(encoding="utf-8")
+    assert "不应写入异常清单的聊天内容" not in rejection_text
+    assert json.loads(rejection_text)["rejected_records"] == [
+        {
+            "source_index": 2,
+            "source_record_id": "WO-MISSING-001",
+            "missing_required_fields": ["产品类型"],
+        }
+    ]
 
 
 def test_http_fetcher_injects_auth_and_cursor_without_persisting_secret(

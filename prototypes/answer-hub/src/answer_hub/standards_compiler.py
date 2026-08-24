@@ -496,6 +496,9 @@ def _structured_qc_items(
                 response_snippet=response_snippet,
                 status="published",
                 version=sheet_name,
+                source_file=str(source_path),
+                source_sheet=sheet_name,
+                source_rows=tuple(sorted(set(group["row_numbers"]))),
             )
         )
     return items
@@ -543,6 +546,9 @@ def _compile_sheet_items(
                 response_snippet=combined[:4000],
                 status="published",
                 version=sheet_name,
+                source_file=str(source_path),
+                source_sheet=sheet_name,
+                source_rows=(row_number,),
             )
         )
     return items
@@ -691,4 +697,228 @@ def compile_standard_catalog(
         "standard_items": len(all_items) - len(existing_items),
         "total_items": len(all_items),
         "sources": source_summary,
+    }
+
+
+_SEARCH_CATEGORY_ALIASES = {
+    "手机": "手机",
+    "平板": "平板电脑",
+    "平板电脑": "平板电脑",
+    "手表": "智能手表",
+    "智能手表": "智能手表",
+    "耳机": "耳机/耳麦",
+    "耳机/耳麦": "耳机/耳麦",
+    "笔记本": "笔记本",
+    "游戏机": "游戏机",
+    "游戏卡带": "游戏卡带",
+    "相机机身": "相机机身",
+    "单反机身": "单反机身",
+    "单电/微单机身": "单电/微单机身",
+    "相机镜头": "相机镜头",
+    "手写笔": "手写笔",
+    "学习机": "学习机",
+}
+
+
+def _search_category(value: Any) -> str:
+    return _SEARCH_CATEGORY_ALIASES.get(_clean(value, 120), _clean(value, 120))
+
+
+def _search_camera_scopes(applicable_types: str) -> tuple[str, ...]:
+    values = {
+        part.strip()
+        for part in re.split(r"[,，+/、\s]+", applicable_types)
+        if part.strip()
+    }
+    scopes: list[str] = []
+    if "单反" in values:
+        scopes.append("单反机身-通用")
+    if "微单" in values or "单电" in values:
+        scopes.append("单电/微单机身-通用")
+    return tuple(scopes)
+
+
+def _search_standard_path(
+    category: str,
+    level1: Any,
+    level2: Any,
+    degree: Any,
+    level3: Any,
+) -> str:
+    parts = [
+        category,
+        _meaningful_path_part(level1),
+        _meaningful_path_part(level2),
+        _meaningful_path_part(degree),
+        _meaningful_path_part(level3),
+    ]
+    return "-".join(f"【{part}】" for part in parts if part)
+
+
+def _search_response_snippet(record: dict[str, Any]) -> str:
+    sections: list[str] = []
+    definition = _clean(record.get("standard_definition"), 4000)
+    method = _clean(record.get("detection_method"), 4000)
+    if definition:
+        sections.append(f"标准定义：{definition}")
+    if method:
+        sections.append(f"检测方法：{method}")
+    return "\n".join(sections)[:8000]
+
+
+def compile_search_jsonl_catalog(
+    search_jsonl_path: str | Path,
+    output_path: str | Path,
+    *,
+    metadata_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Compile the model-readable JSONL export into the Answer Hub catalog schema.
+
+    The source export intentionally keeps ``相机机身`` as a source category.  At
+    runtime, however, DSLR and mirrorless bodies are separate hard boundaries,
+    so records whose applicable type contains both are emitted once per scope.
+    Empty records are excluded because they cannot support a quoted rule.
+    """
+    source = Path(search_jsonl_path)
+    if not source.is_file():
+        raise FileNotFoundError(f"检索标准文件不存在：{source}")
+    rows: list[dict[str, Any]] = []
+    for line_number, line in enumerate(
+        source.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"检索标准 JSONL 第{line_number}行格式错误") from exc
+        if not isinstance(record, dict):
+            raise ValueError(f"检索标准 JSONL 第{line_number}行必须是对象")
+        rows.append(record)
+
+    items: list[StandardCatalogItem] = []
+    skipped_empty = 0
+    split_camera_records = 0
+    scope_counts: dict[str, int] = {}
+    metadata: dict[str, Any] = {}
+    if metadata_path:
+        metadata_file = Path(metadata_path)
+        if metadata_file.is_file():
+            payload = json.loads(metadata_file.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                metadata = payload.get("metadata") or payload
+
+    version = _clean(metadata.get("version"), 120) or "workbuddy-20260821"
+    for record in rows:
+        response_snippet = _search_response_snippet(record)
+        if not response_snippet:
+            skipped_empty += 1
+            continue
+        source_category = _search_category(record.get("category"))
+        applicable_types = _clean(record.get("applicable_types"), 240)
+        if source_category == "相机机身":
+            scopes = _search_camera_scopes(applicable_types) or ()
+            if scopes:
+                split_camera_records += 1 if len(scopes) > 1 else 0
+            else:
+                # An unclassified camera body must not silently enter either
+                # DSLR or mirrorless standards.
+                skipped_empty += 1
+                continue
+        else:
+            scopes = (f"{source_category}-{applicable_types}" if applicable_types else f"{source_category}-通用",)
+
+        category_l1 = _clean(record.get("level1"), 160).strip("*＊")
+        category_l2 = _clean(record.get("level2"), 200)
+        degree = _meaningful_path_part(record.get("degree"))
+        category_l3 = _meaningful_path_part(record.get("level3"))
+        base_id = _clean(record.get("id"), 120)
+        for scope in scopes:
+            suffix = ""
+            if source_category == "相机机身":
+                suffix = "-DSLR" if scope.startswith("单反机身") else "-MIRRORLESS"
+            path_category = (
+                scope.split("-", 1)[0]
+                if source_category == "相机机身"
+                else source_category
+            )
+            standard_path = _search_standard_path(
+                path_category,
+                category_l1,
+                category_l2,
+                degree,
+                category_l3,
+            )
+            standard_id = f"{base_id}{suffix}" if base_id else hashlib.sha1(
+                f"{scope}|{standard_path}|{response_snippet}".encode("utf-8")
+            ).hexdigest()[:16].upper()
+            item = StandardCatalogItem(
+                standard_id=standard_id,
+                title=category_l3 or degree or category_l2 or category_l1,
+                category_l1=category_l1,
+                category_l2=category_l2,
+                knowledge_type="质检标准",
+                standard_path=standard_path,
+                keywords=_keywords(
+                    [
+                        source_category,
+                        applicable_types,
+                        category_l1,
+                        category_l2,
+                        degree,
+                        category_l3,
+                        _clean(record.get("search_text"), 4000),
+                        response_snippet,
+                    ],
+                    scope.split("-", 1)[0],
+                ),
+                scope=scope,
+                response_snippet=response_snippet,
+                status="published",
+                version=version,
+                source_file=_clean(record.get("source_file"), 1000),
+                source_sheet=_clean(record.get("source_sheet"), 300),
+                source_rows=tuple(
+                    sorted(
+                        {
+                            int(value)
+                            for value in (
+                                record.get("source_rows")
+                                or [record.get("source_row")]
+                            )
+                            if str(value).strip().isdigit() and int(value) > 0
+                        }
+                    )
+                ),
+            )
+            items.append(item)
+            scope_counts[scope] = scope_counts.get(scope, 0) + 1
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": version,
+        "compiled_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "source_format": "workbuddy_search_jsonl",
+        "source_file": str(source),
+        "input_records": len(rows),
+        "skipped_empty_records": skipped_empty,
+        "split_camera_records": split_camera_records,
+        "scope_counts": scope_counts,
+        "items": [asdict(item) for item in items],
+    }
+    temporary = output.with_suffix(f"{output.suffix}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(output)
+    return {
+        "output_file": str(output),
+        "input_records": len(rows),
+        "compiled_records": len(items),
+        "skipped_empty_records": skipped_empty,
+        "split_camera_records": split_camera_records,
+        "scope_counts": scope_counts,
     }

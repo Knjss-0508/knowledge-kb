@@ -278,6 +278,8 @@ def test_automation_pipeline_runs_without_standard_file(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    monkeypatch.delenv("ANSWER_HUB_AUTOMATION_STANDARDS", raising=False)
+    monkeypatch.chdir(tmp_path)
     source = tmp_path / "source.xlsx"
     source.write_bytes(b"source")
     captured: dict[str, object] = {}
@@ -326,6 +328,177 @@ def test_automation_pipeline_runs_without_standard_file(
     assert captured["use_standard_references"] is False
     assert captured["enforce_cluster_admission"] is True
     assert not (Path(manifest["run_dir"]) / "inputs" / "standards.xlsx").exists()
+
+
+def test_automation_pipeline_ignores_implicit_local_standard_catalog(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.xlsx"
+    source.write_bytes(b"source")
+    local_catalog = tmp_path / "active_standards.json"
+    local_catalog.write_text("[]", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_initial_label_from_workbook(**kwargs):
+        captured.update(kwargs)
+        artifact_dir = Path(kwargs["output_dir"])
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        for filename in (
+            "review_queue.xlsx",
+            "topic_review_queue.xlsx",
+            "candidate_knowledge.xlsx",
+        ):
+            (artifact_dir / filename).write_bytes(b"artifact")
+        return {
+            "output_file": str(artifact_dir / "review_queue.xlsx"),
+            "topic_review_file": str(artifact_dir / "topic_review_queue.xlsx"),
+            "candidate_output_file": str(artifact_dir / "candidate_knowledge.xlsx"),
+            "audit_db": str(tmp_path / "audit.db"),
+            "source_total_rows": 1,
+            "eligible_rows": 1,
+            "topic_rows": 1,
+            "evidence_gap_rows": 0,
+            "excluded_rows": 0,
+            "standard_references_enabled": False,
+        }
+
+    monkeypatch.setenv("ANSWER_HUB_AUTOMATION_STANDARDS", str(local_catalog))
+    monkeypatch.setattr(
+        automation,
+        "initial_label_from_workbook",
+        fake_initial_label_from_workbook,
+    )
+
+    manifest = automation.run_automation_pipeline(
+        source,
+        None,
+        tmp_path / "runs",
+        use_mimo=False,
+        clustering_mode="rule",
+    )
+
+    assert manifest["status"] == "review_pending"
+    assert manifest["standards_name"] == ""
+    assert manifest["options"]["use_standard_references"] is False
+    assert captured["standards_path"] is None
+    assert captured["use_standard_references"] is False
+    assert not (Path(manifest["run_dir"]) / "inputs" / "active_standards.json").exists()
+
+
+def test_automation_pipeline_ignores_local_standard_catalog_from_dotenv(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.xlsx"
+    source.write_bytes(b"source")
+    local_catalog = tmp_path / "active_standards.json"
+    local_catalog.write_text("[]", encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        f"ANSWER_HUB_AUTOMATION_STANDARDS={local_catalog}\n",
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_initial_label_from_workbook(**kwargs):
+        captured.update(kwargs)
+        artifact_dir = Path(kwargs["output_dir"])
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        for filename in (
+            "review_queue.xlsx",
+            "topic_review_queue.xlsx",
+            "candidate_knowledge.xlsx",
+        ):
+            (artifact_dir / filename).write_bytes(b"artifact")
+        return {
+            "output_file": str(artifact_dir / "review_queue.xlsx"),
+            "topic_review_file": str(artifact_dir / "topic_review_queue.xlsx"),
+            "candidate_output_file": str(artifact_dir / "candidate_knowledge.xlsx"),
+            "audit_db": str(tmp_path / "audit.db"),
+            "source_total_rows": 1,
+            "eligible_rows": 1,
+            "topic_rows": 1,
+            "evidence_gap_rows": 0,
+            "excluded_rows": 0,
+            "standard_references_enabled": False,
+        }
+
+    monkeypatch.delenv("ANSWER_HUB_AUTOMATION_STANDARDS", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        automation,
+        "initial_label_from_workbook",
+        fake_initial_label_from_workbook,
+    )
+
+    manifest = automation.run_automation_pipeline(
+        source,
+        None,
+        tmp_path / "runs",
+        use_mimo=False,
+        clustering_mode="rule",
+    )
+
+    intake_stage = next(
+        stage for stage in manifest["stages"] if stage["id"] == "intake"
+    )
+    assert manifest["status"] == "review_pending"
+    assert manifest["standards_name"] == ""
+    assert manifest["options"]["use_standard_references"] is False
+    assert captured["standards_path"] is None
+    assert captured["use_standard_references"] is False
+    assert intake_stage["metrics"]["standards_bytes"] == 0
+
+
+def test_automation_pipeline_does_not_probe_cz_for_standard_references(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.xlsx"
+    source.write_bytes(b"source")
+    captured: dict[str, object] = {}
+
+    def fake_initial_label_from_workbook(**kwargs):
+        captured.update(kwargs)
+        artifact_dir = Path(kwargs["output_dir"])
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        for filename in (
+            "review_queue.xlsx",
+            "topic_review_queue.xlsx",
+            "candidate_knowledge.xlsx",
+        ):
+            (artifact_dir / filename).write_bytes(b"artifact")
+        return {
+            "output_file": str(artifact_dir / "review_queue.xlsx"),
+            "topic_review_file": str(artifact_dir / "topic_review_queue.xlsx"),
+            "candidate_output_file": str(artifact_dir / "candidate_knowledge.xlsx"),
+            "audit_db": str(tmp_path / "audit.db"),
+            "source_total_rows": 1,
+            "eligible_rows": 1,
+            "topic_rows": 1,
+            "evidence_gap_rows": 0,
+            "excluded_rows": 0,
+            "standard_references_enabled": False,
+        }
+
+    monkeypatch.setattr(
+        automation,
+        "initial_label_from_workbook",
+        fake_initial_label_from_workbook,
+    )
+
+    manifest = automation.run_automation_pipeline(
+        source,
+        None,
+        tmp_path / "runs",
+        use_mimo=False,
+        clustering_mode="rule",
+    )
+
+    assert manifest["status"] == "review_pending"
+    assert manifest["options"]["use_standard_references"] is False
+    assert captured["standards_path"] is None
+    assert captured["use_standard_references"] is False
 
 
 def test_automation_pipeline_passes_cluster_only_mode(

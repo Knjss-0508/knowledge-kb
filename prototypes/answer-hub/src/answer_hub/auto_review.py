@@ -7,7 +7,12 @@ from typing import Any
 import os
 
 from .knowledge_categories import UNCERTAIN_CATEGORY, normalize_knowledge_category
-from .product_taxonomy import infer_product_category, resolve_product_category
+from .business_taxonomy import AGGREGATE_BUSINESS_LINE_CODE, business_line_from_record
+from .product_taxonomy import (
+    infer_product_category,
+    is_concrete_unconfigured_product,
+    resolve_product_category,
+)
 
 from .mimo import load_dotenv
 
@@ -108,6 +113,14 @@ def candidate_product_type(candidate: dict[str, Any]) -> str:
     category = resolve_product_category(direct)
     if category:
         return category.name
+    business_line = business_line_from_record(candidate)
+    aggregate_product = candidate.get("适用范围") or direct
+    if (
+        business_line
+        and business_line.code == AGGREGATE_BUSINESS_LINE_CODE
+        and is_concrete_unconfigured_product(aggregate_product)
+    ):
+        return _text(aggregate_product)
     inferred = infer_product_category(
         (
             candidate.get("适用范围"),

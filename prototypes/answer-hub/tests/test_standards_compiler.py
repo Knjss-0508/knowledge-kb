@@ -6,7 +6,11 @@ import json
 from openpyxl import Workbook
 
 from answer_hub.catalog import load_standard_catalog
-from answer_hub.standards_compiler import compile_standard_catalog, read_raw_standard_sheet
+from answer_hub.standards_compiler import (
+    compile_search_jsonl_catalog,
+    compile_standard_catalog,
+    read_raw_standard_sheet,
+)
 
 
 def _write_raw_standard(path: Path, sheet_name: str) -> None:
@@ -198,3 +202,75 @@ def test_compile_standard_catalog_normalizes_clear_active_sheet_aliases(
     assert {item.scope for item in load_standard_catalog(output)} == {
         "平板电脑-通用",
     }
+
+
+def test_compile_standard_catalog_retains_exact_source_locator(tmp_path: Path) -> None:
+    source = tmp_path / "phone.xlsx"
+    sheet_name = "SJ-HSYJBZ-2026009【5.13以后】"
+    _write_raw_standard(source, sheet_name)
+
+    output = tmp_path / "phone.json"
+    compile_standard_catalog(
+        {"手机": source},
+        output,
+        active_sheets={"手机": (sheet_name,)},
+    )
+
+    items = load_standard_catalog(output)
+    assert {item.source_file for item in items} == {str(source)}
+    assert {item.source_sheet for item in items} == {sheet_name}
+    assert {item.source_rows for item in items} == {(2,), (3,)}
+
+
+def test_compile_search_jsonl_catalog_splits_camera_body_scopes_and_filters_empty(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "search.jsonl"
+    source.write_text(
+        "\n".join(
+            json.dumps(item, ensure_ascii=False)
+            for item in (
+                {
+                    "id": "XJJS-0001",
+                    "category": "相机机身",
+                    "applicable_types": "单反,微单",
+                    "level1": "外观",
+                    "level2": "划痕",
+                    "level3": "轻微",
+                    "standard_definition": "记录划痕位置和数量。",
+                    "detection_method": "拍摄全景和近景。",
+                    "source_file": "camera.xlsx",
+                    "source_sheet": "标准",
+                    "source_row": 2,
+                },
+                {
+                    "id": "EMPTY-001",
+                    "category": "手机",
+                    "applicable_types": "",
+                    "level1": "功能",
+                    "level2": "充电",
+                    "standard_definition": "",
+                    "detection_method": "",
+                },
+            )
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "compiled.json"
+
+    summary = compile_search_jsonl_catalog(source, output)
+    items = load_standard_catalog(output)
+
+    assert summary["input_records"] == 2
+    assert summary["skipped_empty_records"] == 1
+    assert summary["compiled_records"] == 2
+    assert {item.scope for item in items} == {
+        "单反机身-通用",
+        "单电/微单机身-通用",
+    }
+    assert {item.standard_id for item in items} == {
+        "XJJS-0001-DSLR",
+        "XJJS-0001-MIRRORLESS",
+    }
+    assert all("标准定义：" in item.response_snippet for item in items)
+    assert all("检测方法：" in item.response_snippet for item in items)

@@ -9,6 +9,8 @@ import json
 import os
 import re
 
+from .product_taxonomy import is_concrete_unconfigured_product
+
 
 SELF_OPERATED_BUSINESS_LINE_CODE = "self_operated"
 SELF_OPERATED_BUSINESS_LINE_NAME = "自营回收"
@@ -170,7 +172,15 @@ def business_line_from_record(
     if explicit:
         return resolve_business_line(explicit, path)
     product_marker = resolve_business_line(record.get("产品类型"), path)
-    return product_marker or default_business_line(path)
+    if product_marker:
+        return product_marker
+    if is_concrete_unconfigured_product(record.get("产品类型")):
+        return next(
+            line
+            for line in load_business_lines(path)
+            if line.code == AGGREGATE_BUSINESS_LINE_CODE
+        )
+    return default_business_line(path)
 
 
 def canonical_business_line_name(
