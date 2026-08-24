@@ -29,16 +29,22 @@ from .business_taxonomy import (
     business_line_from_record,
     cz_applicable_category_path,
 )
+from .catalog import StandardCatalogItem
 from .knowledge_categories import category_lookup_names
 from .mimo import load_dotenv
-from .product_taxonomy import infer_product_category, resolve_product_category
+from .product_taxonomy import (
+    infer_product_category,
+    is_concrete_unconfigured_product,
+    resolve_product_category,
+)
 
 
 TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
 PASS_DECISIONS = {"通过", "修改后通过"}
 PROCESSING_PLUGIN_NAME = "answer-hub-topic-transcription"
 PROCESSING_PLUGIN_VERSION = "2026-08-06-evidence-facts-v1"
-CZ_KNOWLEDGE_ORIGIN = "business_accumulation"
+CZ_HEADQUARTERS_STANDARD_ORIGIN = "headquarters_standard"
+CZ_BUSINESS_ACCUMULATION_ORIGIN = "business_accumulation"
 CZ_BUSINESS_TYPE_BY_ANSWER_HUB_CODE = {
     SELF_OPERATED_BUSINESS_LINE_CODE: "self_operated",
     AGGREGATE_BUSINESS_LINE_CODE: "aggregated",
@@ -444,6 +450,14 @@ def _product_type(candidate: dict[str, Any]) -> str:
     category = resolve_product_category(direct)
     if category:
         return category.name
+    business_line = business_line_from_record(candidate)
+    aggregate_product = candidate.get("适用范围") or direct
+    if (
+        business_line
+        and business_line.code == AGGREGATE_BUSINESS_LINE_CODE
+        and is_concrete_unconfigured_product(aggregate_product)
+    ):
+        return _text(aggregate_product)
     inferred = infer_product_category(
         (
             candidate.get("适用范围"),
@@ -520,13 +534,15 @@ class CzIntegrationConfig:
     timeout_seconds: float = 30.0
     max_retries: int = 3
     retry_backoff_seconds: float = 0.5
+    retrieval_key: str = ""
 
     @classmethod
     def from_env(cls) -> "CzIntegrationConfig | None":
         load_dotenv()
         base_url = os.getenv("KB_BASE_URL", "").strip()
         integration_key = os.getenv("KB_INTEGRATION_KEY", "").strip()
-        if not (base_url and integration_key):
+        retrieval_key = os.getenv("KB_RETRIEVAL_API_KEY", "").strip()
+        if not (base_url and (integration_key or retrieval_key)):
             return None
         try:
             timeout = max(3.0, min(float(os.getenv("KB_TIMEOUT_SECONDS", "30")), 180.0))
@@ -546,6 +562,7 @@ class CzIntegrationConfig:
         return cls(
             base_url=base_url.rstrip("/"),
             integration_key=integration_key,
+            retrieval_key=retrieval_key,
             timeout_seconds=timeout,
             max_retries=retries,
             retry_backoff_seconds=backoff,
@@ -567,6 +584,7 @@ class CzIntegrationAdapter:
     taxonomy_path = "/api/v1/integration/taxonomy"
     qc_standards_path = "/api/v1/integration/qc-standards"
     qc_standards_search_path = "/api/v1/integration/qc-standards:search"
+    standard_search_path = "/api/v1/integration/standard-search"
     dedup_path = "/api/v1/integration/knowledge-dedup:check"
     candidates_path = "/api/v1/integration/knowledge-candidates:batch"
     review_candidates_path = "/api/v1/integration/knowledge-review-candidates:batch"
@@ -582,6 +600,10 @@ class CzIntegrationAdapter:
             "status": self.config.status if self.config else "API 未配置",
             "taxonomy_endpoint": self.taxonomy_path,
             "qc_standards_endpoint": self.qc_standards_path,
+            "standard_search_endpoint": self.standard_search_path,
+            "standard_retrieval_configured": bool(
+                self.config and self.config.retrieval_key
+            ),
             "dedup_endpoint": self.dedup_path,
             "candidate_endpoint": self.candidates_path,
             "review_candidate_endpoint": self.review_candidates_path,
@@ -595,9 +617,14 @@ class CzIntegrationAdapter:
         payload: dict[str, Any] | None = None,
         *,
         query: dict[str, Any] | None = None,
+        api_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         if not self.config:
-            raise RuntimeError("未配置 KB_BASE_URL 或 KB_INTEGRATION_KEY。")
+            raise RuntimeError("未配置 KB_BASE_URL 或 CZ API Key。")
+        request_key = api_key if api_key is not None else self.config.integration_key
+        if not request_key:
+            raise RuntimeError("未配置所需的 CZ API Key。")
         url = self.config.endpoint(path)
         if query:
             url = f"{url}?{urlencode(query)}"
@@ -607,9 +634,11 @@ class CzIntegrationAdapter:
             else None
         )
         headers = {
-            "X-Integration-Key": self.config.integration_key,
+            "X-Integration-Key": request_key,
             "Accept": "application/json",
         }
+        if extra_headers:
+            headers.update(extra_headers)
         if body is not None:
             headers["Content-Type"] = "application/json"
 
@@ -641,6 +670,118 @@ class CzIntegrationAdapter:
                 raise RuntimeError("CZ接口返回了无法解析的JSON。") from exc
             time.sleep(self.config.retry_backoff_seconds * (2**attempt))
         raise RuntimeError(f"CZ接口调用失败：{last_error or '未知错误'}")
+
+    def can_search_headquarters_standards(self) -> bool:
+        return bool(self.config and self.config.retrieval_key)
+
+    def search_headquarters_standards(
+        self,
+        *,
+        conversation_id: str,
+        normalized_question: str,
+        business_type: str,
+        product_type: str,
+        model: str = "",
+        limit: int = 5,
+    ) -> tuple[list[tuple[StandardCatalogItem, float]], dict[str, Any]]:
+        if not self.config or not self.config.retrieval_key:
+            raise RuntimeError("未配置 KB_RETRIEVAL_API_KEY，无法读取 CZ 已生效标准。")
+        source_id = _text(conversation_id)
+        if not re.fullmatch(r"[0-9]{1,64}", source_id):
+            raise ValueError("CZ 标准检索需要来源工单ID为 1 至 64 位数字。")
+        question = _text(normalized_question)
+        if not question:
+            raise ValueError("CZ 标准检索缺少主题问题。")
+        request_id = "answer-hub-standard:" + _stable_hash(
+            source_id,
+            question,
+            business_type,
+            product_type,
+            model,
+        )[:32]
+        payload = {
+            "conversationId": source_id,
+            "requestId": request_id,
+            "normalizedQuestion": question[:8000],
+            "knowledgeOrigin": CZ_HEADQUARTERS_STANDARD_ORIGIN,
+            "businessType": _text(business_type),
+            "productType": _text(product_type),
+            "model": _text(model),
+            "orderInfo": {
+                "category": _text(product_type),
+                "model": _text(model),
+            },
+            "limit": max(1, min(int(limit), 5)),
+        }
+        response = self._request_json(
+            "POST",
+            self.standard_search_path,
+            payload,
+            api_key=self.config.retrieval_key,
+            extra_headers={
+                "X-Conversation-Id": source_id,
+                "X-Request-Id": request_id,
+            },
+        )
+        candidates = response.get("candidates")
+        if not isinstance(candidates, list):
+            raise RuntimeError("CZ 标准检索接口返回格式不正确。")
+        knowledge_version = _text(response.get("knowledgeVersion"))
+        matches: list[tuple[StandardCatalogItem, float]] = []
+        standard_ids: list[str] = []
+        ignored_business_accumulation_count = 0
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                raise RuntimeError("CZ 标准检索候选格式不正确。")
+            knowledge_origin = _text(candidate.get("knowledgeOrigin"))
+            if knowledge_origin == CZ_BUSINESS_ACCUMULATION_ORIGIN:
+                ignored_business_accumulation_count += 1
+                continue
+            if knowledge_origin != CZ_HEADQUARTERS_STANDARD_ORIGIN:
+                raise RuntimeError("CZ 标准检索返回了非总部标准知识，已拒绝使用。")
+            if _text(candidate.get("status")) != "published":
+                raise RuntimeError("CZ 标准检索返回了未生效知识，已拒绝使用。")
+            standard_id = _text(candidate.get("id"))
+            if not standard_id:
+                raise RuntimeError("CZ 标准检索候选缺少知识ID。")
+            try:
+                score = max(0.0, min(float(candidate.get("finalScore", candidate.get("score", 0))), 1.0))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("CZ 标准检索候选分数不正确。") from exc
+            keywords = candidate.get("keywords")
+            item = StandardCatalogItem(
+                standard_id=standard_id,
+                title=_text(candidate.get("title")),
+                category_l1=_text(candidate.get("level1Label")),
+                category_l2="",
+                knowledge_type="总部标准",
+                standard_path=f"CZ总部标准：{standard_id}",
+                keywords=[
+                    _text(value)
+                    for value in keywords
+                    if _text(value)
+                ] if isinstance(keywords, list) else [],
+                scope=_text(candidate.get("productType")),
+                response_snippet=_text(candidate.get("text")),
+                status="published",
+                version=knowledge_version or "unknown",
+            )
+            matches.append((item, score))
+            standard_ids.append(standard_id)
+        return matches, {
+            "source": CZ_HEADQUARTERS_STANDARD_ORIGIN,
+            "status": _text(response.get("status")),
+            "retrieval_mode": _text(response.get("retrievalMode")),
+            "knowledge_version": knowledge_version,
+            "score_threshold": response.get("scoreThreshold"),
+            "standard_ids": standard_ids,
+            "ignored_business_accumulation_count": (
+                ignored_business_accumulation_count
+            ),
+            "ignored_nonstandard_candidate_count": (
+                ignored_business_accumulation_count
+            ),
+        }
 
     def fetch_taxonomy(self) -> dict[str, Any]:
         payload = self._request_json("GET", self.taxonomy_path)
@@ -1029,7 +1170,7 @@ class CzIntegrationAdapter:
                         "content": {
                             "blocks": _candidate_content_blocks(candidate)
                         },
-                        "knowledge_origin": CZ_KNOWLEDGE_ORIGIN,
+                        "knowledge_origin": CZ_BUSINESS_ACCUMULATION_ORIGIN,
                         "business_type": business_type,
                         "recommended_reply": _text(candidate.get("推荐回复")) or None,
                         "category_id": category_id,

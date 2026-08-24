@@ -11,7 +11,7 @@ from .automation import (
     resume_automation_pipeline,
     run_automation_pipeline,
 )
-from .automation_queue import process_automation_queue
+from .automation_queue import process_automation_queue, retry_cz_candidate_sync
 from .operations import apply_retention_cleanup, write_operations_report
 from .second_part_pull import (
     SecondPartPullError,
@@ -259,6 +259,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-interrupted-running",
         action="store_true",
         help="Resume a run left in running status after Ctrl+C or terminal interruption",
+    )
+
+    retry_cz_sync = subparsers.add_parser(
+        "retry-cz-sync",
+        help="Retry only CZ candidate value-review sync for a completed local run",
+    )
+    retry_cz_sync.add_argument("--run-id", required=True)
+    retry_cz_sync.add_argument(
+        "--output-dir",
+        default="outputs/automation-runs",
+        help="Automation run root directory",
     )
 
     operations_report = subparsers.add_parser(
@@ -519,6 +530,14 @@ def main(argv: list[str] | None = None) -> int:
             args.run_id,
             allow_interrupted_running=args.allow_interrupted_running,
             progress_callback=_cli_progress_printer(),
+        )
+        print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        return 1 if manifest["status"] == "failed" else 0
+
+    if args.command == "retry-cz-sync":
+        manifest = retry_cz_candidate_sync(
+            Path(args.output_dir),
+            args.run_id,
         )
         print(json.dumps(manifest, ensure_ascii=False, indent=2))
         return 1 if manifest["status"] == "failed" else 0

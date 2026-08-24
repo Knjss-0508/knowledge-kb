@@ -513,6 +513,73 @@ def test_workflow_cluster_admission_rejects_mixed_unknown_product(
     assert "产品品类" in unknown_pending["待聚合原因"]
 
 
+def test_workflow_routes_clear_chat_and_human_core_conflict_to_review(
+    tmp_path: Path,
+) -> None:
+    audit = AuditStore(tmp_path / "audit.db")
+    conflicted_row = _row(
+        "WO-STRUCTURED-CHAT-CONFLICT",
+        subject="手机后壳",
+        phenomenon="磕碰",
+    )
+    conflicted_row.update(
+        {
+            "聊天内容": "手机屏幕出现色斑应该怎么判定？",
+            "核心问题": "手机后壳磕碰如何判定",
+            "判定结论": "后壳磕碰按外观质检口径处理",
+        }
+    )
+
+    topics, _mapping, _gaps, pending = build_topic_review_rows(
+        [conflicted_row],
+        use_mimo=False,
+        mimo_client=_HighConfidenceDirectMimo(),
+        audit_store=audit,
+        run_id="run-structured-chat-conflict",
+        clustering_mode="direct_mimo",
+        use_standard_references=False,
+        enforce_cluster_admission=True,
+    )
+
+    assert topics == []
+    assert len(pending) == 1
+    assert "人工校正核心问题与完整聊天" in pending[0]["待聚合原因"]
+    assert audit.list_registered_topics("自营回收", "手机") == []
+
+
+def test_workflow_ignores_transfer_metadata_when_checking_evidence_conflicts(
+    tmp_path: Path,
+) -> None:
+    audit = AuditStore(tmp_path / "audit.db")
+    row = _row(
+        "WO-TRANSFER-METADATA",
+        subject="手机后壳",
+        phenomenon="磕碰",
+    )
+    row["聊天内容"] = (
+        "问题描述：手机屏幕色斑怎么判定\n"
+        "用户：手机后壳有磕碰应该怎么判定？"
+    )
+
+    topics, _mapping, _gaps, pending = build_topic_review_rows(
+        [row],
+        use_mimo=False,
+        mimo_client=_HighConfidenceDirectMimo(),
+        audit_store=audit,
+        run_id="run-transfer-metadata",
+        clustering_mode="direct_mimo",
+        use_standard_references=False,
+        enforce_cluster_admission=True,
+    )
+
+    assert len(topics) == 1
+    assert all(
+        "人工校正核心问题与完整聊天" not in row["待聚合原因"]
+        for row in pending
+    )
+    assert audit.list_registered_topics("自营回收", "手机")
+
+
 def test_registry_bootstraps_existing_audit_candidates_before_matching(
     tmp_path: Path,
 ) -> None:

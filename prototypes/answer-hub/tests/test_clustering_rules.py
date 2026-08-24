@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import answer_hub.clustering_rules as clustering_rules_module
 from answer_hub.clustering_rules import (
@@ -12,7 +13,104 @@ from answer_hub.clustering_rules import (
     clustering_rules_metadata,
     match_clustering_judgment_rule,
 )
+from answer_hub.classification_catalog import (
+    ClassificationCatalogItem,
+    load_classification_catalog,
+    retrieve_classification_matches,
+)
 from answer_hub.product_taxonomy import configured_product_names
+
+
+def test_classification_catalog_json_and_jsonl_are_equivalent(tmp_path: Path) -> None:
+    rows = [
+        {
+            "category": "平板",
+            "category_id": "PB-1",
+            "class_id": "平板-C1",
+            "path": ["平板", "基本情况", "电池健康度", "无法检测"],
+            "path_str": "平板 > 基本情况 > 电池健康度 > 无法检测",
+            "leaf_level": 3,
+            "leaf": "无法检测",
+            "upper": ["基本情况", "电池健康度"],
+            "aliases": ["电池健康度无法检测"],
+            "keywords": ["平板电池健康度无法获取"],
+            "degree": "",
+            "definition": "无法读取时选择无法检测。",
+            "detection_method": "",
+            "is_negative": False,
+            "search_text": "平板 电池健康度 无法检测",
+        }
+    ]
+    json_path = tmp_path / "catalog.json"
+    jsonl_path = tmp_path / "catalog.jsonl"
+    json_path.write_text(
+        json.dumps({"classes": rows}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    jsonl_path.write_text(
+        json.dumps(rows[0], ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    json_items = load_classification_catalog(json_path)
+    jsonl_items = load_classification_catalog(jsonl_path)
+
+    assert json_items == jsonl_items
+    matches, status = retrieve_classification_matches(
+        "平板电池健康度无法获取",
+        product_category="平板电脑",
+        catalog=json_items,
+    )
+    assert status == "classification_matched"
+    assert matches[0].class_id == "平板-C1"
+
+
+def test_classification_catalog_uses_path_aliases_before_definition_keywords() -> None:
+    catalog = (
+        ClassificationCatalogItem(
+            class_id="PB-SN",
+            category="平板电脑",
+            category_id="PB-SN",
+            path=("平板", "基本情况", "SN"),
+            path_str="平板 > 基本情况 > SN",
+            leaf_level=2,
+            leaf="SN",
+            upper=("基本情况", "SN"),
+            aliases=("SN",),
+            keywords=("SN码即产品序列号",),
+            degree="",
+            definition="",
+            detection_method="",
+            is_negative=False,
+            search_text="",
+        ),
+        ClassificationCatalogItem(
+            class_id="PB-HOUSING",
+            category="平板电脑",
+            category_id="PB-HOUSING",
+            path=("平板", "拆修及浸液情况", "外壳拆修", "外壳不符"),
+            path_str="平板 > 拆修及浸液情况 > 外壳拆修 > 外壳不符",
+            leaf_level=3,
+            leaf="外壳不符",
+            upper=("拆修及浸液情况", "外壳拆修"),
+            aliases=("外壳不符",),
+            keywords=("后壳序列号与关于本机显示不一致",),
+            degree="",
+            definition="",
+            detection_method="",
+            is_negative=False,
+            search_text="",
+        ),
+    )
+
+    matches, status = retrieve_classification_matches(
+        "平板序列号在哪里查看",
+        product_category="平板电脑",
+        catalog=catalog,
+    )
+
+    assert status == "classification_matched"
+    assert matches[0].class_id == "PB-SN"
 
 
 def test_phone_housing_damage_values_share_one_cluster_standard_family() -> None:

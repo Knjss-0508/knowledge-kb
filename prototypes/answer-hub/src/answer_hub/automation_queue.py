@@ -342,7 +342,10 @@ def _run_model_review_and_cz_candidate_sync(
 ) -> dict[str, Any]:
     store = AutomationRunStore(output_root)
     _ensure_delivery_stages(manifest)
-    manifest.setdefault("options", {})["submit_to_cz"] = True
+    # This path only creates CZ candidate-review records.  Keep the legacy
+    # option explicitly false so manifests never imply automatic knowledge
+    # submission or publication.
+    manifest.setdefault("options", {})["submit_to_cz"] = False
     manifest["options"]["sync_to_cz_review"] = True
     retrying_failed_run = str(manifest.get("status") or "") == "failed"
     if retrying_failed_run:
@@ -540,6 +543,68 @@ def _run_model_review_and_cz_candidate_sync(
         return _complete_retried_queue_item(manifest, store)
     except Exception as exc:
         return store.fail(manifest, exc)
+
+
+def retry_cz_candidate_sync(
+    output_root: str | Path,
+    run_id: str,
+    *,
+    policy: AutoReviewPolicy | None = None,
+    cz_adapter: CzIntegrationAdapter | None = None,
+) -> dict[str, Any]:
+    """Retry only the CZ candidate-value-review delivery for one run.
+
+    The source workflow must already have completed its local candidate export.
+    This intentionally does not call MiMo, clustering, or knowledge transcription.
+    """
+
+    store = AutomationRunStore(output_root)
+    manifest = store.load(run_id)
+    _ensure_delivery_stages(manifest)
+    delivery_stage = next(
+        (
+            stage
+            for stage in manifest.get("stages") or []
+            if str(stage.get("id") or "") == "cz_upload"
+        ),
+        None,
+    )
+    if delivery_stage is None:
+        raise RuntimeError("运行记录缺少 CZ 候选价值复核同步阶段。")
+    if str(delivery_stage.get("status") or "") == "completed":
+        raise ValueError("该运行的 CZ 候选价值复核同步已经完成，无需重试。")
+
+    status = str(manifest.get("status") or "")
+    if status not in {"failed", "review_pending"}:
+        raise ValueError(
+            "仅支持重试已完成本地候选生成、但 CZ 同步未完成的运行。"
+        )
+    if status == "failed":
+        failed_stage = next(
+            (
+                str(stage.get("id") or "")
+                for stage in manifest.get("stages") or []
+                if str(stage.get("status") or "") == "failed"
+            ),
+            "",
+        )
+        if failed_stage and failed_stage != "cz_upload":
+            raise ValueError(
+                "该运行失败在本地处理阶段，不能只重试 CZ 候选价值复核同步。"
+            )
+
+    topic_review_path = Path(
+        str((manifest.get("artifacts") or {}).get("topic_review") or "")
+    )
+    if not topic_review_path.is_file():
+        raise FileNotFoundError(f"主题审核工作簿不存在：{topic_review_path}")
+
+    return _run_model_review_and_cz_candidate_sync(
+        manifest,
+        Path(output_root),
+        policy=policy,
+        cz_adapter=cz_adapter,
+    )
 
 
 def process_automation_queue(

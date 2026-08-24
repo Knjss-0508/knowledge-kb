@@ -386,7 +386,6 @@ def _map_records(
                     "source_index": index,
                     "source_record_id": _text(row.get("工单ID")),
                     "missing_required_fields": missing_required_fields,
-                    "reason": "missing_required_fields",
                 }
             )
             continue
@@ -477,7 +476,7 @@ def _write_rejection_report(
         "profile": profile.name,
         "source_cursor": cursor,
         "source_next_cursor": next_cursor,
-        "records": rejected_records,
+        "rejected_records": rejected_records,
     }
     temporary = report_path.with_suffix(f"{report_path.suffix}.tmp")
     temporary.write_text(
