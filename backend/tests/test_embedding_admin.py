@@ -15,6 +15,7 @@ from app.models.embedding_admin import (
 from app.models.integration import RetrievalQualityEvent
 from app.models.knowledge import Category, Knowledge, KnowledgeStatus
 from app.routes.embedding_admin import (
+    _embedding_lab_scope_ids,
     _task_runner_url,
     activate_embedding_config,
     claim_task_training_job,
@@ -247,26 +248,264 @@ class EmbeddingAdminTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             EmbeddingLabSearchRequest(
                 query="iPad 指纹",
-                business_type="self_operated",
-                knowledge_origin="model_configuration",
+                applicable_category_id="119",
+                applicable_brand_id="10530",
+                applicable_model_id="iPad16,3",
+                top_k=51,
             )
 
-    def test_vector_lab_scope_filters_are_normalized_and_require_business_type(self):
+    def test_vector_lab_scope_filters_are_normalized_and_require_category(self):
         request = EmbeddingLabSearchRequest(
             query="iPad 防水标签",
-            business_type="self_operated",
-            applicable_category_ids=[" 119 ", "119", ""],
-            brand_ids=[" 10530 "],
-            model_ids=[" iPad16,3 "],
+            applicable_category_id=" 119 ",
+            applicable_brand_id=" 10530 ",
+            applicable_model_id=" iPad16,3 ",
         )
 
-        self.assertEqual(request.applicable_category_ids, ["119"])
-        self.assertEqual(request.brand_ids, ["10530"])
-        self.assertEqual(request.model_ids, ["iPad16,3"])
+        self.assertEqual(request.applicable_category_id, "119")
+        self.assertEqual(request.applicable_brand_id, "10530")
+        self.assertEqual(request.applicable_model_id, "iPad16,3")
         with self.assertRaises(ValidationError):
             EmbeddingLabSearchRequest(
                 query="iPad 防水标签",
             )
+        with self.assertRaisesRegex(ValidationError, "必须选择适用品类"):
+            EmbeddingLabSearchRequest(
+                query="iPad 防水标签",
+                applicable_category_id="   ",
+            )
+        self.assertEqual(
+            {
+                "applicable_category_id",
+                "applicable_brand_id",
+                "applicable_model_id",
+            },
+            set(EmbeddingLabSearchRequest.model_fields).intersection(
+                {
+                    "applicable_category_id",
+                    "applicable_brand_id",
+                    "applicable_model_id",
+                }
+            ),
+        )
+        self.assertTrue(
+            {
+                "knowledge_origin",
+                "business_type",
+                "category_id",
+                "applicable_category_ids",
+                "brand_ids",
+                "model_ids",
+            }.isdisjoint(EmbeddingLabSearchRequest.model_fields)
+        )
+
+    def test_vector_lab_model_filter_requires_brand(self):
+        with self.assertRaisesRegex(ValidationError, "选择机型前必须先选择品牌"):
+            EmbeddingLabSearchRequest(
+                query="iPad 防水标签",
+                applicable_category_id="119",
+                applicable_model_id="iPad16,3",
+            )
+
+        request = EmbeddingLabSearchRequest(
+            query="iPad 防水标签",
+            applicable_category_id="119",
+            applicable_brand_id="   ",
+        )
+        self.assertIsNone(request.applicable_brand_id)
+        self.assertIsNone(request.applicable_model_id)
+
+    def test_vector_lab_scope_ids_apply_category_brand_model_funnel_exactly(self):
+        rows = [
+            SimpleNamespace(
+                knowledge_id="generic",
+                applicable_categories=[],
+                applicable_brands=[],
+                applicable_models=[],
+            ),
+            SimpleNamespace(
+                knowledge_id="category-only",
+                applicable_categories=[{"categoryId": "119"}],
+                applicable_brands=[],
+                applicable_models=[],
+            ),
+            SimpleNamespace(
+                knowledge_id="category-prefix",
+                applicable_categories=["1190"],
+                applicable_brands=[],
+                applicable_models=[],
+            ),
+            SimpleNamespace(
+                knowledge_id="brand-match",
+                applicable_categories=["119"],
+                applicable_brands=[{"brandId": "10530"}],
+                applicable_models=[],
+            ),
+            SimpleNamespace(
+                knowledge_id="brand-other",
+                applicable_categories=["119"],
+                applicable_brands=["10531"],
+                applicable_models=[],
+            ),
+            SimpleNamespace(
+                knowledge_id="model-match",
+                applicable_categories=["119"],
+                applicable_brands=["10530"],
+                applicable_models=[{"modelId": "97001"}],
+            ),
+            SimpleNamespace(
+                knowledge_id="model-other",
+                applicable_categories=["119"],
+                applicable_brands=["10530"],
+                applicable_models=["970010"],
+            ),
+        ]
+
+        cases = (
+            (
+                EmbeddingLabSearchRequest(
+                    query="仅品类",
+                    applicable_category_id="119",
+                ),
+                [
+                    "generic",
+                    "category-only",
+                    "brand-match",
+                    "brand-other",
+                    "model-match",
+                    "model-other",
+                ],
+            ),
+            (
+                EmbeddingLabSearchRequest(
+                    query="品类和品牌",
+                    applicable_category_id="119",
+                    applicable_brand_id="10530",
+                ),
+                [
+                    "generic",
+                    "category-only",
+                    "brand-match",
+                    "model-match",
+                    "model-other",
+                ],
+            ),
+            (
+                EmbeddingLabSearchRequest(
+                    query="品类品牌机型",
+                    applicable_category_id="119",
+                    applicable_brand_id="10530",
+                    applicable_model_id="97001",
+                ),
+                [
+                    "generic",
+                    "category-only",
+                    "brand-match",
+                    "model-match",
+                ],
+            ),
+        )
+        for body, expected_ids in cases:
+            with self.subTest(query=body.query):
+                scope_query = MagicMock()
+                scope_query.filter.return_value = scope_query
+                scope_query.all.return_value = rows
+                db = MagicMock()
+                db.query.return_value = scope_query
+
+                self.assertEqual(
+                    _embedding_lab_scope_ids(db, body, []),
+                    expected_ids,
+                )
+
+    def test_vector_lab_scope_resolves_ids_and_names_across_business_types(self):
+        cache = {
+            "options_by_business_type": {
+                "self_operated": {
+                    "applicable_categories": [
+                        {"categoryId": "119", "categoryName": "平板电脑"}
+                    ],
+                    "brands_by_category": {
+                        "119": [
+                            {"brandId": "10530", "brandName": "苹果"}
+                        ]
+                    },
+                    "models": [
+                        {
+                            "modelId": "97001",
+                            "modelName": "iPad 10",
+                            "categoryId": "119",
+                            "brandId": "10530",
+                        }
+                    ],
+                },
+                "aggregated": {
+                    "applicable_categories": [
+                        {"categoryId": "901", "categoryName": "黄金"}
+                    ],
+                    "brands_by_category": {
+                        "901": [
+                            {"brandId": "20001", "brandName": "聚合品牌"}
+                        ]
+                    },
+                    "models": [
+                        {
+                            "modelId": "30001",
+                            "modelName": "聚合机型",
+                            "categoryId": "901",
+                            "brandId": "20001",
+                        }
+                    ],
+                },
+            }
+        }
+        cases = (
+            (
+                EmbeddingLabSearchRequest(
+                    query="自营名称兼容",
+                    applicable_category_id="119",
+                    applicable_brand_id="10530",
+                    applicable_model_id="97001",
+                ),
+                SimpleNamespace(
+                    knowledge_id="self-operated-name",
+                    applicable_categories=["平板电脑"],
+                    applicable_brands=["苹果"],
+                    applicable_models=["iPad 10"],
+                ),
+            ),
+            (
+                EmbeddingLabSearchRequest(
+                    query="聚合名称兼容",
+                    applicable_category_id="901",
+                    applicable_brand_id="20001",
+                    applicable_model_id="30001",
+                ),
+                SimpleNamespace(
+                    knowledge_id="aggregated-name",
+                    applicable_categories=["黄金"],
+                    applicable_brands=["聚合品牌"],
+                    applicable_models=["聚合机型"],
+                ),
+            ),
+        )
+
+        with patch(
+            "app.routes.embedding_admin._read_manhattan_cache",
+            return_value=cache,
+        ):
+            for body, row in cases:
+                with self.subTest(query=body.query):
+                    scope_query = MagicMock()
+                    scope_query.filter.return_value = scope_query
+                    scope_query.all.return_value = [row]
+                    db = MagicMock()
+                    db.query.return_value = scope_query
+
+                    self.assertEqual(
+                        _embedding_lab_scope_ids(db, body, []),
+                        [row.knowledge_id],
+                    )
 
     def test_vector_coverage_excludes_managed_exact_knowledge(self):
         db = MagicMock()
@@ -340,7 +579,7 @@ class EmbeddingAdminTests(unittest.TestCase):
             result = embedding_lab_search(
                 EmbeddingLabSearchRequest(
                     query="iPad 指纹",
-                    business_type="self_operated",
+                    applicable_category_id="119",
                 ),
                 db,
                 None,
@@ -425,33 +664,17 @@ class EmbeddingAdminTests(unittest.TestCase):
         candidate_query.all.side_effect = [first_batch, second_batch]
         db.query.side_effect = [scope_query, candidate_query]
 
-        with (
-            patch(
-                "app.routes.embedding_admin._read_manhattan_cache",
-                return_value={},
-            ),
-            patch(
-                "app.routes.embedding_admin.resolve_applicability_scope",
-                return_value={
-                    "categories": {"119"},
-                    "brands": {"10530"},
-                    "models": {"ipad163"},
-                },
-            ),
-            patch(
-                "app.routes.embedding_admin.embed_texts",
-                return_value=[[0.1] * settings.EMBEDDING_DIMENSIONS],
-            ),
+        with patch(
+            "app.routes.embedding_admin.embed_texts",
+            return_value=[[0.1] * settings.EMBEDDING_DIMENSIONS],
         ):
             result = embedding_lab_search(
                 EmbeddingLabSearchRequest(
                     query="该设备防水标签红应如何判定",
                     top_k=2,
-                    knowledge_origin="headquarters_standard",
-                    business_type="self_operated",
-                    applicable_category_ids=["119"],
-                    brand_ids=["10530"],
-                    model_ids=["ipad163"],
+                    applicable_category_id="119",
+                    applicable_brand_id="10530",
+                    applicable_model_id="ipad163",
                 ),
                 db,
                 None,
@@ -468,6 +691,8 @@ class EmbeddingAdminTests(unittest.TestCase):
             for expression in filter_call.args
         )
         self.assertIn("knowledge_items.id IN", candidate_filters)
+        self.assertNotIn("knowledge_items.business_type =", candidate_filters)
+        self.assertNotIn("knowledge_items.category_id =", candidate_filters)
         self.assertEqual(
             candidate_query.limit.call_args_list,
             [call(50), call(100)],
@@ -495,26 +720,13 @@ class EmbeddingAdminTests(unittest.TestCase):
         scope_query.all.return_value = []
         db.query.return_value = scope_query
 
-        with (
-            patch(
-                "app.routes.embedding_admin._read_manhattan_cache",
-                return_value={},
-            ),
-            patch(
-                "app.routes.embedding_admin.resolve_applicability_scope",
-                return_value={
-                    "categories": {"119"},
-                    "brands": set(),
-                    "models": set(),
-                },
-            ),
-            patch("app.routes.embedding_admin.embed_texts") as embed_texts,
-        ):
+        with patch(
+            "app.routes.embedding_admin.embed_texts"
+        ) as embed_texts:
             result = embedding_lab_search(
                 EmbeddingLabSearchRequest(
                     query="该设备防水标签红应如何判定",
-                    business_type="self_operated",
-                    applicable_category_ids=["119"],
+                    applicable_category_id="119",
                 ),
                 db,
                 None,
