@@ -51,6 +51,7 @@ from app.schemas.embedding_admin import (
 from app.services.applicability import (
     filter_applicable_rows,
     resolve_applicability_scope,
+    scope_keys,
 )
 from app.services.embedding import EmbeddingServiceUnavailable, embed_texts
 from app.services.embedding_admin import (
@@ -596,25 +597,35 @@ def _embedding_lab_scope_ids(
     db: Session,
     body: EmbeddingLabSearchRequest,
     knowledge_filters: list[Any],
-) -> list[str] | None:
-    if not (
-        body.applicable_category_ids
-        or body.brand_ids
-        or body.model_ids
-    ):
-        return None
-
+) -> list[str]:
+    applicability_scope = {
+        "categories": scope_keys(
+            [body.applicable_category_id],
+            "category",
+        ),
+        "brands": scope_keys(
+            [body.applicable_brand_id],
+            "brand",
+        ),
+        "models": scope_keys(
+            [body.applicable_model_id],
+            "model",
+        ),
+    }
     try:
         manhattan_cache = _read_manhattan_cache()
     except (OSError, ValueError):
         manhattan_cache = {}
-    applicability_scope = resolve_applicability_scope(
-        manhattan_cache,
-        body.business_type,
-        category_values=body.applicable_category_ids,
-        brand_values=body.brand_ids,
-        model_values=body.model_ids,
-    )
+    for business_type in ("self_operated", "aggregated"):
+        resolved_scope = resolve_applicability_scope(
+            manhattan_cache,
+            business_type,
+            category_values=[body.applicable_category_id],
+            brand_values=[body.applicable_brand_id],
+            model_values=[body.applicable_model_id],
+        )
+        for layer in ("categories", "brands", "models"):
+            applicability_scope[layer].update(resolved_scope[layer])
     scope_rows = (
         db.query(
             Knowledge.id.label("knowledge_id"),
@@ -646,13 +657,6 @@ def embedding_lab_search(
         Knowledge.status == KnowledgeStatus.PUBLISHED,
         Knowledge.knowledge_origin != "model_configuration",
     ]
-    if body.knowledge_origin:
-        knowledge_filters.append(
-            Knowledge.knowledge_origin == body.knowledge_origin
-        )
-    knowledge_filters.append(Knowledge.business_type == body.business_type)
-    if body.category_id:
-        knowledge_filters.append(Knowledge.category_id == body.category_id)
 
     allowed_knowledge_ids = _embedding_lab_scope_ids(
         db,
@@ -689,10 +693,9 @@ def embedding_lab_search(
             KnowledgeSearchEmbedding.embedding_vector.is_not(None),
         )
     )
-    if allowed_knowledge_ids is not None:
-        candidate_query = candidate_query.filter(
-            Knowledge.id.in_(allowed_knowledge_ids)
-        )
+    candidate_query = candidate_query.filter(
+        Knowledge.id.in_(allowed_knowledge_ids)
+    )
 
     candidate_limit = max(body.top_k * 12, 50)
     best_rows: dict[

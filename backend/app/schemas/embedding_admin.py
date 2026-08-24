@@ -42,33 +42,29 @@ class EmbeddingLabSearchRequest(BaseModel):
 
     query: str = Field(..., min_length=1, max_length=1000)
     top_k: int = Field(10, ge=1, le=50)
-    knowledge_origin: Literal[
-        "headquarters_standard",
-        "business_accumulation",
-    ] | None = None
-    business_type: Literal["self_operated", "aggregated"]
-    category_id: str | None = Field(None, max_length=64)
-    applicable_category_ids: list[str] = Field(default_factory=list, max_length=50)
-    brand_ids: list[str] = Field(default_factory=list, max_length=50)
-    model_ids: list[str] = Field(default_factory=list, max_length=50)
+    applicable_category_id: str = Field(..., max_length=128)
+    applicable_brand_id: str | None = Field(None, max_length=128)
+    applicable_model_id: str | None = Field(None, max_length=128)
 
     @model_validator(mode="after")
     def validate_scope_filters(self):
         for field_name in (
-            "applicable_category_ids",
-            "brand_ids",
-            "model_ids",
+            "applicable_category_id",
+            "applicable_brand_id",
+            "applicable_model_id",
         ):
-            values: list[str] = getattr(self, field_name)
-            normalized: list[str] = []
-            for raw_value in values:
-                value = raw_value.strip()
-                if not value or value in normalized:
-                    continue
-                if len(value) > 128:
-                    raise ValueError("适用范围筛选值不能超过 128 个字符")
-                normalized.append(value)
-            setattr(self, field_name, normalized)
+            raw_value: str | None = getattr(self, field_name)
+            setattr(
+                self,
+                field_name,
+                raw_value.strip() if raw_value and raw_value.strip() else None,
+            )
+        if not self.applicable_category_id:
+            raise ValueError("必须选择适用品类")
+        if self.applicable_brand_id and not self.applicable_category_id:
+            raise ValueError("选择品牌前必须先选择适用品类")
+        if self.applicable_model_id and not self.applicable_brand_id:
+            raise ValueError("选择机型前必须先选择品牌")
         return self
 
 
