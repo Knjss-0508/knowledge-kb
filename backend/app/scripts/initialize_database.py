@@ -208,6 +208,7 @@ def validate_schema() -> None:
         "ix_knowledge_items_source_topic_key",
         "ix_knowledge_items_source_record_id",
         "ix_knowledge_items_source_knowledge_key",
+        "uq_knowledge_items_model_configuration_source_knowledge_key",
         "ix_knowledge_import_tasks_created_at",
         "ix_knowledge_import_tasks_created_by",
         "ix_knowledge_import_tasks_file_sha256",

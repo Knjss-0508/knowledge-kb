@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class EmbeddingRuntimeConfigValues(BaseModel):
@@ -12,6 +12,8 @@ class EmbeddingRuntimeConfigValues(BaseModel):
     search_chunk_size: int = Field(800, ge=100, le=8000)
     search_chunk_overlap: int = Field(120, ge=0, le=4000)
     retrieval_score_threshold: float = Field(0.42, ge=0, le=1)
+    retrieval_headquarters_standard_top_k: int = Field(5, ge=1, le=10)
+    retrieval_business_accumulation_top_k: int = Field(5, ge=1, le=10)
     retrieval_default_top_k: int = Field(10, ge=1, le=100)
     training_min_verified_samples: int = Field(20, ge=1, le=1000000)
     training_trigger_new_samples: int = Field(100, ge=1, le=1000000)
@@ -36,11 +38,34 @@ class EmbeddingRuntimeConfigCreate(BaseModel):
 
 
 class EmbeddingLabSearchRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     query: str = Field(..., min_length=1, max_length=1000)
     top_k: int = Field(10, ge=1, le=50)
-    knowledge_origin: str | None = Field(None, max_length=32)
-    business_type: str | None = Field(None, max_length=32)
-    category_id: str | None = Field(None, max_length=64)
+    applicable_category_id: str = Field(..., max_length=128)
+    applicable_brand_id: str | None = Field(None, max_length=128)
+    applicable_model_id: str | None = Field(None, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_scope_filters(self):
+        for field_name in (
+            "applicable_category_id",
+            "applicable_brand_id",
+            "applicable_model_id",
+        ):
+            raw_value: str | None = getattr(self, field_name)
+            setattr(
+                self,
+                field_name,
+                raw_value.strip() if raw_value and raw_value.strip() else None,
+            )
+        if not self.applicable_category_id:
+            raise ValueError("必须选择适用品类")
+        if self.applicable_brand_id and not self.applicable_category_id:
+            raise ValueError("选择品牌前必须先选择适用品类")
+        if self.applicable_model_id and not self.applicable_brand_id:
+            raise ValueError("选择机型前必须先选择品牌")
+        return self
 
 
 class EmbeddingTrainingSampleCreate(BaseModel):

@@ -350,6 +350,8 @@ def test_queue_model_reviews_and_syncs_all_rows_to_candidate_review(
     )
     assert model_stage["status"] == "completed"
     assert upload_stage["status"] == "completed"
+    assert manifest["options"]["sync_to_cz_review"] is True
+    assert manifest["options"]["submit_to_cz"] is False
     assert manifest["summary"]["cz_candidate_sync"]["ready"] == 1
     assert manifest["summary"]["cz_candidate_sync"]["queued"] == 1
     assert Path(manifest["artifacts"]["model_review"]).is_file()
@@ -646,6 +648,76 @@ def test_retrying_failed_cz_sync_restores_run_to_review_pending(
         limit=10,
     )
     assert records[0]["effective_status"] == "review_pending"
+
+
+def test_retry_cz_candidate_sync_reuses_completed_topic_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output_root = tmp_path / "runs"
+    queue = AutomationQueue(tmp_path / "queue")
+    queue.ensure()
+    failed_source = queue.failed / "job-retry-delivery--source.xlsx"
+    failed_source.write_bytes(b"source")
+    manifest = _fake_manifest(
+        failed_source,
+        output_root,
+        status="review_pending",
+    )
+    artifact_dir = Path(manifest["run_dir"]) / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    topic_review = artifact_dir / "topic_review_queue.xlsx"
+    topic_review.write_bytes(b"topic-review")
+    manifest["artifacts"]["topic_review"] = str(topic_review)
+    manifest["queue"] = {
+        "final_path": str(failed_source),
+        "disposition": "failed",
+    }
+    AutomationRunStore(output_root).save(manifest)
+
+    def unexpected_pipeline_run(**_kwargs):
+        raise AssertionError("CZ 同步重试不应重新运行模型、聚类或转写")
+
+    monkeypatch.setattr(
+        automation_queue,
+        "run_automation_pipeline",
+        unexpected_pipeline_run,
+    )
+    monkeypatch.setattr(
+        automation_queue,
+        "read_workbook_rows",
+        lambda *args, **kwargs: (["topic_id"], [{"topic_id": "TOP-RETRY"}]),
+    )
+
+    class SuccessfulCzAdapter:
+        def sync_review_candidates(self, candidates):
+            assert [candidate["topic_id"] for candidate in candidates] == [
+                "TOP-RETRY"
+            ]
+            return {
+                "queued": 1,
+                "ready": 0,
+                "rejected": 0,
+                "reused": 0,
+                "failed": 0,
+                "results": [{"event_id": "TOP-RETRY", "status": "queued"}],
+            }
+
+    result = automation_queue.retry_cz_candidate_sync(
+        output_root,
+        manifest["run_id"],
+        policy=AutoReviewPolicy(),
+        cz_adapter=SuccessfulCzAdapter(),
+    )
+
+    upload_stage = next(
+        stage for stage in result["stages"] if stage["id"] == "cz_upload"
+    )
+    assert result["status"] == "review_pending"
+    assert result["error"] == ""
+    assert upload_stage["status"] == "completed"
+    assert (queue.completed / failed_source.name).is_file()
+    assert not failed_source.exists()
 
 
 def test_cz_retry_rolls_queue_file_back_when_metadata_update_fails(

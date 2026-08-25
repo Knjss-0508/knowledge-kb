@@ -1,17 +1,18 @@
 import unittest
 from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 
 from app.services.knowledge_excel import (
     KnowledgeExcelError,
+    build_model_configuration_import_template,
     build_knowledge_export_workbook,
     build_knowledge_import_template,
+    parse_model_configuration_workbook,
     parse_knowledge_workbook,
 )
-
-
 class KnowledgeExcelTests(unittest.TestCase):
     def setUp(self):
         self.categories = [
@@ -78,6 +79,31 @@ class KnowledgeExcelTests(unittest.TestCase):
         workbook.save(output)
         return output.getvalue()
 
+    @staticmethod
+    def model_configuration_workbook_bytes(
+        headers,
+        rows,
+        *,
+        sheet_name="机型配置信息",
+        generic_rows=None,
+    ):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = sheet_name
+        sheet.append(headers)
+        for row in rows:
+            sheet.append(row)
+        if generic_rows is not None:
+            generic_sheet = workbook.create_sheet("知识导入")
+            generic_sheet.append(
+                ["知识来源", "业务类型", "标题", "知识分类", "正文"]
+            )
+            for row in generic_rows:
+                generic_sheet.append(row)
+        output = BytesIO()
+        workbook.save(output)
+        return output.getvalue()
+
     def test_template_contains_category_dictionary_and_no_layer_column(self):
         payload = build_knowledge_import_template(self.categories)
         workbook = load_workbook(BytesIO(payload), read_only=True)
@@ -133,6 +159,338 @@ class KnowledgeExcelTests(unittest.TestCase):
                 ("aggregated", "聚合回收"),
             ],
         )
+
+    def test_model_configuration_template_has_dedicated_contract(self):
+        payload = build_model_configuration_import_template()
+        workbook = load_workbook(BytesIO(payload))
+
+        self.assertEqual(
+            workbook.sheetnames,
+            ["机型配置信息", "填写说明"],
+        )
+        headers = [
+            cell.value
+            for cell in next(
+                workbook["机型配置信息"].iter_rows(max_row=1)
+            )
+        ]
+        self.assertEqual(
+            headers,
+            [
+                "来源知识ID（选填）",
+                "标题（必填）",
+                "品类ID（必填）",
+                "品类（必填）",
+                "品牌ID（必填）",
+                "品牌（必填）",
+                "型号ID（必填）",
+                "型号（必填）",
+                "综合内容（必填）",
+            ],
+        )
+        self.assertEqual(workbook["机型配置信息"].max_column, 9)
+        self.assertEqual(
+            workbook["机型配置信息"].auto_filter.ref,
+            "A1:I1",
+        )
+        self.assertIn(
+            "完整机型配置正文",
+            workbook["机型配置信息"]["I1"].comment.text,
+        )
+        self.assertNotEqual(
+            workbook["机型配置信息"]["A1"].fill.fgColor.rgb,
+            workbook["机型配置信息"]["B1"].fill.fgColor.rgb,
+        )
+        self.assertIn(
+            "可留空",
+            workbook["机型配置信息"]["A1"].comment.text,
+        )
+        instructions = dict(
+            workbook["填写说明"].iter_rows(
+                min_row=2,
+                max_col=2,
+                values_only=True,
+            )
+        )
+        self.assertNotIn("来源知识ID", instructions["必填列"])
+        self.assertIn("选填", instructions["来源知识ID"])
+        self.assertIn("品类ID、品牌ID、型号ID组合", instructions["幂等规则"])
+        self.assertIn("只同步综合内容", instructions["原表兼容"])
+
+    def test_parse_model_configuration_ignores_legacy_attribute_columns(self):
+        personalized_attributes = {
+            "是否有卡槽": "蜂窝版有卡槽",
+            "Home键": "不支持",
+            "指纹识别": "屏下指纹",
+            "3D面容": "支持",
+            "内置手写笔": "支持",
+            "闪光灯": "双闪光灯",
+            "蜂窝网络": "支持 5G",
+            "光线传感器": "支持",
+        }
+        payload = self.model_configuration_workbook_bytes(
+            [
+                "来源知识ID（选填）",
+                "标题（必填）",
+                "品类ID（必填）",
+                "品类（必填）",
+                "品牌ID（必填）",
+                "品牌（必填）",
+                "型号ID（必填）",
+                "型号（必填）",
+                *personalized_attributes,
+                "综合内容（必填）",
+            ],
+            [
+                [
+                    "56383",
+                    "iPad 10 配置信息",
+                    "119",
+                    "平板电脑",
+                    "10530",
+                    "苹果",
+                    "97519",
+                    "iPad 10 (2022) 10.9英寸",
+                    *personalized_attributes.values(),
+                    "Home键：不支持；指纹识别：屏下指纹；",
+                ]
+            ],
+        )
+
+        parsed = parse_model_configuration_workbook(payload)
+
+        self.assertEqual(parsed.row_numbers, [2])
+        self.assertEqual(len(parsed.records), 1)
+        record = parsed.records[0]
+        self.assertEqual(record.source_record_id, "56383")
+        self.assertEqual(record.category_id, "119")
+        self.assertEqual(record.brand_id, "10530")
+        self.assertEqual(record.model_id, "97519")
+        self.assertTrue(
+            all(field not in record.source_fields for field in personalized_attributes)
+        )
+        self.assertEqual(
+            record.source_fields["综合内容"],
+            "Home键：不支持；指纹识别：屏下指纹；",
+        )
+        self.assertEqual(record.source_fields["来源工作表"], "机型配置信息")
+        self.assertEqual(record.source_fields["来源行号"], "2")
+
+    def test_model_configuration_source_id_column_and_values_are_optional(self):
+        blank_id_payload = self.model_configuration_workbook_bytes(
+            [
+                "来源知识ID（选填）",
+                "标题（必填）",
+                "品类ID（必填）",
+                "品类（必填）",
+                "品牌ID（必填）",
+                "品牌（必填）",
+                "型号ID（必填）",
+                "型号（必填）",
+                "综合内容（必填）",
+            ],
+            [
+                [
+                    "",
+                    "测试机型一",
+                    "119",
+                    "平板电脑",
+                    "10530",
+                    "苹果",
+                    "97519",
+                    "测试机型一",
+                    "配置正文一",
+                ],
+                [
+                    None,
+                    "测试机型二",
+                    "119",
+                    "平板电脑",
+                    "10530",
+                    "苹果",
+                    "97520",
+                    "测试机型二",
+                    "配置正文二",
+                ],
+            ],
+        )
+
+        blank_id_records = parse_model_configuration_workbook(
+            blank_id_payload
+        ).records
+
+        self.assertEqual(len(blank_id_records), 2)
+        self.assertEqual(
+            [record.source_record_id for record in blank_id_records],
+            ["", ""],
+        )
+        self.assertTrue(
+            all("知识ID" not in record.source_fields for record in blank_id_records)
+        )
+
+        missing_column_payload = self.model_configuration_workbook_bytes(
+            [
+                "标题",
+                "品类ID",
+                "品类",
+                "品牌ID",
+                "品牌",
+                "型号ID",
+                "型号",
+                "综合内容",
+            ],
+            [
+                [
+                    "无来源ID列的机型",
+                    "119",
+                    "平板电脑",
+                    "10530",
+                    "苹果",
+                    "97521",
+                    "无来源ID列的机型",
+                    "配置正文",
+                ]
+            ],
+        )
+
+        missing_column_record = parse_model_configuration_workbook(
+            missing_column_payload
+        ).records[0]
+
+        self.assertEqual(missing_column_record.source_record_id, "")
+        self.assertNotIn("知识ID", missing_column_record.source_fields)
+
+    def test_parse_legacy_model_configuration_defaults_category_and_ignores_unheaded_cells(self):
+        payload = self.model_configuration_workbook_bytes(
+            [
+                "知识ID",
+                "标题",
+                "品牌ID",
+                "品牌",
+                "型号ID",
+                "型号",
+                "综合内容",
+                "是否更新",
+                None,
+            ],
+            [
+                [
+                    "56362",
+                    "Acer A510 配置信息",
+                    "11427",
+                    "宏碁",
+                    "252285",
+                    "Acer A510 10.4英寸",
+                    "指纹识别：不支持；",
+                    "",
+                    "有表头数据行上的残留",
+                ],
+                [None, None, None, None, None, None, None, None, "仅无表头残留"],
+                [None] * 9,
+            ],
+            sheet_name="个性化配置信息",
+        )
+
+        parsed = parse_model_configuration_workbook(payload)
+
+        self.assertEqual(len(parsed.records), 1)
+        record = parsed.records[0]
+        self.assertEqual(record.category_id, "119")
+        self.assertEqual(record.category_name, "平板电脑")
+        self.assertNotIn("", record.source_fields)
+        self.assertNotIn("有表头数据行上的残留", record.source_fields.values())
+
+    def test_model_configuration_rejects_mixed_rows_and_allows_duplicate_trace_ids(self):
+        mixed_payload = self.model_configuration_workbook_bytes(
+            [
+                "知识ID",
+                "标题",
+                "品牌ID",
+                "品牌",
+                "型号ID",
+                "型号",
+                "综合内容",
+            ],
+            [["1", "配置", "2", "品牌", "3", "型号", "正文"]],
+            generic_rows=[
+                ["业务沉淀", "自营回收", "普通", "cat-process", "正文"]
+            ],
+        )
+        with self.assertRaisesRegex(
+            KnowledgeExcelError,
+            "同时包含普通知识和机型配置信息",
+        ):
+            parse_model_configuration_workbook(mixed_payload)
+
+        duplicate_payload = self.model_configuration_workbook_bytes(
+            [
+                "知识ID",
+                "标题",
+                "品牌ID",
+                "品牌",
+                "型号ID",
+                "型号",
+                "综合内容",
+            ],
+            [
+                ["1", "配置一", "2", "品牌", "3", "型号一", "正文一"],
+                ["1", "配置二", "2", "品牌", "4", "型号二", "正文二"],
+            ],
+        )
+        parsed = parse_model_configuration_workbook(duplicate_payload)
+        self.assertEqual(len(parsed.records), 2)
+        self.assertEqual(
+            parsed.records[0].source_record_id,
+            parsed.records[1].source_record_id,
+        )
+
+    def test_regular_import_rejects_workbook_with_model_configuration_data(self):
+        payload = self.model_configuration_workbook_bytes(
+            [
+                "知识ID",
+                "标题",
+                "品牌ID",
+                "品牌",
+                "型号ID",
+                "型号",
+                "综合内容",
+            ],
+            [["1", "配置", "2", "品牌", "3", "型号", "正文"]],
+            generic_rows=[
+                ["业务沉淀", "自营回收", "普通", "cat-process", "正文"]
+            ],
+        )
+
+        with self.assertRaisesRegex(
+            KnowledgeExcelError,
+            "同时包含普通知识和机型配置信息",
+        ):
+            parse_knowledge_workbook(payload, self.categories)
+
+    def test_model_configuration_has_independent_row_limit(self):
+        payload = self.model_configuration_workbook_bytes(
+            [
+                "知识ID",
+                "标题",
+                "品牌ID",
+                "品牌",
+                "型号ID",
+                "型号",
+                "综合内容",
+            ],
+            [
+                ["1", "配置一", "2", "品牌", "3", "型号一", "正文一"],
+                ["2", "配置二", "2", "品牌", "4", "型号二", "正文二"],
+            ],
+        )
+        with patch(
+            "app.services.knowledge_excel.MAX_MODEL_CONFIGURATION_IMPORT_ROWS",
+            1,
+        ), self.assertRaisesRegex(
+            KnowledgeExcelError,
+            "单次最多导入 1 条",
+        ):
+            parse_model_configuration_workbook(payload)
 
     def test_export_matches_knowledge_main_sheet_format_and_maps_supported_fields(self):
         item = SimpleNamespace(
@@ -367,10 +725,30 @@ class KnowledgeExcelTests(unittest.TestCase):
             },
         )
         self.assertEqual(rows[0].applicable_scenes, ["适用范围：苹果"])
+        self.assertEqual(rows[0].applicable_brands, ["苹果"])
         self.assertEqual(rows[0].source_status, "生效中")
         self.assertEqual(rows[0].source_scope, "苹果")
         self.assertTrue(rows[1].is_valid)
+        self.assertEqual(rows[1].applicable_brands, [])
         self.assertEqual(rows[1].source_status, "待审核")
+
+    def test_legacy_scope_maps_only_explicit_brand_names(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识内容", "知识分类", "适用范围", "生效状态"],
+            [
+                ["组合品牌", "正文。", "场景判定", "小米/红米", "生效中"],
+                ["安卓范围", "正文。", "场景判定", "安卓", "生效中"],
+                ["其他品牌", "正文。", "场景判定", "其他品牌", "生效中"],
+                ["普通场景", "正文。", "场景判定", "线下质检", "生效中"],
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(rows[0].applicable_brands, ["小米", "红米"])
+        self.assertEqual(rows[1].applicable_brands, [])
+        self.assertEqual(rows[2].applicable_brands, ["其他品牌"])
+        self.assertEqual(rows[3].applicable_brands, [])
 
     def test_parse_binds_optional_source_identifiers(self):
         payload = self.workbook_bytes(
@@ -539,6 +917,37 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertEqual(rows[1].error_code, "KNOWLEDGE_ORIGIN_INVALID")
         self.assertIn("仅允许总部标准、业务沉淀", rows[1].error_message)
 
+    def test_managed_model_configuration_origin_rejects_generic_excel_import(self):
+        payload = self.workbook_bytes(
+            ["知识来源", "业务类型", "标题", "知识分类", "正文"],
+            [
+                [
+                    "机型配置信息",
+                    "自营回收",
+                    "iPad 机型配置",
+                    "cat-process",
+                    "配置正文。",
+                ],
+                [
+                    "model_configuration",
+                    "self_operated",
+                    "iPad 机型配置代码",
+                    "cat-process",
+                    "配置正文。",
+                ],
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(
+            [row.error_code for row in rows],
+            ["KNOWLEDGE_ORIGIN_MANAGED", "KNOWLEDGE_ORIGIN_MANAGED"],
+        )
+        self.assertTrue(
+            all("飞书专用同步" in row.error_message for row in rows)
+        )
+
     def test_parse_only_promotes_prefixed_media_tokens(self):
         payload = self.workbook_bytes(
             ["主标题", "知识分类", "知识内容"],
@@ -600,6 +1009,94 @@ class KnowledgeExcelTests(unittest.TestCase):
                         "caption": "",
                     },
                     {"type": "text", "value": "图片后文"},
+                ]
+            },
+        )
+
+    def test_parse_drops_standalone_list_markers_adjacent_to_media(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容"],
+            [
+                [
+                    "媒体列表占位符",
+                    "标准定义",
+                    "【检测方法】\n"
+                    "- 通过官网查询。\n"
+                    "-\n"
+                    "[img:https://cdn.example.com/first.png]\n"
+                    "-\n"
+                    "[img:https://cdn.example.com/second.png]\n"
+                    "- 安卓系统按其他版本判断。",
+                ]
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(
+            rows[0].content,
+            {
+                "blocks": [
+                    {
+                        "type": "text",
+                        "value": "【检测方法】\n- 通过官网查询。",
+                    },
+                    {
+                        "type": "image",
+                        "external_url": "https://cdn.example.com/first.png",
+                        "alt": "",
+                        "caption": "",
+                    },
+                    {
+                        "type": "image",
+                        "external_url": "https://cdn.example.com/second.png",
+                        "alt": "",
+                        "caption": "",
+                    },
+                    {
+                        "type": "text",
+                        "value": "- 安卓系统按其他版本判断。",
+                    },
+                ]
+            },
+        )
+
+    def test_parse_keeps_standalone_marker_without_media(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容"],
+            [["保留普通横杠", "标准定义", "说明文字\n-"]],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(rows[0].content, "说明文字\n-")
+
+    def test_parse_preserves_multi_character_separator_before_media(self):
+        payload = self.workbook_bytes(
+            ["主标题", "知识分类", "知识内容"],
+            [
+                [
+                    "保留正文分隔线",
+                    "标准定义",
+                    "说明文字\n---\n"
+                    "[img:https://cdn.example.com/separator.png]",
+                ]
+            ],
+        )
+
+        rows = parse_knowledge_workbook(payload, self.categories)
+
+        self.assertEqual(
+            rows[0].content,
+            {
+                "blocks": [
+                    {"type": "text", "value": "说明文字\n---"},
+                    {
+                        "type": "image",
+                        "external_url": "https://cdn.example.com/separator.png",
+                        "alt": "",
+                        "caption": "",
+                    },
                 ]
             },
         )

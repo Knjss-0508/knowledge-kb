@@ -41,7 +41,7 @@ from .terminology import (
 )
 
 
-PROMPT_VERSION = "multi-category-topic-transcription-v11-specific-model-facts"
+PROMPT_VERSION = "multi-category-topic-transcription-v13-recall-subtitles"
 TOPIC_REVIEW_PROMPT_VERSION = "multi-category-topic-content-quality-review-v9-12-category-taxonomy"
 TOPIC_STAGE_PROMPT_VERSION = "multi-category-topic-stage-value-v8-12-category-taxonomy"
 TOPIC_DISPLAY_QUESTION_PROMPT_VERSION = "topic-display-question-v3-12-category-taxonomy"
@@ -52,8 +52,10 @@ TOPIC_SIGNAL_PROMPT_VERSION = "multi-category-conversation-topic-signal-v9-12-ca
 CLUSTER_UNIT_PROMPT_VERSION = "multi-category-conversation-cluster-units-v29-12-category-taxonomy"
 CLUSTER_FUSION_PROMPT_VERSION = "multi-category-conversation-cluster-fusion-v9-12-category-taxonomy"
 ATOMIC_TOPIC_CLUSTER_PROMPT_VERSION = (
-    "atomic-knowledge-topic-clustering-v13-12-category-taxonomy"
+    "atomic-knowledge-topic-clustering-v16-classification-catalog-reviewable-recall"
 )
+
+CONTENT_TYPES = frozenset({"定义型", "阈值型", "核验型", "区分型"})
 
 _API_KEY_SEPARATOR_RE = re.compile(r"[,;\r\n]+")
 _META_DOCUMENT_TITLE_PATTERN = re.compile(
@@ -722,15 +724,17 @@ def _build_prompt(
 2. standard_refs 只能填写本次检索结果中的 standard_ref，且必须是 JSON 字符串数组；不能匹配时填 [] 并将 needs_human_review 设为 true。
 3. 图片不能单独构成发布结论；图片模糊、不可判断或与标准不充分对应时，在 image_evidence_summary 中说明，并设 needs_human_review=true。
 4. reasoning_summary 是给审核人的简短依据摘要，不要输出思维过程，不超过 240 字。
-5. title 必须是可复用的知识标题，不得复述“回收师遇到/咨询/希望获得”等会话叙述。content 只保留 3～5 个必要要点，总长度不超过 500 字；不得整段复制输入的核心问题、判定依据或参考话术。
-6. 若会话没有“具体对象 + 明确现象/图片证据 + 可对应标准”中的关键证据，或包含“疑似、不确定、证据不足、未识别、未发现”等表达，不得给出确定性质检结论。此时 knowledge_form 必须为“流程方法”，内容应给出检查步骤、需补充证据和标准对照，并以“补充证据后再判定”收口；本次个案结论不可外推为通用规则。
-7. applicable_scope 只能填写当前生效品类中的正式名称，例如“手机”“笔记本”“平板电脑”，不得包含任何“-通用”“-iOS”“-Windows”或其他后缀。来源明确限制品牌时填写 applicable_brands；来源明确限制具体机型时填写 applicable_models；没有明确来源时两个数组都填 []，不得推测。
-8. recommended_reply 是人工答疑可直接发送的推荐回复，80～180 字，语气简洁，不写内部审核术语，不承诺证据不足时的确定结论。
-9. 只输出一个 JSON 对象，不要 Markdown，不要额外解释。字段必须完整：
+5. title 必须是可复用的知识标题，不得复述“回收师遇到/咨询/希望获得”等会话叙述。subtitles 必须尽可能填写 2～6 个、最多 8 个可检索的自然问句：第一个为覆盖整条知识范围的面问法，其余为覆盖阈值、正反条件、分支、测量或操作要点的点问法。副标题不是主标题的机械同义改写，不得只写品类、部位、范围、标准编号、审核状态或关键词；每条都应保留与主标题一致的对象、现象和适用范围粒度。content 必须采用 content_type 对应的简洁编号格式，总长度不超过 500 字；不得整段复制输入的核心问题、判定依据或参考话术。
+6. content_type 只能为“定义型”“阈值型”“核验型”“区分型”，按以下优先级选择：多个易混淆现象且存在“区分、优先按、转按、分别计数”等关系时为区分型；必须依赖明确操作、测试或取证步骤才能判断时为核验型；单一现象存在尺寸、数量、时长、次数等决定性条件时为阈值型；其余仅解释单一现象含义或优先级时为定义型。定义型通常写 1～2 条；阈值型、核验型按已有证据写 1～3 条或 1～4 条；区分型通常写 2～5 条。只保留解决当前问题的最少要点，没有来源依据的组件不要凑写，也不要使用空占位。
+7. 若会话没有“具体对象 + 明确现象/图片证据 + 可对应标准”中的关键证据，或包含“疑似、不确定、证据不足、未识别、未发现”等表达，不得给出确定性质检结论。此时 knowledge_form 必须为“流程方法”，内容应给出检查步骤、需补充证据和标准对照，并以“补充证据后再判定”收口；本次个案结论不可外推为通用规则。
+8. applicable_scope 只能填写当前生效品类中的正式名称，例如“手机”“笔记本”“平板电脑”，不得包含任何“-通用”“-iOS”“-Windows”或其他后缀。来源明确限制品牌时填写 applicable_brands；来源明确限制具体机型时填写 applicable_models；没有明确来源时两个数组都填 []，不得推测。
+9. recommended_reply 是人工答疑可直接发送的推荐回复，80～180 字，语气简洁，不写内部审核术语，不承诺证据不足时的确定结论。
+10. 只输出一个 JSON 对象，不要 Markdown，不要额外解释。字段必须完整：
 {{
   "title": "string",
   "subtitles": ["string"],
   "content": "string",
+  "content_type": "定义型、阈值型、核验型或区分型",
   "category_l1": "string",
   "category_l2": "string",
   "layer": "L2",
@@ -772,12 +776,12 @@ def _build_topic_prompt(
         else "只能依据主题特征、来源事实证据包、历史实际回复和对应案例图"
     )
     concrete_rule = (
-        "只有同时满足“明确边界问题 + 可引用的本次标准 + 足够支持的主题证据”时，knowledge_form 才可为“具体判定”。"
+        "只有同时满足“明确边界问题 +（可引用的本次标准或足够支持的主题来源事实）”时，knowledge_form 才可为“具体判定”；无标准引用时必须标记人工复核，不能把经验补充写成总部标准。"
         if use_standard_references
         else "只有主题内案例证据清楚、一致且足以支持可复用结论时，knowledge_form 才可为“具体判定”；否则必须为“流程方法”。"
     )
     standard_rule = (
-        "standard_refs 只能填写本次检索结果的 standard_ref；knowledge_type 为“已有知识”时优先复用，未覆盖才新增；无可信标准时填 []，并将 needs_human_review=true。"
+        "standard_refs 只能填写本次检索结果的 standard_ref；knowledge_type 为“已有知识”时优先复用，未覆盖才新增；标准依据来源会在主题输入中说明，只有明确为总部标准时才可称“总部标准”，本地质检标准不得伪装成总部标准；无可信标准时填 []，仍可依据来源事实、历史实际回复和人工判定结论转写为经验补充候选，但必须 needs_human_review=true，且不得编造标准条款、阈值或平台规则。"
         if use_standard_references
         else "standard_refs 必须输出 []。不得根据记忆补写标准，也不得把质检标准问题改写成案例知识。"
     )
@@ -801,14 +805,14 @@ def _build_topic_prompt(
 {terminology_prompt_block}
 
 必须遵守：
-1. 主标题必须是自然、清楚、可直接使用的知识标题，优先写成用户会检索的问题或明确判定主题；不得堆砌关键词、使用斜杠串词，也不得直接使用“质检记录规则”“记录要求”“管理规定”等描述文档形式的公文式标题。若主题确实涉及记录要求，应改写成“工单中需要记录哪些信息”一类自然问法。副标题不是必填项；主标题已经表达清楚时输出空数组，最多输出 2 个自然问法。
+1. 主标题必须是自然、清楚、可直接使用的知识标题，优先写成用户会检索的问题或明确判定主题；不得堆砌关键词、使用斜杠串词，也不得直接使用“质检记录规则”“记录要求”“管理规定”等描述文档形式的公文式标题。若主题确实涉及记录要求，应改写成“工单中需要记录哪些信息”一类自然问法。subtitles 不得默认留空：应尽可能输出 2～6 个、最多 8 个可检索的自然问句。第一个必须是覆盖整条知识范围的面问法；其余是覆盖阈值、正反条件、分支、测量或操作要点的点问法。副标题不是主标题的机械同义改写，不得只写品类、部位、范围、标准编号、审核状态或关键词；每条都必须保留与主标题一致的对象、现象和适用范围粒度。
 2. {concrete_rule} 其余情况必须为“流程方法”。
 3. 外观、显示、拆修、胶状物、功能异常等需要现场图片判断的问题，默认沉淀核验过程：{image_flow_rule}。
 4. 只有机型/型号身份或功能结论在来源中无法确认时，才输出查询与核对流程；来源已经明确机型及功能结论时，必须输出该机型的具体事实，不得改写成“查询官网/核对型号”的泛化流程。
 5. {standard_rule}
 6. reasoning_summary 只写简短审核依据，不输出思维过程；不要编造聊天细节、图片细节或标准条款。
 7. 文字已经能完整表达规则时，requires_images=false，不能把图片当装饰；只有必须通过外观、部位、颜色、裂纹、坏点或拆修痕迹等视觉差异才能解释时，requires_images=true，并给出 image_usage_instruction。
-8. content 只保留 3～5 个必要要点，总长度不超过 500 字。不得使用“问题背景、判断对象、来源核验依据、人工处理结论”等内部分析报告标签；应直接写适用情形、核验要点、处理结论和适用边界。applicable_scope 只能填写品类名称，不得带任何后缀；来源明确限制品牌或具体机型时分别填写 applicable_brands、applicable_models，否则都填 []。单机型事实时，标题、正文、推荐回复和 applicable_models 都必须保留该机型，且不得外推到整个品类或其他机型。不得根据常识推测品牌或机型。recommended_reply 为 80～180 字、可直接发送的人工答疑回复，且必须保留正文中的具体对象、结论或处理边界。recommended_reply 只能回答当前单一原子主题，不得把同一会话中其他原子问题、副主题或对应答案拼接进来；即使相关文字在历史实际回复中出现过，也属于当前主题外内容，必须忽略。不得重复问候，不得使用“关于另一问题”“针对其他问题”等标签切换主题，不得输出残句或“，；”“，。”等异常标点。
+8. content_type 只能为“定义型”“阈值型”“核验型”“区分型”，并按以下优先级选择：多个易混淆现象且存在“区分、优先按、转按、分别计数”等关系时为区分型；必须依赖明确操作、测试或取证步骤才能判断时为核验型；单一现象存在尺寸、数量、时长、次数等决定性条件时为阈值型；其余仅解释单一现象含义或优先级时为定义型。content 必须使用对应的简洁编号格式：定义型通常 1～2 条，阈值型和核验型按已有证据写 1～3 条或 1～4 条，区分型通常 2～5 条；只写来源支持的最少规则，不得写空占位或通用流程凑数。不得使用“问题背景、判断对象、来源核验依据、人工处理结论”等内部分析报告标签；应直接写适用情形、核验要点、处理结论和适用边界。applicable_scope 只能填写品类名称，不得带任何后缀；来源明确限制品牌或具体机型时分别填写 applicable_brands、applicable_models，否则都填 []。单机型事实时，标题、正文、推荐回复和 applicable_models 都必须保留该机型，且不得外推到整个品类或其他机型。不得根据常识推测品牌或机型。recommended_reply 为 80～180 字、可直接发送的人工答疑回复，且必须保留正文中的具体对象、结论或处理边界。recommended_reply 只能回答当前单一原子主题，不得把同一会话中其他原子问题、副主题或对应答案拼接进来；即使相关文字在历史实际回复中出现过，也属于当前主题外内容，必须忽略。不得重复问候，不得使用“关于另一问题”“针对其他问题”等标签切换主题，不得输出残句或“，；”“，。”等异常标点。
 9. 无标准引用模式下，正文必须提炼来源聊天、历史实际回复或判定结论中的具体信息，至少覆盖“具体对象/代际/来源问题”“检查项或触发条件”“实际结论或处理方式”“不能适用时的边界”中的 2 项。禁止只输出“适用主题、明确对象、补充截图/视频/查询结果、结合案例、完善资料后再处理”之类的通用四步模板，也不得套用“适用对象、处理原则、记录要求、边界说明”这类制度条款模板把个案包装成通用规则。
 10. 【来源事实证据包】中的 facts 是全部可审计来源，representative_facts 是本轮优先组织知识的代表性证据。人工核心问题和人工判定结论是明确的结构化事实，必须与聊天、历史实际回复共同使用；发生冲突时标记人工复核，不得静默覆盖。
 11. 每个对象、条件、结论、例外和图片说明都必须能回到证据包中的事实ID。没有来源的内容不得补写；来源没有提供核验方式或适用边界时，应明确说明证据缺口并标记人工复核，不能使用模型常识扩写。
@@ -818,6 +822,7 @@ def _build_topic_prompt(
   "title": "string",
   "subtitles": ["string"],
   "content": "string",
+  "content_type": "定义型、阈值型、核验型或区分型",
   "category_l1": "string",
   "category_l2": "string",
   "layer": "L2",
@@ -862,12 +867,12 @@ def _build_topic_review_prompt(
         else "只能依据来源事实证据包、来源案例、历史实际回复和对应案例图审核"
     )
     concrete_rule = (
-        "草稿为“具体判定”时，必须有本次检索标准引用和足够主题证据；否则结论为“需修改”或“证据不足待补充”。"
+        "草稿为“具体判定”时，必须有本次检索标准引用，或有清楚、一致且足够的主题来源事实；后者只能作为经验补充候选，必须重点人工复核。"
         if use_standard_references
         else "草稿为“具体判定”时，必须有清楚、一致且可复用的案例证据；证据不足时结论为“需修改”或“证据不足待补充”。"
     )
     standard_rules = (
-        "4. 无可信标准的草稿不得标“通过”；应标“证据不足待补充”，并标记重点复核。\n"
+        "4. 无可信标准时，standard_consistency 填“无可信标准”，必须标记重点复核；若正文和推荐回复均有充分来源事实支撑，可以作为经验补充候选标“通过”，但不得伪装为总部标准或编造阈值、条款。\n"
         "8. 转写引用标准与独立复核标准不一致时，应标记“标准项映射错”或“标准召回不足”。"
         if use_standard_references
         else "4. 本模式不使用标准引用；standard_consistency 固定填写“无可信标准”，但不能仅因此判定不通过。\n"
@@ -887,7 +892,7 @@ def _build_topic_review_prompt(
 
 你的职责是“审核标注”，不是改写知识：{responsibility}；只判断草稿能否进入人工复标。
 
-该主题的沉淀价值已经在转写前完成，并且只有标注为“值得沉淀”的主题才会进入本环节。你不得重新判断是否值得沉淀，knowledge_value 固定返回“值得沉淀”。
+该主题的沉淀价值已经在转写前完成；所有通过聚类准入的主题都可能进入本环节。你不得重新判断是否值得沉淀，knowledge_value 仅作兼容字段，原样返回主题输入中的 knowledge_value；缺失时返回“待确认”。
 
 {terminology_prompt_block}
 
@@ -900,7 +905,7 @@ def _build_topic_review_prompt(
 6. 必须审核主标题是否自然清楚、副标题是否只是关键词堆砌；直接使用“质检记录规则”“记录要求”“管理规定”等公文式元描述的标题必须标记为需修改，但“工单中需要记录哪些信息”一类自然问法可以保留。主标题清楚时不应强行要求副标题。
 7. 必须审核图片必要性：文字能说清时不应要求图片；依赖视觉差异时没有保留图片，应标记需修改或证据不足。
 9. 本环节只审核标题、正文、分类、推荐回复、证据一致性和图片必要性；不得因为重新评价沉淀价值而驳回草稿。
-10. knowledge_value 只是兼容字段，必须固定返回“值得沉淀”。
+10. knowledge_value 只是兼容字段，必须原样返回主题输入中的 knowledge_value；不得在本环节重判沉淀价值。
 11. 逐项核对草稿中的对象、条件、结论、例外和图片说明是否能回到主题信息中的事实ID；找不到来源事实的内容必须判为“需修改”或“证据不足待补充”。无标准引用模式下，正文若套用“适用对象、处理原则、记录要求、边界说明”等制度条款模板，应检查是否把单个案例外推成了通用规则。
 12. 人工核心问题和人工判定结论必须明确纳入审核；它们与聊天证据冲突时必须重点复核，不能选择性忽略任一侧。
 13. 推荐回复必须只服务当前单一原子主题。若混入其他原子问题或答案、重复问候、使用“关于××问题”“针对××”切换主题、出现残句或“，；”“，。”等异常标点，必须标记“需修改”；不能因为这些内容出现在历史实际回复中就判断一致。
@@ -1602,6 +1607,38 @@ def _atomic_unit_payload(unit: dict[str, Any]) -> dict[str, Any]:
         "clustering_standard_family": _text(unit.get("_聚类标准族"), 120),
         "clustering_phenomenon_value": _text(unit.get("_聚类现象值"), 80),
         "clustering_merge_policy": _text(unit.get("_聚类合并策略"), 80),
+        "precluster_rule_status": _text(
+            unit.get("_预聚类规则状态"),
+            40,
+        ),
+        "precluster_rule_id": _text(
+            unit.get("_预聚类判定规则ID"),
+            80,
+        ),
+        "precluster_standard_family": _text(
+            unit.get("_预聚类标准族"),
+            120,
+        ),
+        "precluster_phenomenon_value": _text(
+            unit.get("_预聚类现象值"),
+            80,
+        ),
+        "precluster_merge_policy": _text(
+            unit.get("_预聚类合并策略"),
+            80,
+        ),
+        "classification_catalog_status": _text(
+            unit.get("_分类库状态"),
+            40,
+        ),
+        "classification_catalog_paths": _text(
+            unit.get("_分类库候选标准路径"),
+            500,
+        ),
+        "classification_catalog_categories": _text(
+            unit.get("_分类库候选问题分类"),
+            300,
+        ),
         "requires_review": _as_bool(unit.get("requires_review")),
     }
 
@@ -1666,8 +1703,10 @@ def _build_atomic_topic_cluster_prompt(
 13. “无法与其他知识点合并”不等于“不确定”。只要该原子知识点自身主题清楚，就必须建立单成员簇。
     少见、特殊或标准咨询类原子问题可以合理保持单成员簇，不得为了减少单例或提高簇大小而强制合并。
 14. review_requests 仅用于输入字段自身矛盾、缺失或无法判断适用范围/路径/阈值的情况；不得用于存放清晰但独立的知识点。
-15. 每个主题簇必须返回 confidence 和 requires_review。confidence 表示“簇内所有成员确实能共用同一条知识”的把握，不是单条原子问题自身清晰度。字段冲突、证据不足或合并边界不清时 requires_review=true。
-16. 只输出一个 JSON 对象，不要 Markdown。
+15. precluster_* 是系统根据源聊天、人工核心问题、判定结论和本地聚类关键词规则得到的预识别结果。它只用于聚类边界，不是知识正文或标准引用。若 precluster_rule_status=rule_matched，应优先核对该标准族和现象值；模型不得无依据改成另一标准族。若模型结构化字段与预识别结果冲突，必须将该原子问题放入 review_requests，不得静默覆盖。
+16. classification_catalog_* 是新分类库给出的候选分类和标准路径，只用于补充问题识别，不是最终聚类依据，也不是标准正文引用。classification_catalog_status=classification_matched 时，同一路径可作为“值得比较”的辅助信号，但仍必须核对对象、判定目标和处理结论。classification_catalog_status=classification_ambiguous 时，不得仅因候选路径不同把同品类案例强制拆开；应先按聊天、人工校正字段和聚类规则判断能否共用知识，并将最终簇标记 requires_review=true。分类库候选与当前聚类规则或聊天证据不一致时，以当前聚类规则和聊天证据为准，并进入人工复核。
+17. 每个主题簇必须返回 confidence 和 requires_review。confidence 表示“簇内所有成员确实能共用同一条知识”的把握，不是单条原子问题自身清晰度。字段冲突、证据不足或合并边界不清时 requires_review=true。
+18. 只输出一个 JSON 对象，不要 Markdown。
 
 输出结构：
 {{
@@ -1805,12 +1844,131 @@ def _fallback_recommended_reply(title: str, content: str) -> str:
     return _text(f"您好，关于“{title}”，建议{body}。若现有证据不能对应标准，请补充证据后再判定。", 240)
 
 
+def _content_type_has_expected_numbered_points(
+    content: str,
+    content_type: str,
+) -> bool:
+    counts = {
+        "定义型": (1, 2),
+        "阈值型": (1, 3),
+        "核验型": (1, 4),
+        "区分型": (2, 5),
+    }
+    minimum, maximum = counts[content_type]
+    points = re.findall(r"(?:^|\n)\s*\d+[.、]\s*\S+", content)
+    return minimum <= len(points) <= maximum
+
+
+_CONTENT_TYPE_ALIASES = {
+    "流程型": "核验型",
+    "检测型": "核验型",
+    "查询型": "核验型",
+    "操作型": "核验型",
+    "标准判定型": "阈值型",
+    "阈值判定型": "阈值型",
+    "边界型": "区分型",
+    "区别型": "区分型",
+    "说明型": "定义型",
+    "解释型": "定义型",
+}
+
+
+def _normalize_content_type(value: Any, content: str) -> str:
+    supplied = _text(value, 16)
+    if not supplied:
+        return ""
+    if supplied in CONTENT_TYPES:
+        return supplied
+    aliased = _CONTENT_TYPE_ALIASES.get(supplied)
+    if aliased:
+        return aliased
+
+    if supplied not in {"判定型", "规则型"}:
+        return ""
+    if any(
+        marker in content
+        for marker in ("区分", "区别", "分别", "优先按", "转按")
+    ):
+        return "区分型"
+    if (
+        re.search(r"\d+(?:\.\d+)?\s*(?:mm|cm|毫米|厘米|%|次|处|个|颗)", content)
+        and any(
+            marker in content
+            for marker in ("大于", "小于", "不超过", "不少于", "达到", "低于", "高于")
+        )
+    ):
+        return "阈值型"
+    if any(
+        marker in content
+        for marker in (
+            "打开",
+            "进入",
+            "查看",
+            "查询",
+            "检测",
+            "核验",
+            "测试",
+            "确认",
+            "读取",
+            "拍摄",
+            "补充",
+        )
+    ):
+        return "核验型"
+    return "定义型"
+
+
+_SUBTITLE_QUESTION_MARKERS = (
+    "如何",
+    "怎么",
+    "是否",
+    "什么",
+    "哪些",
+    "能否",
+    "多大",
+    "多少",
+    "几处",
+    "有无",
+    "为啥",
+    "为什么",
+)
+
+
+def _validate_subtitles(
+    subtitles: list[str],
+    title: str,
+    *,
+    required: bool,
+) -> list[str]:
+    normalized_title = _text(title, 120)
+    validated: list[str] = []
+    for subtitle in dict.fromkeys(
+        _text(item, 120)
+        for item in subtitles
+        if _text(item, 120)
+    ):
+        if subtitle == normalized_title:
+            continue
+        if required and candidate_title_structure_issue(subtitle):
+            continue
+        if required and not any(
+            marker in subtitle
+            for marker in _SUBTITLE_QUESTION_MARKERS
+        ):
+            continue
+        validated.append(subtitle)
+        if len(validated) >= 8:
+            break
+    return validated
+
+
 def _validate_candidate(value: Any, allowed_refs: set[str]) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise MimoError("MiMo 输出不是 JSON 对象")
     required_text = [
         "title", "content", "category_l1", "category_l2", "layer",
-        "knowledge_form", "applicable_scope", "reasoning_summary", "image_evidence_summary",
+        "knowledge_form", "content_type", "applicable_scope",
+        "reasoning_summary", "image_evidence_summary",
     ]
     for key in required_text:
         if not _text(value.get(key)):
@@ -1858,7 +2016,25 @@ def _validate_candidate(value: Any, allowed_refs: set[str]) -> dict[str, Any]:
             f"主标题不能使用“{title_style_issue}”这类公文式元描述，"
             "应改为自然的检索问题或明确判定主题"
         )
+    supplied_content_type = _text(value.get("content_type"), 16)
     content = _text(value["content"], 1200)
+    content_type = _normalize_content_type(supplied_content_type, content)
+    if not content_type:
+        raise MimoError(
+            "MiMo 输出的 content_type 必须为 定义型、阈值型、核验型 或 区分型"
+        )
+    validated_subtitles = _validate_subtitles(
+        subtitles,
+        title,
+        required=True,
+    )
+    if not _content_type_has_expected_numbered_points(
+        content,
+        content_type,
+    ):
+        raise MimoError(
+            f"MiMo 输出的{content_type}正文必须使用对应数量的编号要点"
+        )
     applicable_category = resolve_product_category(value["applicable_scope"])
     if applicable_category is None:
         raise MimoError(
@@ -1866,12 +2042,9 @@ def _validate_candidate(value: Any, allowed_refs: set[str]) -> dict[str, Any]:
         )
     return {
         "title": title,
-        "subtitles": [
-            _text(item, 120)
-            for item in subtitles[:2]
-            if _text(item, 120) and _text(item, 120) != title
-        ],
+        "subtitles": validated_subtitles,
         "content": content,
+        "content_type": content_type,
         "category_l1": _text(value["category_l1"], 80),
         "category_l2": _text(value["category_l2"], 80),
         "layer": _text(value["layer"], 32) or "L2",

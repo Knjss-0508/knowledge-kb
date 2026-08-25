@@ -447,7 +447,9 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(labeled[0]["知识分类"], "质检流程")
             self.assertEqual(labeled[0]["生效状态"], "待审核")
             self.assertIn("屏幕显示异常如何通过图片核验", labeled[0]["主标题"])
-            self.assertIn("核验流程", labeled[0]["知识内容"])
+            self.assertRegex(labeled[0]["知识内容"], r"(?m)^1\. ")
+            self.assertEqual(labeled[0]["正文类型"], "定义型")
+            self.assertNotIn("核验流程：", labeled[0]["知识内容"])
 
     def test_candidate_knowledge_card_does_not_repeat_source_narrative(self) -> None:
         standard = load_standard_catalog(
@@ -548,7 +550,9 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(candidate["主标题"], "设备机型如何查询与确认")
         self.assertEqual(candidate["候选知识形态"], "流程方法")
-        self.assertIn("查询流程", candidate["知识内容"])
+        self.assertRegex(candidate["知识内容"], r"(?m)^1\. ")
+        self.assertEqual(candidate["正文类型"], "核验型")
+        self.assertNotIn("查询流程：", candidate["知识内容"])
         self.assertNotIn("该设备型号为某机型", candidate["知识内容"])
 
     def test_function_problem_uses_function_verification_flow(self) -> None:
@@ -583,7 +587,9 @@ class WorkflowTests(unittest.TestCase):
         candidate = initial_label_rows([row], [standard])[0]
 
         self.assertEqual(candidate["主标题"], "摄像头功能如何核验")
-        self.assertIn("功能核验流程", candidate["知识内容"])
+        self.assertRegex(candidate["知识内容"], r"(?m)^1\. ")
+        self.assertEqual(candidate["正文类型"], "核验型")
+        self.assertNotIn("功能核验流程：", candidate["知识内容"])
         self.assertNotIn("外观异常", candidate["知识内容"])
 
     def test_explicit_boundary_case_keeps_specific_judgment(self) -> None:
@@ -619,7 +625,9 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(candidate["候选知识形态"], "具体判定")
         self.assertEqual(candidate["知识分类"], "质检标准")
-        self.assertIn("场景结论", candidate["知识内容"])
+        self.assertRegex(candidate["知识内容"], r"(?m)^1\. ")
+        self.assertEqual(candidate["正文类型"], "区分型")
+        self.assertNotIn("场景结论：", candidate["知识内容"])
 
     def test_candidate_export_contains_only_knowledge_master_columns(self) -> None:
         candidate = {
@@ -640,7 +648,7 @@ class WorkflowTests(unittest.TestCase):
             "模型运行ID": "run-001",
         }
         expected_headers = [
-            "主标题", "副标题", "知识内容", "知识分类", "知识来源", "关联标准项", "适用范围",
+            "主标题", "副标题", "知识内容", "正文类型", "知识分类", "知识来源", "关联标准项", "适用范围",
             "适用品牌", "适用机型",
             "生效状态", "来源版本", "变更类型", "失效原因", "检索关键词", "校验备注",
         ]
@@ -655,7 +663,7 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(headers, expected_headers)
         self.assertEqual(values[0], candidate["主标题"])
-        self.assertEqual(values[6], "手机")
+        self.assertEqual(values[7], "手机")
         self.assertEqual(len(values), len(expected_headers))
 
     def test_candidate_export_groups_duplicate_topics_into_theme_rows(self) -> None:
@@ -708,6 +716,41 @@ class WorkflowTests(unittest.TestCase):
         note_index = headers.index("校验备注")
         self.assertIn("主题聚合样本数：2", first_row[note_index])
         self.assertIn("来源记录ID：A、B", first_row[note_index])
+
+    def test_topic_candidate_export_moves_embedded_recommended_reply_to_reply_column(self) -> None:
+        output_path = Path(tempfile.mkdtemp()) / "candidate_knowledge.xlsx"
+        write_topic_candidate_knowledge_workbook(
+            [
+                {
+                    "主题ID": "TOP-EMBEDDED-REPLY",
+                    "知识ID": "TOP-EMBEDDED-REPLY",
+                    "主题转写状态": "topic_model_labeled",
+                    "主标题": "手机屏幕黑点如何判定",
+                    "知识内容": (
+                        "判定要点：\n"
+                        "1. 在纯白、纯灰、纯黑背景下复测黑点。\n"
+                        "2. 记录最大直径和数量。\n\n"
+                        "【推荐回复】\n"
+                        "您好，请先在纯白、纯灰、纯黑背景下复测并记录黑点直径和数量。"
+                    ),
+                    "推荐回复": "",
+                    "知识分类": "质检标准",
+                    "知识来源": "业务沉淀",
+                    "适用范围": "手机",
+                }
+            ],
+            output_path,
+            use_standard_references=True,
+        )
+
+        workbook = load_workbook(output_path, read_only=True, data_only=True)
+        values = list(workbook["候选知识"].iter_rows(values_only=True))
+        workbook.close()
+        exported = dict(zip(values[0], values[1]))
+
+        assert "【推荐回复】" not in exported["知识内容"]
+        assert exported["知识内容"].startswith("判定要点：")
+        assert exported["推荐回复"].startswith("您好，请先在纯白")
 
     def test_topic_review_excludes_structured_only_records(self) -> None:
         base = {

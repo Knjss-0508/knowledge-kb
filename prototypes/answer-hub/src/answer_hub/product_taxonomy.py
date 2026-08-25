@@ -29,6 +29,26 @@ REQUIRED_PRODUCT_CATEGORIES = (
 )
 AMBIGUOUS_CAMERA_VALUES = frozenset({"相机", "相机机身", "camera_body"})
 AMBIGUOUS_PRODUCT_VALUES = frozenset({"电脑"})
+PRODUCT_TYPE_PLACEHOLDER_VALUES = frozenset(
+    {
+        "机型",
+        "型号",
+        "待确认",
+        "待确定",
+        "不确定",
+        "未知",
+        "未知新品类",
+        "其他",
+        "自营回收",
+        "聚合回收",
+        "自营",
+        "聚合",
+        "无",
+        "none",
+        "null",
+        "n/a",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +65,23 @@ def _text(value: Any) -> str:
 
 def _key(value: Any) -> str:
     return re.sub(r"[\s_\-/／]+", "", _text(value).lower())
+
+
+def is_product_type_placeholder(value: Any) -> bool:
+    text = _text(value)
+    key = _key(value)
+    if not key:
+        return True
+    if key in {_key(item) for item in PRODUCT_TYPE_PLACEHOLDER_VALUES}:
+        return True
+    return any(marker in text for marker in ("待确认", "待确定", "不确定", "未知"))
+
+
+def is_concrete_unconfigured_product(value: Any) -> bool:
+    return (
+        not is_product_type_placeholder(value)
+        and resolve_product_category(value) is None
+    )
 
 
 def product_taxonomy_path(path: str | Path | None = None) -> Path:

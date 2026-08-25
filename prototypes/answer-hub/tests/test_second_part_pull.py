@@ -226,7 +226,7 @@ def test_pull_advances_only_through_successfully_queued_pages(tmp_path: Path) ->
     assert json.loads(state_path.read_text(encoding="utf-8"))["cursor"] == "cursor-2"
 
 
-def test_pull_rejects_records_missing_profile_required_fields(
+def test_pull_queues_valid_records_and_reports_rows_missing_required_fields(
     tmp_path: Path,
 ) -> None:
     profile = _write_profile(tmp_path / "profile.json")
@@ -243,12 +243,17 @@ def test_pull_rejects_records_missing_profile_required_fields(
                 "data": {
                     "items": [
                         {
-                            "work_order_id": "WO-MISSING-001",
+                            "work_order_id": "WO-VALID-001",
                             "conversation": "手机无法充电怎么处理？",
+                            "product_type": "手机",
+                        },
+                        {
+                            "work_order_id": "WO-MISSING-001",
+                            "conversation": "不应写入异常清单的聊天内容。",
                             "product_type": "",
                         }
                     ],
-                    "next_cursor": "",
+                    "next_cursor": "cursor-2",
                     "has_more": False,
                 }
             }
@@ -263,22 +268,29 @@ def test_pull_rejects_records_missing_profile_required_fields(
         fetcher=fetcher,
     )
 
-    assert summary["status"] == "rejected"
-    assert summary["fetched_records"] == 1
-    assert summary["queued_jobs"] == 0
+    assert summary["status"] == "queued"
+    assert summary["fetched_records"] == 2
+    assert summary["queued_jobs"] == 1
     assert summary["rejected_records"] == 1
-    assert len(summary["rejection_reports"]) == 1
-    report = json.loads(
-        Path(summary["rejection_reports"][0]["path"]).read_text(encoding="utf-8")
-    )
-    assert report["rejected_records"] == [
+    assert summary["cursor"] == "cursor-2"
+    assert json.loads(
+        (tmp_path / "pull-state.json").read_text(encoding="utf-8")
+    )["cursor"] == "cursor-2"
+
+    workbook = next((tmp_path / "queue" / "pending").glob("*.xlsx"))
+    _columns, rows = read_workbook_rows(workbook)
+    assert [row["工单ID"] for row in rows] == ["WO-VALID-001"]
+
+    rejection_report = Path(summary["rejection_reports"][0]["path"])
+    rejection_text = rejection_report.read_text(encoding="utf-8")
+    assert "不应写入异常清单的聊天内容" not in rejection_text
+    assert json.loads(rejection_text)["rejected_records"] == [
         {
-            "source_index": 1,
+            "source_index": 2,
             "source_record_id": "WO-MISSING-001",
             "missing_required_fields": ["产品类型"],
         }
     ]
-    assert not list((tmp_path / "queue" / "pending").glob("*.xlsx"))
 
 
 def test_http_fetcher_injects_auth_and_cursor_without_persisting_secret(

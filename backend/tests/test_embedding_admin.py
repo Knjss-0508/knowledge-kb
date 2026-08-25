@@ -2,10 +2,7 @@ import hashlib
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-
-from fastapi import HTTPException
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from unittest.mock import MagicMock, call, patch
 
 from app.core.config import settings
 from app.models.embedding_admin import (
@@ -15,7 +12,10 @@ from app.models.embedding_admin import (
     EmbeddingTrainingRunner,
     EmbeddingTrainingSample,
 )
+from app.models.integration import RetrievalQualityEvent
+from app.models.knowledge import Category, Knowledge, KnowledgeStatus
 from app.routes.embedding_admin import (
+    _embedding_lab_scope_ids,
     _task_runner_url,
     activate_embedding_config,
     claim_task_training_job,
@@ -25,12 +25,17 @@ from app.routes.embedding_admin import (
     create_embedding_config,
     create_training_job,
     decide_model_version,
+    embedding_lab_search,
     fail_training_job,
+    get_embedding_overview,
     probe_task_runner_access,
     regenerate_training_job_runner_access,
+    review_retrieval_event,
     runner_heartbeat,
+    update_training_sample,
 )
 from app.schemas.embedding_admin import (
+    EmbeddingLabSearchRequest,
     EmbeddingModelDecision,
     EmbeddingRunnerClaim,
     EmbeddingRunnerComplete,
@@ -39,9 +44,19 @@ from app.schemas.embedding_admin import (
     EmbeddingRuntimeConfigCreate,
     EmbeddingRuntimeConfigValues,
     EmbeddingTrainingJobCreate,
+    EmbeddingTrainingSampleUpdate,
+    RetrievalQualityReview,
 )
-from app.services.embedding_admin import build_training_dataset
+from app.services.embedding_admin import (
+    build_training_dataset,
+    import_deduplication_samples,
+    import_retrieval_samples,
+)
 from app.services.embedding_runtime import default_embedding_runtime_config
+from fastapi import HTTPException
+from pydantic import ValidationError
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 
 class EmbeddingAdminTests(unittest.TestCase):
@@ -50,6 +65,9 @@ class EmbeddingAdminTests(unittest.TestCase):
         settings.EMBEDDING_TRAINING_PUBLIC_BASE_URL = "https://kb.example.test"
         self.engine = create_engine("sqlite+pysqlite:///:memory:")
         for table in (
+            Category.__table__,
+            Knowledge.__table__,
+            RetrievalQualityEvent.__table__,
             EmbeddingRuntimeConfig.__table__,
             EmbeddingTrainingSample.__table__,
             EmbeddingTrainingJob.__table__,
@@ -162,6 +180,8 @@ class EmbeddingAdminTests(unittest.TestCase):
 
         retrieval_values = dict(base_values)
         retrieval_values["retrieval_score_threshold"] = 0.55
+        retrieval_values["retrieval_headquarters_standard_top_k"] = 2
+        retrieval_values["retrieval_business_accumulation_top_k"] = 4
         retrieval_values["dedup_block_threshold"] = 0.70
         retrieval_values["dedup_review_threshold"] = 0.60
         retrieval_active = create_embedding_config(
@@ -175,6 +195,14 @@ class EmbeddingAdminTests(unittest.TestCase):
             self.user,
         )
         self.assertEqual(retrieval_active["config"]["retrieval_score_threshold"], 0.55)
+        self.assertEqual(
+            retrieval_active["config"]["retrieval_headquarters_standard_top_k"],
+            2,
+        )
+        self.assertEqual(
+            retrieval_active["config"]["retrieval_business_accumulation_top_k"],
+            4,
+        )
         self.assertEqual(retrieval_active["config"]["dedup_block_threshold"], 0.96)
         self.assertEqual(retrieval_active["config"]["dedup_review_threshold"], 0.88)
 
@@ -188,6 +216,1024 @@ class EmbeddingAdminTests(unittest.TestCase):
         self.assertEqual(
             activated_dedup["config"]["retrieval_score_threshold"],
             0.55,
+        )
+        self.assertEqual(
+            activated_dedup["config"]["retrieval_headquarters_standard_top_k"],
+            2,
+        )
+        self.assertEqual(
+            activated_dedup["config"]["retrieval_business_accumulation_top_k"],
+            4,
+        )
+
+    def test_retrieval_pool_top_k_defaults_and_bounds(self):
+        values = EmbeddingRuntimeConfigValues()
+        self.assertEqual(values.retrieval_headquarters_standard_top_k, 5)
+        self.assertEqual(values.retrieval_business_accumulation_top_k, 5)
+
+        for field in (
+            "retrieval_headquarters_standard_top_k",
+            "retrieval_business_accumulation_top_k",
+        ):
+            valid_values = EmbeddingRuntimeConfigValues(
+                **{field: 10},
+            )
+            self.assertEqual(getattr(valid_values, field), 10)
+            for invalid_value in (0, 11, 1.5):
+                with self.subTest(field=field, value=invalid_value):
+                    with self.assertRaises(ValidationError):
+                        EmbeddingRuntimeConfigValues(
+                            **{field: invalid_value},
+                        )
+        with self.assertRaises(ValidationError):
+            EmbeddingLabSearchRequest(
+                query="iPad 指纹",
+                applicable_category_id="119",
+                applicable_brand_id="10530",
+                applicable_model_id="iPad16,3",
+                top_k=51,
+            )
+
+    def test_vector_lab_scope_filters_are_normalized_and_require_category(self):
+        request = EmbeddingLabSearchRequest(
+            query="iPad 防水标签",
+            applicable_category_id=" 119 ",
+            applicable_brand_id=" 10530 ",
+            applicable_model_id=" iPad16,3 ",
+        )
+
+        self.assertEqual(request.applicable_category_id, "119")
+        self.assertEqual(request.applicable_brand_id, "10530")
+        self.assertEqual(request.applicable_model_id, "iPad16,3")
+        with self.assertRaises(ValidationError):
+            EmbeddingLabSearchRequest(
+                query="iPad 防水标签",
+            )
+        with self.assertRaisesRegex(ValidationError, "必须选择适用品类"):
+            EmbeddingLabSearchRequest(
+                query="iPad 防水标签",
+                applicable_category_id="   ",
+            )
+        self.assertEqual(
+            {
+                "applicable_category_id",
+                "applicable_brand_id",
+                "applicable_model_id",
+            },
+            set(EmbeddingLabSearchRequest.model_fields).intersection(
+                {
+                    "applicable_category_id",
+                    "applicable_brand_id",
+                    "applicable_model_id",
+                }
+            ),
+        )
+        self.assertTrue(
+            {
+                "knowledge_origin",
+                "business_type",
+                "category_id",
+                "applicable_category_ids",
+                "brand_ids",
+                "model_ids",
+            }.isdisjoint(EmbeddingLabSearchRequest.model_fields)
+        )
+
+    def test_vector_lab_model_filter_requires_brand(self):
+        with self.assertRaisesRegex(ValidationError, "选择机型前必须先选择品牌"):
+            EmbeddingLabSearchRequest(
+                query="iPad 防水标签",
+                applicable_category_id="119",
+                applicable_model_id="iPad16,3",
+            )
+
+        request = EmbeddingLabSearchRequest(
+            query="iPad 防水标签",
+            applicable_category_id="119",
+            applicable_brand_id="   ",
+        )
+        self.assertIsNone(request.applicable_brand_id)
+        self.assertIsNone(request.applicable_model_id)
+
+    def test_vector_lab_scope_ids_apply_category_brand_model_funnel_exactly(self):
+        rows = [
+            SimpleNamespace(
+                knowledge_id="generic",
+                applicable_categories=[],
+                applicable_brands=[],
+                applicable_models=[],
+            ),
+            SimpleNamespace(
+                knowledge_id="category-only",
+                applicable_categories=[{"categoryId": "119"}],
+                applicable_brands=[],
+                applicable_models=[],
+            ),
+            SimpleNamespace(
+                knowledge_id="category-prefix",
+                applicable_categories=["1190"],
+                applicable_brands=[],
+                applicable_models=[],
+            ),
+            SimpleNamespace(
+                knowledge_id="brand-match",
+                applicable_categories=["119"],
+                applicable_brands=[{"brandId": "10530"}],
+                applicable_models=[],
+            ),
+            SimpleNamespace(
+                knowledge_id="brand-other",
+                applicable_categories=["119"],
+                applicable_brands=["10531"],
+                applicable_models=[],
+            ),
+            SimpleNamespace(
+                knowledge_id="model-match",
+                applicable_categories=["119"],
+                applicable_brands=["10530"],
+                applicable_models=[{"modelId": "97001"}],
+            ),
+            SimpleNamespace(
+                knowledge_id="model-other",
+                applicable_categories=["119"],
+                applicable_brands=["10530"],
+                applicable_models=["970010"],
+            ),
+        ]
+
+        cases = (
+            (
+                EmbeddingLabSearchRequest(
+                    query="仅品类",
+                    applicable_category_id="119",
+                ),
+                [
+                    "generic",
+                    "category-only",
+                    "brand-match",
+                    "brand-other",
+                    "model-match",
+                    "model-other",
+                ],
+            ),
+            (
+                EmbeddingLabSearchRequest(
+                    query="品类和品牌",
+                    applicable_category_id="119",
+                    applicable_brand_id="10530",
+                ),
+                [
+                    "generic",
+                    "category-only",
+                    "brand-match",
+                    "model-match",
+                    "model-other",
+                ],
+            ),
+            (
+                EmbeddingLabSearchRequest(
+                    query="品类品牌机型",
+                    applicable_category_id="119",
+                    applicable_brand_id="10530",
+                    applicable_model_id="97001",
+                ),
+                [
+                    "generic",
+                    "category-only",
+                    "brand-match",
+                    "model-match",
+                ],
+            ),
+        )
+        for body, expected_ids in cases:
+            with self.subTest(query=body.query):
+                scope_query = MagicMock()
+                scope_query.filter.return_value = scope_query
+                scope_query.all.return_value = rows
+                db = MagicMock()
+                db.query.return_value = scope_query
+
+                self.assertEqual(
+                    _embedding_lab_scope_ids(db, body, []),
+                    expected_ids,
+                )
+
+    def test_vector_lab_scope_resolves_ids_and_names_across_business_types(self):
+        cache = {
+            "options_by_business_type": {
+                "self_operated": {
+                    "applicable_categories": [
+                        {"categoryId": "119", "categoryName": "平板电脑"}
+                    ],
+                    "brands_by_category": {
+                        "119": [
+                            {"brandId": "10530", "brandName": "苹果"}
+                        ]
+                    },
+                    "models": [
+                        {
+                            "modelId": "97001",
+                            "modelName": "iPad 10",
+                            "categoryId": "119",
+                            "brandId": "10530",
+                        }
+                    ],
+                },
+                "aggregated": {
+                    "applicable_categories": [
+                        {"categoryId": "901", "categoryName": "黄金"}
+                    ],
+                    "brands_by_category": {
+                        "901": [
+                            {"brandId": "20001", "brandName": "聚合品牌"}
+                        ]
+                    },
+                    "models": [
+                        {
+                            "modelId": "30001",
+                            "modelName": "聚合机型",
+                            "categoryId": "901",
+                            "brandId": "20001",
+                        }
+                    ],
+                },
+            }
+        }
+        cases = (
+            (
+                EmbeddingLabSearchRequest(
+                    query="自营名称兼容",
+                    applicable_category_id="119",
+                    applicable_brand_id="10530",
+                    applicable_model_id="97001",
+                ),
+                SimpleNamespace(
+                    knowledge_id="self-operated-name",
+                    applicable_categories=["平板电脑"],
+                    applicable_brands=["苹果"],
+                    applicable_models=["iPad 10"],
+                ),
+            ),
+            (
+                EmbeddingLabSearchRequest(
+                    query="聚合名称兼容",
+                    applicable_category_id="901",
+                    applicable_brand_id="20001",
+                    applicable_model_id="30001",
+                ),
+                SimpleNamespace(
+                    knowledge_id="aggregated-name",
+                    applicable_categories=["黄金"],
+                    applicable_brands=["聚合品牌"],
+                    applicable_models=["聚合机型"],
+                ),
+            ),
+        )
+
+        with patch(
+            "app.routes.embedding_admin._read_manhattan_cache",
+            return_value=cache,
+        ):
+            for body, row in cases:
+                with self.subTest(query=body.query):
+                    scope_query = MagicMock()
+                    scope_query.filter.return_value = scope_query
+                    scope_query.all.return_value = [row]
+                    db = MagicMock()
+                    db.query.return_value = scope_query
+
+                    self.assertEqual(
+                        _embedding_lab_scope_ids(db, body, []),
+                        [row.knowledge_id],
+                    )
+
+    def test_vector_coverage_excludes_managed_exact_knowledge(self):
+        db = MagicMock()
+        published = MagicMock()
+        published.filter.return_value = published
+        published.count.return_value = 2
+        dedup = MagicMock()
+        dedup.join.return_value = dedup
+        dedup.filter.return_value = dedup
+        dedup.scalar.return_value = 1
+        search = MagicMock()
+        search.join.return_value = search
+        search.filter.return_value = search
+        search.scalar.return_value = 1
+        samples = MagicMock()
+        samples.group_by.return_value.all.return_value = []
+        jobs = MagicMock()
+        jobs.group_by.return_value.all.return_value = []
+        runner = MagicMock()
+        runner.order_by.return_value.first.return_value = None
+        latest_job = MagicMock()
+        latest_job.order_by.return_value.first.return_value = None
+        db.query.side_effect = [
+            published,
+            dedup,
+            search,
+            samples,
+            jobs,
+            runner,
+            latest_job,
+        ]
+
+        with (
+            patch(
+                "app.routes.embedding_admin._health_snapshot",
+                return_value={"status": "ok"},
+            ),
+            patch(
+                "app.routes.embedding_admin.get_active_runtime_record",
+                return_value=None,
+            ),
+        ):
+            result = get_embedding_overview(db, None)
+
+        self.assertEqual(result["vectors"]["published_total"], 2)
+        self.assertEqual(result["vectors"]["dedup_missing"], 1)
+        self.assertEqual(result["vectors"]["search_missing"], 1)
+        for query in (published, dedup, search):
+            expression_text = " ".join(
+                str(expression)
+                for expression in query.filter.call_args.args
+            )
+            self.assertIn(
+                "knowledge_items.knowledge_origin !=",
+                expression_text,
+            )
+
+    def test_vector_lab_excludes_managed_exact_knowledge(self):
+        db = MagicMock()
+        query = MagicMock()
+        query.join.return_value = query
+        query.filter.return_value = query
+        query.select_from.return_value = query
+        query.order_by.return_value.limit.return_value.all.return_value = []
+        db.query.return_value = query
+
+        with patch(
+            "app.routes.embedding_admin.embed_texts",
+            return_value=[[0.1] * settings.EMBEDDING_DIMENSIONS],
+        ):
+            result = embedding_lab_search(
+                EmbeddingLabSearchRequest(
+                    query="iPad 指纹",
+                    applicable_category_id="119",
+                ),
+                db,
+                None,
+            )
+
+        self.assertEqual(result["results"], [])
+        expression_text = " ".join(
+            str(expression)
+            for call in query.filter.call_args_list
+            for expression in call.args
+        )
+        self.assertIn(
+            "knowledge_items.knowledge_origin !=",
+            expression_text,
+        )
+
+    def test_vector_lab_filters_scope_and_expands_until_top_k_unique_knowledge(self):
+        db = MagicMock()
+        scope_query = MagicMock()
+        scope_query.filter.return_value = scope_query
+        scope_query.all.return_value = [
+            SimpleNamespace(
+                knowledge_id="A-00154",
+                applicable_categories=["119"],
+                applicable_brands=["10530"],
+                applicable_models=["ipad163"],
+            ),
+            SimpleNamespace(
+                knowledge_id="A-17873",
+                applicable_categories=["120"],
+                applicable_brands=["10531"],
+                applicable_models=["other"],
+            ),
+        ]
+
+        first_item = SimpleNamespace(
+            id="A-00154",
+            title="平板机身内部有生锈/发霉/水渍",
+            knowledge_origin="headquarters_standard",
+            business_type="self_operated",
+            category_id="cat-1",
+        )
+        second_item = SimpleNamespace(
+            id="A-17873",
+            title="苹果设备内部防水标签变红",
+            knowledge_origin="headquarters_standard",
+            business_type="self_operated",
+            category_id="cat-1",
+        )
+        first_batch = [
+            (
+                first_item,
+                SimpleNamespace(
+                    embedding_kind="subtitle",
+                    chunk_index=index,
+                    source_text=(
+                        "平板机身内部防水标签变红怎么确认"
+                        if index == 0
+                        else f"同知识较低分分块 {index}"
+                    ),
+                ),
+                0.10 + index / 1000,
+            )
+            for index in range(50)
+        ]
+        second_batch = first_batch + [
+            (
+                second_item,
+                SimpleNamespace(
+                    embedding_kind="content",
+                    chunk_index=0,
+                    source_text="苹果设备防水标签变红需要判定",
+                ),
+                0.60,
+            )
+        ]
+        candidate_query = MagicMock()
+        candidate_query.join.return_value = candidate_query
+        candidate_query.filter.return_value = candidate_query
+        candidate_query.order_by.return_value = candidate_query
+        candidate_query.limit.return_value = candidate_query
+        candidate_query.all.side_effect = [first_batch, second_batch]
+        db.query.side_effect = [scope_query, candidate_query]
+
+        with patch(
+            "app.routes.embedding_admin.embed_texts",
+            return_value=[[0.1] * settings.EMBEDDING_DIMENSIONS],
+        ):
+            result = embedding_lab_search(
+                EmbeddingLabSearchRequest(
+                    query="该设备防水标签红应如何判定",
+                    top_k=2,
+                    applicable_category_id="119",
+                    applicable_brand_id="10530",
+                    applicable_model_id="ipad163",
+                ),
+                db,
+                None,
+            )
+
+        candidate_expressions = " ".join(
+            str(expression)
+            for expression in db.query.call_args_list[1].args
+        )
+        self.assertIn("knowledge_search_embeddings", candidate_expressions)
+        candidate_filters = " ".join(
+            str(expression)
+            for filter_call in candidate_query.filter.call_args_list
+            for expression in filter_call.args
+        )
+        self.assertIn("knowledge_items.id IN", candidate_filters)
+        self.assertNotIn("knowledge_items.business_type =", candidate_filters)
+        self.assertNotIn("knowledge_items.category_id =", candidate_filters)
+        self.assertEqual(
+            candidate_query.limit.call_args_list,
+            [call(50), call(100)],
+        )
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(result["results"][0]["knowledge_id"], "A-00154")
+        self.assertEqual(result["results"][0]["score"], 0.9)
+        self.assertEqual(result["results"][0]["embedding_kind"], "subtitle")
+        self.assertEqual(result["results"][0]["chunk_index"], 0)
+        self.assertEqual(
+            result["results"][0]["source_text"],
+            "平板机身内部防水标签变红怎么确认",
+        )
+        self.assertEqual(
+            result["results"][0]["match_reason"],
+            "命中副标题",
+        )
+        self.assertEqual(result["results"][1]["knowledge_id"], "A-17873")
+        self.assertEqual(result["results"][1]["match_reason"], "命中正文")
+
+    def test_vector_lab_empty_scope_skips_embedding_and_returns_no_results(self):
+        db = MagicMock()
+        scope_query = MagicMock()
+        scope_query.filter.return_value = scope_query
+        scope_query.all.return_value = []
+        db.query.return_value = scope_query
+
+        with patch(
+            "app.routes.embedding_admin.embed_texts"
+        ) as embed_texts:
+            result = embedding_lab_search(
+                EmbeddingLabSearchRequest(
+                    query="该设备防水标签红应如何判定",
+                    applicable_category_id="119",
+                ),
+                db,
+                None,
+            )
+
+        self.assertEqual(result["results"], [])
+        embed_texts.assert_not_called()
+
+    def test_retrieval_review_rejects_managed_exact_expected_knowledge(self):
+        event = SimpleNamespace(
+            event_metadata={},
+        )
+        event_query = MagicMock()
+        event_query.filter.return_value.with_for_update.return_value.first.return_value = event
+        expected_query = MagicMock()
+        expected_query.filter.return_value.first.return_value = None
+        db = MagicMock()
+        db.query.side_effect = [event_query, expected_query]
+
+        with self.assertRaises(HTTPException) as raised:
+            review_retrieval_event(
+                "rqe-test",
+                RetrievalQualityReview(
+                    review_status="confirmed",
+                    expected_knowledge_id="A-00001",
+                    training_eligible=True,
+                ),
+                db,
+                self.user,
+            )
+
+        self.assertEqual(raised.exception.status_code, 422)
+        expression_text = " ".join(
+            str(expression)
+            for expression in expected_query.filter.call_args.args
+        )
+        self.assertIn(
+            "knowledge_items.knowledge_origin !=",
+            expression_text,
+        )
+        db.commit.assert_not_called()
+
+    def _add_training_knowledge(self, knowledge_id: str, title: str) -> Knowledge:
+        category = self.db.get(Category, "cat-training")
+        if not category:
+            category = Category(id="cat-training", name="训练样本")
+            self.db.add(category)
+        item = Knowledge(
+            id=knowledge_id,
+            knowledge_origin="headquarters_standard",
+            business_type="self_operated",
+            title=title,
+            content={
+                "blocks": [
+                    {"type": "text", "value": f"{title}正文"},
+                ],
+            },
+            category_id=category.id,
+            status=KnowledgeStatus.PUBLISHED,
+            created_by="tester",
+        )
+        self.db.add(item)
+        self.db.flush()
+        return item
+
+    def _add_retrieval_event(
+        self,
+        event_id: str,
+        *,
+        conversation_id: str = "ticket-training",
+        request_id: str = "request-training",
+        expected_knowledge_id: str | None = None,
+        reviewed: bool = False,
+        created_at: datetime | None = None,
+    ) -> RetrievalQualityEvent:
+        event = RetrievalQualityEvent(
+            id=event_id,
+            idempotency_key=f"key-{event_id}",
+            source_system="qa-recommendation-plugin",
+            conversation_id=conversation_id,
+            request_id=request_id,
+            source_kind="standard",
+            query_text="该设备防水标签红应如何判定？",
+            candidate_count=1,
+            top_knowledge_id=expected_knowledge_id,
+            top_rerank_score=0.81,
+            score_threshold=0.42,
+            selected=False,
+            outcome="not_selected",
+            request_status="success",
+            threshold_status="passed",
+            selection_status="none_selected",
+            selected_knowledge_id=None,
+            expected_knowledge_id=expected_knowledge_id if reviewed else None,
+            feedback_type="helpful" if reviewed else "none",
+            candidate_snapshot=(
+                [
+                    {
+                        "knowledge_id": expected_knowledge_id,
+                        "rank": 1,
+                        "title": expected_knowledge_id,
+                        "final_score": 0.81,
+                    },
+                ]
+                if expected_knowledge_id
+                else []
+            ),
+            training_eligible=reviewed,
+            review_status="confirmed" if reviewed else "unreviewed",
+            created_at=created_at or datetime.utcnow(),
+        )
+        self.db.add(event)
+        self.db.commit()
+        return event
+
+    def test_retrieval_review_immediately_creates_candidate_sample(self):
+        expected = self._add_training_knowledge("A-17873", "防水标签判定")
+        event = self._add_retrieval_event(
+            "rqe-training-create",
+            expected_knowledge_id=expected.id,
+        )
+
+        result = review_retrieval_event(
+            event.id,
+            RetrievalQualityReview(
+                review_status="confirmed",
+                expected_knowledge_id=expected.id,
+                feedback_type="helpful",
+                training_eligible=True,
+            ),
+            self.db,
+            self.user,
+        )
+
+        sample = self.db.query(EmbeddingTrainingSample).one()
+        self.assertEqual(sample.source_type, "retrieval_event")
+        self.assertEqual(sample.source_id, event.id)
+        self.assertEqual(sample.status, "candidate")
+        self.assertEqual(sample.query_text, event.query_text)
+        self.assertIn("防水标签判定", sample.positive_text)
+        self.assertIsNone(sample.sample_metadata["selected_knowledge_id"])
+        self.assertEqual(
+            sample.sample_metadata["expected_knowledge_id"],
+            expected.id,
+        )
+        self.assertEqual(result["training_sample_id"], sample.id)
+        self.assertEqual(result["training_sample_action"], "created")
+
+    def test_retrieval_review_updates_candidate_sample_idempotently(self):
+        first = self._add_training_knowledge("A-17873", "第一条正确知识")
+        second = self._add_training_knowledge("A-17874", "第二条正确知识")
+        event = self._add_retrieval_event(
+            "rqe-training-update",
+            expected_knowledge_id=first.id,
+        )
+        for expected in (first, second):
+            review_retrieval_event(
+                event.id,
+                RetrievalQualityReview(
+                    review_status="confirmed",
+                    expected_knowledge_id=expected.id,
+                    feedback_type="helpful",
+                    training_eligible=True,
+                ),
+                self.db,
+                self.user,
+            )
+
+        samples = self.db.query(EmbeddingTrainingSample).all()
+        self.assertEqual(len(samples), 1)
+        self.assertIn("第二条正确知识", samples[0].positive_text)
+        self.assertEqual(
+            samples[0].sample_metadata["expected_knowledge_id"],
+            second.id,
+        )
+
+    def test_retrieval_review_excludes_unconfirmed_candidate_sample(self):
+        expected = self._add_training_knowledge("A-17873", "防水标签判定")
+        event = self._add_retrieval_event(
+            "rqe-training-exclude",
+            expected_knowledge_id=expected.id,
+        )
+        review_retrieval_event(
+            event.id,
+            RetrievalQualityReview(
+                review_status="confirmed",
+                expected_knowledge_id=expected.id,
+                feedback_type="helpful",
+                training_eligible=True,
+            ),
+            self.db,
+            self.user,
+        )
+
+        result = review_retrieval_event(
+            event.id,
+            RetrievalQualityReview(
+                review_status="confirmed",
+                expected_knowledge_id=expected.id,
+                feedback_type="helpful",
+                training_eligible=False,
+            ),
+            self.db,
+            self.user,
+        )
+
+        sample = self.db.query(EmbeddingTrainingSample).one()
+        self.assertEqual(sample.status, "excluded")
+        self.assertEqual(result["training_sample_action"], "excluded")
+
+        result = review_retrieval_event(
+            event.id,
+            RetrievalQualityReview(
+                review_status="confirmed",
+                expected_knowledge_id=expected.id,
+                feedback_type="helpful",
+                training_eligible=True,
+            ),
+            self.db,
+            self.user,
+        )
+
+        self.db.refresh(sample)
+        self.assertEqual(sample.status, "candidate")
+        self.assertEqual(result["training_sample_action"], "updated")
+
+    def test_retrieval_review_rejects_changes_to_verified_sample(self):
+        first = self._add_training_knowledge("A-17873", "第一条正确知识")
+        second = self._add_training_knowledge("A-17874", "第二条正确知识")
+        event = self._add_retrieval_event(
+            "rqe-training-verified",
+            expected_knowledge_id=first.id,
+        )
+        review_retrieval_event(
+            event.id,
+            RetrievalQualityReview(
+                review_status="confirmed",
+                expected_knowledge_id=first.id,
+                feedback_type="helpful",
+                training_eligible=True,
+            ),
+            self.db,
+            self.user,
+        )
+        sample = self.db.query(EmbeddingTrainingSample).one()
+        sample.status = "verified"
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as raised:
+            review_retrieval_event(
+                event.id,
+                RetrievalQualityReview(
+                    review_status="confirmed",
+                    expected_knowledge_id=second.id,
+                    feedback_type="corrected",
+                    training_eligible=True,
+                ),
+                self.db,
+                self.user,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.db.refresh(event)
+        self.db.refresh(sample)
+        self.assertEqual(event.expected_knowledge_id, first.id)
+        self.assertIn("第一条正确知识", sample.positive_text)
+
+        update_training_sample(
+            sample.id,
+            EmbeddingTrainingSampleUpdate(status="excluded"),
+            self.db,
+            self.user,
+        )
+        result = review_retrieval_event(
+            event.id,
+            RetrievalQualityReview(
+                review_status="confirmed",
+                expected_knowledge_id=second.id,
+                feedback_type="corrected",
+                training_eligible=True,
+            ),
+            self.db,
+            self.user,
+        )
+
+        self.db.refresh(event)
+        self.db.refresh(sample)
+        self.assertEqual(result["training_sample_action"], "updated")
+        self.assertEqual(event.expected_knowledge_id, second.id)
+        self.assertEqual(sample.status, "candidate")
+        self.assertIn("第二条正确知识", sample.positive_text)
+
+    def test_training_import_preserves_manually_excluded_sample(self):
+        expected = self._add_training_knowledge("A-17873", "防水标签判定")
+        event = self._add_retrieval_event(
+            "rqe-training-manual-excluded",
+            expected_knowledge_id=expected.id,
+            reviewed=True,
+        )
+        self.db.add(
+            EmbeddingTrainingSample(
+                id="ets-manual-excluded",
+                task_type="retrieval",
+                query_text=event.query_text,
+                positive_text="已人工排除的样本",
+                negative_texts=[],
+                source_type="retrieval_event",
+                source_id=event.id,
+                status="excluded",
+                reason="人工排除",
+                sample_metadata={"expected_knowledge_id": expected.id},
+                created_by="admin",
+                reviewed_by="admin",
+                reviewed_at=datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+
+        imported = import_retrieval_samples(self.db, created_by="admin")
+
+        sample = self.db.get(EmbeddingTrainingSample, "ets-manual-excluded")
+        self.assertEqual(imported, 0)
+        self.assertEqual(sample.status, "excluded")
+        self.assertEqual(sample.positive_text, "已人工排除的样本")
+
+    def test_training_import_includes_confirmed_historical_request(self):
+        expected = self._add_training_knowledge("A-17873", "防水标签判定")
+        self._add_retrieval_event(
+            "rqe-training-old",
+            conversation_id="ticket-history",
+            request_id="request-old",
+            expected_knowledge_id=expected.id,
+            reviewed=True,
+            created_at=datetime.utcnow() - timedelta(minutes=10),
+        )
+        self._add_retrieval_event(
+            "rqe-training-new",
+            conversation_id="ticket-history",
+            request_id="request-new",
+            expected_knowledge_id=expected.id,
+            reviewed=False,
+            created_at=datetime.utcnow(),
+        )
+
+        imported = import_retrieval_samples(self.db, created_by="admin")
+
+        self.assertEqual(imported, 1)
+        sample = self.db.query(EmbeddingTrainingSample).one()
+        self.assertEqual(sample.source_id, "rqe-training-old")
+
+    def test_training_import_skips_managed_exact_knowledge(self):
+        event = SimpleNamespace(
+            expected_knowledge_id="A-00001",
+            review_status="confirmed",
+            training_eligible=True,
+        )
+        event_query = MagicMock()
+        (
+            event_query.filter.return_value.order_by.return_value
+            .with_for_update.return_value.all.return_value
+        ) = [event]
+        expected_query = MagicMock()
+        expected_query.filter.return_value.first.return_value = SimpleNamespace(
+            knowledge_origin="model_configuration",
+        )
+        retrieval_db = MagicMock()
+        retrieval_db.query.side_effect = [event_query, expected_query]
+
+        self.assertEqual(
+            import_retrieval_samples(
+                retrieval_db,
+                created_by="admin",
+            ),
+            0,
+        )
+        retrieval_db.add.assert_not_called()
+        retrieval_db.commit.assert_called_once_with()
+
+        feedback = SimpleNamespace(
+            knowledge_id="A-00001",
+            matched_knowledge_id="A-00002",
+        )
+        feedback_query = MagicMock()
+        feedback_query.filter.return_value.order_by.return_value.all.return_value = [
+            feedback
+        ]
+        item_query = MagicMock()
+        item_query.filter.return_value.first.return_value = SimpleNamespace(
+            knowledge_origin="model_configuration",
+        )
+        matched_query = MagicMock()
+        matched_query.filter.return_value.first.return_value = SimpleNamespace(
+            knowledge_origin="business_accumulation",
+        )
+        dedup_db = MagicMock()
+        dedup_db.query.side_effect = [
+            feedback_query,
+            item_query,
+            matched_query,
+        ]
+
+        self.assertEqual(
+            import_deduplication_samples(
+                dedup_db,
+                created_by="admin",
+            ),
+            0,
+        )
+        dedup_db.add.assert_not_called()
+        dedup_db.commit.assert_called_once_with()
+
+    def test_legacy_retrieval_scope_preserves_active_pool_top_k(self):
+        active_values = EmbeddingRuntimeConfigValues(
+            retrieval_headquarters_standard_top_k=2,
+            retrieval_business_accumulation_top_k=4,
+        ).model_dump()
+        self.db.add(
+            EmbeddingRuntimeConfig(
+                id="erc-active",
+                version=1,
+                status="active",
+                config=active_values,
+                evaluation_metrics={},
+                change_reason="分池数量已生效",
+                created_by="admin",
+                activated_by="admin",
+                activated_at=datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+
+        legacy_values = {
+            key: value
+            for key, value in active_values.items()
+            if key
+            not in {
+                "retrieval_headquarters_standard_top_k",
+                "retrieval_business_accumulation_top_k",
+            }
+        }
+        legacy_values["retrieval_score_threshold"] = 0.55
+        legacy_body = EmbeddingRuntimeConfigCreate.model_validate(
+            {
+                "config": legacy_values,
+                "change_reason": "旧前端只调整检索阈值",
+                "evaluation_metrics": {"config_scope": "retrieval_thresholds"},
+                "activate": False,
+            }
+        )
+        self.assertNotIn(
+            "retrieval_headquarters_standard_top_k",
+            legacy_body.config.model_fields_set,
+        )
+        self.assertNotIn(
+            "retrieval_business_accumulation_top_k",
+            legacy_body.config.model_fields_set,
+        )
+
+        legacy_draft = create_embedding_config(
+            legacy_body,
+            self.db,
+            self.user,
+        )
+        self.assertEqual(
+            legacy_draft["config"]["retrieval_headquarters_standard_top_k"],
+            2,
+        )
+        self.assertEqual(
+            legacy_draft["config"]["retrieval_business_accumulation_top_k"],
+            4,
+        )
+        self.assertEqual(
+            legacy_draft["config"]["retrieval_score_threshold"],
+            0.55,
+        )
+
+        historical_values = dict(legacy_values)
+        historical_values["retrieval_score_threshold"] = 0.60
+        self.db.add(
+            EmbeddingRuntimeConfig(
+                id="erc-legacy-draft",
+                version=3,
+                status="draft",
+                config=historical_values,
+                evaluation_metrics={"config_scope": "retrieval_thresholds"},
+                change_reason="历史阈值草稿",
+                created_by="admin",
+            )
+        )
+        self.db.commit()
+
+        activated = activate_embedding_config(
+            "erc-legacy-draft",
+            self.db,
+            self.user,
+        )
+        self.assertEqual(
+            activated["config"]["retrieval_headquarters_standard_top_k"],
+            2,
+        )
+        self.assertEqual(
+            activated["config"]["retrieval_business_accumulation_top_k"],
+            4,
+        )
+        self.assertEqual(
+            activated["config"]["retrieval_score_threshold"],
+            0.60,
         )
 
     def test_task_runner_base_url_accepts_external_http_or_https(self):

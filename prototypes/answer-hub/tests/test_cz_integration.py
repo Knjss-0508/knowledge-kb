@@ -19,15 +19,31 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _cz_required_schema_fields(class_name: str) -> set[str]:
-    schema_path = (
-        PROJECT_ROOT
-        / "cz-knowledge-kb"
-        / "knowledge-kb-master"
-        / "backend"
-        / "app"
-        / "schemas"
-        / "integration.py"
+    schema_paths = [
+        (
+            PROJECT_ROOT
+            / "cz-knowledge-kb"
+            / "knowledge-kb-master"
+            / "backend"
+            / "app"
+            / "schemas"
+            / "integration.py"
+        ),
+        (
+            PROJECT_ROOT.parents[1]
+            / "backend"
+            / "app"
+            / "schemas"
+            / "integration.py"
+        ),
+    ]
+    schema_path = next(
+        (path for path in schema_paths if path.is_file()),
+        None,
     )
+    if schema_path is None:
+        raise FileNotFoundError("未找到 CZ integration.py schema 文件。")
+
     module = ast.parse(schema_path.read_text(encoding="utf-8"))
     schema_class = next(
         node
@@ -118,6 +134,147 @@ class CzIntegrationTests(unittest.TestCase):
             config.endpoint("health"),
             "https://kb.example/api/v1/health",
         )
+
+    @patch("answer_hub.cz_integration.urlopen")
+    def test_search_headquarters_standards_uses_retrieval_key(
+        self,
+        urlopen_mock,
+    ) -> None:
+        urlopen_mock.return_value = _JsonResponse(
+            {
+                "conversationId": "202608100001",
+                "requestId": "answer-hub-standard-test",
+                "provider": "knowledge-kb",
+                "status": "success",
+                "retrievalMode": "semantic_pgvector",
+                "knowledgeVersion": "cz-snapshot-v1",
+                "scoreThreshold": 0.42,
+                "candidates": [
+                    {
+                        "id": "KB-STD-001",
+                        "title": "屏幕漏光判定",
+                        "text": "在指定光照条件下检查屏幕边缘漏光。",
+                        "score": 0.91,
+                        "finalScore": 0.91,
+                        "status": "published",
+                        "knowledgeOrigin": "headquarters_standard",
+                        "businessType": "self_operated",
+                        "categoryId": "cat-screen",
+                        "level1Label": "质检标准",
+                        "productType": "手机",
+                        "models": ["iPhone 15"],
+                        "keywords": ["屏幕", "漏光"],
+                        "sourceRef": "knowledge-kb://knowledge/KB-STD-001",
+                    }
+                ],
+            }
+        )
+        adapter = CzIntegrationAdapter(
+            CzIntegrationConfig(
+                "https://kb.example",
+                "integration-key",
+                retrieval_key="retrieval-key",
+            )
+        )
+
+        matches, audit = adapter.search_headquarters_standards(
+            conversation_id="202608100001",
+            normalized_question="iPhone 屏幕漏光怎么判定",
+            business_type="self_operated",
+            product_type="手机",
+            model="iPhone 15",
+        )
+
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0][0].standard_id, "KB-STD-001")
+        self.assertEqual(matches[0][0].response_snippet, "在指定光照条件下检查屏幕边缘漏光。")
+        self.assertEqual(matches[0][0].version, "cz-snapshot-v1")
+        self.assertEqual(matches[0][1], 0.91)
+        self.assertEqual(audit["knowledge_version"], "cz-snapshot-v1")
+        self.assertEqual(audit["source"], "headquarters_standard")
+        request = urlopen_mock.call_args.args[0]
+        body = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(body["knowledgeOrigin"], "headquarters_standard")
+        self.assertEqual(body["conversationId"], "202608100001")
+        self.assertEqual(request.get_header("X-integration-key"), "retrieval-key")
+        self.assertEqual(
+            request.get_header("X-conversation-id"),
+            "202608100001",
+        )
+
+    @patch("answer_hub.cz_integration.urlopen")
+    def test_search_headquarters_standards_ignores_business_accumulation_candidates(
+        self,
+        urlopen_mock,
+    ) -> None:
+        urlopen_mock.return_value = _JsonResponse(
+            {
+                "conversationId": "202608100001",
+                "requestId": "answer-hub-standard-test",
+                "provider": "knowledge-kb",
+                "status": "success",
+                "retrievalMode": "semantic_pgvector",
+                "knowledgeVersion": "cz-snapshot-v1",
+                "scoreThreshold": 0.42,
+                "candidates": [
+                    {
+                        "id": "KB-BUS-001",
+                        "title": "业务沉淀知识",
+                        "text": "不能作为总部标准使用。",
+                        "score": 0.99,
+                        "finalScore": 0.99,
+                        "status": "published",
+                        "knowledgeOrigin": "business_accumulation",
+                        "businessType": "self_operated",
+                        "categoryId": "cat-case",
+                        "level1Label": "业务沉淀",
+                        "productType": "手机",
+                        "models": [],
+                        "keywords": [],
+                        "sourceRef": "knowledge-kb://knowledge/KB-BUS-001",
+                    },
+                    {
+                        "id": "KB-STD-001",
+                        "title": "屏幕漏光判定",
+                        "text": "在指定光照条件下检查屏幕边缘漏光。",
+                        "score": 0.91,
+                        "finalScore": 0.91,
+                        "status": "published",
+                        "knowledgeOrigin": "headquarters_standard",
+                        "businessType": "self_operated",
+                        "categoryId": "cat-screen",
+                        "level1Label": "质检标准",
+                        "productType": "手机",
+                        "models": [],
+                        "keywords": ["屏幕", "漏光"],
+                        "sourceRef": "knowledge-kb://knowledge/KB-STD-001",
+                    },
+                ],
+            }
+        )
+        adapter = CzIntegrationAdapter(
+            CzIntegrationConfig(
+                "https://kb.example",
+                "integration-key",
+                retrieval_key="retrieval-key",
+            )
+        )
+
+        matches, audit = adapter.search_headquarters_standards(
+            conversation_id="202608100001",
+            normalized_question="iPhone 屏幕漏光怎么判定",
+            business_type="self_operated",
+            product_type="手机",
+            model="iPhone 15",
+        )
+
+        self.assertEqual(
+            [item.standard_id for item, _ in matches],
+            ["KB-STD-001"],
+        )
+        self.assertEqual(matches[0][0].knowledge_type, "总部标准")
+        self.assertEqual(audit["standard_ids"], ["KB-STD-001"])
+        self.assertEqual(audit["ignored_nonstandard_candidate_count"], 1)
 
     def test_unmapped_category_blocks_local_payload(self) -> None:
         adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))

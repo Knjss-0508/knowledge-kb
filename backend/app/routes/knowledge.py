@@ -23,7 +23,10 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.database import SessionLocal, get_db
 from app.routes.auth import get_current_user, has_permission, require_permission
-from app.routes.manhattan import cached_applicable_category_keys
+from app.routes.manhattan import (
+    cached_applicable_category_keys,
+    cached_manhattan_options_snapshot,
+)
 from app.models.user import User
 from app.models.knowledge import (
     Category, Knowledge, KnowledgeStatus,
@@ -32,6 +35,7 @@ from app.models.knowledge import (
 )
 from app.core.config import settings
 from app.services.embedding import EmbeddingServiceUnavailable, embed_texts
+from app.services.applicability import build_applicability_canonicalizer
 from app.services.knowledge_dedup import (
     DedupDecision,
     build_dedup_documents,
@@ -45,12 +49,23 @@ from app.services.knowledge_dedup import (
 )
 from app.services.knowledge_excel import (
     DEPRECATED_SOURCE_STATUS,
+    HEADER_ALIASES,
     MAX_IMPORT_FILE_BYTES,
     KnowledgeExcelError,
     IMPORTABLE_SOURCE_STATUS,
+    build_knowledge_update_template,
+    build_model_configuration_import_template,
     build_knowledge_export_workbook,
     build_knowledge_import_template,
+    parse_model_configuration_workbook,
     parse_knowledge_workbook,
+    parse_knowledge_update_workbook,
+)
+from app.services.model_configuration import (
+    ModelConfigurationSyncError,
+    acquire_model_configuration_write_lock,
+    parse_model_configuration_payload,
+    sync_model_configurations,
 )
 from app.services.media_deletion import (
     delete_media_immediately_or_enqueue,
@@ -59,8 +74,10 @@ from app.services.media_deletion import (
 from app.services.media_storage import MediaStorageError, get_media_storage
 from app.schemas.knowledge import (
     BusinessType,
+    KnowledgeImportType,
     KnowledgeOrigin,
     KnowledgeCreate, KnowledgeUpdate, KnowledgeResponse,
+    ModelConfigurationUpdate,
     CandidateSubmit, DeduplicationFeedbackSubmit, FeedbackSubmit,
     ExcelImportRowResult, KnowledgeImportTaskListResponse,
     KnowledgeImportTaskResponse,
@@ -251,6 +268,205 @@ def _validate_business_applicable_categories(
                 + "、".join(invalid_values[:5])
             ),
         )
+
+
+def _manhattan_option_text(option, *keys: str) -> str:
+    if not isinstance(option, dict):
+        return ""
+    for key in keys:
+        value = option.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _resolve_model_configuration_scope(
+    *,
+    category_id: str,
+    brand_id: str,
+    model_id: str,
+) -> dict[str, str]:
+    """按自营 Manhattan 缓存解析机型配置的可信名称和父子关系。"""
+    snapshot = cached_manhattan_options_snapshot()
+    business_options = (
+        snapshot.get("options_by_business_type", {}).get("self_operated")
+        if isinstance(snapshot, dict)
+        else None
+    )
+    categories = (
+        business_options.get("applicable_categories", [])
+        if isinstance(business_options, dict)
+        else []
+    )
+    if not categories:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MANHATTAN_CACHE_UNAVAILABLE",
+                "message": "自营类目缓存尚未准备，暂不能保存机型配置信息。",
+            },
+        )
+
+    category_matches = [
+        option
+        for option in categories
+        if _manhattan_option_text(
+            option,
+            "categoryId",
+            "id",
+            "code",
+            "value",
+        )
+        == category_id
+    ]
+    if len(category_matches) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "MODEL_CONFIGURATION_CATEGORY_INVALID",
+                "message": f"类目ID {category_id} 不在当前自营类目缓存中。",
+            },
+        )
+    category_name = _manhattan_option_text(
+        category_matches[0],
+        "categoryName",
+        "name",
+        "label",
+        "title",
+        "text",
+    )
+    if not category_name:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MANHATTAN_CACHE_INCOMPLETE",
+                "message": f"类目ID {category_id} 缺少名称，暂不能保存。",
+            },
+        )
+
+    brands_by_category = business_options.get("brands_by_category", {})
+    category_brands = (
+        brands_by_category.get(category_id, [])
+        if isinstance(brands_by_category, dict)
+        else []
+    )
+    if not category_brands:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MANHATTAN_BRAND_CACHE_UNAVAILABLE",
+                "message": f"类目ID {category_id} 的品牌缓存尚未准备。",
+            },
+        )
+    brand_matches = [
+        option
+        for option in category_brands
+        if _manhattan_option_text(
+            option,
+            "brandId",
+            "id",
+            "code",
+            "value",
+        )
+        == brand_id
+    ]
+    if len(brand_matches) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "MODEL_CONFIGURATION_BRAND_SCOPE_INVALID",
+                "message": (
+                    f"品牌ID {brand_id} 不属于当前类目ID {category_id}。"
+                ),
+            },
+        )
+    brand_name = _manhattan_option_text(
+        brand_matches[0],
+        "brandName",
+        "name",
+        "label",
+        "title",
+        "text",
+    )
+    if not brand_name:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MANHATTAN_CACHE_INCOMPLETE",
+                "message": f"品牌ID {brand_id} 缺少名称，暂不能保存。",
+            },
+        )
+
+    models = business_options.get("models", [])
+    if not models:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MANHATTAN_MODEL_CACHE_UNAVAILABLE",
+                "message": "自营机型缓存尚未准备，暂不能保存。",
+            },
+        )
+    model_matches = [
+        option
+        for option in models
+        if (
+            _manhattan_option_text(
+                option,
+                "modelId",
+                "id",
+                "code",
+                "value",
+            )
+            == model_id
+            and _manhattan_option_text(
+                option,
+                "categoryId",
+                "category_id",
+            )
+            == category_id
+            and _manhattan_option_text(
+                option,
+                "brandId",
+                "brand_id",
+            )
+            == brand_id
+        )
+    ]
+    if len(model_matches) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "MODEL_CONFIGURATION_MODEL_SCOPE_INVALID",
+                "message": (
+                    f"机型ID {model_id} 不属于当前类目ID {category_id} "
+                    f"和品牌ID {brand_id}。"
+                ),
+            },
+        )
+    model_name = _manhattan_option_text(
+        model_matches[0],
+        "modelName",
+        "name",
+        "label",
+        "title",
+        "text",
+    )
+    if not model_name:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MANHATTAN_CACHE_INCOMPLETE",
+                "message": f"机型ID {model_id} 缺少名称，暂不能保存。",
+            },
+        )
+    return {
+        "category_id": category_id,
+        "category_name": category_name,
+        "brand_id": brand_id,
+        "brand_name": brand_name,
+        "model_id": model_id,
+        "model_name": model_name,
+    }
 
 
 class SourceKnowledgeMatchError(ValueError):
@@ -621,6 +837,34 @@ def _import_review_metadata(item: Knowledge) -> dict[str, str]:
     return {key: value for key, value in metadata.items() if value}
 
 
+def _model_configuration_detail(item: Knowledge) -> dict | None:
+    if getattr(item, "knowledge_origin", "") != "model_configuration":
+        return None
+    source_fields = (
+        item.source_fields
+        if isinstance(getattr(item, "source_fields", None), dict)
+        else {}
+    )
+    content = str(source_fields.get("综合内容") or "").strip()
+    if not content:
+        normalized_content = _normalize_content(item.content)
+        content = "\n".join(
+            str(block.get("value") or "")
+            for block in normalized_content.get("blocks", [])
+            if block.get("type") == "text"
+        ).strip()
+    return {
+        "title": item.title,
+        "content": content,
+        "category_id": str(source_fields.get("品类ID") or "").strip(),
+        "category_name": str(source_fields.get("品类") or "").strip(),
+        "brand_id": str(source_fields.get("品牌ID") or "").strip(),
+        "brand_name": str(source_fields.get("品牌") or "").strip(),
+        "model_id": str(source_fields.get("型号ID") or "").strip(),
+        "model_name": str(source_fields.get("型号") or "").strip(),
+    }
+
+
 def _to_response(item: Knowledge) -> dict:
     tags = []
     for kt in item.tags:
@@ -669,6 +913,7 @@ def _to_response(item: Knowledge) -> dict:
         "updated_at": item.updated_at,
         "tags": tags,
         "media": media_list,
+        "model_configuration": _model_configuration_detail(item),
     }
 
 
@@ -685,6 +930,11 @@ def _create_knowledge_item(
     search_embedding_vectors: dict[tuple[str, int, str], list[float]] | None = None,
     ensure_search_index: bool = True,
 ) -> Knowledge:
+    if body.knowledge_origin == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工创建或普通导入。",
+        )
     _require_manual_applicable_category(
         source=source,
         category_id=body.category_id,
@@ -780,18 +1030,42 @@ def create_knowledge(
     return _to_response(item)
 
 
-@router.get("/import/template", summary="下载知识批量导入模板")
+@router.get("/import/template", summary="下载 Excel 批量处理模板")
 def download_knowledge_import_template(
+    import_type: KnowledgeImportType = Query(
+        "knowledge",
+        description=(
+            "导入类型：knowledge=普通知识，"
+            "knowledge_update=按知识ID批量修改，"
+            "model_configuration=机型配置信息"
+        ),
+    ),
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(get_current_user),
 ):
-    categories = db.query(Category).order_by(Category.level, Category.sort_order).all()
-    payload = build_knowledge_import_template(categories)
+    _require_import_type_permission(import_type, current_user)
+    if import_type == "model_configuration":
+        payload = build_model_configuration_import_template()
+        filename = "model-configuration-import-template.xlsx"
+    elif import_type == "knowledge_update":
+        categories = db.query(Category).order_by(
+            Category.level,
+            Category.sort_order,
+        ).all()
+        payload = build_knowledge_update_template(categories)
+        filename = "knowledge-update-template.xlsx"
+    else:
+        categories = db.query(Category).order_by(
+            Category.level,
+            Category.sort_order,
+        ).all()
+        payload = build_knowledge_import_template(categories)
+        filename = "knowledge-import-template.xlsx"
     return StreamingResponse(
         BytesIO(payload),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": 'attachment; filename="knowledge-import-template.xlsx"'
+            "Content-Disposition": f'attachment; filename="{filename}"'
         },
     )
 
@@ -800,13 +1074,15 @@ def download_knowledge_import_template(
     "/import/excel",
     response_model=KnowledgeImportTaskResponse,
     status_code=202,
-    summary="上传 Excel 并创建后台导入任务",
+    summary="上传 Excel 并创建后台处理任务",
 )
 async def import_knowledge_excel(
     file: UploadFile = File(...),
+    import_type: KnowledgeImportType = Form("knowledge"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(get_current_user),
 ):
+    _require_import_type_permission(import_type, current_user)
     filename = file.filename or ""
     if not filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=422, detail="仅支持 .xlsx 文件。")
@@ -820,6 +1096,7 @@ async def import_knowledge_excel(
 
     task = KnowledgeImportTask(
         id=f"import-{uuid.uuid4().hex}",
+        import_type=import_type,
         created_by=current_user.username,
         original_filename=filename[:256],
         file_size=len(data),
@@ -842,6 +1119,10 @@ def _to_import_task_response(
 ) -> KnowledgeImportTaskResponse:
     return KnowledgeImportTaskResponse(
         id=task.id,
+        import_type=(
+            getattr(task, "import_type", None)
+            or "knowledge"
+        ),
         original_filename=task.original_filename,
         file_size=task.file_size,
         status=task.status,
@@ -852,6 +1133,9 @@ def _to_import_task_response(
         pending_review=task.pending_review,
         deprecated=task.deprecated,
         failed=task.failed,
+        created=int(getattr(task, "created", 0) or 0),
+        updated=int(getattr(task, "updated", 0) or 0),
+        unchanged=int(getattr(task, "unchanged", 0) or 0),
         retry_rows=[
             int(row_number)
             for row_number in (task.retry_rows or [])
@@ -864,7 +1148,9 @@ def _to_import_task_response(
         completed_at=task.completed_at,
         results=[
             ExcelImportRowResult.model_validate(result)
-            for result in (task.results or [])[:max(1, min(result_limit, 500))]
+            for result in (
+                task.results or []
+            )[:max(1, min(result_limit, 5000))]
         ]
         if include_results
         else [],
@@ -878,15 +1164,43 @@ def _can_view_import_task(task: KnowledgeImportTask, current_user: User) -> bool
     )
 
 
+def _can_access_import_tasks(current_user: User) -> bool:
+    return (
+        has_permission(current_user, "knowledge:create")
+        or has_permission(current_user, "knowledge:edit_published")
+    )
+
+
+def _require_import_task_access(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if not _can_access_import_tasks(current_user):
+        raise HTTPException(status_code=403, detail="无权访问 Excel 后台任务。")
+    return current_user
+
+
+def _require_import_type_permission(
+    import_type: KnowledgeImportType,
+    current_user: User,
+) -> None:
+    permission = (
+        "knowledge:edit_published"
+        if import_type == "knowledge_update"
+        else "knowledge:create"
+    )
+    if not has_permission(current_user, permission):
+        raise HTTPException(status_code=403, detail="Permission denied.")
+
+
 @router.get(
     "/import/tasks",
     response_model=KnowledgeImportTaskListResponse,
-    summary="查看 Excel 后台导入任务",
+    summary="查看 Excel 后台任务",
 )
 def list_knowledge_import_tasks(
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(_require_import_task_access),
 ):
     query = db.query(KnowledgeImportTask)
     if current_user.role != "super_admin":
@@ -904,14 +1218,19 @@ def list_knowledge_import_tasks(
 @router.get(
     "/import/tasks/{task_id}",
     response_model=KnowledgeImportTaskResponse,
-    summary="查看 Excel 后台导入任务详情",
+    summary="查看 Excel 后台任务详情",
 )
 def get_knowledge_import_task(
     task_id: str,
     include_results: bool = Query(False, description="是否返回逐行处理结果"),
-    result_limit: int = Query(100, ge=1, le=500, description="最多返回的逐行结果数"),
+    result_limit: int = Query(
+        100,
+        ge=1,
+        le=5000,
+        description="最多返回的逐行结果数",
+    ),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(_require_import_task_access),
 ):
     task = db.query(KnowledgeImportTask).filter(
         KnowledgeImportTask.id == task_id
@@ -944,12 +1263,12 @@ def _retryable_import_result(result: dict) -> bool:
 @router.post(
     "/import/tasks/{task_id}/cancel",
     response_model=KnowledgeImportTaskResponse,
-    summary="取消 Excel 后台导入任务",
+    summary="取消 Excel 后台任务",
 )
 def cancel_knowledge_import_task(
     task_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(_require_import_task_access),
 ):
     task = (
         db.query(KnowledgeImportTask)
@@ -984,12 +1303,12 @@ def cancel_knowledge_import_task(
 @router.post(
     "/import/tasks/{task_id}/retry-failed",
     response_model=KnowledgeImportTaskResponse,
-    summary="重试 Excel 导入中的基础设施失败行",
+    summary="重试 Excel 任务中的基础设施失败行",
 )
 def retry_failed_knowledge_import_task(
     task_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("knowledge:create")),
+    current_user: User = Depends(_require_import_task_access),
 ):
     task = (
         db.query(KnowledgeImportTask)
@@ -1087,10 +1406,12 @@ def retry_failed_knowledge_import_task(
         Category.sort_order,
     ).all()
     try:
-        workbook_rows = parse_knowledge_workbook(
-            file_content,
-            categories,
+        parser = (
+            parse_knowledge_update_workbook
+            if task.import_type == "knowledge_update"
+            else parse_knowledge_workbook
         )
+        workbook_rows = parser(file_content, categories)
     except KnowledgeExcelError as exc:
         raise HTTPException(
             status_code=409,
@@ -1151,6 +1472,18 @@ def retry_failed_knowledge_import_task(
     )
     task.deprecated = sum(
         result.status == "deprecated"
+        for _, result in remaining_pairs
+    )
+    task.created = sum(
+        result.operation == "created"
+        for _, result in remaining_pairs
+    )
+    task.updated = sum(
+        result.operation == "updated"
+        for _, result in remaining_pairs
+    )
+    task.unchanged = sum(
+        result.operation == "unchanged"
         for _, result in remaining_pairs
     )
     task.failed = 0
@@ -1216,6 +1549,12 @@ def _append_import_task_result(
         task.deprecated = (task.deprecated or 0) + 1
     if result.status == "failed":
         task.failed = (task.failed or 0) + 1
+    if result.operation == "created":
+        task.created = (task.created or 0) + 1
+    if result.operation == "updated":
+        task.updated = (task.updated or 0) + 1
+    if result.operation == "unchanged":
+        task.unchanged = (task.unchanged or 0) + 1
     task.lease_expires_at = _task_lease_expiry(now)
     task.updated_at = now
 
@@ -1226,6 +1565,7 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
             row=row.row_number,
             title=row.title,
             status="failed",
+            knowledge_id=getattr(row, "knowledge_id", None) or None,
             error_code=(
                 "EMBEDDING_UNAVAILABLE"
                 if exc.retryable
@@ -1245,6 +1585,7 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
             row=row.row_number,
             title=row.title,
             status="failed",
+            knowledge_id=getattr(row, "knowledge_id", None) or None,
             error_code=error_code,
             error_message=error_message,
             deduplication=(
@@ -1262,6 +1603,7 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
             row=row.row_number,
             title=row.title,
             status="failed",
+            knowledge_id=getattr(row, "knowledge_id", None) or None,
             error_code="INVALID_ROW",
             error_message="数据校验失败，请检查分类和字段格式。",
         )
@@ -1270,6 +1612,7 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
             row=row.row_number,
             title=row.title,
             status="failed",
+            knowledge_id=getattr(row, "knowledge_id", None) or None,
             error_code=exc.code,
             error_message=str(exc),
         )
@@ -1278,6 +1621,7 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
             row=row.row_number,
             title=row.title,
             status="failed",
+            knowledge_id=getattr(row, "knowledge_id", None) or None,
             error_code="INVALID_ROW",
             error_message=str(exc),
         )
@@ -1286,6 +1630,7 @@ def _excel_row_failure_result(row, exc: Exception) -> ExcelImportRowResult:
         row=row.row_number,
         title=row.title,
         status="failed",
+        knowledge_id=getattr(row, "knowledge_id", None) or None,
         error_code="IMPORT_FAILED",
         error_message="导入失败，请检查服务日志。",
     )
@@ -1309,6 +1654,29 @@ def _excel_row_body(row) -> KnowledgeCreate:
         source_knowledge_key=row.source_knowledge_key or None,
         source_fields=row.source_fields,
     )
+
+
+def _canonicalize_excel_rows_applicability(rows: list, cache: dict) -> None:
+    """用同一缓存快照规范化一次任务内的全部有效行。"""
+    canonicalizers = {}
+    for row in rows:
+        if not row.is_valid or row.source_status == DEPRECATED_SOURCE_STATUS:
+            continue
+        canonicalizer = canonicalizers.get(row.business_type)
+        if canonicalizer is None:
+            canonicalizer = build_applicability_canonicalizer(
+                cache,
+                row.business_type,
+            )
+            canonicalizers[row.business_type] = canonicalizer
+        applicability = canonicalizer.canonicalize(
+            category_values=row.applicable_categories,
+            brand_values=row.applicable_brands,
+            model_values=row.applicable_models,
+        )
+        row.applicable_categories = applicability["categories"]
+        row.applicable_brands = applicability["brands"]
+        row.applicable_models = applicability["models"]
 
 
 def _build_import_embedding_plan(row) -> _ImportEmbeddingPlan:
@@ -1573,6 +1941,229 @@ def _process_excel_import_row(
     )
 
 
+_UPDATE_SNAPSHOT_TO_EXCEL_FIELD = {
+    "title": "title",
+    "subtitles": "subtitles",
+    "content": "content",
+    "knowledge_origin": "knowledge_origin",
+    "business_type": "business_type",
+    "category_id": "category",
+    "applicable_scenes": "scenes",
+    "applicable_categories": "applicable_categories",
+    "applicable_brands": "brands",
+    "applicable_models": "models",
+    "related_standard_items": "related_standard_items",
+}
+
+
+def _source_fields_after_excel_update(
+    item: Knowledge,
+    row,
+    changed_fields: list[str],
+) -> dict:
+    """同步已有追溯字段的对应值，不新增或覆盖系统字段。"""
+
+    source_fields = deepcopy(
+        item.source_fields
+        if isinstance(item.source_fields, dict)
+        else {}
+    )
+    for snapshot_field in changed_fields:
+        excel_field = _UPDATE_SNAPSHOT_TO_EXCEL_FIELD.get(snapshot_field)
+        if not excel_field:
+            continue
+        aliases = HEADER_ALIASES.get(excel_field, set())
+        raw_value = next(
+            (
+                row.source_fields[alias]
+                for alias in aliases
+                if alias in row.source_fields
+            ),
+            None,
+        )
+        if raw_value is None:
+            continue
+        for alias in aliases:
+            if alias in source_fields:
+                source_fields[alias] = raw_value
+
+    applicability_fields = {
+        "applicable_scenes",
+        "applicable_categories",
+        "applicable_brands",
+        "applicable_models",
+    }
+    if (
+        applicability_fields.intersection(changed_fields)
+        and "scope" not in row.provided_fields
+    ):
+        for alias in HEADER_ALIASES.get("scope", set()):
+            source_fields.pop(alias, None)
+    return source_fields
+
+
+def _process_excel_update_row(
+    db: Session,
+    row,
+    current_user: User,
+) -> ExcelImportRowResult:
+    if not row.is_valid:
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            knowledge_id=row.knowledge_id or None,
+            error_code=row.error_code,
+            error_message=row.error_message,
+        )
+
+    item = (
+        db.query(Knowledge)
+        .filter(Knowledge.id == row.knowledge_id)
+        .with_for_update()
+        .first()
+    )
+    if not item:
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            knowledge_id=row.knowledge_id,
+            error_code="KNOWLEDGE_ID_NOT_FOUND",
+            error_message=(
+                f"未找到知识ID“{row.knowledge_id}”，该行不会新增知识。"
+            ),
+        )
+    if item.knowledge_origin == "model_configuration":
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            knowledge_id=item.id,
+            error_code="KNOWLEDGE_ORIGIN_MANAGED",
+            error_message=(
+                "机型配置信息由专用 Excel 同步维护，"
+                "不能通过知识批量修改覆盖。"
+            ),
+        )
+    if not _can_edit_knowledge(item, current_user):
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            knowledge_id=item.id,
+            error_code="KNOWLEDGE_UPDATE_FORBIDDEN",
+            error_message="当前账号无权修改该状态下的知识。",
+        )
+    if item.media:
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="failed",
+            knowledge_id=item.id,
+            error_code="LOCAL_MEDIA_BATCH_UPDATE_UNSUPPORTED",
+            error_message=(
+                "该知识包含本地上传的图片或视频，"
+                "Excel 无法安全回填媒体，请在页面中单条编辑。"
+            ),
+        )
+
+    provided_fields = set(row.provided_fields or set())
+    next_values = {
+        "title": row.title,
+        "knowledge_origin": row.knowledge_origin,
+        "business_type": row.business_type,
+        "category_id": row.category_id,
+        "content": _normalize_content(row.content),
+    }
+    optional_values = {
+        "subtitles": row.subtitles or [],
+        "applicable_scenes": row.applicable_scenes or [],
+        "applicable_categories": row.applicable_categories or [],
+        "applicable_brands": row.applicable_brands or [],
+        "applicable_models": row.applicable_models or [],
+        "related_standard_items": row.related_standard_items or [],
+    }
+    optional_columns = {
+        "subtitles": {"subtitles"},
+        "applicable_scenes": {"scenes", "scope"},
+        "applicable_categories": {"applicable_categories"},
+        "applicable_brands": {"brands"},
+        "applicable_models": {"models"},
+        "related_standard_items": {"related_standard_items"},
+    }
+    for field, columns in optional_columns.items():
+        if columns.intersection(provided_fields):
+            next_values[field] = optional_values[field]
+
+    _require_manual_applicable_category(
+        source=item.source,
+        category_id=next_values["category_id"],
+        applicable_categories=next_values.get(
+            "applicable_categories",
+            item.applicable_categories,
+        ),
+    )
+    _validate_business_applicable_categories(
+        business_type=next_values["business_type"],
+        applicable_categories=next_values.get(
+            "applicable_categories",
+            item.applicable_categories,
+        ),
+    )
+
+    before_data = _knowledge_snapshot(item)
+    for field, value in next_values.items():
+        setattr(item, field, value)
+
+    core_after_data = _knowledge_snapshot(item)
+    core_changed_fields = [
+        field
+        for field, before_value in before_data.items()
+        if field != "source_fields"
+        and before_value != core_after_data.get(field)
+    ]
+    if not core_changed_fields:
+        return ExcelImportRowResult(
+            row=row.row_number,
+            title=row.title,
+            status="imported",
+            knowledge_id=item.id,
+            operation="unchanged",
+        )
+
+    item.source_fields = _source_fields_after_excel_update(
+        item,
+        row,
+        core_changed_fields,
+    )
+    after_data = _knowledge_snapshot(item)
+    changed_at = datetime.utcnow()
+    item.updated_by = current_user.username
+    item.updated_at = changed_at
+    change_log = _change_log_from_snapshots(
+        item,
+        changed_by=current_user.username,
+        before_data=before_data,
+        after_data=after_data,
+        created_at=changed_at,
+    )
+    if change_log is not None:
+        db.add(change_log)
+
+    if {"title", "subtitles", "content"}.intersection(core_changed_fields):
+        ensure_embedding(db, item)
+        ensure_search_embeddings(db, item)
+
+    return ExcelImportRowResult(
+        row=row.row_number,
+        title=row.title,
+        status="imported",
+        knowledge_id=item.id,
+        operation="updated",
+    )
+
+
 def _mark_import_task_failed(
     task: KnowledgeImportTask,
     message: str,
@@ -1676,6 +2267,187 @@ def _lock_import_task_attempt(
     )
 
 
+def _owns_import_task_attempt(
+    task: KnowledgeImportTask | None,
+    claimed_attempt: int,
+) -> bool:
+    return bool(
+        task
+        and task.status == "running"
+        and int(task.attempt_count or 0) == claimed_attempt
+    )
+
+
+def _process_model_configuration_import_task(
+    db: Session,
+    task_id: str,
+    claimed_attempt: int,
+) -> None:
+    task = _lock_import_task_attempt(
+        db,
+        task_id,
+        claimed_attempt,
+    )
+    if not _owns_import_task_attempt(task, claimed_attempt):
+        return
+
+    try:
+        workbook = parse_model_configuration_workbook(
+            bytes(task.file_content or b"")
+        )
+    except KnowledgeExcelError as exc:
+        _mark_import_task_failed(
+            task,
+            str(exc),
+            now=datetime.utcnow(),
+        )
+        db.commit()
+        return
+
+    if task.total_rows and task.total_rows != len(workbook.records):
+        _mark_import_task_failed(
+            task,
+            "机型配置文件解析结果发生变化，任务已停止以避免重复写入。",
+            now=datetime.utcnow(),
+        )
+        db.commit()
+        return
+    if int(task.processed_rows or 0) or list(task.results or []):
+        _mark_import_task_failed(
+            task,
+            "机型配置整批任务存在非原子历史进度，已停止以避免部分覆盖。",
+            now=datetime.utcnow(),
+        )
+        db.commit()
+        return
+
+    task.total_rows = len(workbook.records)
+    task.error_message = ""
+    task.lease_expires_at = _task_lease_expiry(datetime.utcnow())
+    task.updated_at = datetime.utcnow()
+    db.commit()
+
+    task = _lock_import_task_attempt(
+        db,
+        task_id,
+        claimed_attempt,
+    )
+    if not _owns_import_task_attempt(task, claimed_attempt):
+        return
+    # 机型配置必须整批原子提交，因此从同步开始到完成始终持有任务行锁。
+    # 此阶段取消请求会等待事务结束；调用端只应向 queued 任务提供取消入口。
+    try:
+        sync_result = sync_model_configurations(
+            db,
+            workbook.records,
+            actor=task.created_by,
+        )
+        if len(sync_result.items) != len(workbook.records):
+            raise RuntimeError(
+                "机型配置同步结果数量与工作簿记录数不一致。"
+            )
+        if (
+            sync_result.total != len(workbook.records)
+            or (
+                sync_result.created
+                + sync_result.updated
+                + sync_result.unchanged
+            )
+            != sync_result.total
+        ):
+            raise RuntimeError("机型配置同步汇总数量不一致。")
+
+        results: list[dict] = []
+        for row_number, record, item_result in zip(
+            workbook.row_numbers,
+            workbook.records,
+            sync_result.items,
+            strict=True,
+        ):
+            if item_result.source_record_id != record.source_record_id:
+                raise RuntimeError(
+                    "机型配置同步结果顺序与工作簿记录不一致。"
+                )
+            results.append(
+                ExcelImportRowResult(
+                    row=row_number,
+                    title=record.title,
+                    status="imported",
+                    knowledge_id=item_result.knowledge_id,
+                    operation=item_result.operation,
+                ).model_dump(mode="json")
+            )
+
+        completed_at = datetime.utcnow()
+        task.results = results
+        task.retry_rows = []
+        task.processed_rows = sync_result.total
+        task.imported = sync_result.total
+        task.review_required = 0
+        task.pending_review = 0
+        task.deprecated = 0
+        task.failed = 0
+        task.created = sync_result.created
+        task.updated = sync_result.updated
+        task.unchanged = sync_result.unchanged
+        task.status = "completed"
+        task.error_message = ""
+        task.lease_expires_at = None
+        task.completed_at = completed_at
+        task.updated_at = completed_at
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        task = _lock_import_task_attempt(
+            db,
+            task_id,
+            claimed_attempt,
+        )
+        if not _owns_import_task_attempt(task, claimed_attempt):
+            return
+        task.results = []
+        task.retry_rows = []
+        task.processed_rows = int(task.total_rows or 0)
+        task.imported = 0
+        task.review_required = 0
+        task.pending_review = 0
+        task.deprecated = 0
+        task.failed = int(task.total_rows or 0)
+        task.created = 0
+        task.updated = 0
+        task.unchanged = 0
+        if isinstance(exc, ModelConfigurationSyncError):
+            row_by_source_knowledge_key = {
+                record.source_knowledge_key: row_number
+                for row_number, record in zip(
+                    workbook.row_numbers,
+                    workbook.records,
+                    strict=True,
+                )
+            }
+            excel_row = row_by_source_knowledge_key.get(
+                exc.source_knowledge_key or ""
+            )
+            row_prefix = f"Excel 第 {excel_row} 行，" if excel_row else ""
+            message = f"{row_prefix}{exc.code}：{exc}"
+        elif isinstance(exc, IntegrityError):
+            message = (
+                "数据库唯一键冲突，请检查品类/品牌/型号ID组合。"
+            )
+        else:
+            logger.exception(
+                "Model configuration import task %s failed.",
+                task_id,
+            )
+            message = "机型配置信息整批同步失败，请检查服务日志。"
+        _mark_import_task_failed(
+            task,
+            f"机型配置信息整批导入失败，全部数据已回滚：{message}",
+            now=datetime.utcnow(),
+        )
+        db.commit()
+
+
 def process_knowledge_import_task(
     task_id: str,
     *,
@@ -1702,12 +2474,30 @@ def process_knowledge_import_task(
             return
         claimed_attempt = int(task.attempt_count or 0)
 
+        if task.import_type == "model_configuration":
+            _process_model_configuration_import_task(
+                db,
+                task_id,
+                claimed_attempt,
+            )
+            return
+
+        is_knowledge_update = task.import_type == "knowledge_update"
         categories = db.query(Category).order_by(
             Category.level,
             Category.sort_order,
         ).all()
         try:
-            rows = parse_knowledge_workbook(task.file_content, categories)
+            parser = (
+                parse_knowledge_update_workbook
+                if is_knowledge_update
+                else parse_knowledge_workbook
+            )
+            rows = parser(task.file_content, categories)
+            _canonicalize_excel_rows_applicability(
+                rows,
+                cached_manhattan_options_snapshot(),
+            )
         except KnowledgeExcelError as exc:
             current_task = _lock_import_task_attempt(
                 db,
@@ -1750,7 +2540,38 @@ def process_knowledge_import_task(
         task.lease_expires_at = _task_lease_expiry(datetime.utcnow())
         db.commit()
 
-        background_user = SimpleNamespace(username=task.created_by)
+        if is_knowledge_update:
+            background_user = (
+                db.query(User)
+                .filter(
+                    User.username == task.created_by,
+                    User.is_active.is_(True),
+                )
+                .first()
+            )
+            if (
+                background_user is None
+                or not has_permission(
+                    background_user,
+                    "knowledge:edit_published",
+                )
+            ):
+                task = _lock_import_task_attempt(
+                    db,
+                    task_id,
+                    claimed_attempt,
+                )
+                if not owns_import_task(task):
+                    return
+                _mark_import_task_failed(
+                    task,
+                    "任务创建人不存在、已停用或已失去批量修改权限，任务未继续执行。",
+                    now=datetime.utcnow(),
+                )
+                db.commit()
+                return
+        else:
+            background_user = SimpleNamespace(username=task.created_by)
 
         def renew_import_task_lease(_processed: int, _total: int) -> None:
             current_task = _lock_import_task_attempt(
@@ -1804,7 +2625,12 @@ def process_knowledge_import_task(
             ]
         else:
             remaining_rows = rows[task.processed_rows:]
-        for row_batch in _import_embedding_batches(remaining_rows):
+        row_batches = (
+            [[(row, None)] for row in remaining_rows]
+            if is_knowledge_update
+            else _import_embedding_batches(remaining_rows)
+        )
+        for row_batch in row_batches:
             task = _lock_import_task_attempt(
                 db,
                 task_id,
@@ -1817,9 +2643,13 @@ def process_knowledge_import_task(
             db.commit()
 
             batch_rows = [row for row, _ in row_batch]
-            bundles = _precompute_import_embeddings(
-                batch_rows,
-                on_batch_complete=renew_import_task_lease,
+            bundles = (
+                {}
+                if is_knowledge_update
+                else _precompute_import_embeddings(
+                    batch_rows,
+                    on_batch_complete=renew_import_task_lease,
+                )
             )
 
             task = _lock_import_task_attempt(
@@ -1841,29 +2671,36 @@ def process_knowledge_import_task(
                 if not owns_import_task(task):
                     return
                 try:
-                    bundle = bundles.get(row.row_number)
-                    if (
-                        bundle is None
-                        or (
-                            bundle.error is not None
-                            and not isinstance(
-                                bundle.error,
-                                EmbeddingServiceUnavailable,
-                            )
-                        )
-                    ):
-                        result = _process_excel_import_row(
+                    if is_knowledge_update:
+                        result = _process_excel_update_row(
                             db,
                             row,
                             background_user,
                         )
                     else:
-                        result = _process_excel_import_row(
-                            db,
-                            row,
-                            background_user,
-                            embedding_bundle=bundle,
-                        )
+                        bundle = bundles.get(row.row_number)
+                        if (
+                            bundle is None
+                            or (
+                                bundle.error is not None
+                                and not isinstance(
+                                    bundle.error,
+                                    EmbeddingServiceUnavailable,
+                                )
+                            )
+                        ):
+                            result = _process_excel_import_row(
+                                db,
+                                row,
+                                background_user,
+                            )
+                        else:
+                            result = _process_excel_import_row(
+                                db,
+                                row,
+                                background_user,
+                                embedding_bundle=bundle,
+                            )
                 except Exception as exc:
                     db.rollback()
                     if _is_retryable_import_exception(exc):
@@ -2404,6 +3241,44 @@ def _knowledge_snapshot(item: Knowledge) -> dict:
     }
 
 
+def _change_log_from_snapshots(
+    item: Knowledge,
+    *,
+    changed_by: str,
+    before_data: dict,
+    after_data: dict,
+    created_at: datetime | None = None,
+) -> KnowledgeChangeLog | None:
+    """根据前后快照生成仅包含实际变化字段的审计记录。"""
+    ordered_fields = list(before_data)
+    ordered_fields.extend(
+        field for field in after_data
+        if field not in before_data
+    )
+    changed_fields = [
+        field
+        for field in ordered_fields
+        if before_data.get(field) != after_data.get(field)
+    ]
+    if not changed_fields:
+        return None
+    return KnowledgeChangeLog(
+        id=f"kcl-{uuid.uuid4().hex[:12]}",
+        knowledge_id=item.id,
+        changed_by=changed_by,
+        changed_fields=changed_fields,
+        before_data={
+            field: deepcopy(before_data.get(field))
+            for field in changed_fields
+        },
+        after_data={
+            field: deepcopy(after_data.get(field))
+            for field in changed_fields
+        },
+        created_at=created_at or datetime.utcnow(),
+    )
+
+
 def _approval_change_log(
     item: Knowledge,
     *,
@@ -2411,15 +3286,16 @@ def _approval_change_log(
     reviewed_at: datetime,
 ) -> KnowledgeChangeLog:
     """记录待审核知识成功发布的审核人、审核时间和状态变化。"""
-    return KnowledgeChangeLog(
-        id=f"kcl-{uuid.uuid4().hex[:12]}",
-        knowledge_id=item.id,
+    change_log = _change_log_from_snapshots(
+        item,
         changed_by=reviewed_by,
-        changed_fields=["status"],
         before_data={"status": KnowledgeStatus.REVIEW.value},
         after_data={"status": KnowledgeStatus.PUBLISHED.value},
         created_at=reviewed_at,
     )
+    if change_log is None:
+        raise RuntimeError("发布审核状态未发生变化，无法生成变更日志。")
+    return change_log
 
 
 def _can_edit_knowledge(item: Knowledge, user: User) -> bool:
@@ -2484,6 +3360,129 @@ def list_change_logs(
     ]
 
 
+@router.put(
+    "/{knowledge_id}/model-configuration",
+    response_model=KnowledgeResponse,
+    summary="更新机型配置信息",
+)
+def update_model_configuration(
+    knowledge_id: str,
+    body: ModelConfigurationUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission("knowledge:edit_published")
+    ),
+):
+    try:
+        acquire_model_configuration_write_lock(db)
+    except ModelConfigurationSyncError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+            },
+        ) from exc
+
+    item = (
+        db.query(Knowledge)
+        .populate_existing()
+        .filter(Knowledge.id == knowledge_id)
+        .with_for_update()
+        .first()
+    )
+    if not item:
+        db.rollback()
+        raise HTTPException(404, "知识条目不存在")
+    if item.knowledge_origin != "model_configuration":
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "MODEL_CONFIGURATION_ONLY",
+                "message": "只有机型配置信息可以使用此编辑接口。",
+            },
+        )
+    source_record_id = str(item.source_record_id or "").strip()
+    try:
+        resolved_scope = _resolve_model_configuration_scope(
+            category_id=body.category_id,
+            brand_id=body.brand_id,
+            model_id=body.model_id,
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+
+    source_fields = deepcopy(
+        item.source_fields
+        if isinstance(item.source_fields, dict)
+        else {}
+    )
+
+    payload = {
+        "records": [
+            {
+                "source_record_id": source_record_id,
+                "title": body.title,
+                "content": body.content,
+                **resolved_scope,
+                "source_fields": source_fields,
+            }
+        ]
+    }
+
+    try:
+        records = parse_model_configuration_payload(payload)
+        sync_result = sync_model_configurations(
+            db,
+            records,
+            actor=current_user.username,
+            allow_source_key_change_for=item.id,
+        )
+        if (
+            sync_result.total != 1
+            or len(sync_result.items) != 1
+            or sync_result.items[0].knowledge_id != item.id
+        ):
+            raise ModelConfigurationSyncError(
+                "MODEL_CONFIGURATION_TARGET_MISMATCH",
+                "机型配置同步结果与当前知识不一致，已取消更新。",
+                source_record_id=source_record_id,
+            )
+        db.commit()
+    except ModelConfigurationSyncError as exc:
+        db.rollback()
+        conflict_codes = {
+            "SOURCE_IDENTIFIER_AMBIGUOUS",
+            "SOURCE_IDENTIFIER_CONFLICT",
+            "MODEL_CONFIGURATION_TARGET_MISMATCH",
+        }
+        raise HTTPException(
+            status_code=409 if exc.code in conflict_codes else 422,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+            },
+        ) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SOURCE_IDENTIFIER_CONFLICT",
+                "message": "新的品类、品牌和型号组合已绑定其他机型配置信息。",
+            },
+        ) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(item)
+    return _to_response(item)
+
+
 @router.patch("/{knowledge_id}", response_model=KnowledgeResponse, summary="更新知识条目")
 def update_knowledge(
     knowledge_id: str,
@@ -2510,8 +3509,21 @@ def update_knowledge(
         allowed = is_admin
     if not allowed:
         raise HTTPException(403, "You do not have permission to edit this knowledge item.")
+    body_fields_set = getattr(body, "model_fields_set", set())
+    requested_origin = (
+        getattr(body, "knowledge_origin", None)
+        if "knowledge_origin" in body_fields_set
+        else getattr(item, "knowledge_origin", "business_accumulation")
+    )
+    if (
+        getattr(item, "knowledge_origin", "") == "model_configuration"
+        or requested_origin == "model_configuration"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工修改知识来源或内容。",
+        )
     was_published = item.status == KnowledgeStatus.PUBLISHED
-    before_data = _knowledge_snapshot(item) if was_published else None
     updates = body.model_dump(exclude_unset=True)
     updated_fields = set(updates)
     origin_changed = (
@@ -2558,6 +3570,7 @@ def update_knowledge(
             item.applicable_categories,
         ),
     )
+    before_data = _knowledge_snapshot(item)
     try:
         for field, val in updates.items():
             if field == "content":
@@ -2623,23 +3636,22 @@ def update_knowledge(
             field for field, before_value in (before_data or {}).items()
             if before_value != after_data.get(field)
         ]
+        changed_at = datetime.utcnow()
         if changed_fields:
             item.updated_by = current_user.username
-        if was_published and changed_fields:
-            db.add(
-                KnowledgeChangeLog(
-                    id=f"kcl-{uuid.uuid4().hex[:12]}",
-                    knowledge_id=item.id,
-                    changed_by=current_user.username,
-                    changed_fields=changed_fields,
-                    before_data=before_data,
-                    after_data=after_data,
-                )
+            change_log = _change_log_from_snapshots(
+                item,
+                changed_by=current_user.username,
+                before_data=before_data,
+                after_data=after_data,
+                created_at=changed_at,
             )
+            if change_log is not None:
+                db.add(change_log)
         if {"title", "subtitles", "content"} & updated_fields:
             ensure_embedding(db, item)
             ensure_search_embeddings(db, item)
-        item.updated_at = datetime.utcnow()
+        item.updated_at = changed_at
         db.commit()
     except Exception:
         db.rollback()
@@ -2653,6 +3665,11 @@ def delete_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if getattr(item, "knowledge_origin", "") == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工删除。",
+        )
     try:
         for media in item.media:
             enqueue_media_deletion(
@@ -2685,6 +3702,14 @@ def submit_deduplication_feedback(
     matched_item = db.query(Knowledge).filter(Knowledge.id == body.matched_knowledge_id).first()
     if not matched_item:
         raise HTTPException(404, "命中的知识条目不存在")
+    if (
+        item.knowledge_origin == "model_configuration"
+        or matched_item.knowledge_origin == "model_configuration"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息不参与查重反馈或向量训练。",
+        )
 
     metadata = item.deduplication_metadata or {}
     matches = metadata.get("matches") if isinstance(metadata, dict) else []
@@ -2759,6 +3784,7 @@ def submit_review(
         raise HTTPException(400, "只有草稿状态才能提交审核")
     if current_user.role != "super_admin" and item.created_by != current_user.username:
         raise HTTPException(403, "Only the creator can submit this knowledge item for review.")
+    before_data = _knowledge_snapshot(item)
     decision = _check_manual_deduplication(
         db,
         title=item.title,
@@ -2785,7 +3811,19 @@ def submit_review(
             content_embedding=decision.content_embedding,
         )
     ensure_search_embeddings(db, item)
-    item.updated_at = datetime.utcnow()
+    changed_at = datetime.utcnow()
+    item.updated_by = current_user.username
+    item.updated_at = changed_at
+    after_data = _knowledge_snapshot(item)
+    change_log = _change_log_from_snapshots(
+        item,
+        changed_by=current_user.username,
+        before_data=before_data,
+        after_data=after_data,
+        created_at=changed_at,
+    )
+    if change_log is not None:
+        db.add(change_log)
     db.commit()
     db.refresh(item)
     return _to_response(item)
@@ -2958,12 +3996,34 @@ def batch_approve_knowledge(
 
 
 @router.post("/{knowledge_id}/deprecate", response_model=KnowledgeResponse, summary="废弃知识条目")
-def deprecate_knowledge(knowledge_id: str, db: Session = Depends(get_db), _=Depends(require_permission("knowledge:deprecate"))):
+def deprecate_knowledge(
+    knowledge_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:deprecate")),
+):
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if getattr(item, "knowledge_origin", "") == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工废弃。",
+        )
+    before_data = _knowledge_snapshot(item)
+    changed_at = datetime.utcnow()
     item.status = KnowledgeStatus.DEPRECATED
-    item.updated_at = datetime.utcnow()
+    item.updated_by = current_user.username
+    item.updated_at = changed_at
+    after_data = _knowledge_snapshot(item)
+    change_log = _change_log_from_snapshots(
+        item,
+        changed_by=current_user.username,
+        before_data=before_data,
+        after_data=after_data,
+        created_at=changed_at,
+    )
+    if change_log is not None:
+        db.add(change_log)
     db.commit()
     db.refresh(item)
     return _to_response(item)
@@ -2978,23 +4038,28 @@ def restore_knowledge(
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if getattr(item, "knowledge_origin", "") == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工恢复。",
+        )
     if item.status != KnowledgeStatus.DEPRECATED:
         raise HTTPException(400, "Only deprecated knowledge items can be restored.")
     before_data = _knowledge_snapshot(item)
     item.status = KnowledgeStatus.PUBLISHED
     item.updated_by = current_user.username
-    item.updated_at = datetime.utcnow()
+    changed_at = datetime.utcnow()
+    item.updated_at = changed_at
     after_data = _knowledge_snapshot(item)
-    db.add(
-        KnowledgeChangeLog(
-            id=f"kcl-{uuid.uuid4().hex[:12]}",
-            knowledge_id=item.id,
-            changed_by=current_user.username,
-            changed_fields=["status"],
-            before_data=before_data,
-            after_data=after_data,
-        )
+    change_log = _change_log_from_snapshots(
+        item,
+        changed_by=current_user.username,
+        before_data=before_data,
+        after_data=after_data,
+        created_at=changed_at,
     )
+    if change_log is not None:
+        db.add(change_log)
     db.commit()
     db.refresh(item)
     return _to_response(item)
@@ -3015,6 +4080,11 @@ async def upload_media(
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if getattr(item, "knowledge_origin", "") == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工上传媒体。",
+        )
     if not _can_edit_knowledge(item, current_user):
         raise HTTPException(403, "Permission denied.")
 
@@ -3199,6 +4269,11 @@ def update_media(knowledge_id: str, media_file: str, alt: str = Form(""), captio
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if getattr(item, "knowledge_origin", "") == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工修改媒体。",
+        )
     if not _can_edit_knowledge(item, current_user):
         raise HTTPException(403, "Permission denied.")
     media = db.query(KnowledgeMedia).filter(
@@ -3217,6 +4292,11 @@ def delete_media(knowledge_id: str, media_file: str, db: Session = Depends(get_d
     item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
     if not item:
         raise HTTPException(404, "知识条目不存在")
+    if getattr(item, "knowledge_origin", "") == "model_configuration":
+        raise HTTPException(
+            status_code=422,
+            detail="机型配置信息由飞书专用同步维护，不能人工删除媒体。",
+        )
     if not _can_edit_knowledge(item, current_user):
         raise HTTPException(403, "Permission denied.")
     media = db.query(KnowledgeMedia).filter(

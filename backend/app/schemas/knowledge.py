@@ -1,11 +1,24 @@
 ﻿from datetime import datetime
 from typing import Literal, Optional, Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 BusinessType = Literal["self_operated", "aggregated"]
-KnowledgeOrigin = Literal["headquarters_standard", "business_accumulation"]
+KnowledgeImportType = Literal[
+    "knowledge",
+    "knowledge_update",
+    "model_configuration",
+]
+KnowledgeOrigin = Literal[
+    "headquarters_standard",
+    "business_accumulation",
+    "model_configuration",
+]
+WritableKnowledgeOrigin = Literal[
+    "headquarters_standard",
+    "business_accumulation",
+]
 
 
 # ---- 富文本内容块 ----
@@ -14,6 +27,10 @@ class ContentBlock(BaseModel):
     type: str = Field(description="内容块类型: text=文本 image=图片 video=视频")
     value: Optional[str] = Field(None, description="文本内容，type=text时使用")
     media_id: Optional[str] = Field(None, description="媒体文件ID，type=image/video时使用")
+    external_url: Optional[str] = Field(
+        None,
+        description="HTTPS 外链媒体地址，type=image/video时可代替media_id使用",
+    )
     alt: Optional[str] = Field(None, description="媒体标题/替代文本")
     caption: Optional[str] = Field(None, description="媒体描述/说明文字，会显示在内容下方")
     duration: Optional[str] = Field(None, description="视频时长，如 03:20，仅type=video时使用")
@@ -55,7 +72,7 @@ class KnowledgeOriginOption(BaseModel):
 
 
 class KnowledgeCreate(BaseModel):
-    knowledge_origin: KnowledgeOrigin = Field(..., description="知识来源")
+    knowledge_origin: WritableKnowledgeOrigin = Field(..., description="知识来源")
     business_type: BusinessType = Field(..., description="业务类型")
     title: str = Field(..., max_length=256, description="知识标题")
     subtitles: list[str] = Field(default=[], description="副标题列表，可多条")
@@ -86,7 +103,10 @@ class KnowledgeCreate(BaseModel):
 
 
 class KnowledgeUpdate(BaseModel):
-    knowledge_origin: Optional[KnowledgeOrigin] = Field(None, description="知识来源")
+    knowledge_origin: Optional[WritableKnowledgeOrigin] = Field(
+        None,
+        description="可人工维护的知识来源",
+    )
     business_type: Optional[BusinessType] = Field(None, description="业务类型")
     title: Optional[str] = Field(None, description="知识标题")
     subtitles: Optional[list[str]] = Field(None, description="副标题列表")
@@ -116,8 +136,8 @@ class KnowledgeUpdate(BaseModel):
     @classmethod
     def knowledge_origin_must_not_be_null(
         cls,
-        value: Optional[KnowledgeOrigin],
-    ) -> Optional[KnowledgeOrigin]:
+        value: Optional[WritableKnowledgeOrigin],
+    ) -> Optional[WritableKnowledgeOrigin]:
         if value is None:
             raise ValueError("知识来源不能为空")
         return value
@@ -133,7 +153,71 @@ class KnowledgeUpdate(BaseModel):
         return value
 
 
+class ModelConfigurationUpdate(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+        extra="forbid",
+        protected_namespaces=(),
+    )
+
+    title: str = Field(..., min_length=1, max_length=256)
+    content: str = Field(..., min_length=1, max_length=100_000)
+    category_id: str = Field(..., min_length=1, max_length=128)
+    category_name: str = Field(..., min_length=1, max_length=500)
+    brand_id: str = Field(..., min_length=1, max_length=128)
+    brand_name: str = Field(..., min_length=1, max_length=500)
+    model_id: str = Field(..., min_length=1, max_length=128)
+    model_name: str = Field(..., min_length=1, max_length=500)
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_attributes(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "attributes" not in value:
+            return value
+        normalized = dict(value)
+        normalized.pop("attributes", None)
+        return normalized
+
+    @field_validator(
+        "title",
+        "content",
+        "category_id",
+        "category_name",
+        "brand_id",
+        "brand_name",
+        "model_id",
+        "model_name",
+    )
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("字段不能为空")
+        return value
+
+
+class ModelConfigurationDetail(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+        protected_namespaces=(),
+    )
+
+    title: str
+    content: str
+    category_id: str
+    category_name: str
+    brand_id: str
+    brand_name: str
+    model_id: str
+    model_name: str
+
+
 class KnowledgeResponse(BaseModel):
+    model_config = ConfigDict(
+        from_attributes=True,
+        protected_namespaces=(),
+    )
+
     id: str = Field(description="知识条目ID")
     knowledge_origin: KnowledgeOrigin = Field(description="知识来源")
     business_type: BusinessType = Field(description="业务类型")
@@ -163,10 +247,10 @@ class KnowledgeResponse(BaseModel):
     updated_at: datetime = Field(description="更新时间")
     tags: list["TagBrief"] = Field(default=[], description="关联标签列表")
     media: list["MediaResponse"] = Field(default=[], description="关联媒体文件列表")
-
-    class Config:
-        from_attributes = True
-
+    model_configuration: Optional[ModelConfigurationDetail] = Field(
+        None,
+        description="机型配置信息的结构化编辑详情，仅该知识来源返回",
+    )
 
 # ---- 分类 ----
 
@@ -229,7 +313,10 @@ class TagDimensionResponse(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, description="搜索关键词")
-    knowledge_origin: KnowledgeOrigin = Field(..., description="限定知识来源")
+    knowledge_origin: WritableKnowledgeOrigin = Field(
+        ...,
+        description="限定语义知识来源",
+    )
     business_type: BusinessType = Field(..., description="限定业务类型")
     category_id: Optional[str] = Field(None, description="限定分类ID")
     tags: Optional[list[str]] = Field(None, description="限定标签")
@@ -256,7 +343,10 @@ class SearchResponse(BaseModel):
 # ---- 候选池 ----
 
 class CandidateSubmit(BaseModel):
-    knowledge_origin: KnowledgeOrigin = Field(..., description="知识来源")
+    knowledge_origin: WritableKnowledgeOrigin = Field(
+        ...,
+        description="可人工维护的知识来源",
+    )
     business_type: BusinessType = Field(..., description="业务类型")
     title: str = Field(..., description="标题")
     content: Any = Field(..., description="内容")
@@ -301,6 +391,10 @@ class ExcelImportRowResult(BaseModel):
         None,
         description="疑似重复进入审核队列后的任务ID",
     )
+    operation: Optional[Literal["created", "updated", "unchanged"]] = Field(
+        None,
+        description="机型配置同步或知识批量修改中的逐行幂等操作结果",
+    )
 
 
 class ExcelImportResponse(BaseModel):
@@ -315,6 +409,7 @@ class ExcelImportResponse(BaseModel):
 
 class KnowledgeImportTaskResponse(BaseModel):
     id: str = Field(description="导入任务ID")
+    import_type: KnowledgeImportType = Field(description="导入类型")
     original_filename: str = Field(description="原始 Excel 文件名")
     file_size: int = Field(description="上传文件大小（字节）")
     status: Literal[
@@ -327,11 +422,14 @@ class KnowledgeImportTaskResponse(BaseModel):
     ] = Field(description="任务状态")
     total_rows: int = Field(description="解析后的总行数")
     processed_rows: int = Field(description="已完成处理的行数")
-    imported: int = Field(description="成功创建的知识数")
+    imported: int = Field(description="成功处理数")
     review_required: int = Field(description="需人工确认疑似重复的知识数")
     pending_review: int = Field(description="进入待发布审核的知识数")
     deprecated: int = Field(description="已同步为废弃的知识数")
     failed: int = Field(description="失败行数")
+    created: int = Field(description="新增数")
+    updated: int = Field(description="更新数")
+    unchanged: int = Field(description="无变化数")
     retry_rows: list[int] = Field(
         default_factory=list,
         description="等待安全重试的 Excel 原始行号",

@@ -16,6 +16,7 @@ import answer_hub.mimo as mimo_module
 import answer_hub.workflow as workflow_module
 from answer_hub.audit import AuditStore
 from answer_hub.catalog import StandardCatalogItem, load_standard_catalog
+from answer_hub.classification_catalog import ClassificationCatalogItem
 from answer_hub.images import ImageEvidence
 from answer_hub.mimo import (
     MimoClient,
@@ -70,6 +71,62 @@ def test_case_only_topic_signal_payload_treats_historical_reply_as_primary_evide
 
     assert payload["primary_evidence"]["historical_actual_reply"] == "请拍摄清晰屏幕图片"
     assert "legacy_script" not in payload["legacy_reference_only"]
+
+
+def test_failed_topic_transcription_keeps_source_fact_body_for_human_review() -> None:
+    rows = preprocess_source_rows(
+        [
+            {
+                "工单ID": "FAILED-FACT-001",
+                "聊天内容": "充电孔一直弹出进水提示，需先清理接口再测试充电。",
+                "核心问题": "平板充电孔进水提示如何判定",
+                "判定结论": "证据不足，需补充接口清理和充电测试。",
+                "判定依据": "仅凭提示不能判定浸液。",
+                "历史实际回复": "先清理接口，再测试充电功能，证据不足时不要直接判定。",
+                "产品类型": "平板",
+                "对象/部位": "充电接口",
+                "异常现象": "持续进水提示",
+            }
+        ]
+    )
+    topic = workflow_module._failed_topic_transcription_row(
+        "TOP-FAILED-FACT",
+        ("rule", "自营回收", "平板电脑", "充电接口"),
+        rows,
+        {"knowledge_value": "值得沉淀"},
+        provider="mimo",
+        model_name="mimo-v2.5",
+        prompt_version="test",
+        model_run_id="run",
+        transcription_status="topic_model_validation_failed",
+        model_call_status="model_success",
+        error="输出校验失败",
+        matches=[],
+        use_standard_references=False,
+    )
+
+    assert topic["知识内容"]
+    assert "清理接口" in topic["知识内容"]
+    assert "证据不足" in topic["知识内容"]
+    assert topic["推荐回复"] == ""
+    assert topic["模型阶段状态"] == "topic_model_validation_failed"
+
+
+def test_missing_image_measurement_keeps_source_rules_and_adds_boundary() -> None:
+    query = {
+        "对象/部位": "屏幕",
+        "异常现象": "彩色斑点",
+    }
+    content = "1. 屏幕背景色下可见彩色斑点时，按来源规则核验漏液。\n2. 直径大于1mm的黑点或彩点属于判定条件。"
+
+    guarded = workflow_module._append_measurement_evidence_boundary(
+        content,
+        query=query,
+    )
+
+    assert "直径大于1mm" in guarded
+    assert "当前案例图片未提供可核验的尺寸" in guarded
+    assert "不能据此直接确定本案例的档位或结论" in guarded
 
 
 def test_topic_signal_prompt_uses_final_judgment_without_notebook_model_example() -> None:
@@ -441,7 +498,7 @@ def test_atomic_topic_cluster_prompt_uses_shared_terminology() -> None:
     )
 
     assert mimo_module.ATOMIC_TOPIC_CLUSTER_PROMPT_VERSION == (
-        "atomic-knowledge-topic-clustering-v13-12-category-taxonomy"
+        "atomic-knowledge-topic-clustering-v16-classification-catalog-reviewable-recall"
     )
     assert "术语字典（全流程共享）" in prompt
     assert "一根线" in prompt
@@ -458,6 +515,8 @@ def test_atomic_topic_cluster_prompt_uses_shared_terminology() -> None:
         in prompt
     )
     assert "少见、特殊或标准咨询类原子问题" in prompt
+    assert "classification_catalog_status=classification_ambiguous" in prompt
+    assert "不得仅因候选路径不同把同品类案例强制拆开" in prompt
     assert "Xray" not in prompt
     assert "GSX" not in prompt
 
@@ -647,7 +706,7 @@ def test_remaining_mimo_prompts_use_scoped_notebook_terminology() -> None:
     )
 
     assert mimo_module.PROMPT_VERSION == (
-        "multi-category-topic-transcription-v11-specific-model-facts"
+        "multi-category-topic-transcription-v13-recall-subtitles"
     )
     assert mimo_module.TOPIC_REVIEW_PROMPT_VERSION == (
         "multi-category-topic-content-quality-review-v9-12-category-taxonomy"
@@ -675,6 +734,9 @@ def test_remaining_mimo_prompts_use_scoped_notebook_terminology() -> None:
     assert "只能回答当前单一原子主题" in prompts[1]
     assert "历史实际回复中出现过" in prompts[1]
     assert "重复问候" in prompts[1]
+    assert "content_type" in prompts[1]
+    assert "简洁编号格式" in prompts[1]
+    assert "不得写空占位" in prompts[1]
     assert "事实ID" in prompts[2]
     assert "不能因为这些内容出现在历史实际回复中就判断一致" in prompts[2]
     assert "异常标点" in prompts[2]
@@ -715,7 +777,8 @@ def test_candidate_validation_normalizes_alias_scope_and_rejects_non_category_sc
     base = {
         "title": "耳机连接如何核验",
         "subtitles": [],
-        "content": "根据来源事实核对连接表现。",
+        "content": "1. 根据来源事实核对连接表现。",
+        "content_type": "核验型",
         "category_l1": "功能问题",
         "category_l2": "连接功能",
         "layer": "L2",
@@ -953,9 +1016,17 @@ def test_case_only_topic_generation_rejects_model_standard_references() -> None:
     assert len(topics) == 1
     assert not gaps
     assert not pending
-    assert topics[0]["模型阶段状态"] == "topic_model_failed"
+    # 模型成功返回但内容质量门禁未通过，使用独立的质量失败状态。
+    assert topics[0]["模型阶段状态"] == "topic_model_quality_failed"
+    assert topics[0]["模型调用状态"] == "model_success"
+    assert topics[0]["模型输出校验状态"] == "passed"
+    assert topics[0]["模型质量状态"] == "failed"
+    assert topics[0]["知识草稿状态"] == "blocked"
     assert "标准引用" in topics[0]["校验备注"]
-    assert "质检标准" not in topics[0]["知识内容"]
+    assert topics[0]["知识内容"]
+    assert "色斑" in topics[0]["知识内容"]
+    assert "来源未说明的其他情形不得直接套用" in topics[0]["知识内容"]
+    assert topics[0]["推荐回复"] == ""
     assert topics[0]["关联标准项"] == ""
 
 
@@ -1054,6 +1125,260 @@ def _standards() -> list[StandardCatalogItem]:
             status="published",
             version="v2026.07",
         )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("snippet", "question", "expected"),
+    [
+        (
+            "碎裂是指外屏玻璃出现裂纹、断裂或结构性破损。",
+            "什么是屏幕碎裂？",
+            "定义型",
+        ),
+        (
+            "检测方法：/；磕点直径不超过1mm时按有触感划痕处理，直径大于1mm时按屏幕磕点处理。",
+            "屏幕磕点多大按磕点处理？",
+            "阈值型",
+        ),
+        (
+            "用指甲横向刮擦划痕，有明显阻滞感为有触感划痕；无阻滞感为无触感划痕。",
+            "有触感划痕如何核验？",
+            "核验型",
+        ),
+        (
+            "根据结构形态、触感和尺寸区分碎裂、磕点、有触感划痕和无触感划痕；分别计数。",
+            "屏幕碎裂、磕点和划痕如何区分？",
+            "区分型",
+        ),
+    ],
+)
+def test_topic_content_type_uses_source_rule_priority(
+    snippet: str,
+    question: str,
+    expected: str,
+) -> None:
+    standard = StandardCatalogItem(
+        standard_id="SCREEN-APPEARANCE-001",
+        title="屏幕外观瑕疵判定",
+        category_l1="外观问题",
+        category_l2="屏幕",
+        knowledge_type="场景判定",
+        standard_path="【外观问题】-【屏幕】",
+        keywords=["屏幕"],
+        scope="手机",
+        response_snippet=snippet,
+        status="published",
+        version="v2026.08",
+    )
+    query = {
+        "核心问题": question,
+        "对象/部位": "屏幕外屏玻璃",
+        "异常现象": "屏幕外观瑕疵",
+    }
+
+    assert workflow_module._classify_topic_content_type(
+        query,
+        [query],
+        [(standard, 1.0)],
+    ) == expected
+
+
+def test_topic_content_type_distinction_overrides_threshold_and_verification() -> None:
+    standard = StandardCatalogItem(
+        standard_id="SCREEN-APPEARANCE-002",
+        title="屏幕碎裂、磕点和划痕区分",
+        category_l1="外观问题",
+        category_l2="屏幕",
+        knowledge_type="场景判定",
+        standard_path="【外观问题】-【屏幕】",
+        keywords=["屏幕", "划痕"],
+        scope="手机",
+        response_snippet=(
+            "磕点直径不超过1mm时按有触感划痕处理；"
+            "用指甲横向刮擦判断触感，有触感和无触感划痕分别计数。"
+        ),
+        status="published",
+        version="v2026.08",
+    )
+
+    assert workflow_module._classify_topic_content_type(
+        {"核心问题": "屏幕磕点和划痕如何区分？"},
+        [{"核心问题": "屏幕磕点和划痕如何区分？"}],
+        [(standard, 1.0)],
+    ) == "区分型"
+
+
+def test_short_definition_content_is_allowed_by_topic_quality_gate() -> None:
+    assert workflow_module._topic_content_has_complete_short_structure(
+        "1. 碎裂是指外屏玻璃出现裂纹、断裂或结构性破损。",
+        "定义型",
+    )
+    assert not workflow_module._topic_content_has_complete_short_structure(
+        "1. 碎裂是指外屏玻璃出现裂纹。",
+        "区分型",
+    )
+
+
+def test_mimo_content_type_requires_the_matching_number_of_numbered_points() -> None:
+    assert mimo_module._content_type_has_expected_numbered_points(
+        "1. 磕点是指外屏玻璃受碰撞形成的凹坑或缺口。\n"
+        "2. 直径大于1mm时按屏幕磕点处理。",
+        "阈值型",
+    )
+    assert not mimo_module._content_type_has_expected_numbered_points(
+        "1. 磕点直径大于1mm时按屏幕磕点处理。",
+        "区分型",
+    )
+
+
+def test_new_contract_subtitles_keep_only_recall_questions() -> None:
+    subtitles = mimo_module._validate_subtitles(
+        [
+            "屏幕碎裂、磕点和划痕分别怎么判断？",
+            "有触感和无触感划痕如何区分？",
+        ],
+        "屏幕碎裂、磕点和划痕如何区分？",
+        required=True,
+    )
+
+    assert len(subtitles) == 2
+    assert mimo_module._validate_subtitles(
+        [
+            "适用部位：外屏玻璃",
+            "屏幕碎裂、磕点和划痕如何区分？",
+            "外屏玻璃的磕点怎么核验？",
+        ],
+        "屏幕碎裂、磕点和划痕如何区分？",
+        required=True,
+    ) == ["外屏玻璃的磕点怎么核验？"]
+
+
+@pytest.mark.parametrize(
+    ("supplied_content_type", "expected_content_type"),
+    [
+        ("流程型", "核验型"),
+        ("查询型", "核验型"),
+        ("边界型", "区分型"),
+        ("解释型", "定义型"),
+    ],
+)
+def test_candidate_validation_normalizes_common_content_type_aliases(
+    supplied_content_type: str,
+    expected_content_type: str,
+) -> None:
+    content = {
+        "核验型": "1. 打开设备设置。\n2. 查看电池健康度显示结果。",
+        "区分型": "1. 进灰表现为屏幕内部颗粒。\n2. 漏液表现为显示区域异常。",
+        "定义型": "1. 电池健康度是设备当前可用容量相对设计容量的状态指标。",
+    }[expected_content_type]
+    candidate = {
+        "title": "平板电池健康度应如何核验？",
+        "subtitles": [],
+        "content": content,
+        "content_type": supplied_content_type,
+        "category_l1": "电池",
+        "category_l2": "电池健康度",
+        "layer": "L2",
+        "knowledge_form": "流程方法",
+        "standard_refs": [],
+        "applicable_scope": "平板电脑",
+        "applicable_brands": [],
+        "applicable_models": [],
+        "confidence": 0.8,
+        "reasoning_summary": "来源事实支持该核验方法。",
+        "needs_human_review": True,
+        "image_evidence_summary": "无图片。",
+    }
+
+    validated = mimo_module._validate_candidate(candidate, set())
+
+    assert validated["content_type"] == expected_content_type
+    assert validated["subtitles"] == []
+
+
+def test_candidate_validation_requires_content_type_in_new_contract() -> None:
+    candidate = {
+        "title": "平板电池健康度应如何核验？",
+        "subtitles": ["平板电池健康度怎么查看？"],
+        "content": "打开设置查看电池健康度。",
+        "category_l1": "电池",
+        "category_l2": "电池健康度",
+        "layer": "L2",
+        "knowledge_form": "流程方法",
+        "standard_refs": [],
+        "applicable_scope": "平板电脑",
+        "applicable_brands": [],
+        "applicable_models": [],
+        "confidence": 0.8,
+        "reasoning_summary": "来源事实支持该核验方法。",
+        "needs_human_review": True,
+        "image_evidence_summary": "无图片。",
+    }
+
+    with pytest.raises(MimoError, match="content_type"):
+        mimo_module._validate_candidate(candidate, set())
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        "MiMo 输出的 content_type 必须为 定义型、阈值型、核验型 或 区分型",
+        "MiMo 输出的核验型正文必须使用对应数量的编号要点",
+    ),
+)
+def test_content_contract_errors_are_validation_failures(error: str) -> None:
+    assert workflow_module._topic_model_failure_status(
+        MimoError(error)
+    ) == ("topic_model_validation_failed", "model_success")
+
+
+def test_rule_fallback_writes_compact_numbered_content_by_content_type() -> None:
+    standard = StandardCatalogItem(
+        standard_id="SCREEN-APPEARANCE-003",
+        title="屏幕碎裂、磕点和划痕如何区分？",
+        category_l1="外观问题",
+        category_l2="屏幕",
+        knowledge_type="场景判定",
+        standard_path="【外观问题】-【屏幕】",
+        keywords=["屏幕", "碎裂", "磕点", "划痕"],
+        scope="手机",
+        response_snippet=(
+            "标准定义：1. 根据结构形态、触感、尺寸和数量区分碎裂、磕点和划痕。"
+            "2. 磕点直径不超过1mm时按有触感划痕处理，直径大于1mm时按屏幕磕点处理。"
+            "3. 用指甲横向刮擦，有阻滞感为有触感划痕；有触感和无触感划痕分别计数。"
+        ),
+        status="published",
+        version="v2026.08",
+    )
+    row = {
+        "数据ID": "SCREEN-001",
+        "工单ID": "SCREEN-001",
+        "核心问题": "屏幕碎裂、磕点和划痕如何区分？",
+        "判定依据": "按屏幕外观标准核验。",
+        "产品类型": "手机",
+        "一级分类": "外观问题",
+        "二级分类": "屏幕",
+        "问题意图": "现象区分",
+        "对象/部位": "屏幕外屏玻璃",
+        "异常现象": "碎裂、磕点、划痕",
+        "解题方式": "对照标准区分",
+    }
+
+    draft = workflow_module._topic_rule_draft(
+        "TOP-SCREEN-001",
+        [row],
+        [(standard, 1.0)],
+    )
+
+    assert draft["content_type"] == "区分型"
+    assert draft["content"].startswith("1. 根据结构形态、触感、尺寸和数量区分")
+    assert "2. 磕点直径不超过1mm" in draft["content"]
+    assert "3. 用指甲横向刮擦" in draft["content"]
+    assert "主问题：" not in draft["content"]
+    assert draft["subtitles"][:2] == [
+        "屏幕碎裂、磕点和划痕分别怎么判断？",
+        "屏幕碎裂、磕点和划痕中的有触感和无触感情况如何区分？",
     ]
 
 
@@ -1928,11 +2253,10 @@ def test_single_record_only_extracts_features_and_topic_model_saves_audit(tmp_pa
     assert topics[0]["知识分类"] == "质检标准"
     assert topics[0]["是否重点复核"] == "是"
     assert topics[0]["模型初标提供方"] == "mimo"
-    assert topics[0]["模型初标结论"] == "需修改"
-    assert topics[0]["模型初标错误类型"] == "场景理解错"
-    assert topics[0]["主题无来源内容"]
-    assert "历史标准引用需保留" in topics[0]["关联标准项"]
+    assert topics[0]["模型初标结论"] == "通过"
+    assert topics[0]["模型初标错误类型"] == ""
     assert topics[0]["模型初标是否值得沉淀"] == "值得沉淀"
+    assert "历史标准引用需保留" in topics[0]["关联标准项"]
 
     connection = sqlite3.connect(audit.path)
     try:
@@ -2556,7 +2880,7 @@ def test_untranscribed_topic_title_prefers_direct_cluster_theme_name() -> None:
     )
 
     assert len(topics) == 1
-    assert topics[0]["主标题"] == "手机外观碎裂判定"
+    assert topics[0]["主标题"] == "手机外观碎裂如何判定"
     assert "问题描述" not in topics[0]["主标题"]
 
 
@@ -2849,10 +3173,832 @@ def test_worthy_topic_is_transcribed_then_receives_content_quality_review() -> N
     assert topics[0]["主题问题分类"] == "质检流程"
     assert topics[0]["知识分类"] == "质检流程"
     assert topics[0]["主题沉淀价值"] == "值得沉淀"
-    assert topics[0]["主题转写状态"] == "topic_model_labeled"
+    assert topics[0]["主题转写状态"] == "topic_model_quality_failed"
     assert topics[0]["适用范围"] == "手机"
     assert topics[0]["模型初标结论"] == "需修改"
     assert "保留截图" in topics[0]["主题无来源内容"]
+
+
+def test_topic_standard_retriever_runs_after_topic_value_gate() -> None:
+    calls: list[str] = []
+    standard = StandardCatalogItem(
+        standard_id="KB-STD-001",
+        title="设备信息读取标准",
+        category_l1="质检标准",
+        category_l2="",
+        knowledge_type="业务沉淀标准",
+        standard_path="CZ业务沉淀标准：KB-STD-001",
+        keywords=["设备信息", "核对"],
+        scope="手机",
+        response_snippet="先读取设备信息，再使用检测工具交叉核对。",
+        status="published",
+        version="cz-snapshot-v1",
+    )
+
+    class StandardBackedTopicMimo:
+        config = SimpleNamespace(model="mimo-standard-backed-test")
+
+        def classify_topic_stage(self, _topic):
+            calls.append("classify")
+            return MimoLabelResult(
+                candidate={
+                    "topic_stage": "质检标准",
+                    "knowledge_value": "值得沉淀",
+                    "stage_reason": "主题需要按已生效标准改写。",
+                    "value_reason": "来源问题可复用。",
+                    "reusable_knowledge": "设备信息读取和交叉核对。",
+                    "confidence": 0.94,
+                    "needs_human_review": False,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def label_topic(self, _topic, matches, use_standard_references=False):
+            calls.append("transcribe")
+            assert use_standard_references is True
+            assert [item.standard_id for item, _score in matches] == ["KB-STD-001"]
+            return MimoLabelResult(
+                candidate={
+                    "title": "设备信息读取与交叉核对",
+                    "subtitles": [],
+                    "content": standard.response_snippet,
+                    "category_l1": "质检标准",
+                    "category_l2": "设备信息",
+                    "layer": "L2",
+                    "knowledge_form": "流程方法",
+                    "standard_refs": ["KB-STD-001"],
+                    "applicable_scope": "手机",
+                    "recommended_reply": standard.response_snippet,
+                    "confidence": 0.9,
+                    "reasoning_summary": "依据已生效标准改写。",
+                    "needs_human_review": False,
+                    "image_evidence_summary": "不依赖图片。",
+                    "requires_images": False,
+                    "image_usage_instruction": "",
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def review_topic(self, _topic, _draft, _matches, use_standard_references=False):
+            calls.append("quality_review")
+            assert use_standard_references is True
+            return MimoLabelResult(
+                candidate={
+                    "decision": "通过",
+                    "knowledge_value": "值得沉淀",
+                    "error_type": "",
+                    "reason": "内容与已生效标准一致。",
+                    "standard_consistency": "一致",
+                    "evidence_sufficiency": "充分",
+                    "content_consistency": "一致",
+                    "image_necessity": "不需要",
+                    "title_quality": "清晰",
+                    "confidence": 0.93,
+                    "priority_review": False,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    def retrieve(topic_id, _rows, query):
+        calls.append("retrieve")
+        assert calls == ["classify", "retrieve"]
+        assert topic_id
+        assert query["产品类型"] == "手机"
+        return [(standard, 0.91)], {
+            "source": "headquarters_standard",
+            "status": "success",
+            "knowledge_version": "cz-snapshot-v1",
+        }
+
+    rows = [
+        {
+            "数据ID": record_id,
+            "工单ID": record_id,
+            "聊天内容": conversation,
+            "核心问题": "如何读取并核对设备信息",
+            "产品类型": "手机",
+            "问题意图": "信息查询",
+            "对象/部位": "设备信息",
+            "异常现象": "读取结果需核对",
+            "解题方式": "先进入设备信息页读取，再使用检测工具交叉核对",
+            "语义标注依据": conversation,
+        }
+        for record_id, conversation in (
+            ("202608100001", "先进入设备信息页读取配置，再用检测工具核对。"),
+            ("202608100002", "设备页面和检测工具需要依次交叉核对。"),
+        )
+    ]
+
+    topics, _mapping, gaps, pending = build_topic_review_rows(
+        rows,
+        mimo_client=StandardBackedTopicMimo(),
+        clustering_mode="rule",
+        use_standard_references=True,
+        topic_standard_retriever=retrieve,
+    )
+
+    assert calls == ["classify", "retrieve", "transcribe", "quality_review"]
+    assert len(topics) == 1
+    assert not gaps
+    assert not pending
+    assert "KB-STD-001" in topics[0]["关联标准项"]
+    assert "cz-snapshot-v1" in topics[0]["主题标准版本"]
+
+
+def test_missing_topic_standard_transcribes_experience_candidate_for_manual_review() -> None:
+    calls: list[str] = []
+
+    class ExperienceSupplementTopicMimo:
+        config = SimpleNamespace(model="mimo-standard-required-test")
+
+        def classify_topic_stage(self, _topic):
+            calls.append("classify")
+            return MimoLabelResult(
+                candidate={
+                    "topic_stage": "质检标准",
+                    "knowledge_value": "值得沉淀",
+                    "stage_reason": "主题需要按已生效标准改写。",
+                    "value_reason": "来源问题可复用。",
+                    "reusable_knowledge": "设备信息读取和交叉核对。",
+                    "confidence": 0.94,
+                    "needs_human_review": False,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def label_topic(self, _topic, matches, *, use_standard_references=False):
+            calls.append("transcribe")
+            assert use_standard_references is True
+            assert not matches
+            return MimoLabelResult(
+                candidate={
+                    "title": "设备信息读取与交叉核对方法",
+                    "subtitles": [],
+                    "content": (
+                        "判定规则：设备信息不一致时一律判定为异常。\n"
+                        "适用范围：手机设备信息核对。\n"
+                        "处理步骤：先进入设备信息页读取配置，再使用检测工具交叉核对。\n"
+                        "适用边界：当前主题未命中总部标准，其他设备或信息冲突时补充证据后再确认。"
+                    ),
+                    "category_l1": "基本情况",
+                    "category_l2": "设备信息",
+                    "layer": "L2",
+                    "knowledge_form": "流程方法",
+                    "standard_refs": [],
+                    "applicable_scope": "手机",
+                    "recommended_reply": "您好，请先进入设备信息页读取配置，再使用检测工具交叉核对；信息冲突时补充证据后再确认。",
+                    "confidence": 0.9,
+                    "reasoning_summary": "依据来源会话中的设备信息核对步骤整理。",
+                    "needs_human_review": True,
+                    "image_evidence_summary": "不依赖图片。",
+                    "requires_images": False,
+                    "image_usage_instruction": "",
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def review_topic(self, _topic, _draft, matches, *, use_standard_references=False):
+            calls.append("quality_review")
+            assert use_standard_references is True
+            assert not matches
+            return MimoLabelResult(
+                candidate={
+                    "decision": "通过",
+                    "knowledge_value": "值得沉淀",
+                    "error_type": "",
+                    "reason": "草稿仅使用来源会话中的核对步骤，作为经验补充候选。",
+                    "standard_consistency": "无可信标准",
+                    "evidence_sufficiency": "充分",
+                    "content_consistency": "一致",
+                    "image_necessity": "不需要",
+                    "title_quality": "清晰",
+                    "confidence": 0.9,
+                    "priority_review": True,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    def retrieve(_topic_id, _rows, _query):
+        calls.append("retrieve")
+        return [], {
+            "source": "headquarters_standard",
+            "status": "error",
+            "error": "RuntimeError: CZ 标准服务不可用",
+        }
+
+    rows = [
+        {
+            "数据ID": "202608100001",
+            "工单ID": "202608100001",
+            "聊天内容": "如何读取并核对设备信息？",
+            "核心问题": "如何读取并核对设备信息",
+            "产品类型": "手机",
+            "问题意图": "信息查询",
+            "对象/部位": "设备信息",
+            "异常现象": "读取结果需核对",
+            "解题方式": "先进入设备信息页读取，再使用检测工具交叉核对",
+            "语义标注依据": "聊天明确询问设备信息核对方法。",
+        }
+    ]
+
+    topics, _mapping, gaps, pending = build_topic_review_rows(
+        rows,
+        mimo_client=ExperienceSupplementTopicMimo(),
+        clustering_mode="rule",
+        use_standard_references=True,
+        topic_standard_retriever=retrieve,
+        require_standard_match=True,
+    )
+
+    assert calls == ["classify", "retrieve", "transcribe", "quality_review"]
+    assert len(topics) == 1
+    assert not gaps
+    assert not pending
+    assert topics[0]["主题转写状态"] == "topic_model_quality_failed"
+    assert topics[0]["主题标准检索状态"] == "error"
+    assert topics[0]["关联标准项"] == ""
+    assert topics[0]["知识来源"] == "方向二经验补充候选"
+    assert topics[0]["模型初标重点复核"] == "是"
+    assert topics[0]["模型初标结论"] == "需修改"
+    assert topics[0]["模型初标是否值得沉淀"] == "待确认"
+    assert topics[0]["模型初标错误类型"] == "标准未覆盖/标准召回不足"
+    assert topics[0]["推荐回复"] == ""
+    assert "信息不一致时一律判定为异常" not in topics[0]["知识内容"]
+    assert topics[0]["知识内容"].startswith("当前来源未提供可直接套用的明确规则")
+    assert "回收师" not in topics[0]["知识内容"]
+
+
+def test_rule_fallback_never_promotes_case_threshold_without_standard() -> None:
+    rows = [
+        {
+            "数据ID": "FALLBACK-001",
+            "工单ID": "FALLBACK-001",
+            "聊天内容": "后摄镜片和保护圈之间有缝隙，自测约0.3-0.4mm。",
+            "核心问题": "后摄镜片与保护圈之间的缝隙如何判定",
+            "判定结论": "缝隙未达到大于0.5mm的判定阈值，按正常外观状态处理。",
+            "判定依据": (
+                "外壳组件衔接处缝隙大于0.5mm才判定；"
+                "当前自测为0.3-0.4mm，未达到阈值。"
+            ),
+            "参考话术": (
+                "根据图片和测量，缝隙约0.3-0.4mm，未达到0.5mm阈值，"
+                "按正常外观状态继续质检。"
+            ),
+            "产品类型": "平板电脑",
+            "一级分类": "外壳外观情况",
+            "二级分类": "外壳其他现象",
+            "问题意图": "标准判定",
+            "对象/部位": "后摄镜片与保护圈衔接处",
+            "异常现象": "缝隙",
+            "解题方式": "测量缝隙宽度并与0.5mm阈值比较",
+            "语义标注依据": "来源明确记录自测尺寸、判定阈值和处理结论。",
+        }
+    ]
+
+    topics, _mapping, gaps, pending = build_topic_review_rows(
+        rows,
+        mimo_client=None,
+        use_mimo=False,
+        clustering_mode="rule",
+        use_standard_references=True,
+        transcribe_all_admitted_topics=True,
+    )
+
+    assert len(topics) == 1
+    assert not gaps
+    assert not pending
+    assert topics[0]["知识来源"] == "方向二经验补充候选"
+    assert topics[0]["模型初标结论"] == "需修改"
+    assert topics[0]["模型初标错误类型"] == "标准未覆盖/标准召回不足"
+    assert topics[0]["知识内容"].startswith("当前来源未提供可直接套用的明确规则")
+    assert "测量缝隙宽度" in topics[0]["知识内容"]
+    assert all(
+        value not in topics[0]["知识内容"]
+        for value in ("0.3-0.4mm", "0.5mm", "大于0.5mm", "按正常外观状态")
+    )
+    assert all(
+        value not in topics[0]["推荐回复"]
+        for value in ("0.3-0.4mm", "0.5mm", "大于0.5mm", "按正常外观状态")
+    )
+
+
+def test_missing_headquarters_standard_falls_back_to_local_quality_standard() -> None:
+    calls: list[str] = []
+    selected_standard_ids: list[str] = []
+    local_standard = StandardCatalogItem(
+        standard_id="LOCAL-PHONE-INFO-001",
+        title="手机设备信息读取与交叉核对",
+        category_l1="质检流程",
+        category_l2="设备信息",
+        knowledge_type="本地质检标准",
+        standard_path="本地质检标准：手机/设备信息",
+        keywords=["手机", "设备信息", "读取", "交叉核对"],
+        scope="手机",
+        response_snippet="先读取设备信息，再使用检测工具交叉核对。",
+        status="published",
+        version="local-qc-v20260817",
+    )
+
+    class LocalStandardTopicMimo:
+        config = SimpleNamespace(model="mimo-local-standard-fallback-test")
+
+        def classify_topic_stage(self, _topic):
+            calls.append("classify")
+            return MimoLabelResult(
+                candidate={
+                    "topic_stage": "质检流程",
+                    "knowledge_value": "值得沉淀",
+                    "stage_reason": "主题需要按可用质检标准改写。",
+                    "value_reason": "来源问题可复用。",
+                    "reusable_knowledge": "设备信息读取和交叉核对。",
+                    "confidence": 0.94,
+                    "needs_human_review": False,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def label_topic(self, _topic, matches, *, use_standard_references=False):
+            calls.append("transcribe")
+            assert use_standard_references is True
+            selected_standard_ids.extend(
+                item.standard_id for item, _score in matches
+            )
+            assert selected_standard_ids == ["LOCAL-PHONE-INFO-001"]
+            return MimoLabelResult(
+                candidate={
+                    "title": "手机设备信息读取与交叉核对方法",
+                    "subtitles": [],
+                    "content": local_standard.response_snippet,
+                    "category_l1": "质检流程",
+                    "category_l2": "设备信息",
+                    "layer": "L2",
+                    "knowledge_form": "流程方法",
+                    "standard_refs": ["LOCAL-PHONE-INFO-UNKNOWN"],
+                    "applicable_scope": "手机",
+                    "recommended_reply": local_standard.response_snippet,
+                    "confidence": 0.9,
+                    "reasoning_summary": "依据本地质检标准改写。",
+                    "needs_human_review": True,
+                    "image_evidence_summary": "不依赖图片。",
+                    "requires_images": False,
+                    "image_usage_instruction": "",
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def review_topic(self, _topic, _draft, matches, *, use_standard_references=False):
+            calls.append("quality_review")
+            assert use_standard_references is True
+            assert [item.standard_id for item, _score in matches] == [
+                "LOCAL-PHONE-INFO-001"
+            ]
+            return MimoLabelResult(
+                candidate={
+                    "decision": "通过",
+                    "knowledge_value": "值得沉淀",
+                    "error_type": "",
+                    "reason": "草稿依据本地质检标准，需人工确认后送审。",
+                    "standard_consistency": "一致",
+                    "evidence_sufficiency": "充分",
+                    "content_consistency": "一致",
+                    "image_necessity": "不需要",
+                    "title_quality": "清晰",
+                    "confidence": 0.9,
+                    "priority_review": True,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    def retrieve(_topic_id, _rows, _query):
+        calls.append("retrieve")
+        return [], {
+            "source": "headquarters_standard",
+            "status": "error",
+            "knowledge_version": "cz-snapshot-v1",
+            "error": "RuntimeError: CZ 标准服务不可用",
+        }
+
+    rows = [
+        {
+            "数据ID": "202608100001",
+            "工单ID": "202608100001",
+            "聊天内容": "如何读取并核对手机设备信息？",
+            "核心问题": "如何读取并核对设备信息",
+            "产品类型": "手机",
+            "问题意图": "信息查询",
+            "对象/部位": "设备信息",
+            "异常现象": "读取结果需核对",
+            "解题方式": "先进入设备信息页读取，再使用检测工具交叉核对",
+            "语义标注依据": "聊天明确询问设备信息核对方法。",
+        }
+    ]
+
+    topics, _mapping, gaps, pending = build_topic_review_rows(
+        rows,
+        standard_catalog=[local_standard],
+        mimo_client=LocalStandardTopicMimo(),
+        clustering_mode="rule",
+        use_standard_references=True,
+        topic_standard_retriever=retrieve,
+        require_standard_match=True,
+    )
+
+    assert calls == ["classify", "retrieve", "transcribe", "quality_review"]
+    assert len(topics) == 1
+    assert not gaps
+    assert not pending
+    assert topics[0]["知识来源"] == "方向二本地质检标准候选"
+    assert "LOCAL-PHONE-INFO-001" in topics[0]["关联标准项"]
+    assert "LOCAL-PHONE-INFO-UNKNOWN" not in topics[0]["关联标准项"]
+    assert topics[0]["主题标准检索来源"] == "local_quality_standard"
+    assert topics[0]["主题标准检索状态"] == "fallback_match"
+    assert "CZ 标准服务不可用" in topics[0]["主题标准检索错误"]
+    assert topics[0]["模型初标重点复核"] == "是"
+
+
+def test_experience_only_candidate_is_not_exported_or_added_to_training() -> None:
+    topic = {
+        "主题ID": "EXPERIENCE-ONLY-001",
+        "知识来源": "方向二经验补充候选",
+        "关联标准项": "",
+        "审核结论": "通过",
+        "是否值得沉淀": "值得沉淀",
+        "是否可用": "可用",
+        "是否进入训练集": "是",
+        "主标题": "手机屏幕异常如何核验？",
+        "知识内容": "当前来源未提供可直接套用的明确规则，不能据此作出确定结论。",
+        "推荐回复": "请补充证据后再判定。",
+    }
+
+    final_rows, feedback_rows, training_rows = (
+        workflow_module.finalize_topic_review_rows([topic])
+    )
+
+    assert final_rows == []
+    assert len(feedback_rows) == 1
+    assert training_rows == []
+
+
+def test_experience_content_drops_bare_numeric_thresholds_without_standard() -> None:
+    content = workflow_module._build_experience_review_content(
+        {
+            "对象/部位": "屏幕坏点",
+            "异常现象": "数量待确认",
+            "解题方式": "记录坏点数量，不少于3时按异常处理，并观察直径≥5",
+        }
+    )
+
+    assert "不少于3" not in content
+    assert "≥5" not in content
+    assert "记录坏点数量" in content
+
+
+def test_default_workflow_without_catalog_keeps_standard_review_mode(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.xlsx"
+    source_book = Workbook()
+    source_sheet = source_book.active
+    source_sheet.append(["工单ID", "聊天内容", "产品类型"])
+    source_sheet.append(["202608210005", "手机屏幕色斑如何判定？", "手机"])
+    source_book.save(source_path)
+
+    result = workflow_module.initial_label_from_workbook(
+        source_path=source_path,
+        standards_path=None,
+        output_dir=tmp_path / "outputs",
+        use_mimo=False,
+        clustering_mode="rule",
+    )
+
+    assert result["standard_references_enabled"] is True
+
+
+def test_case_analysis_draft_is_rewritten_as_reusable_standard_knowledge() -> None:
+    calls: list[str] = []
+    standard = StandardCatalogItem(
+        standard_id="KB-STD-SCREEN-ASH-001",
+        title="平板屏幕进灰判定",
+        category_l1="屏幕外观情况",
+        category_l2="屏幕进灰",
+        knowledge_type="业务沉淀标准",
+        standard_path="CZ业务沉淀标准：KB-STD-SCREEN-ASH-001",
+        keywords=["平板", "屏幕", "进灰", "漏液"],
+        scope="平板电脑",
+        response_snippet="白底可见灰尘直径≤1mm且数量≤10颗时，判定为屏幕进灰。",
+        status="published",
+        version="cz-snapshot-v1",
+    )
+
+    class CaseAnalysisDraftMimo:
+        config = SimpleNamespace(model="mimo-case-analysis-regression-test")
+
+        def classify_topic_stage(self, _topic):
+            calls.append("classify")
+            return MimoLabelResult(
+                candidate={
+                    "topic_stage": "质检标准",
+                    "knowledge_value": "值得沉淀",
+                    "stage_reason": "问题询问可复用的屏幕判定标准。",
+                    "value_reason": "标准已覆盖该现象。",
+                    "reusable_knowledge": "屏幕进灰与漏液的区分方法。",
+                    "confidence": 0.94,
+                    "needs_human_review": False,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def label_topic(self, _topic, _matches, *, retry_reason="", **_kwargs):
+            calls.append("rewrite" if retry_reason else "transcribe")
+            if not retry_reason:
+                return MimoLabelResult(
+                    candidate={
+                        "title": "回收师询问平板屏幕漏液的判定方法，并描述手电筒照射时看到白色异物",
+                        "subtitles": [],
+                        "content": (
+                            "适用情形：回收师询问平板屏幕漏液的判定方法。\n"
+                            "核验要点：本案例息屏状态下看到屏幕内部白色颗粒。\n"
+                            "处理结论：根据本次会话及图片，建议勾选屏幕进灰。"
+                        ),
+                        "category_l1": "屏幕外观情况",
+                        "category_l2": "屏幕进灰",
+                        "layer": "L2",
+                        "knowledge_form": "具体判定",
+                        "standard_refs": ["KB-STD-SCREEN-ASH-001"],
+                        "applicable_scope": "平板电脑",
+                        "recommended_reply": (
+                            "您好，关于回收师本次看到的白色异物，"
+                            "根据本次会话及图片建议勾选屏幕进灰。"
+                        ),
+                        "confidence": 0.9,
+                        "reasoning_summary": "根据本案例图片得出结论。",
+                        "needs_human_review": False,
+                        "image_evidence_summary": "不依赖图片。",
+                        "requires_images": False,
+                        "image_usage_instruction": "",
+                    },
+                    request_audit={},
+                    response_audit={},
+                )
+            assert "案例分析" in retry_reason
+            return MimoLabelResult(
+                candidate={
+                    "title": "平板屏幕进灰与漏液的判定方法",
+                    "subtitles": ["白色颗粒与有色漏液的区分"],
+                    "content": (
+                        "适用范围：平板电脑。\n"
+                        "判定标准：白底可见灰尘直径≤1mm且数量≤10颗时，判定为屏幕进灰。\n"
+                        "核验方法：在规定显示条件下观察异物颜色、形态和数量。\n"
+                        "处理边界：有色块并遮挡显示内容时，应按漏液标准另行判定。"
+                    ),
+                    "category_l1": "屏幕外观情况",
+                    "category_l2": "屏幕进灰",
+                    "layer": "L2",
+                    "knowledge_form": "具体判定",
+                    "standard_refs": ["KB-STD-SCREEN-ASH-001"],
+                    "applicable_scope": "平板电脑",
+                    "recommended_reply": (
+                        "您好，按平板屏幕进灰标准，在规定显示条件下观察异物颜色、"
+                        "形态和数量；白色细小颗粒满足对应条件时勾选屏幕进灰，"
+                        "有色块遮挡显示内容时再按漏液标准处理。"
+                    ),
+                    "confidence": 0.91,
+                    "reasoning_summary": "依据已生效标准整理可复用判定方法。",
+                    "needs_human_review": False,
+                    "image_evidence_summary": "不依赖图片。",
+                    "requires_images": False,
+                    "image_usage_instruction": "",
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def review_topic(self, _topic, draft, _matches, **_kwargs):
+            calls.append("quality_review")
+            assert draft["title"] == "平板屏幕进灰与漏液如何判定"
+            return MimoLabelResult(
+                candidate={
+                    "decision": "通过",
+                    "knowledge_value": "值得沉淀",
+                    "error_type": "",
+                    "reason": "草稿是标准知识，不是案例复述。",
+                    "standard_consistency": "一致",
+                    "evidence_sufficiency": "充分",
+                    "content_consistency": "一致",
+                    "image_necessity": "不需要",
+                    "title_quality": "清晰",
+                    "confidence": 0.94,
+                    "priority_review": False,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    def retrieve(_topic_id, _rows, _query):
+        calls.append("retrieve")
+        return [(standard, 0.91)], {
+            "source": "headquarters_standard",
+            "status": "success",
+            "knowledge_version": "cz-snapshot-v1",
+        }
+
+    rows = [
+        {
+            "数据ID": record_id,
+            "工单ID": record_id,
+            "聊天内容": "平板屏幕里面有白色颗粒，这是不是漏液？",
+            "核心问题": "平板屏幕进灰与漏液如何判定",
+            "产品类型": "平板电脑",
+            "问题意图": "标准判定",
+            "对象/部位": "屏幕内部",
+            "异常现象": "白色颗粒状异物",
+            "解题方式": "按屏幕进灰和漏液标准核验",
+            "语义标注依据": "会话询问白色异物是否属于屏幕漏液。",
+        }
+        for record_id in ("202608100010", "202608100011")
+    ]
+
+    topics, _mapping, gaps, pending = build_topic_review_rows(
+        rows,
+        mimo_client=CaseAnalysisDraftMimo(),
+        clustering_mode="rule",
+        use_standard_references=True,
+        topic_standard_retriever=retrieve,
+        require_standard_match=True,
+    )
+
+    assert calls == [
+        "classify",
+        "retrieve",
+        "transcribe",
+        "rewrite",
+        "quality_review",
+    ]
+    assert len(topics) == 1
+    assert not gaps
+    assert not pending
+    assert topics[0]["主标题"] == "平板屏幕进灰与漏液如何判定"
+    assert "回收师" not in topics[0]["知识内容"]
+    assert "本次会话" not in topics[0]["推荐回复"]
+
+
+def test_topic_content_keeps_only_structured_knowledge_and_separates_reply() -> None:
+    separated_body, separated_reply = workflow_module._split_embedded_recommended_reply(
+        "判定规则：按当前标准核验。答复建议：请按当前标准处理。"
+    )
+    assert "答复建议" not in separated_body
+    assert separated_reply == "请按当前标准处理。"
+
+    standard = StandardCatalogItem(
+        standard_id="KB-STD-SCREEN-ASH-002",
+        title="手机屏幕进灰判定",
+        category_l1="屏幕外观情况",
+        category_l2="屏幕进灰",
+        knowledge_type="业务沉淀标准",
+        standard_path="CZ业务沉淀标准：KB-STD-SCREEN-ASH-002",
+        keywords=["手机", "屏幕", "进灰"],
+        scope="手机",
+        response_snippet="白底可见灰尘直径≤1mm且数量≤10颗时，判定为屏幕进灰。",
+        status="published",
+        version="cz-snapshot-v1",
+    )
+
+    class MixedFieldTopicMimo:
+        config = SimpleNamespace(model="mimo-topic-content-separation-test")
+
+        def classify_topic_stage(self, _topic):
+            return MimoLabelResult(
+                candidate={
+                    "topic_stage": "质检标准",
+                    "knowledge_value": "值得沉淀",
+                    "stage_reason": "主题命中可复用的屏幕判定标准。",
+                    "value_reason": "标准已覆盖该现象。",
+                    "reusable_knowledge": "手机屏幕进灰判定与处理方法。",
+                    "confidence": 0.95,
+                    "needs_human_review": False,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def label_topic(self, _topic, _matches, **_kwargs):
+            return MimoLabelResult(
+                candidate={
+                    "title": "手机屏幕进灰如何判定",
+                    "subtitles": [],
+                    "content": (
+                        "### 知识标题：手机屏幕进灰如何判定\n"
+                        "判定标准：白底可见灰尘直径≤2mm且数量≤20颗时，判定为屏幕进灰。\n"
+                        "核验方法：1. 观察到颗粒直径超过2mm时直接判定为屏幕进灰。\n"
+                        "处理边界：颗粒超过2mm时可跳过人工审核。答复建议："
+                        "请在白底显示条件下核验异物；满足标准条件时按屏幕进灰处理，"
+                        "证据不足请补充照片后转人工审核。"
+                    ),
+                    "category_l1": "屏幕外观情况",
+                    "category_l2": "屏幕进灰",
+                    "layer": "L2",
+                    "knowledge_form": "具体判定",
+                    "standard_refs": ["KB-STD-SCREEN-ASH-002"],
+                    "applicable_scope": "手机",
+                    "recommended_reply": "",
+                    "confidence": 0.92,
+                    "reasoning_summary": "依据已生效标准整理。",
+                    "needs_human_review": False,
+                    "image_evidence_summary": "不依赖图片。",
+                    "requires_images": False,
+                    "image_usage_instruction": "",
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def review_topic(self, _topic, draft, _matches, **_kwargs):
+            assert draft["title"] == "手机屏幕进灰如何判定"
+            assert draft["content"].startswith("1. ")
+            assert "判定规则：" not in draft["content"]
+            assert "处理步骤：" not in draft["content"]
+            assert "例外与边界：" not in draft["content"]
+            assert "标题：" not in draft["content"]
+            assert "知识标题" not in draft["content"]
+            assert "推荐回复" not in draft["content"]
+            assert "答复建议" not in draft["content"]
+            assert "≤2mm" not in draft["content"]
+            assert "超过2mm" not in draft["content"]
+            assert "≤1mm且数量≤10颗" in draft["content"]
+            assert "≤1mm且数量≤10颗" in draft["content"]
+            return MimoLabelResult(
+                candidate={
+                    "decision": "通过",
+                    "knowledge_value": "值得沉淀",
+                    "error_type": "",
+                    "reason": "知识正文和推荐回复字段职责清晰。",
+                    "standard_consistency": "一致",
+                    "evidence_sufficiency": "充分",
+                    "content_consistency": "一致",
+                    "image_necessity": "不需要",
+                    "title_quality": "清晰",
+                    "confidence": 0.95,
+                    "priority_review": False,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    def retrieve(_topic_id, _rows, _query):
+        return [(standard, 0.95)], {
+            "source": "headquarters_standard",
+            "status": "success",
+            "knowledge_version": "cz-snapshot-v1",
+        }
+
+    topics, _mapping, gaps, pending = build_topic_review_rows(
+        [
+            {
+                "数据ID": "SCREEN-STRUCTURED-001",
+                "工单ID": "SCREEN-STRUCTURED-001",
+                "聊天内容": "手机屏幕里面有白色颗粒，应该怎么判定？",
+                "核心问题": "手机屏幕进灰如何判定",
+                "产品类型": "手机",
+                "问题意图": "标准判定",
+                "对象/部位": "屏幕内部",
+                "异常现象": "白色颗粒状异物",
+                "解题方式": "按屏幕进灰标准核验",
+                "语义标注依据": "会话询问手机屏幕白色颗粒的判定。",
+            }
+        ],
+        mimo_client=MixedFieldTopicMimo(),
+        clustering_mode="rule",
+        use_standard_references=True,
+        topic_standard_retriever=retrieve,
+        require_standard_match=True,
+    )
+
+    assert len(topics) == 1
+    assert not gaps
+    assert not pending
+    assert topics[0]["知识内容"].startswith("1. ")
+    assert "判定规则：" not in topics[0]["知识内容"]
+    assert "处理步骤：" not in topics[0]["知识内容"]
+    assert "例外与边界：" not in topics[0]["知识内容"]
+    assert "标题：" not in topics[0]["知识内容"]
+    assert "知识标题" not in topics[0]["知识内容"]
+    assert "推荐回复" not in topics[0]["知识内容"]
+    assert "答复建议" not in topics[0]["知识内容"]
+    assert "≤2mm" not in topics[0]["知识内容"]
+    assert "超过2mm" not in topics[0]["知识内容"]
+    assert "≤1mm且数量≤10颗" in topics[0]["知识内容"]
+    assert "≤1mm且数量≤10颗" in topics[0]["知识内容"]
+    assert topics[0]["主题无来源内容"] == ""
+    assert topics[0]["模型初标结论"] == "通过"
+    assert topics[0]["推荐回复"]
 
 
 def test_topic_model_call_budget_keeps_remaining_topics_for_manual_review() -> None:
@@ -2915,6 +4061,62 @@ def test_topic_model_call_budget_keeps_remaining_topics_for_manual_review() -> N
         if topic["主题分类状态"] == "topic_stage_skipped_model_budget"
     )
     assert skipped["主题分类重点复核"] == "是"
+
+
+def test_topic_model_call_budget_uses_high_configured_limit(monkeypatch) -> None:
+    monkeypatch.setenv("ANSWER_HUB_TOPIC_MODEL_CALL_LIMIT", "1000")
+
+    class ConfiguredBudgetTopicMimo:
+        config = SimpleNamespace(model="mimo-topic-configured-budget-test")
+
+        def classify_topic_stage(self, _topic):
+            return MimoLabelResult(
+                candidate={
+                    "topic_stage": "案例解析",
+                    "knowledge_value": "待确认",
+                    "stage_reason": "需要人工确认是否形成可复用知识。",
+                    "value_reason": "需要人工确认。",
+                    "reusable_knowledge": "",
+                    "confidence": 0.8,
+                    "needs_human_review": True,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    rows = [
+        {
+            "数据ID": record_id,
+            "工单ID": record_id,
+            "聊天内容": f"{product}当前案例怎么处理",
+            "核心问题": f"{product}当前案例怎么处理",
+            "产品类型": product,
+            "问题意图": "案例判定",
+            "对象/部位": "待确认",
+            "异常现象": "待确认",
+            "解题方式": "人工复核",
+            "语义标注依据": "当前案例证据不足。",
+        }
+        for record_id, product in (("A", "手机"), ("B", "平板"))
+    ]
+    clustering_meta: dict[str, object] = {}
+
+    topics, _mapping, _gaps, _pending = build_topic_review_rows(
+        rows,
+        mimo_client=ConfiguredBudgetTopicMimo(),
+        clustering_mode="rule",
+        use_standard_references=False,
+        clustering_meta=clustering_meta,
+    )
+
+    assert len(topics) == 2
+    assert clustering_meta["topic_model_call_limit"] == 1000
+    assert clustering_meta["topic_model_calls"] == 2
+    assert clustering_meta["topic_model_budget_skipped"] == 0
+    assert all(
+        topic["主题分类状态"] != "topic_stage_skipped_model_budget"
+        for topic in topics
+    )
 
 
 def test_generic_topic_draft_is_rewritten_from_case_evidence_before_initial_review() -> None:
@@ -3053,7 +4255,8 @@ def test_generic_topic_draft_is_rewritten_from_case_evidence_before_initial_revi
     assert calls == ["classify", "transcribe", "rewrite", "quality_review"]
     assert topics[0]["主题沉淀价值"] == "值得沉淀"
     assert topics[0]["主题转写状态"] == "topic_model_rewritten_for_evidence"
-    assert topics[0]["模型初标结论"] == "通过"
+    assert topics[0]["模型初标结论"] == "需修改"
+    assert topics[0]["模型初标错误类型"] in {"标题不准", "话术不合适"}
     assert "AirPods 一代" in topics[0]["知识内容"]
     assert "不要求检查“查找”功能" in topics[0]["知识内容"]
     assert "明确待核验功能" not in topics[0]["知识内容"]
@@ -3204,7 +4407,7 @@ def test_topic_quality_review_does_not_reclassify_knowledge_value() -> None:
     prompt = captured_payloads[0]["messages"][1]["content"][0]["text"]  # type: ignore[index]
     assert "沉淀价值已经在转写前完成" in prompt
     assert "不得重新判断是否值得沉淀" in prompt
-    assert "knowledge_value 固定返回“值得沉淀”" in prompt
+    assert "knowledge_value 仅作兼容字段，原样返回主题输入中的 knowledge_value" in prompt
     assert "必须标注知识点是否值得沉淀" not in prompt
 
 
@@ -3219,8 +4422,15 @@ def test_candidate_knowledge_export_only_contains_transcribed_worthy_topics(
                 "知识ID": "TOP-WORTHY",
                 "主题沉淀价值": "值得沉淀",
                 "主题转写状态": "topic_model_labeled",
-                "主标题": "设备信息核对流程",
-                "知识内容": "先读取设备信息，再使用检测工具交叉核对。",
+                "模型调用状态": "model_success",
+                "模型输出校验状态": "passed",
+                "模型质量状态": "passed",
+                "知识草稿状态": "ready_for_human_review",
+                "模型初标结论": "通过",
+                "模型初标错误类型": "",
+                "审核结论": "修改后通过",
+                "主标题": "手机设备信息应如何核对？",
+                "知识内容": "1. 先读取设备信息。\n2. 再使用检测工具交叉核对。",
                 "推荐回复": "请先读取设备信息，再使用检测工具交叉核对。",
                 "知识分类": "质检流程",
                 "适用范围": "手机-通用",
@@ -3254,6 +4464,509 @@ def test_candidate_knowledge_export_only_contains_transcribed_worthy_topics(
 
     assert len(values) == 2
     assert values[1][0] == "TOP-WORTHY"
+
+
+def test_standard_second_match_rejects_judgment_target_mismatch() -> None:
+    standard = StandardCatalogItem(
+        standard_id="STD-NB-SSD-QUERY",
+        title="固态硬盘查看方法",
+        category_l1="硬件信息",
+        category_l2="固态硬盘",
+        knowledge_type="质检标准",
+        standard_path="【笔记本】-【硬件信息】-【固态硬盘】",
+        keywords=["硬盘", "查看"],
+        scope="笔记本-通用",
+        response_snippet="打开设备信息查看固态硬盘型号。",
+        status="published",
+        version="v1",
+    )
+    reasons = workflow_module._standard_match_rejection_reasons(
+        {
+            "产品类型": "笔记本",
+            "对象/部位": "硬盘",
+            "异常现象": "品牌部件",
+            "问题意图": "品牌判定",
+            "核心问题": "硬盘是否为品牌部件",
+        },
+        standard,
+    )
+
+    assert "judgment_target_mismatch" in reasons
+
+
+def test_empty_title_is_rebuilt_from_structured_fields() -> None:
+    title = workflow_module._rebuild_title_from_structured_fields(
+        {
+            "产品类型": "平板电脑",
+            "对象/部位": "电池健康度",
+            "异常现象": "读取优先级",
+            "问题意图": "查询方法",
+        }
+    )
+
+    assert title == "平板电脑电池健康度应按什么优先级读取？"
+
+
+def test_title_rebuild_uses_intent_specific_question() -> None:
+    assert workflow_module._rebuild_title_from_structured_fields(
+        {
+            "产品类型": "平板电脑",
+            "对象/部位": "序列号",
+            "异常现象": "查看位置",
+            "问题意图": "信息查询",
+        }
+    ) == "平板电脑序列号应在哪里查看？"
+    assert workflow_module._rebuild_title_from_structured_fields(
+        {
+            "产品类型": "平板电脑",
+            "对象/部位": "屏幕",
+            "异常现象": "进灰与漏液边界",
+            "问题意图": "边界判定",
+        }
+    ) == "平板电脑屏幕进灰与漏液应如何区分？"
+
+
+def test_measurement_gate_blocks_visual_numeric_conclusion_without_measurement() -> None:
+    gate = workflow_module._topic_image_measurement_gate(
+        [
+            {
+                "产品类型": "手机",
+                "对象/部位": "屏幕",
+                "异常现象": "磕点",
+                "聊天内容": "图片中看到一个磕点，需要判断是否超过1mm。",
+                "图片链接": "https://example.com/case.jpg",
+            }
+        ],
+        {
+            "content": "1. 磕点直径超过1mm时判定为异常。",
+            "recommended_reply": "该磕点超过1mm，应判定为异常。",
+        },
+    )
+
+    assert gate["measurement_required"] is True
+    assert gate["measurement_available"] is False
+    assert gate["visual_conclusion_allowed"] is False
+    assert gate["status"] == "required_missing"
+
+
+def test_battery_health_percentage_does_not_trigger_image_measurement_gate() -> None:
+    gate = workflow_module._topic_image_measurement_gate(
+        [
+            {
+                "产品类型": "平板电脑",
+                "对象/部位": "电池健康度",
+                "异常现象": "健康度为84%",
+                "聊天内容": (
+                    "截图显示电池健康度为84%，有人认为健康度≤85%需要处理，"
+                    "需要确认应读取哪个结果。"
+                ),
+                "图片链接": "https://example.com/tablet-battery.jpg",
+            }
+        ],
+        {
+            "content": "1. 电池健康度低于85%时需要人工确认。",
+            "recommended_reply": "电池健康度为84%，请补充量尺照片。",
+        },
+    )
+
+    assert gate["measurement_required"] is False
+    assert gate["measurement_available"] is False
+    assert gate["visual_conclusion_allowed"] is True
+    assert gate["status"] == "not_needed"
+
+
+def test_model_draft_cannot_create_camera_gap_measurement_requirement() -> None:
+    gate = workflow_module._topic_image_measurement_gate(
+        [
+            {
+                "产品类型": "平板电脑",
+                "对象/部位": "后摄镜片",
+                "异常现象": "镜片边缘有缝隙",
+                "聊天内容": "图片中后摄镜片边缘有缝隙，需要确认如何处理。",
+                "图片链接": "https://example.com/tablet-camera-gap.jpg",
+            }
+        ],
+        {
+            "content": "1. 缝隙超过0.5mm时按镜片更换处理。",
+            "recommended_reply": "该缝隙超过0.5mm，应按镜片更换处理。",
+        },
+    )
+
+    assert gate["measurement_required"] is False
+    assert gate["status"] == "not_needed"
+
+
+def test_model_failure_and_quality_failure_are_distinct() -> None:
+    assert workflow_module._draft_status_for_model_result(
+        model_error="MiMo 响应超时",
+        quality_issues=[],
+        has_standard=True,
+    ) == ("model_failed", "standard_rule_fallback")
+    assert workflow_module._draft_status_for_model_result(
+        model_error="",
+        quality_issues=["标题为空"],
+        has_standard=True,
+    ) == ("model_success", "blocked")
+
+
+def test_model_validation_failure_does_not_generate_rule_fallback_content() -> None:
+    class ValidationFailingMimo:
+        config = SimpleNamespace(model="mimo-validation-failure-test")
+
+        def classify_topic_stage(self, _topic):
+            return MimoLabelResult(
+                candidate={
+                    "topic_stage": "质检流程",
+                    "knowledge_value": "值得沉淀",
+                    "stage_reason": "来源询问电池健康度读取方式。",
+                    "value_reason": "该问题可以沉淀为可复用的读取流程。",
+                    "reusable_knowledge": "按来源中已确认的顺序读取电池健康度。",
+                    "confidence": 0.92,
+                    "needs_human_review": True,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def label_topic(self, _topic, _matches, *, use_standard_references):
+            assert use_standard_references is False
+            raise MimoError(
+                "MiMo 主题 JSON 校验失败（已重试一次）："
+                "MiMo 输出缺少或为空：title"
+            )
+
+    rows = [
+        {
+            "数据ID": f"TABLET-BATTERY-{index}",
+            "工单ID": f"TABLET-BATTERY-{index}",
+            "聊天内容": "平板电池健康度应以哪个页面的读取结果为准？",
+            "核心问题": "平板电池健康度应以哪个读取结果为准",
+            "历史实际回复": (
+                "先进入设备设置页面读取本机电池健康度，"
+                "再核对检测工具结果；本机不显示时选择无法检测。"
+            ),
+            "判定结论": "本机不显示电池健康度时选择无法检测。",
+            "产品类型": "平板电脑",
+            "一级分类": "电池",
+            "二级分类": "电池健康度",
+            "问题意图": "读取优先级",
+            "对象/部位": "电池健康度",
+            "异常现象": "读取结果不一致",
+            "解题方式": "按读取来源优先级核验",
+        }
+        for index in (1, 2)
+    ]
+
+    topics, _mapping, gaps, pending = build_topic_review_rows(
+        rows,
+        mimo_client=ValidationFailingMimo(),
+        clustering_mode="rule",
+        use_standard_references=False,
+    )
+
+    assert len(topics) == 1
+    assert not gaps
+    assert not pending
+    topic = topics[0]
+    assert topic["主题转写状态"] == "topic_model_validation_failed"
+    assert topic["模型调用状态"] == "model_success"
+    assert topic["模型输出校验状态"] == "failed"
+    assert topic["模型质量状态"] == "failed"
+    assert topic["知识草稿状态"] == "blocked"
+    assert topic["知识内容"]
+    assert "电池健康度" in topic["知识内容"]
+    assert "无法检测" in topic["知识内容"]
+    assert topic["推荐回复"] == ""
+    assert topic["模型初标结论"] == "未执行"
+
+
+def test_failed_topic_title_uses_current_atomic_structure_without_cross_topic_text() -> None:
+    rows = [
+        {
+            "数据ID": "TABLET-CAMERA-DUST-001",
+            "工单ID": "TABLET-CAMERA-DUST-001",
+            "聊天内容": "后摄区域有灰尘，想确认是否属于屏幕进灰。",
+            "核心问题": "电池循环次数太少，电池容量又低，要算异常吗",
+            "产品类型": "平板电脑",
+            "一级分类": "外观问题",
+            "二级分类": "后摄区域",
+            "问题意图": "归属判定",
+            "对象/部位": "后摄区域灰尘",
+            "异常现象": "是否属于屏幕进灰",
+            "解题方式": "确认灰尘所在部位后判断归属",
+        }
+    ]
+    topic = workflow_module._failed_topic_transcription_row(
+        "TOP-TABLET-CAMERA-DUST-001",
+        ("平板电脑", "后摄区域灰尘", "是否属于屏幕进灰"),
+        rows,
+        {
+            "topic_stage": "质检流程",
+            "knowledge_value": "值得沉淀",
+            "confidence": 0.8,
+        },
+        provider="mimo",
+        model_name="mimo-test",
+        prompt_version="test",
+        model_run_id="run-test",
+        transcription_status="topic_model_validation_failed",
+        model_call_status="model_success",
+        error="副标题不合格",
+        matches=[],
+        use_standard_references=False,
+    )
+
+    assert topic["主标题"] == "平板电脑后摄区域灰尘是否属于屏幕进灰？"
+    assert "电池循环次数" not in topic["主标题"]
+    assert "是否属于屏幕进灰应如何判定" not in topic["主标题"]
+    assert "判定定" not in topic["主标题"]
+
+
+def test_failed_topic_title_uses_current_topic_category_when_object_is_missing() -> None:
+    rows = [
+        {
+            "数据ID": "TABLET-SN-001",
+            "工单ID": "TABLET-SN-001",
+            "聊天内容": "同一会话还问了电池问题，但当前主题是序列号查看位置。",
+            "核心问题": "电池健康度84%是否异常",
+            "产品类型": "平板电脑",
+            "一级分类": "信息查询",
+            "二级分类": "序列号",
+            "问题意图": "位置查询",
+            "对象/部位": "",
+            "异常现象": "",
+            "解题方式": "查看系统信息页面",
+        }
+    ]
+    topic = workflow_module._failed_topic_transcription_row(
+        "TOP-TABLET-SN-001",
+        workflow_module._topic_group_key(rows[0]),
+        rows,
+        {
+            "topic_stage": "质检流程",
+            "knowledge_value": "值得沉淀",
+            "confidence": 0.8,
+        },
+        provider="mimo",
+        model_name="mimo-test",
+        prompt_version="test",
+        model_run_id="run-test",
+        transcription_status="topic_model_validation_failed",
+        model_call_status="model_success",
+        error="content_type 缺失",
+        matches=[],
+        use_standard_references=False,
+    )
+
+    assert "序列号" in topic["主标题"]
+    assert "电池健康度" not in topic["主标题"]
+
+
+def test_natural_title_removes_duplicated_judgment_suffix() -> None:
+    assert (
+        workflow_module._as_natural_question_title("平板屏幕漏液如何判定定")
+        == "平板屏幕漏液如何判定"
+    )
+
+
+def test_recommended_reply_is_generated_from_final_content_only() -> None:
+    reply = workflow_module._recommended_reply_from_final_content(
+        "1. 先读取本机电池健康度。\n2. 无法获取时选择无法检测。",
+        evidence_status="available",
+    )
+
+    assert "本机电池健康度" in reply
+    assert "回收师" not in reply
+    assert "关于“" not in reply
+
+
+def test_model_standard_mapping_error_blocks_formal_export() -> None:
+    issues = workflow_module._topic_candidate_export_gate_issues(
+        {
+            "审核结论": "修改后通过",
+            "主标题": "笔记本硬盘是否为品牌部件？",
+            "知识内容": "1. 先查询硬盘型号。",
+            "推荐回复": "先查询硬盘型号。",
+            "关联标准项": "STD-NB-SSD-QUERY",
+            "模型初标错误类型": "标准项映射错",
+        },
+        use_standard_references=True,
+    )
+
+    assert "模型初标标准映射错误" in issues
+
+
+def test_standard_candidate_export_requires_explicit_review_approval_and_real_standard(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "candidate_knowledge.xlsx"
+    write_topic_candidate_knowledge_workbook(
+        [
+            {
+                "主题ID": "TOP-APPROVED",
+                "知识ID": "TOP-APPROVED",
+                "主题沉淀价值": "值得沉淀",
+                "主题转写状态": "topic_model_labeled",
+                "模型调用状态": "model_success",
+                "模型输出校验状态": "passed",
+                "模型质量状态": "passed",
+                "知识草稿状态": "ready_for_human_review",
+                "模型初标结论": "通过",
+                "模型初标错误类型": "",
+                "审核结论": "修改后通过",
+                "主标题": "平板电池健康度应按什么优先级读取？",
+                "副标题": "平板电池健康度怎么核验？",
+                "知识内容": "1. 先读取本机显示值。\n2. 无法获取时选择无法检测。",
+                "推荐回复": "先读取本机显示值，无法获取时选择无法检测。",
+                "关联标准项": "STD-TABLET-BATTERY",
+                "主题无来源内容": "",
+                "主题图片必要性": "辅助图例",
+                "图例": "",
+            },
+            {
+                "主题ID": "TOP-REJECTED",
+                "知识ID": "TOP-REJECTED",
+                "主题沉淀价值": "值得沉淀",
+                "主题转写状态": "topic_model_labeled",
+                "模型调用状态": "model_success",
+                "模型输出校验状态": "passed",
+                "模型质量状态": "passed",
+                "知识草稿状态": "ready_for_human_review",
+                "模型初标结论": "通过",
+                "审核结论": "驳回",
+                "主标题": "平板电池健康度应按什么优先级读取？",
+                "知识内容": "1. 先读取本机显示值。",
+                "推荐回复": "先读取本机显示值。",
+                "关联标准项": "STD-TABLET-BATTERY",
+            },
+            {
+                "主题ID": "TOP-NO-STANDARD",
+                "知识ID": "TOP-NO-STANDARD",
+                "主题沉淀价值": "值得沉淀",
+                "主题转写状态": "topic_model_labeled",
+                "模型调用状态": "model_success",
+                "模型输出校验状态": "passed",
+                "模型质量状态": "passed",
+                "知识草稿状态": "ready_for_human_review",
+                "模型初标结论": "通过",
+                "审核结论": "修改后通过",
+                "主标题": "平板电池健康度应按什么优先级读取？",
+                "知识内容": "1. 先读取本机显示值。",
+                "推荐回复": "先读取本机显示值。",
+                "关联标准项": "",
+            },
+        ],
+        output,
+        use_standard_references=True,
+    )
+    workbook = load_workbook(output, read_only=True, data_only=True)
+    values = list(workbook["候选知识"].iter_rows(values_only=True))
+    workbook.close()
+
+    assert len(values) == 2
+    assert values[1][0] == "平板电池健康度应按什么优先级读取？"
+
+
+def test_case_only_candidate_export_blocks_unapproved_failed_topics(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "candidate_knowledge.xlsx"
+    write_topic_candidate_knowledge_workbook(
+        [
+            {
+                "主题ID": "TOP-APPROVED",
+                "知识ID": "TOP-APPROVED",
+                "主题沉淀价值": "值得沉淀",
+                "主题转写状态": "topic_model_labeled",
+                "模型调用状态": "model_success",
+                "模型输出校验状态": "passed",
+                "模型质量状态": "passed",
+                "知识草稿状态": "ready_for_human_review",
+                "模型初标结论": "通过",
+                "模型初标错误类型": "",
+                "审核结论": "修改后通过",
+                "主标题": "平板电池健康度应如何读取？",
+                "知识内容": (
+                    "1. 先读取设备本机显示的电池健康度。\n"
+                    "2. 本机无法读取时，再按来源中已明确的其他方式核验。"
+                ),
+                "推荐回复": (
+                    "先读取设备本机显示的电池健康度；"
+                    "本机无法读取时，再按已明确的其他方式核验。"
+                ),
+                "主题无来源内容": "",
+            },
+            {
+                "主题ID": "TOP-FAILED",
+                "知识ID": "TOP-FAILED",
+                "主题沉淀价值": "值得沉淀",
+                "主题转写状态": "topic_model_validation_failed",
+                "模型调用状态": "model_success",
+                "模型输出校验状态": "failed",
+                "模型质量状态": "failed",
+                "知识草稿状态": "blocked",
+                "模型初标结论": "未执行",
+                "主标题": "平板后摄镜片缝隙应如何判定？",
+                "知识内容": "",
+                "推荐回复": "",
+            },
+        ],
+        output,
+        use_standard_references=False,
+    )
+    workbook = load_workbook(output, read_only=True, data_only=True)
+    values = list(workbook["候选知识"].iter_rows(values_only=True))
+    workbook.close()
+
+    assert len(values) == 2
+    assert values[1][0] == "TOP-APPROVED"
+
+
+def test_standard_content_keeps_rule_points_and_subtitle_is_single_question() -> None:
+    standard = StandardCatalogItem(
+        standard_id="STD-TABLET-001",
+        title="电池健康度",
+        category_l1="电池",
+        category_l2="电池健康度",
+        knowledge_type="质检标准",
+        standard_path="【平板电脑】-【电池】-【电池健康度】",
+        keywords=["平板", "电池健康度"],
+        scope="平板电脑-通用",
+        response_snippet=(
+            "标准定义：1. 先读取本机显示值。\n"
+            "2. 本机无入口时使用验机工具。\n"
+            "3. 仍无法获取时选择无法检测。\n"
+            "4. 不得用容量字段代替健康度。\n"
+            "检测方法：记录实际显示结果。"
+        ),
+        status="published",
+        version="v1",
+    )
+    content = workflow_module._build_compact_standard_content(
+        standard,
+        workflow_module.CONTENT_TYPE_VERIFICATION,
+    )
+    subtitles = workflow_module._finalize_topic_subtitles(
+        ["怎么核验？", "有哪些处理条件？"],
+        "平板电池健康度应按什么优先级读取？",
+        content,
+        workflow_module.CONTENT_TYPE_VERIFICATION,
+    )
+
+    assert content.count("\n") >= 4
+    assert subtitles.count("\n") == 0
+
+
+def test_finalized_subtitle_drops_a_natural_question_from_another_topic() -> None:
+    subtitle = workflow_module._finalize_topic_subtitles(
+        ["平板电池健康度怎么查看？"],
+        "平板后摄镜片缝隙应如何核验？",
+        "1. 检查后摄镜片与保护圈之间是否存在异常缝隙。",
+        workflow_module.CONTENT_TYPE_VERIFICATION,
+    )
+
+    assert "电池健康度" not in subtitle
+    assert "后摄" in subtitle or "镜片" in subtitle
 
 
 def test_topic_display_questions_validation_requires_short_questions() -> None:
@@ -4483,6 +6196,66 @@ def test_direct_mimo_isolates_unexpected_atomic_extraction_failure(
     ]
     assert len(failed_results) == 1
     assert failed_results[0]["topics"]
+
+
+def test_direct_mimo_recovers_screen_validation_failure_as_review_singleton(
+    tmp_path: Path,
+) -> None:
+    class RecoverableScreenFailureMimo:
+        config = SimpleNamespace(model="mimo-screen-validation-recovery-test")
+
+        def analyze_cluster_units(self, _row):
+            raise MimoError(
+                "MiMo 聚类问题单元 JSON 校验失败（已重试两次）："
+                "屏幕显示现象必须归入显示问题，不得误归外观或拆修问题"
+            )
+
+        def cluster_atomic_units(self, units):
+            return MimoLabelResult(
+                candidate={
+                    "clusters": [
+                        {
+                            "cluster_id": "C001",
+                            "theme_name": "屏幕进灰如何判定",
+                            "member_atomic_ids": [unit["unit_id"] for unit in units],
+                            "merge_basis": "保守单主题候选。",
+                        }
+                    ],
+                    "split_requests": [],
+                    "review_requests": [],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    rows = [
+        {
+            "数据ID": "SCREEN-RECOVERY-001",
+            "工单ID": "SCREEN-RECOVERY-001",
+            "产品类型": "平板电脑",
+            "聊天内容": "手电筒照屏幕内部有白色颗粒，想确认是漏液还是进灰。",
+            "核心问题": "平板屏幕内部白色颗粒是进灰还是漏液如何判定",
+            "对象/部位": "平板屏幕",
+            "异常现象": "屏幕内部白色颗粒",
+            "解题方式": "根据图片和描述特征区分屏幕进灰与漏液",
+            "一级分类": "屏幕外观情况",
+            "二级分类": "屏幕进灰（单选）",
+        }
+    ]
+
+    groups, meta = _direct_mimo_topic_groups(
+        rows,
+        RecoverableScreenFailureMimo(),
+        batch_size=1,
+        progress_path=tmp_path / "direct_mimo_progress.json",
+    )
+
+    assert len(groups) == 1
+    assert meta["atomic_extraction_failed"] == 0
+    assert meta["atomic_extraction_recovered"] == 1
+    recovered = groups[0][1][0]
+    assert recovered["_原子需要复核"] is True
+    assert "屏幕显示现象必须归入显示问题" in recovered["人工优先复核原因"]
 
 
 def test_direct_mimo_locally_splits_notebook_model_and_hardware_brand_queries() -> None:
@@ -5822,6 +7595,61 @@ def test_clustering_rule_lookup_is_cached_per_stable_row(
     assert match_calls == 2
 
 
+def test_direct_reconcile_candidate_scan_caches_fingerprint_per_row(
+    monkeypatch,
+) -> None:
+    real_build_fingerprint = workflow_module.build_clustering_fingerprint
+    fingerprint_calls = 0
+
+    def counted_build_fingerprint(**kwargs):
+        nonlocal fingerprint_calls
+        fingerprint_calls += 1
+        return real_build_fingerprint(**kwargs)
+
+    monkeypatch.setattr(
+        workflow_module,
+        "build_clustering_fingerprint",
+        counted_build_fingerprint,
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "_direct_reconcile_similarity",
+        lambda _left, _right: 0.0,
+    )
+
+    groups = [
+        (
+            ("direct_mimo", "手机", f"candidate-{index}"),
+            [
+                {
+                    "数据ID": f"CANDIDATE-{index:02d}",
+                    "工单ID": f"CANDIDATE-{index:02d}",
+                    "_原子知识ID": f"CANDIDATE-{index:02d}-U01",
+                    "产品类型": "手机",
+                    "模型主题一级分类": "流程操作",
+                    "问题意图": "信息查询",
+                    "对象/部位": "自定义节点",
+                    "异常现象": "状态待确认",
+                    "核心问题": f"自定义节点{index:02d}状态如何核验",
+                    "_聚类裁决提供方": "mimo-direct",
+                }
+            ],
+        )
+        for index in range(12)
+    ]
+    meta: dict[str, object] = {}
+    reviewer = SimpleNamespace(config=SimpleNamespace(model="offline-test"))
+
+    reconciled = workflow_module._reconcile_direct_topic_groups(
+        groups,
+        reviewer,
+        meta,
+    )
+
+    assert len(reconciled) == len(groups)
+    assert fingerprint_calls == len(groups)
+
+
 def test_direct_mimo_review_request_can_rejoin_compatible_family() -> None:
     class ReviewRequestMimo:
         config = SimpleNamespace(model="mimo-review-request-test")
@@ -6789,7 +8617,7 @@ def test_cluster_admission_allows_clear_high_confidence_singleton_into_topic_sta
     assert clustering_meta["cluster_admission_pending_topics"] == 0
 
 
-def test_cluster_admission_blocks_low_confidence_cluster_before_downstream_models() -> None:
+def test_cluster_admission_creates_provisional_singleton_candidates_for_low_confidence_cluster() -> None:
     class LowConfidenceClusterMimo:
         config = SimpleNamespace(model="mimo-cluster-admission-low-test")
 
@@ -6853,15 +8681,6 @@ def test_cluster_admission_blocks_low_confidence_cluster_before_downstream_model
                 response_audit={},
             )
 
-        def classify_topic_stage(self, *_args, **_kwargs):
-            raise AssertionError("低置信聚类不得进入知识分类和沉淀价值判断")
-
-        def label_topic(self, *_args, **_kwargs):
-            raise AssertionError("低置信聚类不得进入知识转写")
-
-        def review_topic(self, *_args, **_kwargs):
-            raise AssertionError("低置信聚类不得进入内容初审")
-
     clustering_meta: dict[str, object] = {}
     topics, mapping, gaps, pending = build_topic_review_rows(
         [
@@ -6881,21 +8700,23 @@ def test_cluster_admission_blocks_low_confidence_cluster_before_downstream_model
         clustering_meta=clustering_meta,
     )
 
-    assert not topics
-    assert not mapping
+    assert len(topics) == 2
+    assert len(mapping) == 2
     assert not gaps
-    assert len(pending) == 2
-    assert {row["待聚合状态"] for row in pending} == {
-        "pending_cluster_review"
-    }
-    assert all(row["聚类准入状态"] == "待人工聚类复核" for row in pending)
-    assert all(row["聚类准入置信度"] == pytest.approx(0.68) for row in pending)
-    assert all("低于自动放行阈值" in row["聚类准入原因"] for row in pending)
+    assert not pending
+    assert {topic["主题样本数"] for topic in topics} == {1}
+    assert all(topic["主题状态"] == "provisional_singleton_review_pending" for topic in topics)
+    assert all(topic["聚类准入状态"] == "暂定单主题候选" for topic in topics)
+    assert all(topic["是否重点复核"] == "是" for topic in topics)
+    assert all(topic["模型初标重点复核"] == "是" for topic in topics)
+    assert all("低于自动放行阈值" in topic["聚类准入原因"] for topic in topics)
     assert clustering_meta["cluster_admission_admitted_topics"] == 0
-    assert clustering_meta["cluster_admission_pending_topics"] == 1
+    assert clustering_meta["cluster_admission_pending_topics"] == 0
+    assert clustering_meta["cluster_admission_provisional_topics"] == 1
+    assert clustering_meta["cluster_admission_provisional_candidates"] == 2
 
 
-def test_cluster_admission_blocks_model_review_request_even_when_confidence_is_high() -> None:
+def test_cluster_admission_creates_provisional_singleton_candidates_when_model_requests_review() -> None:
     class ReviewRequiredClusterMimo:
         config = SimpleNamespace(model="mimo-cluster-admission-review-test")
 
@@ -6959,9 +8780,6 @@ def test_cluster_admission_blocks_model_review_request_even_when_confidence_is_h
                 response_audit={},
             )
 
-        def classify_topic_stage(self, *_args, **_kwargs):
-            raise AssertionError("风险聚类不得进入知识分类和沉淀价值判断")
-
     topics, mapping, gaps, pending = build_topic_review_rows(
         [
             {
@@ -6979,27 +8797,22 @@ def test_cluster_admission_blocks_model_review_request_even_when_confidence_is_h
         enforce_cluster_admission=True,
     )
 
-    assert not topics
-    assert not mapping
+    assert len(topics) == 2
+    assert len(mapping) == 2
     assert not gaps
-    assert len(pending) == 2
-    assert all("模型要求人工复核" in row["聚类准入原因"] for row in pending)
+    assert not pending
+    assert {topic["主题样本数"] for topic in topics} == {1}
+    assert all(topic["主题状态"] == "provisional_singleton_review_pending" for topic in topics)
+    assert all(topic["聚类准入状态"] == "暂定单主题候选" for topic in topics)
+    assert all(topic["是否重点复核"] == "是" for topic in topics)
+    assert all("模型要求人工复核" in topic["聚类准入原因"] for topic in topics)
 
 
-def test_cluster_admission_blocks_direct_mimo_rule_fallback_before_topic_stage(
+def test_cluster_admission_creates_provisional_candidate_for_direct_mimo_rule_fallback(
     monkeypatch,
 ) -> None:
     class DownstreamMustNotRun:
         config = SimpleNamespace(model="mimo-cluster-admission-fallback-test")
-
-        def classify_topic_stage(self, *_args, **_kwargs):
-            raise AssertionError("direct_mimo 规则降级结果不得进入主题分类")
-
-        def label_topic(self, *_args, **_kwargs):
-            raise AssertionError("direct_mimo 规则降级结果不得进入知识转写")
-
-        def review_topic(self, *_args, **_kwargs):
-            raise AssertionError("direct_mimo 规则降级结果不得进入内容初审")
 
     def fail_direct_clustering(*_args, **_kwargs):
         raise MimoError("模拟 direct_mimo 整体不可用")
@@ -7032,14 +8845,17 @@ def test_cluster_admission_blocks_direct_mimo_rule_fallback_before_topic_stage(
         clustering_meta=clustering_meta,
     )
 
-    assert not topics
-    assert not mapping
+    assert len(topics) == 1
+    assert len(mapping) == 1
     assert not gaps
-    assert len(pending) == 1
-    assert pending[0]["待聚合状态"] == "pending_cluster_review"
-    assert "规则或其他模式降级" in pending[0]["聚类准入原因"]
+    assert not pending
+    assert topics[0]["主题状态"] == "provisional_singleton_review_pending"
+    assert topics[0]["聚类准入状态"] == "暂定单主题候选"
+    assert topics[0]["是否重点复核"] == "是"
+    assert "规则或其他模式降级" in topics[0]["聚类准入原因"]
     assert clustering_meta["effective_mode"] == "rule"
-    assert clustering_meta["cluster_admission_pending_topics"] == 1
+    assert clustering_meta["cluster_admission_pending_topics"] == 0
+    assert clustering_meta["cluster_admission_provisional_topics"] == 1
 
 
 def test_direct_mimo_deduplicates_repeated_source_rows_before_clustering() -> None:
@@ -7590,6 +9406,353 @@ def test_direct_mimo_marks_failed_batches_and_skips_reconciliation() -> None:
     } == {"mimo-direct-failed"}
 
 
+def test_local_clustering_rule_preclassifies_source_and_blocks_model_boundary_conflict() -> None:
+    class WrongPhenomenonMimo:
+        config = SimpleNamespace(model="mimo-rule-preclass-conflict-test")
+
+        def __init__(self) -> None:
+            self.cluster_inputs: list[list[str]] = []
+
+        def analyze_cluster_units(self, row):
+            return MimoLabelResult(
+                candidate={
+                    "conversation_type": "single_topic",
+                    "topics": [
+                        {
+                            "normalized_issue": row["核心问题"],
+                            "product_category": "手机",
+                            "scope_type": "品类专用",
+                            "platform": "通用",
+                            "brand": "通用",
+                            "model_scope": "通用",
+                            "category_l1": "显示问题",
+                            "category_l2": "屏幕显示",
+                            "intent": "标准判定",
+                            "subject": "屏幕",
+                            # Deliberately return the same phenomenon for both
+                            # source records; the source rule must catch this.
+                            "phenomenon": "漏液",
+                            "judgment_target": "判断屏幕显示异常",
+                            "resolution_mode": "按屏幕标准核验",
+                            "standard_path": "手机屏幕显示标准",
+                            "threshold_or_exception": "无明确阈值",
+                            "evidence_summary": "完整聊天支持该问题。",
+                            "confidence": 0.95,
+                            "requires_review": False,
+                        }
+                    ],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def cluster_atomic_units(self, units):
+            self.cluster_inputs.append([unit["unit_id"] for unit in units])
+            return MimoLabelResult(
+                candidate={
+                    "clusters": [
+                        {
+                            "cluster_id": "C001",
+                            "theme_name": "手机屏幕显示异常核验",
+                            "member_atomic_ids": [
+                                unit["unit_id"] for unit in units
+                            ],
+                            "merge_basis": "同一批次内的模型标签相同。",
+                        }
+                    ],
+                    "split_requests": [],
+                    "review_requests": [],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    rows = [
+        {
+            "数据ID": "LEAKAGE",
+            "工单ID": "LEAKAGE",
+            "聊天内容": "手机屏幕漏液如何判定",
+            "核心问题": "手机屏幕漏液如何判定",
+            "判定结论": "需要按屏幕显示标准核验",
+            "产品类型": "手机",
+        },
+        {
+            "数据ID": "COLOR",
+            "工单ID": "COLOR",
+            "聊天内容": "手机屏幕色斑如何判定",
+            "核心问题": "手机屏幕色斑如何判定",
+            "判定结论": "需要按屏幕显示标准核验",
+            "产品类型": "手机",
+        },
+    ]
+    clustering_meta: dict[str, object] = {}
+    reviewer = WrongPhenomenonMimo()
+
+    topics, mapping, gaps, pending = build_topic_review_rows(
+        rows,
+        use_mimo=False,
+        mimo_client=reviewer,
+        clustering_mode="direct_mimo",
+        clustering_meta=clustering_meta,
+        cluster_only=True,
+    )
+
+    assert len(topics) == 2
+    assert not mapping
+    assert not gaps
+    assert not pending
+    assert clustering_meta["clustering_rule_pre_match_count"] == 2
+    assert clustering_meta["clustering_rule_model_conflict_count"] == 1
+    # The conflict must survive through the cluster guard and prevent a
+    # multi-member topic, even if the mock reviewer receives both records.
+    assert all(topic["主题样本数"] == 1 for topic in topics)
+
+
+def test_classification_catalog_candidate_path_separates_uncovered_topics() -> None:
+    class CatalogBoundaryMimo:
+        config = SimpleNamespace(model="mimo-classification-catalog-boundary-test")
+
+        def __init__(self) -> None:
+            self.cluster_inputs: list[list[str]] = []
+
+        def analyze_cluster_units(self, row):
+            return MimoLabelResult(
+                candidate={
+                    "conversation_type": "single_topic",
+                    "topics": [
+                        {
+                            "normalized_issue": row["核心问题"],
+                            "product_category": "平板电脑",
+                            "scope_type": "品类专用",
+                            "platform": "通用",
+                            "brand": "通用",
+                            "model_scope": "通用",
+                            "category_l1": "基本情况",
+                            "category_l2": "待确认",
+                            "intent": "信息查询",
+                            "subject": "设备信息",
+                            "phenomenon": "待确认",
+                            "judgment_target": "确认信息",
+                            "resolution_mode": "按来源证据核验",
+                            "standard_path": "待确认",
+                            "threshold_or_exception": "无明确阈值",
+                            "evidence_summary": "完整聊天支持该问题。",
+                            "confidence": 0.9,
+                            "requires_review": False,
+                        }
+                    ],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def cluster_atomic_units(self, units):
+            self.cluster_inputs.append([unit["unit_id"] for unit in units])
+            return MimoLabelResult(
+                candidate={
+                    "clusters": [
+                        {
+                            "cluster_id": "C001",
+                            "theme_name": "平板设备信息查询",
+                            "member_atomic_ids": [
+                                unit["unit_id"] for unit in units
+                            ],
+                            "merge_basis": "分类库候选路径相同。",
+                        }
+                    ],
+                    "split_requests": [],
+                    "review_requests": [],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    def item(class_id: str, path: tuple[str, ...], term: str):
+        return ClassificationCatalogItem(
+            class_id=class_id,
+            category="平板电脑",
+            category_id=class_id,
+            path=path,
+            path_str=" > ".join(path),
+            leaf_level=3,
+            leaf=path[-1],
+            upper=path[1:3],
+            aliases=(term,),
+            keywords=(term,),
+            degree="",
+            definition="",
+            detection_method="",
+            is_negative=False,
+            search_text=term,
+        )
+
+    catalog = (
+        item(
+            "PB-SN",
+            ("平板", "基本情况", "序列号", "查看位置"),
+            "序列号",
+        ),
+        item(
+            "PB-SENSOR",
+            ("平板", "设备功能情况", "传感器功能", "距离感应"),
+            "距离感应",
+        ),
+    )
+    rows = [
+        {
+            "数据ID": "SN",
+            "工单ID": "SN",
+            "聊天内容": "平板序列号在哪里查看",
+            "核心问题": "平板序列号在哪里查看",
+            "产品类型": "平板电脑",
+        },
+        {
+            "数据ID": "SENSOR",
+            "工单ID": "SENSOR",
+            "聊天内容": "平板距离感应器是否支持",
+            "核心问题": "平板距离感应器是否支持",
+            "产品类型": "平板电脑",
+        },
+    ]
+    reviewer = CatalogBoundaryMimo()
+
+    groups, meta = _direct_mimo_topic_groups(
+        rows,
+        reviewer,
+        classification_catalog=catalog,
+        batch_size=4,
+    )
+
+    assert len(groups) == 2
+    assert sorted(len(member_rows) for _key, member_rows in groups) == [1, 1]
+    assert reviewer.cluster_inputs == []
+    assert meta["classification_catalog_enabled"] is True
+    assert meta["classification_catalog_match_count"] == 2
+
+
+def test_classification_catalog_ambiguity_is_reviewable_without_forcing_singleton() -> None:
+    class AmbiguousCatalogMimo:
+        config = SimpleNamespace(model="mimo-classification-catalog-ambiguous-test")
+
+        def __init__(self) -> None:
+            self.cluster_inputs: list[list[str]] = []
+
+        def analyze_cluster_units(self, row):
+            return MimoLabelResult(
+                candidate={
+                    "conversation_type": "single_topic",
+                    "topics": [
+                        {
+                            "normalized_issue": row["核心问题"],
+                            "product_category": "平板电脑",
+                            "scope_type": "品类专用",
+                            "platform": "通用",
+                            "brand": "通用",
+                            "model_scope": "通用",
+                            "category_l1": "屏幕外观",
+                            "category_l2": "灰尘或异物",
+                            "intent": "标准判定",
+                            "subject": "屏幕内部",
+                            "phenomenon": "疑似异物",
+                            "judgment_target": "判断是否属于屏幕进灰",
+                            "resolution_mode": "补充清晰图片后按标准核验",
+                            "standard_path": "待确认",
+                            "threshold_or_exception": "无明确阈值",
+                            "evidence_summary": "聊天内容支持该问题。",
+                            "confidence": 0.9,
+                            "requires_review": False,
+                        }
+                    ],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def cluster_atomic_units(self, units):
+            self.cluster_inputs.append([unit["unit_id"] for unit in units])
+            return MimoLabelResult(
+                candidate={
+                    "clusters": [
+                        {
+                            "cluster_id": "C001",
+                            "theme_name": "平板屏幕异物是否属于进灰",
+                            "member_atomic_ids": [
+                                unit["unit_id"] for unit in units
+                            ],
+                            "merge_basis": "两条案例对象和判定目标一致，但分类库候选存在歧义。",
+                            "scope_consistent": True,
+                            "object_consistent": True,
+                            "judgment_target_consistent": True,
+                            "standard_path_consistent": True,
+                            "threshold_exception_consistent": True,
+                            "shared_knowledge_definition": "平板屏幕内部疑似异物是否按屏幕进灰标准核验。",
+                            "confidence": 0.82,
+                            "requires_review": False,
+                        }
+                    ],
+                    "split_requests": [],
+                    "review_requests": [],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    def item(class_id: str, path: tuple[str, ...], term: str):
+        return ClassificationCatalogItem(
+            class_id=class_id,
+            category="平板电脑",
+            category_id=class_id,
+            path=path,
+            path_str=" > ".join(path),
+            leaf_level=3,
+            leaf=path[-1],
+            upper=path[1:3],
+            aliases=(term,),
+            keywords=(term,),
+            degree="",
+            definition="",
+            detection_method="",
+            is_negative=False,
+            search_text=term,
+        )
+
+    catalog = (
+        item("PB-DUST", ("平板", "屏幕外观情况", "屏幕进灰", "异物"), "异物"),
+        item("PB-LEAK", ("平板", "屏幕显示情况", "屏幕漏液", "异物"), "异物"),
+    )
+    rows = [
+        {
+            "数据ID": "DUST-A",
+            "工单ID": "DUST-A",
+            "聊天内容": "平板屏幕里面有异物，是否属于进灰",
+            "核心问题": "平板屏幕里面有异物，是否属于进灰",
+            "产品类型": "平板电脑",
+        },
+        {
+            "数据ID": "DUST-B",
+            "工单ID": "DUST-B",
+            "聊天内容": "平板屏幕内部看到小异物，怎么判断",
+            "核心问题": "平板屏幕内部看到小异物，怎么判断",
+            "产品类型": "平板电脑",
+        },
+    ]
+    reviewer = AmbiguousCatalogMimo()
+
+    groups, _meta = _direct_mimo_topic_groups(
+        rows,
+        reviewer,
+        classification_catalog=catalog,
+        batch_size=4,
+    )
+
+    assert reviewer.cluster_inputs == [["DUST-A-U1", "DUST-B-U1"]]
+    assert len(groups) == 1
+    assert len(groups[0][1]) == 2
+    assert all(row["_原子需要复核"] for row in groups[0][1])
+    assert all("分类库候选存在歧义" in row["人工优先复核原因"] for row in groups[0][1])
+    assert all(row["_聚类需要复核"] for row in groups[0][1])
+
+
 def test_direct_mimo_reports_progress_for_each_atomic_batch(
     monkeypatch,
 ) -> None:
@@ -7930,11 +10093,12 @@ def test_mimo_client_retries_invalid_json_once() -> None:
                                 {
                                     "title": "手机屏幕色斑判定",
                                     "subtitles": ["色斑"],
-                                    "content": "按标准核验。",
+                                    "content": "1. 按标准核验。",
                                     "category_l1": "显示问题",
                                     "category_l2": "色斑",
                                     "layer": "L2",
                                     "knowledge_form": "具体判定",
+                                    "content_type": "核验型",
                                     "standard_refs": ["PHONE-DISPLAY-001"],
                                     "applicable_scope": "手机",
                                     "confidence": 0.9,
@@ -8548,7 +10712,7 @@ def test_rule_topic_boundary_title_uses_natural_issue_terms() -> None:
         use_standard_references=False,
     )
 
-    assert topics[0]["主标题"] == "屏幕坏点和漏液如何区分"
+    assert topics[0]["主标题"] == "手机屏幕坏点和漏液如何区分"
     assert "26/07/15" not in topics[0]["主标题"]
     assert "回收师在回收" not in topics[0]["主标题"]
 
@@ -9078,24 +11242,21 @@ def test_rule_fallback_organizes_human_judgment_and_keeps_missing_standard_blank
     assert not gaps
     assert not pending
     content = topics[0]["知识内容"]
-    assert "适用情形：人工确认闭合瞬间单次异响是否属于转轴异响" in content
-    assert "核验要点：" in content
+    assert "1. 人工确认闭合瞬间单次异响是否属于转轴异响" in content
     assert "声音出现时机为闭合瞬间" in content
-    assert "处理结论：闭合瞬间的单次异响也属于转轴异响" in content
+    assert "闭合瞬间的单次异响也属于转轴异响" in content
     assert "来源未说明的其他情形不得直接套用" in content
     assert all(
         marker not in content
         for marker in ("问题背景：", "判断对象：", "来源核验依据：", "人工处理结论：")
     )
-    assert "闭合瞬间的单次异响也属于转轴异响" in topics[0]["推荐回复"]
-    assert all(
-        marker not in topics[0]["推荐回复"]
-        for marker in ("问题背景", "判断对象", "来源核验依据", "人工处理结论")
-    )
+    assert topics[0]["推荐回复"] == ""
+    assert topics[0]["模型质量状态"] == "failed"
+    assert topics[0]["知识草稿状态"] == "evidence_review_only"
     assert topics[0]["关联标准项"] == ""
 
 
-def test_specific_model_function_fact_keeps_model_and_direct_answer() -> None:
+def test_specific_model_function_fact_keeps_model_in_applicability_only() -> None:
     class GenericModelLookupMimo:
         config = SimpleNamespace(model="mimo-generic-model-lookup-test")
 
@@ -9181,7 +11342,8 @@ def test_specific_model_function_fact_keeps_model_and_direct_answer() -> None:
     assert not gaps
     assert not pending
     topic = topics[0]
-    assert topic["主标题"] == "拯救者 Y7000P 是否支持指纹"
+    assert topic["主标题"] == "笔记本是否支持指纹功能"
+    assert "拯救者 Y7000P" not in topic["主标题"]
     assert topic["适用机型"] == "拯救者 Y7000P", {
         field: topic.get(field)
         for field in (
@@ -9193,9 +11355,10 @@ def test_specific_model_function_fact_keeps_model_and_direct_answer() -> None:
     }
     assert "拯救者 Y7000P" in topic["知识内容"]
     assert "不支持指纹" in topic["知识内容"]
-    assert "拯救者 Y7000P" in topic["推荐回复"]
-    assert "不支持指纹" in topic["推荐回复"]
-    assert "查询官网" not in topic["推荐回复"]
+    assert "拯救者 Y7000P" not in topic["推荐回复"]
+    assert topic["推荐回复"] == ""
+    assert topic["模型质量状态"] == "failed"
+    assert topic["知识草稿状态"] == "blocked"
 
 
 def test_single_switch_lite_case_does_not_expand_to_all_game_consoles() -> None:
@@ -9292,10 +11455,17 @@ def test_single_switch_lite_case_does_not_expand_to_all_game_consoles() -> None:
     assert not gaps
     assert not pending
     topic = topics[0]
-    assert "日版 Switch Lite 限定款" in topic["主标题"]
+    assert "Switch Lite" not in topic["主标题"]
+    assert "游戏机" in topic["主标题"]
+    assert "回收范围" in topic["主标题"]
+    assert "包装盒" in topic["主标题"]
+    assert "Switch Lite" in topic["适用机型"]
+    assert "Switch Lite" not in topic["推荐回复"]
     assert topic["适用机型"] == "Switch Lite"
     assert "日版 Switch Lite 限定款" in topic["知识内容"]
-    assert "日版 Switch Lite 限定款" in topic["推荐回复"]
+    assert topic["推荐回复"] == ""
+    assert topic["模型质量状态"] == "failed"
+    assert topic["知识草稿状态"] == "blocked"
     assert "属于可回收机型" in topic["知识内容"]
     assert "平台对游戏机回收" not in topic["知识内容"]
 
@@ -9461,6 +11631,12 @@ def test_model_cannot_add_threshold_missing_from_source_facts() -> None:
     assert topics[0]["模型初标结论"] == "需修改"
     assert "来源事实不支持" in topics[0]["模型初标原因"]
     assert "3秒" in topics[0]["主题无来源内容"]
+    assert topics[0]["主题转写状态"] == "topic_model_quality_failed"
+    assert topics[0]["模型调用状态"] == "model_success"
+    assert topics[0]["模型输出校验状态"] == "passed"
+    assert topics[0]["模型质量状态"] == "failed"
+    assert topics[0]["知识草稿状态"] == "blocked"
+    assert topics[0]["推荐回复"] == ""
 
 
 def test_source_claim_guard_does_not_treat_model_annotations_as_fact() -> None:
@@ -9635,7 +11811,9 @@ def test_topic_reply_rebuilds_when_historical_reply_contains_other_atomic_topics
             "主题转写状态",
         )
     }
-    assert "屏幕显示异常" in reply
+    assert "屏幕" in reply
+    assert "当前案例" not in reply
+    assert "案例证据" not in reply
     assert all(term not in reply for term in ("副屏", "型号", "卡顿"))
     assert "建议你好" not in reply
     assert "，；" not in reply
@@ -9885,7 +12063,7 @@ def test_topic_candidate_replaces_pipe_segmented_title_with_natural_question() -
                 candidate={
                     "title": (
                         "手机｜屏幕｜漏液（显示异常）｜"
-                        "判定是否符合回收标准；手机｜屏幕｜"
+                        "坏点与漏液边界判定；手机｜屏幕｜"
                     ),
                     "subtitles": [],
                     "content": (
@@ -9965,7 +12143,7 @@ def test_topic_candidate_replaces_pipe_segmented_title_with_natural_question() -
     assert len(topics) == 1
     assert not gaps
     assert not pending
-    assert topics[0]["主标题"] == "iPhone 11 Pro 屏幕漏液是否可以回收", {
+    assert topics[0]["主标题"] == "手机屏幕漏液是否可以回收", {
         field: topics[0].get(field)
         for field in (
             "主题转写状态",
@@ -9976,6 +12154,217 @@ def test_topic_candidate_replaces_pipe_segmented_title_with_natural_question() -
     }
     assert "｜" not in topics[0]["主标题"]
     assert "|" not in topics[0]["主标题"]
+    assert "iPhone 11 Pro" not in topics[0]["主标题"]
+
+
+def test_topic_candidate_rebuilds_internal_tag_or_statement_title_as_natural_question() -> None:
+    class InternalTagTitleMimo:
+        config = SimpleNamespace(model="mimo-internal-tag-title-test")
+
+        def classify_topic_stage(self, _topic):
+            return MimoLabelResult(
+                candidate={
+                    "topic_stage": "质检标准",
+                    "knowledge_value": "值得沉淀",
+                    "stage_reason": "来源明确记录充电部件外观异常的判定问题。",
+                    "value_reason": "来源包含可复用的对象、现象和处理方式。",
+                    "reusable_knowledge": "需要按现有证据判定充电部件外观异常。",
+                    "confidence": 0.92,
+                    "needs_human_review": True,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def label_topic(self, _topic, _matches, *, use_standard_references):
+            assert use_standard_references is False
+            return MimoLabelResult(
+                candidate={
+                    "title": "手机充电部件外观异常判定",
+                    "subtitles": [],
+                    "content": (
+                        "判定规则：根据当前案例中可核实的充电部件外观证据判断。\n"
+                        "处理步骤：确认异常部位并补充清晰近景。\n"
+                        "例外与边界：证据不足时不能直接套用，需要转人工审核。"
+                    ),
+                    "category_l1": "外观问题",
+                    "category_l2": "充电部件",
+                    "layer": "L2",
+                    "knowledge_form": "流程方法",
+                    "standard_refs": [],
+                    "applicable_scope": "手机",
+                    "applicable_brands": [],
+                    "applicable_models": [],
+                    "recommended_reply": "您好，请先补充充电部件外观近景，再按现有证据核验。",
+                    "confidence": 0.91,
+                    "reasoning_summary": "只使用当前来源事实。",
+                    "needs_human_review": True,
+                    "image_evidence_summary": "",
+                    "requires_images": False,
+                    "image_usage_instruction": "",
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    rows = [
+        {
+            "数据ID": "INTERNAL-TAG-TITLE-001",
+            "工单ID": "INTERNAL-TAG-TITLE-001",
+            "聊天内容": "咨询手机充电部件外观异常应如何判定。",
+            "核心问题": (
+                "边界判定 | 充电部件 | 外观异常 | 意图：边界判定 | "
+                "对象：充电部件 | 现象：外观异常 | 处理：定义与边界条件对照 | "
+                "标准：QC-2D976D3C5294"
+            ),
+            "原始核心问题": "",
+            "人工核心问题": "",
+            "判定结论": "需要根据清晰的充电部件外观证据再判断。",
+            "判定依据": "当前案例图片和人工复核记录。",
+            "历史实际回复": "请补充充电部件外观近景后再核验。",
+            "产品类型": "手机",
+            "一级分类": "外观问题",
+            "二级分类": "充电部件",
+            "模型主题一级分类": "外观问题",
+            "模型主题二级分类": "充电部件",
+            "问题意图": "边界判定",
+            "对象/部位": "充电部件",
+            "异常现象": "外观异常",
+            "解题方式": "定义与边界条件对照",
+            "语义标注依据": "当前案例需核验充电部件外观异常。",
+        }
+    ]
+
+    topics, _mapping, gaps, pending = build_topic_review_rows(
+        rows,
+        mimo_client=InternalTagTitleMimo(),
+        clustering_mode="rule",
+        use_standard_references=False,
+    )
+
+    assert len(topics) == 1
+    assert not gaps
+    assert not pending
+    title = topics[0]["主标题"]
+    assert "手机" in title
+    assert "充电部件" in title
+    assert "外观异常" in title
+    assert "如何" in title
+    for marker in (
+        "|", "意图:", "对象:", "现象:", "处理:", "标准:QC-",
+        "意图：", "对象：", "现象：", "处理：", "标准：QC-",
+    ):
+        assert marker not in title
+
+
+def test_untranscribed_topic_title_skips_internal_cluster_tags() -> None:
+    internal_tag_title = (
+        "边界判定 | 充电部件 | 外观异常 | 意图：边界判定 | "
+        "对象：充电部件 | 现象：外观异常 | 处理：定义与边界条件对照 | "
+        "标准：QC-2D976D3C5294"
+    )
+
+    title = workflow_module._untranscribed_topic_title(
+        {
+            "产品类型": "手机",
+            "对象/部位": "充电部件",
+            "异常现象": "外观异常",
+        },
+        [
+            {
+                "产品类型": "手机",
+                "_聚类主题标题": internal_tag_title,
+                "核心问题": internal_tag_title,
+                "聊天内容": "",
+            }
+        ],
+    )
+
+    assert title == "手机充电部件外观异常如何判定"
+    for marker in (
+        "|", "意图:", "对象:", "现象:", "处理:", "标准:QC-",
+        "意图：", "对象：", "现象：", "处理：", "标准：QC-",
+    ):
+        assert marker not in title
+
+
+def test_cluster_only_title_rebuilds_when_model_label_belongs_to_another_topic() -> None:
+    row = {
+        "数据ID": "TITLE-GUARD-001",
+        "工单ID": "TITLE-GUARD-001",
+        "产品类型": "平板电脑",
+        "核心问题": "平板电池健康度和后置摄像头区域灰尘分别如何判定",
+        "对象/部位": "后置摄像头区域",
+        "异常现象": "灰尘颗粒",
+        "判定目标": "判断是否属于屏幕进灰",
+        "解题方式": "补充屏幕显示区域证据后核验",
+        "_聚类主题标题": "电池循环次数太少，电池容量又低，要算异常吗",
+        "_聚类决策": "纯大模型1-N聚类",
+        "_聚类裁决提供方": "mimo-direct",
+        "_聚类裁决原因": "模型输出。",
+    }
+    topic = workflow_module._cluster_only_topic_row(
+        "TOP-TITLE-GUARD",
+        ("direct_mimo", "平板电脑"),
+        [row],
+    )
+
+    assert "电池循环次数" not in topic["聚类主题"]
+    assert "后置摄像头区域" in topic["聚类主题"]
+    assert "如何" in topic["聚类主题"]
+
+
+def test_cluster_only_title_uses_atomic_fields_for_multi_target_source() -> None:
+    row = {
+        "数据ID": "TITLE-GUARD-002",
+        "工单ID": "TITLE-GUARD-002",
+        "产品类型": "平板电脑",
+        "核心问题": (
+            "回收师对两个问题有疑问：1. 平板屏幕漏液如何判定；"
+            "2. 后置摄像头镜片区域缝隙如何归类"
+        ),
+        "对象/部位": "后置摄像头镜片区域",
+        "异常现象": "缝隙",
+        "判定目标": "判断缝隙是否达到外壳缝隙标准",
+        "_聚类主题标题": "平板屏幕漏液如何判定",
+        "_聚类决策": "纯大模型1-N聚类",
+        "_聚类裁决提供方": "mimo-direct",
+        "_聚类裁决原因": "模型输出。",
+    }
+    topic = workflow_module._cluster_only_topic_row(
+        "TOP-TITLE-GUARD-2",
+        ("direct_mimo", "平板电脑"),
+        [row],
+    )
+
+    assert "屏幕漏液" not in topic["聚类主题"]
+    assert "后置摄像头镜片区域" in topic["聚类主题"]
+    assert "缝隙" in topic["聚类主题"]
+
+
+def test_cluster_only_title_rebuilds_when_atomic_core_question_is_from_other_target() -> None:
+    row = {
+        "数据ID": "TITLE-GUARD-003",
+        "工单ID": "TITLE-GUARD-003",
+        "产品类型": "平板电脑",
+        "核心问题": "平板屏幕漏液如何判定",
+        "对象/部位": "摄像头镜片区域外壳",
+        "异常现象": "缝隙（脱胶）",
+        "判定目标": "判断缝隙是否达到外壳缝隙标准",
+        "_聚类主题标题": "",
+        "_聚类决策": "纯大模型1-N聚类",
+        "_聚类裁决提供方": "mimo-direct",
+        "_聚类裁决原因": "原子问题字段冲突。",
+    }
+    topic = workflow_module._cluster_only_topic_row(
+        "TOP-TITLE-GUARD-3",
+        ("direct_mimo", "平板电脑"),
+        [row],
+    )
+
+    assert "屏幕漏液" not in topic["聚类主题"]
+    assert "摄像头镜片区域外壳" in topic["聚类主题"]
+    assert "缝隙" in topic["聚类主题"]
 
 
 def test_rule_title_uses_structured_atomic_question_before_case_narrative() -> None:
@@ -10038,8 +12427,74 @@ def test_rule_title_uses_structured_atomic_question_before_case_narrative() -> N
     assert not gaps
     assert not pending
     assert topics[0]["主标题"] == (
-        "日版 Switch Lite 限定款是否可回收，包装盒缺失如何处理"
+        "游戏机日版限定款是否可回收，包装盒缺失如何处理"
     )
+
+
+@pytest.mark.parametrize(
+    ("core_problem", "category_l1", "category_l2", "standard_path", "expected_title"),
+    (
+        (
+            "帮忙看一下图片",
+            "显示问题",
+            "色斑",
+            "本地质检标准：【手机】【显示问题】【1】",
+            "手机屏幕色斑如何通过图片核验",
+        ),
+        (
+            "指南针怎么核验",
+            "功能问题",
+            "指南针",
+            "本地质检标准：【手机】【功能问题】【指南针】",
+            "手机指南针功能如何核验",
+        ),
+        (
+            "设备机型如何查询与确认",
+            "基本情况",
+            "机型",
+            "本地质检标准：【手机】【基本情况】【0】",
+            "手机设备机型如何查询与确认",
+        ),
+    ),
+)
+def test_rule_process_title_uses_product_and_rejects_numeric_standard_leaf(
+    core_problem: str,
+    category_l1: str,
+    category_l2: str,
+    standard_path: str,
+    expected_title: str,
+) -> None:
+    standard = StandardCatalogItem(
+        standard_id="LOCAL-TITLE-001",
+        title="1",
+        category_l1=category_l1,
+        category_l2=category_l2,
+        knowledge_type="本地质检标准",
+        standard_path=standard_path,
+        keywords=[category_l2],
+        scope="手机",
+        response_snippet="按当前标准逐项核验。",
+        status="published",
+        version="local-title-test-v1",
+    )
+
+    assert workflow_module._process_title(
+        core_problem,
+        category_l1,
+        category_l2,
+        standard,
+        product_type="手机",
+    ) == expected_title
+
+
+def test_guess_title_rejects_generic_image_request() -> None:
+    assert workflow_module._guess_title("帮忙看一下图片") == ""
+
+
+def test_guess_title_removes_generic_review_tail_and_normalizes_lid_closure() -> None:
+    assert workflow_module._guess_title(
+        "拯救者R7000P合盖合不上看一下"
+    ) == "拯救者R7000P合盖无法闭合如何处理"
 
 
 @pytest.mark.parametrize(
@@ -10096,11 +12551,12 @@ def test_candidate_validation_retries_meta_document_style_title() -> None:
             {
                 "title": "相机镜头自带无法拆除转接环的质检记录规则",
                 "subtitles": [],
-                "content": "根据来源事实核对镜头本体标识，并保留当前案例边界。",
+                "content": "1. 根据来源事实核对镜头本体标识，并保留当前案例边界。",
                 "category_l1": "其他问题",
                 "category_l2": "特殊问题",
                 "layer": "L2",
                 "knowledge_form": "流程方法",
+                "content_type": "核验型",
                 "standard_refs": [],
                 "applicable_scope": "相机镜头",
                 "applicable_brands": [],
@@ -10132,11 +12588,12 @@ def test_candidate_validation_retries_meta_title_with_trailing_status(
             {
                 "title": title,
                 "subtitles": [],
-                "content": "根据来源事实核对镜头本体标识，并保留当前案例边界。",
+                "content": "1. 根据来源事实核对镜头本体标识，并保留当前案例边界。",
                 "category_l1": "其他问题",
                 "category_l2": "特殊问题",
                 "layer": "L2",
                 "knowledge_form": "流程方法",
+                "content_type": "核验型",
                 "standard_refs": [],
                 "applicable_scope": "相机镜头",
                 "applicable_brands": [],
@@ -10158,11 +12615,12 @@ def test_candidate_validation_accepts_natural_record_requirement_question() -> N
         {
             "title": "质检工单中需要记录哪些信息",
             "subtitles": [],
-            "content": "根据来源事实记录当前对象、现象和处理结果，其他情形需补充证据。",
+            "content": "1. 根据来源事实记录当前对象、现象和处理结果，其他情形需补充证据。",
             "category_l1": "其他问题",
             "category_l2": "特殊问题",
             "layer": "L2",
             "knowledge_form": "流程方法",
+            "content_type": "核验型",
             "standard_refs": [],
             "applicable_scope": "相机镜头",
             "applicable_brands": [],
@@ -10288,3 +12746,1937 @@ def test_initial_review_rejects_internal_analysis_report_structure() -> None:
     assert review["decision"] == "需修改"
     assert review["error_type"] == "话术不合适"
     assert "内部分析标签" in review["reason"]
+
+
+def test_recommended_reply_is_direct_without_title_or_case_intro() -> None:
+    reply = workflow_module._recommended_reply(
+        "平板电池健康度应按什么优先级读取？",
+        (
+            "1. 苹果平板按本机、验机工具、苹果支持 App 诊断的顺序读取。\n"
+            "2. 都无法获取时选电池健康度无法检测。"
+        ),
+        use_standard_references=True,
+    )
+
+    assert "您好，关于" not in reply
+    assert "平板电池健康度应按什么优先级读取" not in reply
+    assert "本机、验机工具、苹果支持 App 诊断" in reply
+
+
+def test_topic_candidate_final_gate_removes_model_and_pipe_subtitle() -> None:
+    rows = [
+        {
+            "数据ID": "MODEL-TITLE-001",
+            "工单ID": "202608210001",
+            "聊天内容": "笔记本屏幕出现色斑，如何判定？",
+            "核心问题": "笔记本屏幕色斑如何判定",
+            "产品类型": "笔记本",
+            "问题意图": "标准判定",
+            "对象/部位": "屏幕",
+            "异常现象": "色斑",
+            "解题方式": "按显示标准核验",
+            "语义标注依据": "来源明确询问屏幕色斑判定。",
+        }
+    ]
+    result = workflow_module._topic_candidate_row(
+        "TOP-MODEL-TITLE-001",
+        ("笔记本", "屏幕", "色斑"),
+        rows,
+        [],
+        {
+            "title": "拯救者R7000P屏幕色斑如何判定",
+            "subtitles": ["笔记本｜拯救者R7000P｜屏幕｜色斑怎么核验？"],
+            "content": "1. 回收师在现场上传图片；2. 平台标准依据：暂无。",
+            "recommended_reply": "您好，关于“拯救者R7000P屏幕色斑如何判定”，回收师上传图片。",
+            "applicable_models": ["拯救者R7000P"],
+            "confidence": 0.8,
+            "knowledge_form": "具体判定",
+        },
+        "mimo",
+        "test-model",
+        "test-prompt",
+        "test-run",
+        "",
+        "topic_model_labeled",
+        0.75,
+        use_standard_references=True,
+    )
+
+    assert "拯救者R7000P" not in result["主标题"]
+    assert "｜" not in result["副标题"]
+    assert "|" not in result["副标题"]
+    assert "您好，关于" not in result["推荐回复"]
+
+
+def test_no_standard_candidate_does_not_emit_standard_language() -> None:
+    rows = [
+        {
+            "数据ID": "NO-STANDARD-001",
+            "工单ID": "202608210002",
+            "聊天内容": "设备接口插入困难，无法确认原因。",
+            "核心问题": "笔记本接口插入困难如何核验",
+            "产品类型": "笔记本",
+            "问题意图": "检测核验",
+            "对象/部位": "USB接口",
+            "异常现象": "插入困难",
+            "解题方式": "补充接口近景并检查异物或针脚",
+            "语义标注依据": "来源仅说明需要补充证据。",
+        }
+    ]
+    result = workflow_module._topic_candidate_row(
+        "TOP-NO-STANDARD-001",
+        ("笔记本", "USB接口", "插入困难"),
+        rows,
+        [],
+        {
+            "title": "笔记本USB接口插入困难如何核验",
+            "subtitles": [],
+            "content": "回收师反馈接口插入困难；平台标准依据：当前标准要求检查接口。",
+            "recommended_reply": "您好，请按平台标准判定该接口异常。",
+            "confidence": 0.8,
+            "knowledge_form": "流程方法",
+            "content_type": "核验型",
+        },
+        "mimo",
+        "test-model",
+        "test-prompt",
+        "test-run",
+        "",
+        "topic_model_labeled",
+        0.75,
+        use_standard_references=True,
+    )
+
+    assert result["关联标准项"] == ""
+    assert "平台标准依据" not in result["知识内容"]
+    assert "当前有效标准" not in result["知识内容"]
+    assert "回收师" not in result["知识内容"]
+    assert "平台标准" not in result["推荐回复"]
+
+
+def test_no_standard_reference_gate_ignores_descriptive_standard_topic_language() -> None:
+    assert not workflow_module._candidate_contains_standard_reference(
+        {
+            "title": "平板屏幕内部白色异物应如何区分？",
+            "subtitles": [],
+            "content": "1. 先确认异物位于屏幕内部还是表面。",
+            "recommended_reply": "先确认异物位置，再补充亮屏和息屏照片。",
+            "reasoning_summary": "该问题属于质检标准咨询，但本次未引用标准。",
+            "standard_refs": [],
+        }
+    )
+    # 可验证的标准标识（编号、路径、字段名）才算标准引用。
+    assert workflow_module._candidate_contains_standard_reference(
+        {
+            "content": "1. 标准编号：QC-TABLET-001 要求按屏幕漏液判定。",
+            "standard_refs": [],
+        }
+    )
+    assert workflow_module._candidate_contains_standard_reference(
+        {
+            "content": "1. 按 QC-TABLET-001 的要求执行。",
+            "standard_refs": [],
+        }
+    )
+    assert workflow_module._candidate_contains_standard_reference(
+        {
+            "content": "1. 标准路径：\n【电池】-【电池健康度】要求按顺序读取。",
+            "standard_refs": [],
+        }
+    )
+    # 历史回复里的口语“标准”是案例事实，不是标准引用，不能误拦截。
+    for content in (
+        "1. 按质检标准判为屏幕漏液。",
+        "1. 按平台标准，选择功能异常。",
+        "1. 平台标准：电池健康度低于80%算异常。",
+        "1. 回收标准中电池健康度低于80%算异常。",
+        "1. 按平台口径，电池健康度低于80%选异常。",
+        "1. 根据平台标准，该现象必须判定为屏幕漏液。",
+    ):
+        assert not workflow_module._candidate_contains_standard_reference(
+            {"content": content, "standard_refs": []}
+        )
+
+
+def test_handling_options_extracted_from_standard_snippet_and_source_conclusion() -> None:
+    assert workflow_module._extract_handling_options_from_text(
+        "2. 出厂机型与实物机型不符，需要勾选【设备机况不支持回收】。"
+    ) == ["勾选【设备机况不支持回收】"]
+    assert workflow_module._extract_handling_options_from_text(
+        "屏幕漏液按【屏幕异常】判定；进水按【进液】处理。"
+    ) == ["按【屏幕异常】判定", "按【进液】处理"]
+    assert workflow_module._extract_handling_options_from_text(
+        "电池健康度无法读取时判定为【无法检测】。"
+    ) == ["判定为【无法检测】"]
+    assert workflow_module._extract_handling_options_from_text("") == []
+
+
+def test_topic_candidate_row_exports_handling_options_when_standard_hits() -> None:
+    standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-BATTERY",
+        title="平板电池健康度判定方式",
+        category_l1="电池",
+        category_l2="电池健康度",
+        knowledge_type="场景判定",
+        standard_path="【电池】-【电池健康度】",
+        keywords=["平板", "电池健康度", "读取"],
+        scope="平板电脑-通用",
+        response_snippet=(
+            "1. 优先读取本机电池健康值。\n"
+            "2. 无法读取时使用指定检测工具。\n"
+            "3. 仍无法获取时勾选【电池健康度无法检测】。"
+        ),
+        status="published",
+        version="飞书平板标准-20260817",
+    )
+    rows = [
+        {
+            "数据ID": "TABLET-OPT-001",
+            "工单ID": "202608220011",
+            "聊天内容": "平板电池健康度无法读取怎么选？",
+            "核心问题": "平板电池健康度无法读取怎么选",
+            "产品类型": "平板电脑",
+            "一级分类": "电池",
+            "二级分类": "电池健康度",
+            "问题意图": "检测核验",
+            "对象/部位": "电池健康度",
+            "异常现象": "无法读取",
+            "解题方式": "按标准优先级读取",
+            "语义标注依据": "来源明确咨询电池健康度读取方式。",
+        }
+    ]
+    result = workflow_module._topic_candidate_row(
+        "TOP-OPT-001",
+        ("平板电脑", "电池", "电池健康度"),
+        rows,
+        [(standard, 0.95)],
+        {
+            "title": "平板电池健康度应按什么优先级读取？",
+            "subtitles": [],
+            "content": "1. 优先读取本机电池健康值。",
+            "recommended_reply": "按本机、工具、人工的顺序读取。",
+            "confidence": 0.9,
+            "knowledge_form": "具体判定",
+            "content_type": "判定型",
+        },
+        "mimo",
+        "test-model",
+        "test-prompt",
+        "test-run",
+        "",
+        "topic_model_labeled",
+        0.75,
+        use_standard_references=True,
+    )
+
+    assert result["关联标准项"] != ""
+    assert "勾选【电池健康度无法检测】" in result["候选项/处理项"]
+
+
+def test_topic_candidate_row_exports_source_options_when_standard_missing() -> None:
+    rows = [
+        {
+            "数据ID": "TABLET-OPT-002",
+            "工单ID": "202608220012",
+            "聊天内容": "平板耳机孔有灰怎么处理？",
+            "核心问题": "平板耳机孔有灰怎么处理",
+            "产品类型": "平板电脑",
+            "一级分类": "耳机孔",
+            "二级分类": "有灰",
+            "问题意图": "处理建议",
+            "对象/部位": "耳机孔",
+            "异常现象": "有灰",
+            "人工判定结论": "判定为耳机孔进灰，按【清洁处理】。",
+            "判定结论": "耳机孔进灰",
+            "历史实际回复": "您好，耳机孔进灰按【清洁处理】即可。",
+            "解题方式": "清理耳机孔灰尘",
+            "语义标注依据": "来源明确说明耳机孔进灰处理方式。",
+        }
+    ]
+    result = workflow_module._topic_candidate_row(
+        "TOP-OPT-002",
+        ("平板电脑", "耳机孔", "有灰"),
+        rows,
+        [],
+        {
+            "title": "平板耳机孔进灰应如何处理？",
+            "subtitles": [],
+            "content": "1. 判定为耳机孔进灰。",
+            "recommended_reply": "您好，耳机孔进灰按【清洁处理】即可。",
+            "confidence": 0.8,
+            "knowledge_form": "具体判定",
+            "content_type": "判定型",
+        },
+        "mimo",
+        "test-model",
+        "test-prompt",
+        "test-run",
+        "",
+        "topic_model_labeled",
+        0.75,
+        use_standard_references=True,
+    )
+
+    assert result["标准引用标签"] == "未引用标准-人工重点复核"
+    assert result["关联标准项"] == ""
+    assert "按【清洁处理】" in result["候选项/处理项"]
+
+
+def test_topic_candidate_row_keeps_handling_options_empty_without_evidence() -> None:
+    rows = [
+        {
+            "数据ID": "TABLET-OPT-003",
+            "工单ID": "202608220013",
+            "聊天内容": "平板屏幕有横线需要补充什么证据？",
+            "核心问题": "平板屏幕有横线需要补充什么证据",
+            "产品类型": "平板电脑",
+            "一级分类": "显示问题",
+            "二级分类": "横线",
+            "问题意图": "补充证据",
+            "对象/部位": "屏幕",
+            "异常现象": "横线",
+            "解题方式": "补充亮屏和息屏照片",
+            "语义标注依据": "来源仅说明需要补充证据。",
+        }
+    ]
+    result = workflow_module._topic_candidate_row(
+        "TOP-OPT-003",
+        ("平板电脑", "屏幕", "横线"),
+        rows,
+        [],
+        {
+            "title": "平板屏幕横线应补充什么证据？",
+            "subtitles": [],
+            "content": "1. 补充亮屏和息屏照片。",
+            "recommended_reply": "请补充亮屏和息屏照片。",
+            "confidence": 0.7,
+            "knowledge_form": "具体判定",
+            "content_type": "核验型",
+        },
+        "mimo",
+        "test-model",
+        "test-prompt",
+        "test-run",
+        "",
+        "topic_model_labeled",
+        0.75,
+        use_standard_references=True,
+    )
+
+    assert result["候选项/处理项"] == ""
+
+
+def test_standard_mapping_failure_revokes_reference_before_export() -> None:
+    topic = {
+        "标准引用标签": "已引用标准知识点",
+        "标准引用门禁状态": "accepted",
+        "关联标准项": "CZ-HQ-TABLET-WRONG | 外壳辅件缺损",
+        "候选项/处理项": "【外壳辅件缺损】",
+        "主题标准版本": "v1",
+        "来源版本": "v1",
+        "知识来源": "方向二总部标准候选",
+        "主题对象/部位": "外壳",
+        "主题异常现象": "缝隙",
+        "主题解题方式": "补充局部照片后核对",
+        "知识内容": (
+            "1. 满足以下任一条件时，勾选"
+            "【外壳外观情况】-【外壳其他现象】-【外壳辅件缺损】：\n\n"
+            "镜片整体缺失。"
+        ),
+        "推荐回复": "勾选【外壳外观情况】-【外壳其他现象】-【外壳辅件缺损】。",
+        "模型初标错误类型": "标准项映射错",
+        "模型初标标准一致性": "不一致",
+        "模型初标原因": "来源事实是外壳缝隙，不是辅件缺损。",
+    }
+
+    guarded = workflow_module._enforce_standard_reference_consistency(
+        topic,
+        use_standard_references=True,
+    )
+
+    assert guarded["标准引用标签"] == "未引用标准-人工重点复核"
+    assert guarded["标准引用门禁状态"] == "retrieved_mapping_rejected"
+    assert guarded["关联标准项"] == ""
+    assert guarded["候选项/处理项"] == ""
+    assert guarded["主题标准版本"] == ""
+    assert guarded["来源版本"] == ""
+    assert guarded["知识来源"] == "方向二经验补充候选"
+    assert "【外壳外观情况】" not in guarded["知识内容"]
+    assert "勾选" not in guarded["知识内容"]
+    assert guarded["推荐回复"] == ""
+
+
+def test_standard_label_without_association_is_rejected() -> None:
+    guarded = workflow_module._enforce_standard_reference_consistency(
+        {
+            "标准引用标签": "已引用标准知识点",
+            "标准引用门禁状态": "accepted",
+            "关联标准项": "",
+            "候选项/处理项": "",
+        },
+        use_standard_references=True,
+    )
+
+    assert guarded["标准引用标签"] == "未引用标准-人工重点复核"
+    assert guarded["标准引用门禁状态"] == "rejected_or_missing"
+
+
+def test_no_standard_content_does_not_claim_standard_selection() -> None:
+    cleaned = workflow_module._strip_unverified_standard_language(
+        "依据标准判定为屏幕进灰，并勾选相应等级。"
+    )
+
+    assert "依据标准" not in cleaned
+    assert "勾选相应等级" not in cleaned
+    assert "人工" in cleaned
+
+
+def test_recommended_reply_from_final_content_drops_full_standard_path() -> None:
+    reply = workflow_module._recommended_reply_from_final_content(
+        "1. 【拆修及浸液情况】-【电池拆修】-【电池-工具读出异常】\n"
+        "2. 上门门店场景：苹果机型使用验机工具（一根线）验机报告读出电池结果为“异常”。"
+    )
+
+    assert reply.startswith("选择【电池-工具读出异常】")
+    assert "【拆修及浸液情况】-【电池拆修】" not in reply
+
+
+def test_case_narrative_title_requires_structured_rebuild() -> None:
+    assert workflow_module._title_requires_structured_rebuild(
+        "回收师询问平板屏幕漏液的判定方法，并描述用手电筒照射屏幕内部看到如何判定"
+    )
+    rebuilt = workflow_module._rebuild_title_from_structured_fields(
+        {
+            "产品类型": "平板电脑",
+            "对象/部位": "屏幕",
+            "异常现象": "漏液",
+            "问题意图": "标准判定",
+        }
+    )
+    assert rebuilt == "平板电脑屏幕漏液应如何判定？"
+
+
+def test_product_conflict_is_a_hard_cluster_admission_block() -> None:
+    admission = workflow_module._cluster_topic_admission(
+        [
+            {
+                "产品类型": "平板电脑",
+                "_原子品类冲突": True,
+                "语义标注置信度": 0.95,
+                "_聚类裁决置信度": 0.95,
+            }
+        ],
+        {
+            "requested_mode": "direct_mimo",
+            "effective_mode": "direct_mimo",
+        },
+        enabled=True,
+        min_confidence=0.75,
+    )
+
+    assert admission["admitted"] is False
+    assert admission["hard_blocked"] is True
+    assert "品类冲突" in admission["reason"]
+
+
+def test_failed_topic_transcription_body_is_knowledge_like_not_case_analysis() -> None:
+    rows = [
+        {
+            "数据ID": "TABLET-FAIL-BODY-001",
+            "工单ID": "202608230001",
+            "产品类型": "平板电脑",
+            "一级分类": "拆修及浸液情况",
+            "二级分类": "屏幕拆修",
+            "问题意图": "标准判定",
+            "对象/部位": "屏幕",
+            "异常现象": "验机工具读出异常",
+            "核心问题": "平板屏幕工具读出异常如何判定",
+            "判定结论": "按【屏幕-工具读出异常】处理",
+            "判定依据": (
+                "关键事实：一根线读出屏幕结果为异常；"
+                "匹配口径：屏幕拆修项；"
+                "定义：工具读出异常时按屏幕维修处理。"
+            ),
+            "历史实际回复": (
+                "老师，这种情况优先看工具结果，"
+                "一根线读出异常就勾选【屏幕-工具读出异常】。"
+            ),
+            "解题方式": "按工具结果选择拆修项",
+            "语义标注依据": "来源明确记录工具结果和处理选项。",
+        }
+    ]
+    topic = workflow_module._failed_topic_transcription_row(
+        "TOP-FAIL-BODY-001",
+        ("平板电脑", "拆修及浸液情况", "屏幕拆修"),
+        rows,
+        {"knowledge_value": "值得沉淀"},
+        provider="mimo",
+        model_name="mimo-v2.5",
+        prompt_version="test",
+        model_run_id="run",
+        transcription_status="topic_model_validation_failed",
+        model_call_status="model_success",
+        error="模型草稿包含分析过程",
+        matches=[],
+        use_standard_references=True,
+    )
+
+    content = topic["知识内容"]
+    assert content
+    assert "关键事实" not in content
+    assert "匹配口径" not in content
+    assert "定义：" not in content
+    assert "老师" not in content
+    assert "回收师" not in content
+    assert "【屏幕-工具读出异常】" in content
+    assert topic["推荐回复"] == ""
+
+
+def test_user_judgment_tool_result_rejects_battery_health_standard_target() -> None:
+    standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-BATTERY-HEALTH",
+        title="平板电池健康度判定方式",
+        category_l1="基本情况",
+        category_l2="电池健康度（单选）",
+        knowledge_type="场景判定",
+        standard_path="【基本情况】-【电池健康度（单选）】",
+        keywords=["平板", "电池健康度", "最大容量"],
+        scope="平板电脑-苹果",
+        response_snippet="按本机、工具、支持APP的顺序读取电池健康度。",
+        status="published",
+        version="test",
+    )
+    query = {
+        "产品类型": "平板电脑",
+        "一级分类": "基本情况",
+        "二级分类": "电池健康度（单选）",
+        "问题意图": "标准判定",
+        "对象/部位": "电池健康度",
+        "异常现象": "用户判断",
+        "核心问题": "一根线工具读出电池用户判断怎么选",
+        "人工核心问题": "电池序列号工具读出用户判断应如何处理",
+        "人工判定结论": "用户判断不能作为电池健康度的勾选依据。",
+        "判定依据": "应按电池拆修项判断工具结果。",
+        "平台": "iOS",
+        "品牌": "Apple",
+    }
+
+    reasons = workflow_module._standard_match_rejection_reasons(query, standard)
+
+    assert "judgment_target_mismatch" in reasons
+
+
+def test_user_judgment_tool_result_can_bridge_to_battery_repair_standard() -> None:
+    standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-BATTERY-REPAIR",
+        title="电池工具读出用户判断如何处理",
+        category_l1="拆修及浸液情况",
+        category_l2="电池拆修（单选）",
+        knowledge_type="场景判定",
+        standard_path="【拆修及浸液情况】-【电池拆修（单选）】",
+        keywords=["电池", "用户判断", "工具读出异常"],
+        scope="平板电脑-苹果",
+        response_snippet="电池工具读出异常时，勾选【电池-工具读出异常】。",
+        status="published",
+        version="test",
+    )
+    query = {
+        "产品类型": "平板电脑",
+        "一级分类": "基本情况",
+        "二级分类": "电池健康度（单选）",
+        "问题意图": "标准判定",
+        "对象/部位": "电池健康度",
+        "异常现象": "用户判断",
+        "核心问题": "一根线工具读出电池用户判断怎么选",
+        "人工核心问题": "电池序列号工具读出用户判断应如何处理",
+        "人工判定结论": "按电池拆修项处理。",
+        "判定依据": "用户判断属于工具结果，需按电池拆修判断。",
+        "平台": "iOS",
+        "品牌": "Apple",
+    }
+
+    reasons = workflow_module._standard_match_rejection_reasons(query, standard)
+
+    assert "object_mismatch" not in reasons
+    assert "standard_path_mismatch" not in reasons
+
+
+def test_user_judgment_without_observed_repair_evidence_cannot_select_tool_abnormal() -> None:
+    standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-BATTERY-TOOL-ABNORMAL",
+        title="电池-工具读出异常是什么意思",
+        category_l1="拆修及浸液情况",
+        category_l2="电池拆修（单选）",
+        knowledge_type="标准定义",
+        standard_path=(
+            "【拆修及浸液情况】-【电池拆修】-【电池-工具读出异常】"
+        ),
+        keywords=["电池", "工具读出异常"],
+        scope="平板电脑-苹果",
+        response_snippet="验机工具读出电池异常时，勾选【电池-工具读出异常】。",
+        status="published",
+        version="test",
+    )
+    query = {
+        "产品类型": "平板电脑",
+        "一级分类": "拆修及浸液情况",
+        "二级分类": "电池拆修",
+        "问题意图": "标准判定",
+        "对象/部位": "电池",
+        "异常现象": "验机工具读出用户判断",
+        "核心问题": "平板电池验机工具显示用户判断时如何处理",
+        "人工判定结论": "用户判断不算问题。",
+        "判定依据": "需现场查看电池是否存在拆修现象。",
+        "平台": "iOS",
+        "品牌": "Apple",
+    }
+
+    reasons = workflow_module._standard_match_rejection_reasons(query, standard)
+
+    assert "user_judgment_observation_required" in reasons
+
+
+def test_user_judgment_repair_knowledge_requires_observation_before_tool_abnormal() -> None:
+    content = workflow_module._failed_topic_source_knowledge_content(
+        {
+            "产品类型": "平板电脑",
+            "一级分类": "拆修及浸液情况",
+            "二级分类": "电池拆修",
+            "对象/部位": "电池",
+            "异常现象": "验机工具读出用户判断",
+            "核心问题": "平板电池验机工具显示用户判断时如何处理",
+            "解题方式": "现场核验电池是否存在拆修现象",
+        }
+    )
+
+    assert "不能仅凭该提示直接勾选" in content
+    assert "未发现对应部位的拆修现象时，不处理该提示" in content
+    assert "发现对应部位存在明确拆修现象时，按对应部位的工具读出异常项处理" in content
+
+
+def test_cross_product_atomic_question_is_not_exported_as_review_candidate() -> None:
+    class CrossProductMimo:
+        config = SimpleNamespace(model="mimo-cross-product-export-test")
+
+        def analyze_cluster_units(self, _row):
+            return MimoLabelResult(
+                candidate={
+                    "conversation_type": "single_topic",
+                    "topics": [
+                        {
+                            "normalized_issue": "笔记本C面涂鸦是否拒收",
+                            "product_category": "笔记本",
+                            "scope_type": "品类专用",
+                            "platform": "通用",
+                            "brand": "通用",
+                            "model_scope": "通用",
+                            "category_l1": "外观状态",
+                            "category_l2": "外观异常",
+                            "intent": "标准判定",
+                            "subject": "C面",
+                            "phenomenon": "涂鸦",
+                            "judgment_target": "判断是否拒收",
+                            "resolution_mode": "按外观标准核验",
+                            "standard_path": "外观状态",
+                            "threshold_or_exception": "",
+                            "evidence_summary": "聊天中夹带了笔记本问题。",
+                            "confidence": 0.95,
+                            "requires_review": False,
+                        }
+                    ],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def cluster_atomic_units(self, units):
+            return MimoLabelResult(
+                candidate={
+                    "clusters": [
+                        {
+                            "cluster_id": "C001",
+                            "theme_name": "笔记本外观异常",
+                            "member_atomic_ids": [
+                                unit["unit_id"] for unit in units
+                            ],
+                            "merge_basis": "单成员。",
+                        }
+                    ],
+                    "split_requests": [],
+                    "review_requests": [],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    topics, _mapping, _gaps, pending = build_topic_review_rows(
+        [
+            {
+                "数据ID": "TABLET-WITH-LAPTOP-CHAT",
+                "工单ID": "202608230099",
+                "聊天内容": "平板WiFi版怎么区分？笔记本C面涂鸦能回收吗？",
+                "核心问题": "平板WiFi版和蜂窝版如何区分",
+                "产品类型": "平板电脑",
+            }
+        ],
+        use_mimo=False,
+        mimo_client=CrossProductMimo(),
+        clustering_mode="direct_mimo",
+        enforce_cluster_admission=True,
+    )
+
+    assert topics == []
+    assert len(pending) == 1
+    assert pending[0]["待聚合状态"] == "pending_product_conflict_review"
+    assert "品类冲突" in pending[0]["待聚合原因"]
+
+
+def test_battery_user_judgment_query_is_retargeted_to_repair_scope() -> None:
+    corrected = workflow_module._retarget_battery_user_judgment_query(
+        {
+            "产品类型": "平板电脑",
+            "一级分类": "基本情况",
+            "二级分类": "电池健康度（单选）",
+            "问题意图": "标准判定",
+            "对象/部位": "电池健康度",
+            "异常现象": "用户判断",
+            "核心问题": "一根线工具读出电池用户判断怎么选",
+            "解题方式": "按健康度流程选择无法检测",
+            "历史实际回复": "工具读出用户判断，应按电池拆修项核验。",
+        }
+    )
+
+    assert corrected["一级分类"] == "拆修及浸液情况"
+    assert corrected["二级分类"] == "电池拆修"
+    assert corrected["对象/部位"] == "电池"
+    assert corrected["异常现象"] == "验机工具读出用户判断"
+    assert "健康度流程" not in corrected["解题方式"]
+
+
+def test_battery_user_judgment_title_variant_is_retargeted_to_same_repair_topic() -> None:
+    title_variant = workflow_module._retarget_battery_user_judgment_query(
+        {
+            "产品类型": "平板电脑",
+            "一级分类": "基本情况",
+            "二级分类": "电池健康度（单选）",
+            "问题意图": "标准判定",
+            "对象/部位": "电池健康度",
+            "异常现象": "用户判断",
+            "核心问题": "平板电脑电池健康度质检选项用户判断如何选择如何处理",
+        }
+    )
+    tool_variant = workflow_module._retarget_battery_user_judgment_query(
+        {
+            "产品类型": "平板电脑",
+            "一级分类": "基本情况",
+            "二级分类": "电池健康度（单选）",
+            "问题意图": "标准判定",
+            "对象/部位": "电池健康度",
+            "异常现象": "用户判断",
+            "核心问题": "平板电脑电池验机工具读出用户判断应如何判定",
+        }
+    )
+
+    assert title_variant["一级分类"] == "拆修及浸液情况"
+    assert title_variant["二级分类"] == "电池拆修"
+    assert title_variant["核心问题"] == tool_variant["核心问题"]
+    assert title_variant["异常现象"] == tool_variant["异常现象"]
+    assert (
+        workflow_module._rebuild_title_from_structured_fields(title_variant)
+        == "平板电脑电池拆修检测显示“用户判断”时如何处理？"
+    )
+
+
+def test_user_judgment_candidate_forces_repair_title_over_natural_model_title() -> None:
+    rows = [
+        {
+            "数据ID": "TABLET-USER-JUDGMENT-001",
+            "工单ID": "202608230001",
+            "产品类型": "平板电脑",
+            "一级分类": "基本情况",
+            "二级分类": "电池健康度（单选）",
+            "问题意图": "标准判定",
+            "对象/部位": "电池健康度",
+            "异常现象": "用户判断",
+            "核心问题": "平板电脑电池健康度质检选项用户判断如何选择如何处理",
+            "聊天内容": "一根线工具显示电池用户判断，应怎么处理？",
+            "历史实际回复": "工具显示用户判断时，现场核验电池拆修现象。",
+        }
+    ]
+
+    result = workflow_module._topic_candidate_row(
+        "TOP-TABLET-USER-JUDGMENT-001",
+        ("平板电脑", "电池", "用户判断"),
+        rows,
+        [],
+        {
+            "title": "平板电脑电池健康度质检选项用户判断如何选择？",
+            "subtitles": [],
+            "content": "请根据工具提示处理。",
+            "recommended_reply": "",
+            "confidence": 0.8,
+            "knowledge_form": "具体判定",
+        },
+        "mimo",
+        "test-model",
+        "test-prompt",
+        "test-run",
+        "",
+        "topic_model_labeled",
+        0.75,
+        use_standard_references=True,
+    )
+
+    assert result["主标题"] == "平板电脑电池拆修检测显示“用户判断”时如何处理？"
+    assert "电池健康度" not in result["主标题"]
+
+
+def test_non_tablet_battery_user_judgment_is_not_retargeted_or_merged() -> None:
+    query = {
+        "产品类型": "手机",
+        "一级分类": "基本情况",
+        "二级分类": "电池健康度（单选）",
+        "问题意图": "标准判定",
+        "对象/部位": "电池健康度",
+        "异常现象": "用户判断",
+        "核心问题": "手机电池验机工具读出用户判断应如何判定",
+    }
+
+    corrected = workflow_module._retarget_battery_user_judgment_query(query)
+    merged = workflow_module._merge_known_equivalent_topic_groups(
+        [
+            (
+                ("direct_mimo", "自营回收", "手机", "cluster-1"),
+                [dict(query)],
+            )
+        ]
+    )
+
+    assert corrected == query
+    assert merged[0][0] == ("direct_mimo", "自营回收", "手机", "cluster-1")
+    assert merged[0][1][0]["核心问题"] == query["核心问题"]
+
+
+def test_equivalent_battery_user_judgment_topic_groups_are_merged() -> None:
+    topic_groups = [
+        (
+            ("direct_mimo", "自营回收", "平板电脑", "cluster-1"),
+            [
+                {
+                    "产品类型": "平板电脑",
+                    "核心问题": "平板电脑电池健康度质检选项用户判断如何选择如何处理",
+                    "异常现象": "用户判断",
+                }
+            ],
+        ),
+        (
+            ("direct_mimo", "自营回收", "平板电脑", "cluster-2"),
+            [
+                {
+                    "产品类型": "平板电脑",
+                    "核心问题": "平板电脑电池验机工具读出用户判断应如何判定",
+                    "异常现象": "用户判断",
+                }
+            ],
+        ),
+    ]
+
+    merged = workflow_module._merge_known_equivalent_topic_groups(topic_groups)
+
+    assert len(merged) == 1
+    assert len(merged[0][1]) == 2
+    assert all(
+        row["核心问题"] == "平板电池验机工具显示用户判断时如何处理"
+        for row in merged[0][1]
+    )
+
+
+def test_single_battery_health_percentage_is_not_a_reusable_topic() -> None:
+    assert workflow_module._is_single_battery_health_observation_topic(
+        {
+            "产品类型": "平板电脑",
+            "核心问题": "平板电脑电池健康度84%如何处理",
+            "对象/部位": "电池健康度",
+            "异常现象": "84%",
+        }
+    )
+    assert not workflow_module._is_single_battery_health_observation_topic(
+        {
+            "产品类型": "平板电脑",
+            "核心问题": "平板电池健康度本机和验机工具均无法检测如何处理",
+            "对象/部位": "电池健康度",
+            "异常现象": "无法检测",
+        }
+    )
+    assert workflow_module._is_single_battery_health_observation_topic(
+        {
+            "产品类型": "平板电脑",
+            "核心问题": "平板电脑电池健康度84%如何处理",
+            "对象/部位": "电池健康度",
+            "异常现象": "验机工具读数84%",
+            "解题方式": "本机与验机工具均显示84%",
+        }
+    )
+
+
+def test_revoked_user_judgment_standard_keeps_special_review_body_and_status() -> None:
+    topic = workflow_module._enforce_standard_reference_consistency(
+        {
+            "标准引用标签": "已引用标准知识点",
+            "标准引用门禁状态": "accepted",
+            "关联标准项": (
+                "【拆修及浸液情况】-【电池拆修】-【电池-工具读出异常】"
+            ),
+            "主题标准版本": "v1",
+            "来源版本": "v1",
+            "知识来源": "方向二总部标准候选",
+            "主题对象/部位": "电池",
+            "主题异常现象": "验机工具读出用户判断",
+            "主题解题方式": "现场核验电池是否存在明确拆修现象",
+            "核心问题": "平板电池验机工具显示用户判断时如何处理",
+            "模型初标错误类型": "标准项映射错误",
+            "模型初标原因": "标准项映射错误：不能仅凭用户判断直接勾选工具异常。",
+            "模型初标标准一致性": "不一致",
+        },
+        use_standard_references=True,
+    )
+
+    assert topic["标准引用标签"] == "未引用标准-人工重点复核"
+    assert topic["标准引用门禁状态"] == "retrieved_mapping_rejected"
+    assert topic["关联标准项"] == ""
+    assert topic["候选项/处理项"] == ""
+    assert "不能仅凭该提示直接勾选" in topic["知识内容"]
+    assert "未发现对应部位的拆修现象时，不处理该提示" in topic["知识内容"]
+
+
+def test_revoked_user_judgment_standard_uses_topic_export_fields() -> None:
+    topic = workflow_module._enforce_standard_reference_consistency(
+        {
+            "标准引用标签": "已引用标准知识点",
+            "关联标准项": (
+                "【拆修及浸液情况】-【电池拆修】-【电池-工具读出异常】"
+            ),
+            "适用范围": "平板电脑",
+            "主标题": "平板电脑电池拆修检测显示“用户判断”时如何处理？",
+            "主题对象/部位": "电池",
+            "主题异常现象": "验机工具读出用户判断",
+            "主题解题方式": "核对工具报告和对应电池拆修结论",
+            "模型初标错误类型": "标准项映射错误",
+        },
+        use_standard_references=True,
+    )
+
+    assert topic["标准引用门禁状态"] == "retrieved_mapping_rejected"
+    assert "不能仅凭该提示直接勾选" in topic["知识内容"]
+    assert "现场核验电池是否存在明确拆修现象" in topic["知识内容"]
+    assert "未发现对应部位的拆修现象时，不处理该提示" in topic["知识内容"]
+
+
+def test_revoked_standard_keeps_source_backed_wifi_process_and_reply() -> None:
+    topic = workflow_module._enforce_standard_reference_consistency(
+        {
+            "标准引用标签": "已引用标准知识点",
+            "关联标准项": "CZ-HQ-TABLET-WIFI | WIFI版应该如何查看",
+            "适用范围": "平板电脑",
+            "主题对象/部位": "网络制式",
+            "主题异常现象": "区分WiFi版和蜂窝版",
+            "主题解题方式": "检查SIM卡槽和IMEI信息",
+            "模型初标错误类型": "内容不完整、标准召回不足",
+            "模型初标原因": "标准只覆盖WiFi版，遗漏蜂窝版标准项。",
+            "模型初标标准一致性": "不一致",
+            "主题事实证据包": json.dumps(
+                {
+                    "representative_facts": [
+                        {
+                            "atomic_question": "平板电脑｜网络制式｜区分WiFi版和蜂窝版",
+                            "human_core_problem": "如何判断平板是WiFi版还是蜂窝版。",
+                            "human_judgment_conclusion": (
+                                "有SIM卡槽且系统内可查到IMEI为蜂窝版，否则为WiFi版。"
+                            ),
+                            "historical_actual_reply": (
+                                "先看机身有没有SIM卡卡槽；有卡槽时，到设置-关于本机"
+                                "查看是否有IMEI，能插卡且有IMEI就是蜂窝版；确认后"
+                                "蜂窝版填写IMEI，WiFi版填写PSN。"
+                            ),
+                            "judgment_basis": "来源明确记录卡槽和IMEI的区分方法。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        },
+        use_standard_references=True,
+    )
+
+    assert topic["标准引用标签"] == "未引用标准-人工重点复核"
+    assert topic["标准引用门禁状态"] == "retrieved_mapping_rejected"
+    assert "SIM卡卡槽" in topic["知识内容"]
+    assert "IMEI" in topic["知识内容"]
+    assert "SIM卡卡槽" in topic["推荐回复"]
+    assert "IMEI" in topic["推荐回复"]
+
+
+def test_revoked_standard_keeps_source_backed_battery_reading_process() -> None:
+    topic = workflow_module._enforce_standard_reference_consistency(
+        {
+            "标准引用标签": "已引用标准知识点",
+            "关联标准项": "CZ-HQ-TABLET-BATTERY | 96%≤电池健康度≤100%",
+            "适用范围": "平板电脑",
+            "主题对象/部位": "电池健康度",
+            "主题异常现象": "本机和验机工具无法读取",
+            "模型初标错误类型": "标准项映射错",
+            "模型初标原因": "错误映射为96%≤电池健康度≤100%。",
+            "模型初标标准一致性": "不一致",
+            "主题事实证据包": json.dumps(
+                {
+                    "representative_facts": [
+                        {
+                            "historical_actual_reply": (
+                                "本机不显示电池健康度且工具检测失败时，请打开设备上的"
+                                "支持APP，进入设备性能-电池性能-联系技术支持，等待诊断"
+                                "报告返回后根据结果填写；此方法也无效时，勾选"
+                                "【电池健康度无法检测】。"
+                            ),
+                            "judgment_basis": "来源明确记录支持APP诊断是下一步。",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        },
+        use_standard_references=True,
+    )
+
+    assert "支持APP" in topic["知识内容"]
+    assert "无法检测" in topic["知识内容"]
+    assert "96%" not in topic["知识内容"]
+    assert "支持APP" in topic["推荐回复"]
+    assert "【电池健康度无法检测】" in topic["候选项/处理项"]
+
+
+def test_revoked_standard_keeps_source_backed_strong_light_boundary() -> None:
+    topic = workflow_module._enforce_standard_reference_consistency(
+        {
+            "标准引用标签": "已引用标准知识点",
+            "关联标准项": "CZ-HQ-TABLET-SCREEN | 碎裂/磕点如何分级判定",
+            "适用范围": "平板电脑",
+            "主题对象/部位": "屏幕边缘",
+            "主题异常现象": "强光下可见的不规则起伏",
+            "模型初标错误类型": "标准引用错误",
+            "模型初标原因": "标准路径属于碎裂/磕点，与屏幕脱胶主题不一致。",
+            "模型初标标准一致性": "不一致",
+            "主题事实证据包": json.dumps(
+                {
+                    "representative_facts": [
+                        {
+                            "historical_actual_reply": (
+                                "请补充按压检测：将屏幕朝地面、后盖朝上进行按压，"
+                                "观察屏幕盖板是否有上下起伏现象。"
+                            ),
+                            "source_supported_threshold_or_exception": (
+                                "不打强光不可见的不用判。"
+                            ),
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        },
+        use_standard_references=True,
+    )
+
+    assert "不打强光不可见的不用判" in topic["知识内容"]
+    assert "屏幕朝地面、后盖朝上" in topic["知识内容"]
+    assert "不打强光不可见的不用判" in topic["推荐回复"]
+
+
+def test_revoked_standard_rebuilds_camera_gap_measurement_rule() -> None:
+    topic = workflow_module._enforce_standard_reference_consistency(
+        {
+            "标准引用标签": "已引用标准知识点",
+            "关联标准项": "CZ-HQ-TABLET-WRONG | 外壳辅件缺损如何处理",
+            "候选项/处理项": "【外壳外观情况】-【外壳其他现象】-【外壳辅件缺损】",
+            "主题标准版本": "飞书平板标准-20260817",
+            "来源版本": "飞书平板标准-20260817",
+            "知识来源": "方向二总部标准候选",
+            "适用范围": "平板电脑",
+            "主标题": "平板电脑外壳辅件缺损功能如何核验",
+            "副标题": "平板电脑外壳辅件缺损功能怎么核验？",
+            "主题对象/部位": "后置摄像头镜片与保护圈衔接处",
+            "主题异常现象": "缝隙",
+            "主题解题方式": "根据尺寸判定",
+            "模型初标错误类型": "主题内容与来源事实不匹配",
+            "模型初标原因": (
+                "引用标准路径为外壳辅件缺损，但来源事实是后摄镜片衔接处缝隙的"
+                "尺寸判定，标准与来源事实不一致。"
+            ),
+            "模型初标标准一致性": "不一致",
+            "主题事实证据包": json.dumps(
+                {
+                    "representative_facts": [
+                        {
+                            "atomic_question": (
+                                "平板电脑｜后置摄像头镜片与保护圈衔接处｜"
+                                "缝隙（自测0.3-0.4mm）｜未达到>0.5mm判定标准，不判异常"
+                            ),
+                            "human_judgment_conclusion": (
+                                "自测缝隙约0.3-0.4mm，未达到>0.5mm的判定标准，"
+                                "当前不满足外壳缝隙的判定条件。"
+                            ),
+                            "historical_actual_reply": (
+                                "根据图片和测量，后摄镜片与保护圈之间的缝隙约0.3-0.4mm，"
+                                "未达到0.5mm的判定阈值，建议按正常外观状态处理。"
+                            ),
+                            "source_supported_threshold_or_exception": "缝隙＞0.5mm",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        },
+        use_standard_references=True,
+    )
+
+    assert topic["标准引用标签"] == "未引用标准-人工重点复核"
+    assert topic["标准引用门禁状态"] == "retrieved_mapping_rejected"
+    assert topic["关联标准项"] == ""
+    assert topic["候选项/处理项"] == ""
+    assert "外壳辅件缺损" not in topic["主标题"]
+    assert "后置摄像头镜片与保护圈衔接处" in topic["主标题"]
+    assert "缝隙" in topic["主标题"]
+    assert "外壳辅件缺损" not in topic["副标题"]
+    assert "后置摄像头镜片与保护圈衔接处" in topic["副标题"]
+    assert "外壳辅件缺损" not in topic["知识内容"]
+    assert "后置摄像头镜片与保护圈衔接处" in topic["知识内容"]
+    assert "测量" in topic["知识内容"]
+    assert "缝隙＞0.5mm" in topic["知识内容"]
+    assert "不满足上述条件" in topic["知识内容"]
+    assert "补充清晰图片和测量证据" in topic["知识内容"]
+    assert "缝隙＞0.5mm" in topic["推荐回复"]
+
+
+def test_revoked_standard_does_not_recover_multi_topic_source_reply() -> None:
+    topic = workflow_module._enforce_standard_reference_consistency(
+        {
+            "标准引用标签": "已引用标准知识点",
+            "关联标准项": "CZ-HQ-TABLET-WRONG | 自动重启/关机",
+            "适用范围": "平板电脑",
+            "主标题": "苹果平板验机工具读出有重启记录时如何判定？",
+            "主题对象/部位": "系统",
+            "主题异常现象": "验机工具读出有重启记录iOS",
+            "模型初标错误类型": "正文内容与主题核心问题不匹配",
+            "模型初标原因": "标准与来源事实不一致。",
+            "模型初标标准一致性": "不一致",
+            "主题事实证据包": json.dumps(
+                {
+                    "representative_facts": [
+                        {
+                            "historical_actual_reply": (
+                                "1. 关于屏幕检测，先查看工具是否显示正常，再按屏幕结果处理。\n"
+                                "2. 关于重启记录，再查看验机工具是否读出有重启记录iOS。"
+                            ),
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        },
+        use_standard_references=True,
+    )
+
+    assert "当前标准引用已撤销" in topic["知识内容"]
+    assert topic["推荐回复"] == ""
+
+
+@pytest.mark.parametrize(
+    ("row", "included", "excluded"),
+    [
+        (
+            {
+                "数据ID": "ATOMIC-REPLY-REBOOT",
+                "工单ID": "ATOMIC-REPLY-REBOOT",
+                "产品类型": "平板电脑",
+                "核心问题": "平板电脑｜系统｜验机工具读出有重启记录iOS｜判定",
+                "对象/部位": "系统",
+                "异常现象": "验机工具读出有重启记录iOS",
+                "判定目标": "有重启记录-ios",
+                "解题方式": "按验机工具重启记录处理",
+                "历史实际回复": (
+                    "1. 关于屏幕检测，工具读出正常即可勾选无问题。\n"
+                    "2. 关于重启记录，苹果机型验机工具读出有重启记录时，"
+                    "按有重启记录-ios处理。"
+                ),
+            },
+            "重启记录",
+            "屏幕检测",
+        ),
+        (
+            {
+                "数据ID": "ATOMIC-REPLY-DUST",
+                "工单ID": "ATOMIC-REPLY-DUST",
+                "产品类型": "平板电脑",
+                "核心问题": "平板电脑｜后置摄像头区域｜灰尘｜是否属于屏幕进灰",
+                "对象/部位": "后置摄像头区域",
+                "异常现象": "灰尘",
+                "判定目标": "确认是否属于屏幕进灰",
+                "解题方式": "检查屏幕显示区域",
+                "历史实际回复": (
+                    "1. 关于电池健康度，工具读数84%按对应区间处理。\n"
+                    "2. 关于进灰，需确认灰尘是否位于点亮屏幕后可见的屏幕显示区域。"
+                ),
+            },
+            "关于进灰",
+            "电池健康度",
+        ),
+    ],
+)
+def test_atomic_source_fact_scopes_numbered_multi_topic_reply(
+    row: dict[str, object],
+    included: str,
+    excluded: str,
+) -> None:
+    fact = workflow_module._topic_source_fact(row, 1)
+
+    assert included in fact["historical_actual_reply"]
+    assert excluded not in fact["historical_actual_reply"]
+
+
+def test_atomic_source_fact_scopes_human_fields_and_revoked_content() -> None:
+    row = {
+        "数据ID": "ATOMIC-HUMAN-REBOOT",
+        "工单ID": "ATOMIC-HUMAN-REBOOT",
+        "产品类型": "平板电脑",
+        "核心问题": "平板电脑｜系统｜验机工具读出有重启记录iOS｜判定",
+        "对象/部位": "系统",
+        "异常现象": "有重启记录iOS",
+        "判定目标": "有重启记录-ios",
+        "解题方式": "验机工具读出有重启记录时按有重启记录-ios处理",
+        "原始核心问题": (
+            "回收师询问屏幕工具读出异常是否需要看闪光图；"
+            "同时询问验机工具有重启记录iOS是否需要判定。"
+        ),
+        "原始判定结论": (
+            "1. 屏幕问题：工具读出正常即可按正常处理，无需看闪光图。\n"
+            "2. 重启记录问题：验机工具读出有重启记录iOS时，"
+            "判定为有重启记录-ios。"
+        ),
+        "历史实际回复": (
+            "1. 关于屏幕检测，工具读出正常即可勾选无问题，无需通过闪光图判断。\n"
+            "2. 关于重启记录，苹果机型验机工具读出有重启记录时，"
+            "按有重启记录-ios处理。"
+        ),
+    }
+
+    fact = workflow_module._topic_source_fact(row, 1)
+    assert "屏幕" not in fact["human_core_problem"]
+    assert "屏幕" not in fact["human_judgment_conclusion"]
+    assert "屏幕" not in fact["historical_actual_reply"]
+    assert "重启记录" in fact["human_judgment_conclusion"]
+
+    topic = workflow_module._enforce_standard_reference_consistency(
+        {
+            "标准引用标签": "已引用标准知识点",
+            "关联标准项": "CZ-HQ-TABLET-WRONG | 屏幕异常",
+            "适用范围": "平板电脑",
+            "主标题": "苹果平板验机工具读出有重启记录时如何判定？",
+            "主题对象/部位": "系统",
+            "主题异常现象": "有重启记录iOS",
+            "主题解题方式": "验机工具读出有重启记录时按有重启记录-ios处理",
+            "模型初标错误类型": "标准项映射错误",
+            "主题事实证据包": json.dumps(
+                {"representative_facts": [fact]},
+                ensure_ascii=False,
+            ),
+        },
+        use_standard_references=True,
+    )
+
+    assert "屏幕" not in topic["知识内容"]
+    assert "闪光图" not in topic["知识内容"]
+    assert "重启记录" in topic["知识内容"]
+    assert "屏幕" not in topic["推荐回复"]
+
+
+def test_revoked_standard_content_cleans_unverified_claim_and_nested_numbering() -> None:
+    topic = workflow_module._enforce_standard_reference_consistency(
+        {
+            "标准引用标签": "已引用标准知识点",
+            "关联标准项": "CZ-HQ-TABLET-WRONG | 屏幕异常",
+            "适用范围": "平板电脑",
+            "主标题": "苹果平板验机工具读出有重启记录时如何判定？",
+            "主题对象/部位": "系统",
+            "主题异常现象": "有重启记录iOS",
+            "主题解题方式": "验机工具读出有重启记录时按有重启记录-ios处理",
+            "模型初标错误类型": "标准项映射错误",
+            "主题事实证据包": json.dumps(
+                {
+                    "representative_facts": [
+                        {
+                            "historical_actual_reply": (
+                                "2. 重启记录问题：请确认验机工具已读出“有重启记录iOS”。"
+                                "依据质检标准，此情况应直接判定为“有重启记录-ios”。"
+                            ),
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        },
+        use_standard_references=True,
+    )
+
+    assert topic["关联标准项"] == ""
+    assert "依据质检标准" not in topic["知识内容"]
+    assert "依据质检标准" not in topic["推荐回复"]
+    assert topic["知识内容"].startswith("1. 重启记录问题：")
+    assert "1. 2." not in topic["知识内容"]
+
+
+def test_standard_handling_options_for_unreadable_battery_health_keep_only_final_option() -> None:
+    standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-BATTERY-HEALTH",
+        title="苹果电池健康度如何分级判定",
+        category_l1="基本情况",
+        category_l2="电池健康度",
+        knowledge_type="场景判定",
+        standard_path=(
+            "【基本情况】-【电池健康度】-【96%≤电池健康度≤100%】\n"
+            "【基本情况】-【电池健康度】-【电池健康度无法检测】"
+        ),
+        keywords=["电池健康度", "无法检测"],
+        scope="平板电脑-苹果",
+        response_snippet=(
+            "【判断与勾选】\n"
+            "- 96%≤电池健康度≤100%：勾选【基本情况】-【电池健康度】-【96%≤电池健康度≤100%】。\n"
+            "- 本机、验机工具和 Apple 支持均无法取得电池健康度时，"
+            "勾选【基本情况】-【电池健康度】-【电池健康度无法检测】。"
+        ),
+        status="published",
+        version="test",
+    )
+
+    options = workflow_module._standard_handling_options(
+        standard,
+        {
+            "产品类型": "平板电脑",
+            "核心问题": "本机和验机工具均无法读取电池健康度如何处理",
+            "对象/部位": "电池健康度",
+            "异常现象": "本机和工具无法读取",
+        },
+    )
+
+    assert options == ["勾选【基本情况】-【电池健康度】-【电池健康度无法检测】"]
+
+
+def test_standard_handling_options_exclude_section_headings_and_platform_labels() -> None:
+    standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-REBOOT",
+        title="苹果有重启记录-ios判定方式",
+        category_l1="基本情况",
+        category_l2="开机情况",
+        knowledge_type="场景判定",
+        standard_path="【基本情况】-【开机情况】-【有重启记录-ios】",
+        keywords=["重启记录"],
+        scope="平板电脑-苹果",
+        response_snippet=(
+            "勾选项：【基本情况】-【开机情况】-【有重启记录-ios】\n"
+            "【标准说明】\n"
+            "- 【苹果】机型使用验机工具读出有重启记录。\n"
+            "联动处理：有自动重启时，勾选"
+            "【基本情况】-【开机情况】-【自动重启/关机】。"
+        ),
+        status="published",
+        version="test",
+    )
+
+    assert workflow_module._standard_handling_options(standard) == [
+        "勾选【基本情况】-【开机情况】-【有重启记录-ios】",
+        "勾选【基本情况】-【开机情况】-【自动重启/关机】",
+    ]
+
+
+def test_multilevel_standard_does_not_use_single_option_condition_template() -> None:
+    standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-DAMAGE",
+        title="最大直径如何分级判定",
+        category_l1="外壳外观情况",
+        category_l2="外壳磕碰/掉漆",
+        knowledge_type="场景判定",
+        standard_path="【外壳外观情况】-【外壳磕碰/掉漆】",
+        keywords=["掉漆", "直径"],
+        scope="平板电脑-通用",
+        response_snippet=(
+            "勾选项：【外壳外观情况】-【外壳磕碰/掉漆】-"
+            "【最大直径≤6mm且2mm以上数量≤10】\n"
+            "以下图片对应勾选项：【外壳外观情况】-【外壳磕碰/掉漆】-"
+            "【最大直径>10mm或2mm以上数量>15】\n"
+            "以下图片对应勾选项：【外壳外观情况】-【外壳磕碰/掉漆】-"
+            "【最大直径≤10mm且2mm以上数量≤15】"
+        ),
+        status="published",
+        version="test",
+    )
+
+    content = workflow_module._build_compact_standard_content(
+        standard,
+        workflow_module.CONTENT_TYPE_THRESHOLD,
+    )
+
+    assert not content.startswith("1. 满足以下任一条件时")
+    assert "勾选【外壳外观情况】-【外壳磕碰/掉漆】-" not in content
+
+
+def test_compact_knowledge_content_keeps_blank_lines_between_condition_items() -> None:
+    content = workflow_module._compact_knowledge_content(
+        "1. 满足以下任一条件时，勾选【外壳】-【其他】-【辅件缺损】：\n\n"
+        "摄像头镜片碎裂或镜片整体缺失。\n\n"
+        "防尘网罩破损。"
+    )
+
+    assert (
+        content
+        == "1. 满足以下任一条件时，勾选【外壳】-【其他】-【辅件缺损】：\n\n"
+        "摄像头镜片碎裂或镜片整体缺失。\n\n"
+        "防尘网罩破损。"
+    )
+
+
+def test_standard_content_turns_option_path_and_conditions_into_readable_rule() -> None:
+    standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-ACCESSORY",
+        title="平板外壳辅件缺损如何处理",
+        category_l1="外壳外观情况",
+        category_l2="外壳其他现象",
+        knowledge_type="场景判定",
+        standard_path=(
+            "【外壳外观情况】-【外壳其他现象】-"
+            "【外壳辅件(镜片/防尘网罩等)缺损】"
+        ),
+        keywords=["镜片", "防尘网罩", "缺损"],
+        scope="平板电脑-通用",
+        response_snippet=(
+            "勾选项：【外壳外观情况】-【外壳其他现象】-"
+            "【外壳辅件(镜片/防尘网罩等)缺损】\n"
+            "【标准说明】\n"
+            "- 摄像头镜片碎裂或镜片整体缺失。\n"
+            "- （注意：iPad镜头区域碎裂按图例\n"
+            "- 防尘网罩（含扬声器、麦克风、听筒网）破损。\n"
+            "- 闪光灯镜片碎裂或镜片整体缺失。\n"
+            "- 机身按键键帽碎裂、缺失、脱落（包含home键）。"
+        ),
+        status="published",
+        version="test",
+    )
+
+    content = workflow_module._build_compact_standard_content(
+        standard,
+        workflow_module.CONTENT_TYPE_DEFINITION,
+    )
+
+    assert content.startswith(
+        "1. 满足以下任一条件时，勾选"
+        "【外壳外观情况】-【外壳其他现象】-"
+        "【外壳辅件(镜片/防尘网罩等)缺损】：\n\n"
+    )
+    assert "\n\n摄像头镜片碎裂或镜片整体缺失。" in content
+    assert "\n\n防尘网罩（含扬声器、麦克风、听筒网）破损。" in content
+    assert "\n2. 摄像头镜片碎裂或镜片整体缺失。" not in content
+    assert "按图例" not in content
+    assert "\n1. 【外壳外观情况】" not in content
+
+
+def test_standard_content_uses_a_bare_leading_path_as_the_selectable_option() -> None:
+    standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-ACCESSORY-BARE",
+        title="平板外壳辅件缺损如何处理",
+        category_l1="外壳外观情况",
+        category_l2="外壳其他现象",
+        knowledge_type="场景判定",
+        standard_path=(
+            "【外壳外观情况】-【外壳其他现象】-"
+            "【外壳辅件(镜片/防尘网罩等)缺损】"
+        ),
+        keywords=["镜片", "防尘网罩", "缺损"],
+        scope="平板电脑-通用",
+        response_snippet=(
+            "【外壳外观情况】-【外壳其他现象】-"
+            "【外壳辅件(镜片/防尘网罩等)缺损】\n"
+            "摄像头镜片碎裂或镜片整体缺失。\n"
+            "防尘网罩（含扬声器、麦克风、听筒网）破损。"
+        ),
+        status="published",
+        version="test",
+    )
+
+    content = workflow_module._build_compact_standard_content(
+        standard,
+        workflow_module.CONTENT_TYPE_DEFINITION,
+    )
+
+    assert content.startswith(
+        "1. 满足以下任一条件时，勾选"
+        "【外壳外观情况】-【外壳其他现象】-"
+        "【外壳辅件(镜片/防尘网罩等)缺损】：\n\n"
+    )
+    assert "\n\n摄像头镜片碎裂或镜片整体缺失。" in content
+    assert "\n2. 摄像头镜片碎裂或镜片整体缺失。" not in content
+
+
+def test_standard_content_for_unreadable_battery_health_keeps_reading_chain_only() -> None:
+    standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-BATTERY-HEALTH",
+        title="苹果电池健康度如何分级判定",
+        category_l1="基本情况",
+        category_l2="电池健康度",
+        knowledge_type="场景判定",
+        standard_path="【基本情况】-【电池健康度】-【电池健康度无法检测】",
+        keywords=["电池健康度", "无法检测", "Apple 支持"],
+        scope="平板电脑-苹果",
+        response_snippet=(
+            "【标准说明】\n"
+            "- 平板电池健康度优先以本机显示值为准，本机不显示则以验机工具读取值为准。\n"
+            "- 若本机和验机工具均无法获取，则以 Apple 支持 App 诊断结果填写。\n"
+            "- 以上方法均无效则勾选【基本情况】-【电池健康度】-【电池健康度无法检测】。\n"
+            "【判断与勾选】\n"
+            "- 96%≤电池健康度≤100%：勾选【基本情况】-【电池健康度】-【96%≤电池健康度≤100%】。\n"
+            "- 81%≤电池健康度≤85%：勾选【基本情况】-【电池健康度】-【81%≤电池健康度≤85%】。\n"
+            "- 本机、验机工具和 Apple 支持均无法取得电池健康度时，勾选【基本情况】-【电池健康度】-【电池健康度无法检测】。"
+        ),
+        status="published",
+        version="test",
+    )
+
+    content = workflow_module._build_compact_standard_content(
+        standard,
+        workflow_module.CONTENT_TYPE_VERIFICATION,
+        query={
+            "产品类型": "平板电脑",
+            "核心问题": "本机和验机工具均无法读取电池健康度如何处理",
+            "对象/部位": "电池健康度",
+            "异常现象": "本机和工具无法读取",
+        },
+    )
+
+    assert "Apple 支持 App 诊断结果" in content
+    assert "电池健康度无法检测" in content
+    assert content.count("电池健康度无法检测") == 1
+    assert "96%≤" not in content
+    assert "81%≤" not in content
+
+
+def test_configured_empty_standard_catalog_stops_before_transcription(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.xlsx"
+    standard_path = tmp_path / "empty_standards.xlsx"
+
+    source_book = Workbook()
+    source_sheet = source_book.active
+    source_sheet.append(["工单ID", "聊天内容", "产品类型"])
+    source_sheet.append(["202608210003", "平板电池健康度如何读取？", "平板电脑"])
+    source_book.save(source_path)
+
+    standard_book = Workbook()
+    standard_sheet = standard_book.active
+    standard_sheet.append(["标准ID", "标准标题", "生效状态", "知识内容"])
+    standard_book.save(standard_path)
+
+    with pytest.raises(ValueError, match="没有读取到有效的生效标准"):
+        workflow_module.initial_label_from_workbook(
+            source_path=source_path,
+            standards_path=standard_path,
+            output_dir=tmp_path / "outputs",
+            use_mimo=False,
+            clustering_mode="rule",
+        )
+
+
+def test_configured_incomplete_standard_record_stops_before_transcription(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.xlsx"
+    standard_path = tmp_path / "incomplete_standards.xlsx"
+
+    source_book = Workbook()
+    source_sheet = source_book.active
+    source_sheet.append(["工单ID", "聊天内容", "产品类型"])
+    source_sheet.append(["202608210004", "手机屏幕色斑如何判定？", "手机"])
+    source_book.save(source_path)
+
+    standard_book = Workbook()
+    standard_sheet = standard_book.active
+    standard_sheet.append(
+        ["标准ID", "标准标题", "生效状态", "标准路径", "适用范围", "知识内容"]
+    )
+    standard_sheet.append(
+        ["QC-INCOMPLETE-001", "手机屏幕色斑", "published", "", "手机", ""]
+    )
+    standard_book.save(standard_path)
+
+    with pytest.raises(ValueError, match="字段不完整"):
+        workflow_module.initial_label_from_workbook(
+            source_path=source_path,
+            standards_path=standard_path,
+            output_dir=tmp_path / "outputs",
+            use_mimo=False,
+            clustering_mode="rule",
+        )
+
+
+def test_cz_tablet_knowledge_workbook_loads_as_referenceable_tablet_standards(
+    tmp_path: Path,
+) -> None:
+    standard_path = tmp_path / "tablet.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "知识库主表"
+    sheet.append(
+        [
+            "主标题",
+            "副标题",
+            "知识内容",
+            "生效状态",
+            "知识分类",
+            "知识来源",
+            "关联标准项",
+            "适用范围",
+            "适用类目",
+            "来源版本",
+            "主题键",
+        ]
+    )
+    sheet.append(
+        [
+            "苹果平板电池健康度判定方式",
+            "苹果平板电池健康度怎么读取",
+            "1. 优先读取本机电池健康值。\n2. 无法读取时使用指定检测工具。",
+            "生效中",
+            "场景判定",
+            "总部标准",
+            "【电池】-【电池健康度】",
+            "苹果",
+            "平板电脑",
+            "飞书平板标准-20260817",
+            "电池-电池健康度::苹果",
+        ]
+    )
+    sheet.append(
+        [
+            "待审核知识点",
+            "",
+            "待审核内容",
+            "待审核",
+            "场景判定",
+            "总部标准",
+            "【电池】-【待审核】",
+            "通用",
+            "平板电脑",
+            "飞书平板标准-20260817",
+            "电池-待审核::通用",
+        ]
+    )
+    workbook.save(standard_path)
+
+    items = load_standard_catalog(standard_path)
+
+    assert len(items) == 1
+    assert items[0].standard_id.startswith("CZ-HQ-TABLET-")
+    assert items[0].standard_path == "【电池】-【电池健康度】"
+    assert items[0].scope == "平板电脑-苹果"
+    assert items[0].version == "飞书平板标准-20260817"
+
+
+def test_tablet_review_queue_labels_standard_hit_and_missing_standard_for_review() -> None:
+    standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-BATTERY",
+        title="平板电池健康度判定方式",
+        category_l1="电池",
+        category_l2="电池健康度",
+        knowledge_type="场景判定",
+        standard_path="【电池】-【电池健康度】",
+        keywords=["平板", "电池健康度", "读取"],
+        scope="平板电脑-通用",
+        response_snippet=(
+            "1. 优先读取本机电池健康值。\n"
+            "2. 无法读取时使用指定检测工具。\n"
+            "3. 仍无法获取时转人工确认。"
+        ),
+        status="published",
+        version="飞书平板标准-20260817",
+    )
+    source_row = {
+        "数据ID": "TABLET-LABEL-001",
+        "工单ID": "202608220001",
+        "聊天内容": "平板电池健康度应该按什么顺序读取？",
+        "核心问题": "平板电池健康度应该按什么顺序读取",
+        "产品类型": "平板电脑",
+        "一级分类": "电池",
+        "二级分类": "电池健康度",
+        "问题意图": "检测核验",
+        "对象/部位": "电池健康度",
+        "异常现象": "读取顺序不明确",
+        "解题方式": "按总部标准知识点核验读取顺序",
+        "语义标注依据": "来源明确咨询平板电池健康度读取顺序。",
+    }
+
+    hit_topics, _mapping, _gaps, _pending = build_topic_review_rows(
+        [source_row],
+        standard_catalog=[standard],
+        use_mimo=False,
+        clustering_mode="rule",
+        use_standard_references=True,
+        transcribe_all_admitted_topics=True,
+    )
+    missing_topics, _mapping, _gaps, _pending = build_topic_review_rows(
+        [{**source_row, "数据ID": "TABLET-LABEL-002", "工单ID": "202608220002"}],
+        standard_catalog=[],
+        use_mimo=False,
+        clustering_mode="rule",
+        use_standard_references=True,
+        transcribe_all_admitted_topics=True,
+    )
+
+    assert hit_topics[0]["标准引用标签"] == "已引用标准知识点"
+    assert hit_topics[0]["关联标准项"]
+    assert missing_topics[0]["标准引用标签"] == "未引用标准-人工重点复核"
+    assert missing_topics[0]["关联标准项"] == ""
+    assert missing_topics[0]["是否重点复核"] == "是"
+
+
+def test_tablet_placeholder_taxonomy_still_matches_only_compatible_platform_standard() -> None:
+    apple_standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-SN-APPLE",
+        title="苹果SN查看方式",
+        category_l1="基本情况",
+        category_l2="SN",
+        knowledge_type="检测方法",
+        standard_path="【基本情况】-【SN】",
+        keywords=["苹果", "SN", "序列号"],
+        scope="平板电脑-苹果",
+        response_snippet="苹果平板打开设置、通用、关于本机查看序列号。",
+        status="published",
+        version="飞书平板标准-20260817",
+    )
+    android_standard = StandardCatalogItem(
+        standard_id="CZ-HQ-TABLET-SN-ANDROID",
+        title="安卓SN查看方式",
+        category_l1="基本情况",
+        category_l2="SN",
+        knowledge_type="检测方法",
+        standard_path="【基本情况】-【SN】",
+        keywords=["安卓", "SN", "序列号", "努比亚", "红魔"],
+        scope="平板电脑-安卓",
+        response_snippet="安卓平板打开设置、关于本机查看序列号。",
+        status="published",
+        version="飞书平板标准-20260817",
+    )
+    source_row = {
+        "数据ID": "TABLET-SN-001",
+        "工单ID": "202608220003",
+        "聊天内容": "努比亚红魔电竞平板的序列号在哪里查看？",
+        "核心问题": "努比亚红魔电竞平板的SN在哪里查看",
+        "产品类型": "平板电脑",
+        "一级分类": "待确认",
+        "二级分类": "待确认",
+        "问题意图": "信息查询",
+        "对象/部位": "SN",
+        "异常现象": "SN",
+        "解题方式": "进入系统设置查看序列号",
+        "语义标注依据": "来源明确咨询努比亚红魔平板SN查看路径。",
+        "_原子平台": "Android",
+        "_原子品牌": "努比亚",
+    }
+
+    topics, _mapping, _gaps, _pending = build_topic_review_rows(
+        [source_row],
+        standard_catalog=[apple_standard, android_standard],
+        use_mimo=False,
+        clustering_mode="rule",
+        use_standard_references=True,
+        transcribe_all_admitted_topics=True,
+    )
+
+    assert topics[0]["标准引用标签"] == "已引用标准知识点"
+    assert "CZ-HQ-TABLET-SN-ANDROID" in topics[0]["关联标准项"]
+    assert "CZ-HQ-TABLET-SN-APPLE" not in topics[0]["关联标准项"]
+
+
+def test_tablet_apple_android_and_universal_scope_semantics() -> None:
+    def build_with_scope(
+        scope: str,
+        *,
+        platform: str = "",
+        brand: str = "",
+        model: str = "",
+        question: str = "平板SN在哪里查看",
+    ) -> dict[str, object]:
+        qualifier = scope.rsplit("-", 1)[-1]
+        standard = StandardCatalogItem(
+            standard_id=f"CZ-HQ-TABLET-SCOPE-{qualifier}",
+            title="平板SN查看方式",
+            category_l1="基本情况",
+            category_l2="SN",
+            knowledge_type="检测方法",
+            standard_path="【基本情况】-【SN】",
+            keywords=["平板", "SN", "序列号"],
+            scope=scope,
+            response_snippet="进入系统设置中的关于本机页面查看序列号。",
+            status="published",
+            version="飞书平板标准-20260817",
+        )
+        source_row = {
+            "数据ID": f"TABLET-SCOPE-{qualifier}-{brand or platform or 'UNKNOWN'}",
+            "工单ID": "202608220005",
+            "聊天内容": f"{question}？",
+            "核心问题": question,
+            "产品类型": "平板电脑",
+            "一级分类": "待确认",
+            "二级分类": "待确认",
+            "问题意图": "信息查询",
+            "对象/部位": "SN",
+            "异常现象": "SN",
+            "解题方式": "进入系统设置查看序列号",
+            "语义标注依据": "来源明确咨询平板SN查看路径。",
+            "_原子平台": platform,
+            "_原子品牌": brand,
+            "_原子机型范围": model,
+        }
+        topics, _mapping, _gaps, _pending = build_topic_review_rows(
+            [source_row],
+            standard_catalog=[standard],
+            use_mimo=False,
+            clustering_mode="rule",
+            use_standard_references=True,
+            transcribe_all_admitted_topics=True,
+        )
+        return topics[0]
+
+    apple_on_apple = build_with_scope(
+        "平板电脑-苹果",
+        platform="iOS",
+        brand="Apple",
+        model="iPad Air",
+    )
+    android_on_apple = build_with_scope(
+        "平板电脑-安卓",
+        platform="iOS",
+        brand="Apple",
+        model="iPad Air",
+    )
+    android_on_unlisted_non_apple = build_with_scope(
+        "平板电脑-安卓",
+        platform="Android",
+        brand="星河",
+        model="GalaxyPad X1",
+    )
+    android_on_explicit_non_apple_text = build_with_scope(
+        "平板电脑-安卓",
+        question="回收星河 Nebula X 电竞平板时如何查看SN",
+    )
+    universal_on_apple = build_with_scope(
+        "平板电脑-通用",
+        platform="iOS",
+        brand="Apple",
+        model="iPad Air",
+    )
+    universal_on_non_apple = build_with_scope(
+        "平板电脑-通用",
+        platform="Android",
+        brand="星河",
+        model="GalaxyPad X1",
+    )
+    apple_unknown = build_with_scope("平板电脑-苹果")
+    android_unknown = build_with_scope("平板电脑-安卓")
+
+    assert apple_on_apple["标准引用标签"] == "已引用标准知识点"
+    assert android_on_apple["标准引用标签"] == "未引用标准-人工重点复核"
+    assert android_on_unlisted_non_apple["标准引用标签"] == "已引用标准知识点"
+    assert android_on_explicit_non_apple_text["标准引用标签"] == "已引用标准知识点"
+    assert universal_on_apple["标准引用标签"] == "已引用标准知识点"
+    assert universal_on_non_apple["标准引用标签"] == "已引用标准知识点"
+    assert apple_unknown["标准引用标签"] == "未引用标准-人工重点复核"
+    assert android_unknown["标准引用标签"] == "未引用标准-人工重点复核"
+
+
+def test_tablet_camera_gap_prefers_matching_repair_standard_over_generic_damage(
+    tmp_path: Path,
+) -> None:
+    standard_path = tmp_path / "tablet.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "知识库主表"
+    sheet.append(
+        [
+            "主标题",
+            "副标题",
+            "知识内容",
+            "生效状态",
+            "知识分类",
+            "知识来源",
+            "关联标准项",
+            "适用范围",
+            "适用类目",
+            "来源版本",
+            "主题键",
+        ]
+    )
+    sheet.append(
+        [
+            "外壳辅件缺损如何处理",
+            "外壳镜片缺损怎么处理",
+            "外壳辅件缺失或破损时按外壳缺损处理。",
+            "生效中",
+            "场景判定",
+            "总部标准",
+            "【外壳外观情况】-【外壳其他现象】-【外壳辅件缺损】",
+            "通用",
+            "平板电脑",
+            "飞书平板标准-20260817",
+            "外壳-辅件缺损::通用",
+        ]
+    )
+    sheet.append(
+        [
+            "平板更换摄像头镜片",
+            "平板后置摄像头镜片边缘有明显缝隙\n平板后置摄像头镜片边缘有溢胶",
+            (
+                "后置摄像头镜片边缘有明显缝隙、溢胶或尺寸不匹配时，"
+                "勾选后摄镜片更换。"
+            ),
+            "生效中",
+            "场景判定",
+            "总部标准",
+            "【拆修及浸液情况】-【其他零部件拆修】-【后摄镜片更换(有溢胶、缝隙)】",
+            "通用",
+            "平板电脑",
+            "飞书平板手写-20260817",
+            "拆修-后摄镜片更换::通用",
+        ]
+    )
+    workbook.save(standard_path)
+    catalog = load_standard_catalog(standard_path)
+    source_row = {
+        "数据ID": "TABLET-CAMERA-001",
+        "工单ID": "202608220004",
+        "聊天内容": "平板后置摄像头镜片边缘有缝隙，像胶水，应该怎么判？",
+        "核心问题": "平板后置摄像头镜片边缘有缝隙如何判定",
+        "产品类型": "平板电脑",
+        "一级分类": "待确认",
+        "二级分类": "待确认",
+        "问题意图": "边界判定",
+        "对象/部位": "摄像头",
+        "异常现象": "疑似拆修痕迹",
+        "解题方式": "核验后摄镜片边缘是否有缝隙或溢胶",
+        "语义标注依据": "来源明确询问后置摄像头镜片缝隙。",
+    }
+
+    topics, _mapping, _gaps, _pending = build_topic_review_rows(
+        [source_row],
+        standard_catalog=catalog,
+        use_mimo=False,
+        clustering_mode="rule",
+        use_standard_references=True,
+        transcribe_all_admitted_topics=True,
+    )
+
+    assert topics[0]["标准引用标签"] == "已引用标准知识点"
+    assert "平板更换摄像头镜片" in topics[0]["关联标准项"]
+    assert "外壳辅件缺损如何处理" not in topics[0]["关联标准项"]

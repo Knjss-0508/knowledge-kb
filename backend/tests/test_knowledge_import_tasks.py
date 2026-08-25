@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 from app.models.knowledge import Category, KnowledgeImportTask
 from app.routes.knowledge import (
+    _canonicalize_excel_rows_applicability,
     _import_embedding_batches,
     _import_retry_delay_seconds,
     _lock_import_task_attempt,
@@ -67,6 +68,46 @@ class KnowledgeImportTaskTests(unittest.TestCase):
             expires_at = _task_lease_expiry(now)
 
         self.assertEqual(expires_at, now + timedelta(seconds=420))
+
+    def test_import_rows_use_one_canonical_applicability_snapshot(self):
+        row = self._row(2)
+        row.applicable_brands = ["苹果"]
+
+        _canonicalize_excel_rows_applicability(
+            [row],
+            {
+                "applicable_categories": [
+                    {
+                        "categoryId": 119,
+                        "categoryName": "平板电脑",
+                        "bizType": 0,
+                    },
+                ],
+                "brands_by_category": {
+                    "119": [{"brandId": 10530, "brandName": "苹果"}],
+                },
+                "models": [],
+            },
+        )
+
+        self.assertEqual(row.applicable_categories, ["119"])
+        self.assertEqual(row.applicable_brands, ["10530"])
+
+    @patch("app.routes.knowledge.build_applicability_canonicalizer")
+    def test_import_rows_build_one_index_per_business_type(self, build):
+        build.return_value = SimpleNamespace(
+            canonicalize=lambda **_kwargs: {
+                "categories": ["119"],
+                "brands": ["10530"],
+                "models": [],
+            },
+        )
+        rows = [self._row(2), self._row(3)]
+        cache = {"updated_at": "fixed-snapshot"}
+
+        _canonicalize_excel_rows_applicability(rows, cache)
+
+        build.assert_called_once_with(cache, "self_operated")
 
     @staticmethod
     def _row(row_number, *, source_status="生效中", valid=True):

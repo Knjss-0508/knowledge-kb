@@ -32,6 +32,7 @@ from app.models.knowledge import (
 )
 from app.models.user import User
 from app.routes.auth import require_permission
+from app.routes.manhattan import _read_cache as _read_manhattan_cache
 from app.schemas.embedding_admin import (
     EmbeddingLabSearchRequest,
     EmbeddingModelDecision,
@@ -47,6 +48,11 @@ from app.schemas.embedding_admin import (
     EmbeddingTrainingSampleUpdate,
     RetrievalQualityReview,
 )
+from app.services.applicability import (
+    filter_applicable_rows,
+    resolve_applicability_scope,
+    scope_keys,
+)
 from app.services.embedding import EmbeddingServiceUnavailable, embed_texts
 from app.services.embedding_admin import (
     activate_runtime_config,
@@ -54,6 +60,7 @@ from app.services.embedding_admin import (
     import_deduplication_samples,
     import_retrieval_samples,
     next_runtime_config_version,
+    sync_retrieval_training_sample,
 )
 from app.services.embedding_runtime import (
     default_embedding_runtime_config,
@@ -73,6 +80,8 @@ _RUNTIME_CONFIG_SCOPE_KEYS = {
     },
     "retrieval_thresholds": {
         "retrieval_score_threshold",
+        "retrieval_headquarters_standard_top_k",
+        "retrieval_business_accumulation_top_k",
     },
 }
 
@@ -96,7 +105,8 @@ def _merge_scoped_runtime_config(
         return EmbeddingRuntimeConfigValues(**requested_values).model_dump()
     merged = dict(active_values)
     for key in _RUNTIME_CONFIG_SCOPE_KEYS[scope]:
-        merged[key] = requested_values[key]
+        if key in requested_values:
+            merged[key] = requested_values[key]
     return EmbeddingRuntimeConfigValues(**merged).model_dump()
 
 
@@ -370,7 +380,8 @@ def get_embedding_overview(
     _: User = Depends(require_permission("embedding:manage")),
 ):
     published_query = db.query(Knowledge.id).filter(
-        Knowledge.status == KnowledgeStatus.PUBLISHED
+        Knowledge.status == KnowledgeStatus.PUBLISHED,
+        Knowledge.knowledge_origin != "model_configuration",
     )
     published_total = published_query.count()
     dedup_covered = (
@@ -378,6 +389,7 @@ def get_embedding_overview(
         .join(Knowledge, Knowledge.id == KnowledgeEmbedding.knowledge_id)
         .filter(
             Knowledge.status == KnowledgeStatus.PUBLISHED,
+            Knowledge.knowledge_origin != "model_configuration",
             KnowledgeEmbedding.embedding_model == settings.EMBEDDING_MODEL,
             KnowledgeEmbedding.embedding_vector.is_not(None),
         )
@@ -389,6 +401,7 @@ def get_embedding_overview(
         .join(Knowledge, Knowledge.id == KnowledgeSearchEmbedding.knowledge_id)
         .filter(
             Knowledge.status == KnowledgeStatus.PUBLISHED,
+            Knowledge.knowledge_origin != "model_configuration",
             KnowledgeSearchEmbedding.embedding_model == settings.EMBEDDING_MODEL,
             KnowledgeSearchEmbedding.embedding_vector.is_not(None),
         )
@@ -499,7 +512,7 @@ def create_embedding_config(
     config_scope = _runtime_config_scope(body.evaluation_metrics)
     config_values = _merge_scoped_runtime_config(
         active_values,
-        body.config.model_dump(),
+        body.config.model_dump(exclude_unset=bool(config_scope)),
         config_scope,
     )
     record = EmbeddingRuntimeConfig(
@@ -570,19 +583,101 @@ def activate_embedding_config(
     return _config_payload(record)
 
 
+def _embedding_lab_match_reason(embedding_kind: str) -> str:
+    if embedding_kind == "subtitle":
+        return "命中副标题"
+    if embedding_kind == "content":
+        return "命中正文"
+    if embedding_kind == "title":
+        return "命中标题"
+    return "命中知识内容"
+
+
+def _embedding_lab_scope_ids(
+    db: Session,
+    body: EmbeddingLabSearchRequest,
+    knowledge_filters: list[Any],
+) -> list[str]:
+    applicability_scope = {
+        "categories": scope_keys(
+            [body.applicable_category_id],
+            "category",
+        ),
+        "brands": scope_keys(
+            [body.applicable_brand_id],
+            "brand",
+        ),
+        "models": scope_keys(
+            [body.applicable_model_id],
+            "model",
+        ),
+    }
+    try:
+        manhattan_cache = _read_manhattan_cache()
+    except (OSError, ValueError):
+        manhattan_cache = {}
+    for business_type in ("self_operated", "aggregated"):
+        resolved_scope = resolve_applicability_scope(
+            manhattan_cache,
+            business_type,
+            category_values=[body.applicable_category_id],
+            brand_values=[body.applicable_brand_id],
+            model_values=[body.applicable_model_id],
+        )
+        for layer in ("categories", "brands", "models"):
+            applicability_scope[layer].update(resolved_scope[layer])
+    scope_rows = (
+        db.query(
+            Knowledge.id.label("knowledge_id"),
+            Knowledge.applicable_categories,
+            Knowledge.applicable_brands,
+            Knowledge.applicable_models,
+        )
+        .filter(*knowledge_filters)
+        .all()
+    )
+    return [
+        row.knowledge_id
+        for row in filter_applicable_rows(
+            scope_rows,
+            category_keys=applicability_scope["categories"],
+            brand_keys=applicability_scope["brands"],
+            model_keys=applicability_scope["models"],
+        )
+    ]
+
+
 @router.post("/lab/search")
 def embedding_lab_search(
     body: EmbeddingLabSearchRequest,
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("embedding:manage")),
 ):
+    knowledge_filters = [
+        Knowledge.status == KnowledgeStatus.PUBLISHED,
+        Knowledge.knowledge_origin != "model_configuration",
+    ]
+
+    allowed_knowledge_ids = _embedding_lab_scope_ids(
+        db,
+        body,
+        knowledge_filters,
+    )
+    if allowed_knowledge_ids == []:
+        return {
+            "query": body.query,
+            "model": settings.EMBEDDING_MODEL,
+            "top_k": body.top_k,
+            "results": [],
+        }
+
     try:
         query_vector = embed_texts([body.query.strip()])[0]
     except EmbeddingServiceUnavailable as exc:
         raise HTTPException(503, "Embedding 服务不可用，无法运行召回实验") from exc
 
     distance = KnowledgeSearchEmbedding.embedding_vector.cosine_distance(query_vector)
-    query = (
+    candidate_query = (
         db.query(
             Knowledge,
             KnowledgeSearchEmbedding,
@@ -593,18 +688,40 @@ def embedding_lab_search(
             KnowledgeSearchEmbedding.knowledge_id == Knowledge.id,
         )
         .filter(
-            Knowledge.status == KnowledgeStatus.PUBLISHED,
+            *knowledge_filters,
             KnowledgeSearchEmbedding.embedding_model == settings.EMBEDDING_MODEL,
             KnowledgeSearchEmbedding.embedding_vector.is_not(None),
         )
     )
-    if body.knowledge_origin:
-        query = query.filter(Knowledge.knowledge_origin == body.knowledge_origin)
-    if body.business_type:
-        query = query.filter(Knowledge.business_type == body.business_type)
-    if body.category_id:
-        query = query.filter(Knowledge.category_id == body.category_id)
-    rows = query.order_by(distance).limit(body.top_k).all()
+    candidate_query = candidate_query.filter(
+        Knowledge.id.in_(allowed_knowledge_ids)
+    )
+
+    candidate_limit = max(body.top_k * 12, 50)
+    best_rows: dict[
+        str,
+        tuple[Knowledge, KnowledgeSearchEmbedding, float],
+    ] = {}
+    while True:
+        rows = (
+            candidate_query.order_by(
+                distance.asc(),
+                Knowledge.id.asc(),
+                KnowledgeSearchEmbedding.embedding_kind.asc(),
+                KnowledgeSearchEmbedding.chunk_index.asc(),
+                KnowledgeSearchEmbedding.id.asc(),
+            )
+            .limit(candidate_limit)
+            .all()
+        )
+        for item, embedding, distance_value in rows:
+            if item.id not in best_rows:
+                best_rows[item.id] = (item, embedding, distance_value)
+        if len(best_rows) >= body.top_k or len(rows) < candidate_limit:
+            break
+        candidate_limit *= 2
+    ranked_rows = list(best_rows.values())[: body.top_k]
+
     return {
         "query": body.query,
         "model": settings.EMBEDDING_MODEL,
@@ -620,9 +737,15 @@ def embedding_lab_search(
                 "embedding_kind": embedding.embedding_kind,
                 "chunk_index": embedding.chunk_index,
                 "source_text": embedding.source_text,
+                "match_reason": _embedding_lab_match_reason(
+                    embedding.embedding_kind
+                ),
                 "score": round(max(0.0, 1.0 - float(distance_value)), 6),
             }
-            for index, (item, embedding, distance_value) in enumerate(rows, start=1)
+            for index, (item, embedding, distance_value) in enumerate(
+                ranked_rows,
+                start=1,
+            )
         ],
     }
 
@@ -694,6 +817,7 @@ def update_training_sample(
     sample = (
         db.query(EmbeddingTrainingSample)
         .filter(EmbeddingTrainingSample.id == sample_id)
+        .with_for_update()
         .first()
     )
     if not sample:
@@ -748,21 +872,53 @@ def review_retrieval_event(
     event = (
         db.query(RetrievalQualityEvent)
         .filter(RetrievalQualityEvent.id == event_id)
+        .with_for_update()
         .first()
     )
     if not event:
         raise HTTPException(404, "召回事件不存在")
+    expected = None
     if body.expected_knowledge_id:
         expected = (
             db.query(Knowledge)
             .filter(
                 Knowledge.id == body.expected_knowledge_id,
                 Knowledge.status == KnowledgeStatus.PUBLISHED,
+                Knowledge.knowledge_origin != "model_configuration",
             )
             .first()
         )
         if not expected:
             raise HTTPException(422, "指定的正确知识不存在或尚未发布")
+    existing_sample = (
+        db.query(EmbeddingTrainingSample)
+        .filter(
+            EmbeddingTrainingSample.source_type == "retrieval_event",
+            EmbeddingTrainingSample.source_id == event.id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if existing_sample and existing_sample.status == "verified":
+        sample_expected_id = str(
+            (existing_sample.sample_metadata or {}).get(
+                "expected_knowledge_id",
+                "",
+            )
+        ).strip()
+        remains_eligible = (
+            body.review_status == "confirmed"
+            and body.training_eligible
+            and bool(body.expected_knowledge_id)
+        )
+        if (
+            not remains_eligible
+            or sample_expected_id != body.expected_knowledge_id
+        ):
+            raise HTTPException(
+                409,
+                "该事件的训练样本已确认，请先在纠错样本池排除后再修改标注",
+            )
     event.review_status = body.review_status
     event.expected_knowledge_id = body.expected_knowledge_id
     event.feedback_type = body.feedback_type
@@ -777,12 +933,21 @@ def review_retrieval_event(
         "reviewed_at": event.reviewed_at.isoformat(),
     }
     event.event_metadata = metadata
+    sample, sample_action = sync_retrieval_training_sample(
+        db,
+        event,
+        created_by=current_user.username,
+        expected=expected,
+    )
     db.commit()
     return {
         "status": "recorded",
         "event_id": event.id,
         "review_status": event.review_status,
         "training_eligible": event.training_eligible,
+        "training_sample_id": sample.id if sample else None,
+        "training_sample_status": sample.status if sample else None,
+        "training_sample_action": sample_action,
     }
 
 

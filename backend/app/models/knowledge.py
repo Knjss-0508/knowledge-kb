@@ -3,7 +3,8 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, String, Text, Enum, Float, Integer, DateTime,
-    CheckConstraint, ForeignKey, JSON, LargeBinary, UniqueConstraint,
+    CheckConstraint, ForeignKey, Index, JSON, LargeBinary, UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
@@ -72,12 +73,27 @@ class Knowledge(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "knowledge_origin IN ('headquarters_standard', 'business_accumulation')",
+            "knowledge_origin IN "
+            "('headquarters_standard', 'business_accumulation', "
+            "'model_configuration')",
             name="ck_knowledge_items_knowledge_origin",
         ),
         CheckConstraint(
             "business_type IN ('self_operated', 'aggregated')",
             name="ck_knowledge_items_business_type",
+        ),
+        Index(
+            "uq_knowledge_items_model_configuration_source_knowledge_key",
+            "source_knowledge_key",
+            unique=True,
+            sqlite_where=text(
+                "knowledge_origin = 'model_configuration' "
+                "AND source_knowledge_key IS NOT NULL"
+            ),
+            postgresql_where=text(
+                "knowledge_origin = 'model_configuration' "
+                "AND source_knowledge_key IS NOT NULL"
+            ),
         ),
     )
 
@@ -256,6 +272,12 @@ class KnowledgeImportTask(Base):
     __tablename__ = "knowledge_import_tasks"
 
     id = Column(String(64), primary_key=True)
+    import_type = Column(
+        String(32),
+        nullable=False,
+        default="knowledge",
+        index=True,
+    )
     created_by = Column(String(128), nullable=False, index=True)
     original_filename = Column(String(256), nullable=False)
     file_size = Column(Integer, nullable=False, default=0)
@@ -269,6 +291,9 @@ class KnowledgeImportTask(Base):
     pending_review = Column(Integer, nullable=False, default=0)
     deprecated = Column(Integer, nullable=False, default=0)
     failed = Column(Integer, nullable=False, default=0)
+    created = Column(Integer, nullable=False, default=0)
+    updated = Column(Integer, nullable=False, default=0)
+    unchanged = Column(Integer, nullable=False, default=0)
     results = Column(JSON, nullable=False, default=list)
     retry_rows = Column(JSON, nullable=False, default=list)
     error_message = Column(Text, nullable=False, default="")
@@ -284,6 +309,11 @@ class KnowledgeImportTask(Base):
         CheckConstraint(
             "status IN ('queued', 'running', 'completed', 'completed_with_errors', 'failed', 'cancelled')",
             name="ck_knowledge_import_task_status",
+        ),
+        CheckConstraint(
+            "import_type IN "
+            "('knowledge', 'knowledge_update', 'model_configuration')",
+            name="ck_knowledge_import_task_import_type",
         ),
     )
 

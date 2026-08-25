@@ -2462,10 +2462,13 @@ def _render_automation() -> None:
         icon=":material/info:",
     )
     st.success(
-        "当前使用无标准引用模式：候选知识只依据第二部分脱敏会话、历史回复和案例图生成。",
+        "当前使用双标准转写模式：聚类只看会话证据；转写时总部标准优先，本地质检标准兜底。",
         icon=":material/check_circle:",
     )
-    st.caption("原标准关联流程已保留在代码中，但本轮运行不会读取、检索或输出质检标准。")
+    st.caption(
+        "总部标准未命中时会读取已配置的本地标准目录；两类标准都未命中时仍生成经验补充候选，"
+        "但必须进入人工价值复核，且不会自动新增 CZ 标准关联。"
+    )
 
     st.markdown("<div class='section-label'>启动一次自动化运行</div>", unsafe_allow_html=True)
     with st.form("automation_run_form"):
@@ -2485,8 +2488,8 @@ def _render_automation() -> None:
             )
         with upload_right:
             st.markdown("**知识生成依据**")
-            st.write("完整会话、历史实际回复、案例图片")
-            st.caption("当前流程不新增标准关联；已有值会保留并单独搁置。")
+            st.write("完整会话、历史实际回复、案例图片、已生效总部/本地标准")
+            st.caption("聚类不读取标准；本地标准候选不自动填写 CZ 关联标准项，已有值会保留。")
 
         config_left, config_middle, config_right = st.columns([1, 1, 1.2], gap="large")
         with config_left:

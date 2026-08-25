@@ -14,7 +14,9 @@ from app.routes.knowledge import (
     _find_source_knowledge,
     approve_knowledge,
     batch_approve_knowledge,
+    deprecate_knowledge,
     list_review_selection,
+    submit_review,
     update_knowledge,
 )
 from app.services.knowledge_excel import IMPORTABLE_SOURCE_STATUS
@@ -423,6 +425,156 @@ class DeduplicationWorkflowTests(unittest.TestCase):
         self.assertEqual(approval_log.after_data, {"status": "published"})
         self.assertEqual(approval_log.created_at, item.updated_at)
         db.commit.assert_called_once_with()
+
+    def test_review_edit_records_field_level_before_and_after_values(self):
+        item = SimpleNamespace(
+            id="A-00031",
+            title="旧知识内容",
+            status=KnowledgeStatus.REVIEW,
+            source="manual",
+            business_type="self_operated",
+            category_id="cat-case-analysis",
+            created_by="editor",
+            applicable_categories=[],
+            updated_by=None,
+            updated_at=None,
+        )
+        query = MagicMock()
+        query.filter.return_value.first.return_value = item
+        db = MagicMock()
+        db.query.return_value = query
+
+        with patch(
+            "app.routes.knowledge._knowledge_snapshot",
+            side_effect=[
+                {"title": "旧知识内容"},
+                {"title": "123456"},
+            ],
+        ), patch(
+            "app.routes.knowledge._require_manual_applicable_category"
+        ), patch(
+            "app.routes.knowledge._validate_business_applicable_categories"
+        ), patch(
+            "app.routes.knowledge.ensure_embedding"
+        ), patch(
+            "app.routes.knowledge.ensure_search_embeddings"
+        ), patch(
+            "app.routes.knowledge._to_response",
+            return_value={"title": "123456"},
+        ):
+            response = update_knowledge(
+                item.id,
+                KnowledgeUpdate(title="123456"),
+                db,
+                SimpleNamespace(
+                    username="editor",
+                    role="super_admin",
+                    permissions=[],
+                ),
+            )
+
+        self.assertEqual(response, {"title": "123456"})
+        change_log = db.add.call_args.args[0]
+        self.assertIsInstance(change_log, KnowledgeChangeLog)
+        self.assertEqual(change_log.changed_by, "editor")
+        self.assertEqual(change_log.changed_fields, ["title"])
+        self.assertEqual(change_log.before_data, {"title": "旧知识内容"})
+        self.assertEqual(change_log.after_data, {"title": "123456"})
+
+    def test_submit_review_records_status_transition(self):
+        item = SimpleNamespace(
+            id="A-00032",
+            title="待提交知识",
+            subtitles=[],
+            content={"blocks": [{"type": "text", "value": "内容"}]},
+            knowledge_origin="business_accumulation",
+            business_type="self_operated",
+            status=KnowledgeStatus.DRAFT,
+            applicable_scenes=[],
+            created_by="editor",
+            updated_by=None,
+            updated_at=None,
+        )
+        query = MagicMock()
+        query.filter.return_value.first.return_value = item
+        db = MagicMock()
+        db.query.return_value = query
+        decision = DedupDecision(
+            action="new",
+            content_hash="new-hash",
+            embedding=None,
+            title_embedding=None,
+            content_embedding=None,
+            matches=[],
+        )
+
+        with patch(
+            "app.routes.knowledge._knowledge_snapshot",
+            side_effect=[
+                {"status": "draft"},
+                {"status": "review"},
+            ],
+        ), patch(
+            "app.routes.knowledge._check_manual_deduplication",
+            return_value=decision,
+        ), patch(
+            "app.routes.knowledge.ensure_search_embeddings"
+        ), patch(
+            "app.routes.knowledge._to_response",
+            return_value={"status": "review"},
+        ):
+            response = submit_review(
+                item.id,
+                False,
+                db,
+                SimpleNamespace(
+                    username="editor",
+                    role="super_admin",
+                ),
+            )
+
+        self.assertEqual(response, {"status": "review"})
+        self.assertEqual(item.updated_by, "editor")
+        change_log = db.add.call_args.args[0]
+        self.assertEqual(change_log.changed_fields, ["status"])
+        self.assertEqual(change_log.before_data, {"status": "draft"})
+        self.assertEqual(change_log.after_data, {"status": "review"})
+
+    def test_deprecate_records_operator_and_status_transition(self):
+        item = SimpleNamespace(
+            id="A-00033",
+            status=KnowledgeStatus.PUBLISHED,
+            updated_by=None,
+            updated_at=None,
+        )
+        query = MagicMock()
+        query.filter.return_value.first.return_value = item
+        db = MagicMock()
+        db.query.return_value = query
+
+        with patch(
+            "app.routes.knowledge._knowledge_snapshot",
+            side_effect=[
+                {"status": "published"},
+                {"status": "deprecated"},
+            ],
+        ), patch(
+            "app.routes.knowledge._to_response",
+            return_value={"status": "deprecated"},
+        ):
+            response = deprecate_knowledge(
+                item.id,
+                db,
+                SimpleNamespace(username="operator"),
+            )
+
+        self.assertEqual(response, {"status": "deprecated"})
+        self.assertEqual(item.updated_by, "operator")
+        change_log = db.add.call_args.args[0]
+        self.assertEqual(change_log.changed_by, "operator")
+        self.assertEqual(change_log.changed_fields, ["status"])
+        self.assertEqual(change_log.before_data, {"status": "published"})
+        self.assertEqual(change_log.after_data, {"status": "deprecated"})
 
     def test_approve_requires_reasoned_deduplication_confirmation(self):
         item = SimpleNamespace(

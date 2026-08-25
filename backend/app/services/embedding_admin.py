@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import exists, func
 from sqlalchemy.orm import Session
 
 from app.models.embedding_admin import (
@@ -17,9 +17,9 @@ from app.models.integration import RetrievalQualityEvent
 from app.models.knowledge import (
     Knowledge,
     KnowledgeDeduplicationFeedback,
+    KnowledgeStatus,
 )
 from app.services.knowledge_dedup import _content_to_text, build_embedding_text
-from app.services.retrieval_quality import latest_retrieval_quality_event_ids
 
 
 def next_runtime_config_version(db: Session) -> int:
@@ -106,58 +106,144 @@ def _create_source_sample(
     return True
 
 
+def sync_retrieval_training_sample(
+    db: Session,
+    event: RetrievalQualityEvent,
+    *,
+    created_by: str,
+    expected: Knowledge | None = None,
+) -> tuple[EmbeddingTrainingSample | None, str]:
+    """Keep one candidate sample in sync with an explicitly reviewed event."""
+    eligible = (
+        event.review_status == "confirmed"
+        and bool(event.training_eligible)
+        and bool(str(event.expected_knowledge_id or "").strip())
+    )
+    if not eligible:
+        existing = (
+            db.query(EmbeddingTrainingSample)
+            .filter(
+                EmbeddingTrainingSample.source_type == "retrieval_event",
+                EmbeddingTrainingSample.source_id == event.id,
+            )
+            .first()
+        )
+        if existing and existing.status == "candidate":
+            existing.status = "excluded"
+            existing.reviewed_by = created_by
+            existing.reviewed_at = datetime.utcnow()
+            db.flush()
+            return existing, "excluded"
+        return existing, "unchanged"
+
+    if expected is None:
+        expected = (
+            db.query(Knowledge)
+            .filter(
+                Knowledge.id == event.expected_knowledge_id,
+                Knowledge.status == KnowledgeStatus.PUBLISHED,
+            )
+            .first()
+        )
+    if (
+        not expected
+        or expected.knowledge_origin == "model_configuration"
+    ):
+        return None, "skipped"
+
+    existing = (
+        db.query(EmbeddingTrainingSample)
+        .filter(
+            EmbeddingTrainingSample.source_type == "retrieval_event",
+            EmbeddingTrainingSample.source_id == event.id,
+        )
+        .first()
+    )
+    negatives: list[str] = []
+    negative_ids: set[str] = set()
+    for candidate in event.candidate_snapshot or []:
+        if not isinstance(candidate, dict):
+            continue
+        knowledge_id = str(candidate.get("knowledge_id") or "").strip()
+        if (
+            not knowledge_id
+            or knowledge_id == expected.id
+            or knowledge_id in negative_ids
+        ):
+            continue
+        item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
+        if (
+            item
+            and item.knowledge_origin != "model_configuration"
+        ):
+            negatives.append(knowledge_training_text(item))
+            negative_ids.add(knowledge_id)
+
+    values = {
+        "task_type": "retrieval",
+        "query_text": event.query_text.strip(),
+        "positive_text": knowledge_training_text(expected).strip(),
+        "negative_texts": negatives,
+        "reason": (event.failure_reason or "人工确认的召回反馈").strip(),
+        "sample_metadata": {
+            "expected_knowledge_id": expected.id,
+            "selected_knowledge_id": event.selected_knowledge_id,
+            "selection_status": event.selection_status,
+            "threshold_status": event.threshold_status,
+            "embedding_model": event.embedding_model,
+            "conversation_id": event.conversation_id,
+            "request_id": event.request_id,
+            "source_kind": event.source_kind,
+        },
+    }
+    if existing:
+        if existing.status == "verified":
+            return existing, "unchanged"
+        for key, value in values.items():
+            setattr(existing, key, value)
+        existing.status = "candidate"
+        existing.reviewed_by = None
+        existing.reviewed_at = None
+        db.flush()
+        return existing, "updated"
+
+    sample = EmbeddingTrainingSample(
+        id=f"ets-{uuid.uuid4().hex[:16]}",
+        source_type="retrieval_event",
+        source_id=event.id,
+        status="candidate",
+        created_by=created_by,
+        **values,
+    )
+    db.add(sample)
+    db.flush()
+    return sample, "created"
+
+
 def import_retrieval_samples(db: Session, *, created_by: str) -> int:
     imported = 0
     events = (
         db.query(RetrievalQualityEvent)
         .filter(
-            RetrievalQualityEvent.id.in_(latest_retrieval_quality_event_ids()),
             RetrievalQualityEvent.review_status == "confirmed",
             RetrievalQualityEvent.training_eligible.is_(True),
             RetrievalQualityEvent.expected_knowledge_id.is_not(None),
+            ~exists().where(
+                EmbeddingTrainingSample.source_type == "retrieval_event",
+                EmbeddingTrainingSample.source_id == RetrievalQualityEvent.id,
+            ),
         )
         .order_by(RetrievalQualityEvent.created_at)
+        .with_for_update(skip_locked=True)
         .all()
     )
     for event in events:
-        expected = (
-            db.query(Knowledge)
-            .filter(Knowledge.id == event.expected_knowledge_id)
-            .first()
-        )
-        if not expected:
-            continue
-        negatives: list[str] = []
-        for candidate in event.candidate_snapshot or []:
-            if not isinstance(candidate, dict):
-                continue
-            knowledge_id = str(candidate.get("knowledge_id") or "").strip()
-            if not knowledge_id or knowledge_id == expected.id:
-                continue
-            item = db.query(Knowledge).filter(Knowledge.id == knowledge_id).first()
-            if item:
-                negatives.append(knowledge_training_text(item))
-        if _create_source_sample(
+        _, action = sync_retrieval_training_sample(
             db,
-            task_type="retrieval",
-            query_text=event.query_text,
-            positive_text=knowledge_training_text(expected),
-            negative_texts=negatives,
-            source_type="retrieval_event",
-            source_id=event.id,
-            reason=event.failure_reason or "人工确认的召回反馈",
-            metadata={
-                "expected_knowledge_id": expected.id,
-                "selected_knowledge_id": event.selected_knowledge_id,
-                "selection_status": event.selection_status,
-                "threshold_status": event.threshold_status,
-                "embedding_model": event.embedding_model,
-                "conversation_id": event.conversation_id,
-                "request_id": event.request_id,
-                "source_kind": event.source_kind,
-            },
+            event,
             created_by=created_by,
-        ):
+        )
+        if action == "created":
             imported += 1
     db.commit()
     return imported
@@ -178,7 +264,12 @@ def import_deduplication_samples(db: Session, *, created_by: str) -> int:
             .filter(Knowledge.id == feedback.matched_knowledge_id)
             .first()
         )
-        if not item or not matched:
+        if (
+            not item
+            or not matched
+            or item.knowledge_origin == "model_configuration"
+            or matched.knowledge_origin == "model_configuration"
+        ):
             continue
         query_text = item.title.strip()
         positive_text = _content_to_text(item.content)

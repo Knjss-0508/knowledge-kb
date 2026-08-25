@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unicodedata
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -122,14 +123,27 @@ def _business_type_for_category(category: dict[str, Any]) -> str | None:
 
 
 def _cache_group(cache: dict[str, Any], business_type: str) -> dict[str, Any]:
-    stored = (cache.get("options_by_business_type") or {}).get(business_type) or {}
+    grouped_options = cache.get("options_by_business_type")
+    if isinstance(grouped_options, dict) and business_type in grouped_options:
+        stored = grouped_options.get(business_type)
+        stored = stored if isinstance(stored, dict) else {}
+        return {
+            "applicable_categories": list(
+                stored.get("applicable_categories") or []
+            ),
+            "brands_by_category": dict(
+                stored.get("brands_by_category") or {}
+            ),
+            "models": list(stored.get("models") or []),
+        }
+
     raw_categories = [
         category
         for category in cache.get("applicable_categories") or []
         if isinstance(category, dict)
         and _business_type_for_category(category) in {None, business_type}
     ]
-    categories = list(stored.get("applicable_categories") or raw_categories)
+    categories = list(raw_categories)
     category_ids = {
         value
         for category in categories
@@ -144,12 +158,12 @@ def _cache_group(cache: dict[str, Any], business_type: str) -> dict[str, Any]:
     }
 
     raw_brands_by_category = cache.get("brands_by_category") or {}
-    brands_by_category = stored.get("brands_by_category") or {
+    brands_by_category = {
         category_id: brands
         for category_id, brands in raw_brands_by_category.items()
         if not category_ids or normalize_scope_key(category_id) in category_ids
     }
-    models = list(stored.get("models") or cache.get("models") or [])
+    models = list(cache.get("models") or [])
     return {
         "applicable_categories": categories,
         "brands_by_category": brands_by_category,
@@ -185,6 +199,224 @@ def _identifier_keys(option: dict[str, Any], kind: str) -> set[str]:
             option.get("id"),
         ],
         kind,
+    )
+
+
+def _option_identifier(option: dict[str, Any], kind: str) -> str:
+    prefix = {
+        "category": "category",
+        "brand": "brand",
+        "model": "model",
+    }[kind]
+    for key in (f"{prefix}Id", f"{prefix}_id", "id", "code", "value"):
+        value = option.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _scope_value_text(value: Any, kind: str) -> str:
+    if isinstance(value, dict):
+        for key in _FIELD_KEYS[kind]:
+            nested = value.get(key)
+            if nested not in (None, ""):
+                return str(nested).strip()
+        return ""
+    return "" if value is None else str(value).strip()
+
+
+@dataclass(frozen=True)
+class _CanonicalOption:
+    identifier: str
+    category_ids: frozenset[str] = frozenset()
+    brand_ids: frozenset[str] = frozenset()
+
+
+def _parent_identifiers(option: dict[str, Any], keys: tuple[str, ...]) -> set[str]:
+    return {
+        str(option.get(key)).strip()
+        for key in keys
+        if option.get(key) not in (None, "")
+    }
+
+
+def _index_option(
+    index: dict[str, list[_CanonicalOption]],
+    option: dict[str, Any],
+    kind: str,
+    *,
+    category_ids: set[str] | None = None,
+    brand_ids: set[str] | None = None,
+) -> None:
+    identifier = _option_identifier(option, kind)
+    if not identifier:
+        return
+    candidate = _CanonicalOption(
+        identifier=identifier,
+        category_ids=frozenset(category_ids or ()),
+        brand_ids=frozenset(brand_ids or ()),
+    )
+    for key in scope_keys(option, kind):
+        index.setdefault(key, []).append(candidate)
+
+
+def _canonicalize_indexed_values(
+    values: Any,
+    index: dict[str, list[_CanonicalOption]],
+    kind: str,
+    *,
+    category_ids: set[str] | None = None,
+    brand_ids: set[str] | None = None,
+) -> tuple[list[str], set[str]]:
+    canonical: list[str] = []
+    seen: set[str] = set()
+    matched_identifiers: set[str] = set()
+    for value in _iter_values(values):
+        raw_value = _scope_value_text(value, kind)
+        if not raw_value:
+            continue
+        requested_key = normalize_scope_key(raw_value)
+        identifiers = {
+            candidate.identifier
+            for candidate in index.get(requested_key, ())
+            if (
+                not category_ids
+                or not candidate.category_ids
+                or not candidate.category_ids.isdisjoint(category_ids)
+            )
+            if (
+                not brand_ids
+                or not candidate.brand_ids
+                or not candidate.brand_ids.isdisjoint(brand_ids)
+            )
+        }
+        if len(identifiers) == 1:
+            resolved_value = next(iter(identifiers))
+            matched_identifiers.add(resolved_value)
+        else:
+            resolved_value = raw_value
+        if resolved_value in seen:
+            continue
+        seen.add(resolved_value)
+        canonical.append(resolved_value)
+    return canonical, matched_identifiers
+
+
+class ApplicabilityCanonicalizer:
+    """按业务缓存预建索引，供批量导入逐行复用。"""
+
+    def __init__(self, cache: dict[str, Any], business_type: str):
+        group = _cache_group(cache, business_type)
+        self._category_index: dict[str, list[_CanonicalOption]] = {}
+        self._brand_index: dict[str, list[_CanonicalOption]] = {}
+        self._model_index: dict[str, list[_CanonicalOption]] = {}
+
+        for category in group["applicable_categories"]:
+            if isinstance(category, dict):
+                _index_option(
+                    self._category_index,
+                    category,
+                    "category",
+                )
+
+        for category_id, brands in (group["brands_by_category"] or {}).items():
+            group_category_ids = {str(category_id).strip()}
+            for brand in brands or []:
+                if not isinstance(brand, dict):
+                    continue
+                category_ids = group_category_ids | _parent_identifiers(
+                    brand,
+                    ("categoryId", "category_id"),
+                )
+                _index_option(
+                    self._brand_index,
+                    brand,
+                    "brand",
+                    category_ids=category_ids,
+                )
+
+        for model in group["models"]:
+            if not isinstance(model, dict):
+                continue
+            _index_option(
+                self._model_index,
+                model,
+                "model",
+                category_ids=_parent_identifiers(
+                    model,
+                    ("categoryId", "category_id"),
+                ),
+                brand_ids=_parent_identifiers(
+                    model,
+                    ("brandId", "brand_id"),
+                ),
+            )
+
+    def canonicalize(
+        self,
+        *,
+        category_values: Any = None,
+        brand_values: Any = None,
+        model_values: Any = None,
+    ) -> dict[str, list[str]]:
+        categories, category_ids = _canonicalize_indexed_values(
+            category_values,
+            self._category_index,
+            "category",
+        )
+        requested_category_keys = scope_keys(category_values, "category")
+        requested_brand_keys = scope_keys(brand_values, "brand")
+
+        can_resolve_brands = not requested_category_keys or bool(category_ids)
+        brands, brand_ids = _canonicalize_indexed_values(
+            brand_values,
+            self._brand_index if can_resolve_brands else {},
+            "brand",
+            category_ids=category_ids,
+        )
+
+        can_resolve_models = (
+            can_resolve_brands
+            and (not requested_brand_keys or bool(brand_ids))
+        )
+        models, _ = _canonicalize_indexed_values(
+            model_values,
+            self._model_index if can_resolve_models else {},
+            "model",
+            category_ids=category_ids,
+            brand_ids=brand_ids,
+        )
+
+        return {
+            "categories": categories,
+            "brands": brands,
+            "models": models,
+        }
+
+
+def build_applicability_canonicalizer(
+    cache: dict[str, Any],
+    business_type: str,
+) -> ApplicabilityCanonicalizer:
+    return ApplicabilityCanonicalizer(cache, business_type)
+
+
+def canonicalize_applicability_values(
+    cache: dict[str, Any],
+    business_type: str,
+    *,
+    category_values: Any = None,
+    brand_values: Any = None,
+    model_values: Any = None,
+) -> dict[str, list[str]]:
+    """将唯一可识别的名称规范成 Manhattan ID，未知或歧义值原样保留。"""
+    return build_applicability_canonicalizer(
+        cache,
+        business_type,
+    ).canonicalize(
+        category_values=category_values,
+        brand_values=brand_values,
+        model_values=model_values,
     )
 
 
