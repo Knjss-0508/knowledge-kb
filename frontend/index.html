@@ -279,7 +279,8 @@
       <div class="nav-item" :class="{on:view==='overview'}" @click="openOverview"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg></span>运营总览</div>
       <div class="nav-item" :class="{on:view==='knowledge'}" @click="openKnowledge()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"></path><path d="M4 5.5v16"></path><path d="M8 7h8M8 11h8"></path></svg></span>知识库管理</div>
       <div class="nav-item" v-if="can('knowledge:submit')" :class="{on:view==='candidateReviews'}" @click="openCandidateReviews"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4h10a2 2 0 0 1 2 2v14H5V6a2 2 0 0 1 2-2z"></path><path d="M9 4V2h6v2M8 9h8M8 13h5"></path><path d="m14.5 16 1.5 1.5 3-3"></path></svg></span>候选价值复核</div>
-      <div class="nav-item" :class="{on:view==='embeddingModel'}" @click="openEmbeddingModel()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4.5a3 3 0 0 1 5.2-2A3.5 3.5 0 0 1 18 5.8a3.2 3.2 0 0 1 1.2 5.9A3.5 3.5 0 0 1 17 18a3 3 0 0 1-5 2.2A3 3 0 0 1 7 18a3.5 3.5 0 0 1-2.2-6.3A3.2 3.2 0 0 1 6 5.8 3.5 3.5 0 0 1 8 4.5z"></path><path d="M12 4v16M8.5 8.5c1.5.3 2.5 1.2 3.5 2.5M15.5 8.5c-1.5.3-2.5 1.2-3.5 2.5M8.5 15.5c1.5-.3 2.5-1.2 3.5-2.5M15.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5"></path></svg></span>向量模型</div>
+      <div class="nav-item" v-if="can('knowledge:submit')" :class="{on:view==='answerHub'}" @click="openAnswerHub"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4h14v5H5zM5 15h14v5H5z"></path><path d="M8 7h.01M8 18h.01M12 7h4M12 18h4"></path></svg></span>Answer Hub 自动化</div>
+      <div class="nav-item" :class="{on:view==='embeddingModel'}" @click="openEmbeddingModel()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4.5a3 3 0 0 1 5.2-2A3.5 3.5 0 0 1 18 5.8a3.2 3.2 0 0 1 1.2 5.9A3.5 3.5 0 0 1 17 18a3 3 0 0 1-5 2.2A3 3 0 0 1 7 18a3.5 3.5 0 0 1-2.2-6.3A3.2 3.2 0 0 1 6 5.8 3.5 3.5 0 0 1 8 4.5z"></path><path d="M12 4v16M8.5 8.5c1.5.3 2.5 1.2 3.5 2.5M15.5 8.5c-1.5.3-2.5 1.2-3.5 2.5M8.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5M15.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5"></path></svg></span>向量模型</div>
       <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='users'}" @click="openUsers"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c.8-3.2 3.1-5 7-5s6.2 1.8 7 5"></path><path d="M19 8v4M21 10h-4"></path></svg></span>账号管理</div>
     </div>
     <div class="side-foot">
@@ -643,6 +644,46 @@
         </tbody>
       </table>
     </div>
+  </div>
+  <div class="mn" v-if="view==='answerHub' && can('knowledge:submit')">
+    <section class="overview">
+      <div><h2>Answer Hub 自动化运行治理台</h2><p>查看拉取、队列处理、候选同步和异常。结果只进入候选价值复核，不会自动送审、终审或发布。</p></div>
+      <div class="overview-status">页面更新时间：<b>{{answerHub.updatedAt}}</b></div>
+    </section>
+    <div class="bar review-toolbar">
+      <span class="tt">服务状态</span><span class="tg" :class="answerHubServiceClass(answerHub.overview.service.status)">{{answerHub.overview.service.label}}</span>
+      <span class="hint">{{answerHub.overview.control.running?'当前已有任务正在运行，已阻止重复启动。':'当前没有运行中的人工触发任务。'}}</span>
+      <button class="btn bd" @click="loadAnswerHub" :disabled="answerHub.loading">{{answerHub.loading?'加载中...':'刷新'}}</button>
+      <button v-if="isSuperAdmin()" class="btn bp" @click="startAnswerHubRun" :disabled="answerHub.updating||answerHub.overview.control.running||!answerHub.overview.control.enabled">{{answerHub.overview.control.running?'运行中...':'立即拉取并处理'}}</button>
+    </div>
+    <div class="cards review-metric-cards">
+      <div class="card"><div class="lb">队列任务</div><div class="vl bl">{{answerHub.overview.metrics.queue_tasks}}</div><div class="metric-note">最近 100 条可追踪任务</div></div>
+      <div class="card"><div class="lb">正在处理</div><div class="vl og">{{answerHub.overview.metrics.processing}}</div><div class="metric-note">排队或运行中的任务</div></div>
+      <div class="card"><div class="lb">处理失败</div><div class="vl" style="color:#c83827!important">{{answerHub.overview.metrics.failed}}</div><div class="metric-note">可由管理员重试</div></div>
+      <div class="card"><div class="lb">等待人工复核</div><div class="vl gn">{{answerHub.overview.metrics.waiting_review}}</div><div class="metric-note">已同步到候选价值复核</div></div>
+      <div class="card"><div class="lb">疑似卡住</div><div class="vl" style="color:#765be6!important">{{answerHub.overview.metrics.stalled}}</div><div class="metric-note">超过阈值未更新</div></div>
+      <div class="card"><div class="lb">最近拉取记录</div><div class="vl bl">{{answerHub.overview.metrics.recent_pull_records}}</div><div class="metric-note">最近一次运行已拉取</div></div>
+      <div class="card"><div class="lb">最近入队记录</div><div class="vl gn">{{answerHub.overview.metrics.recent_queued_records}}</div><div class="metric-note">最近一次运行新增任务</div></div>
+      <div class="card"><div class="lb">最近隔离记录</div><div class="vl og">{{answerHub.overview.metrics.recent_quarantined_records}}</div><div class="metric-note">字段或产品类型异常</div></div>
+    </div>
+    <section class="review-panel" v-if="isSuperAdmin()">
+      <div class="dashboard-section-head"><div><h3>管理员控制</h3><p>开关只影响新拉取、新任务和失败重试；不会强制中断正在运行的批次。</p></div></div>
+      <div class="bar" style="margin:0">
+        <label class="review-check-label"><input type="checkbox" v-model="answerHub.overview.control.enabled" :disabled="answerHub.updating" @change="saveAnswerHubControl"> 自动化总开关</label>
+        <label class="review-check-label"><input type="checkbox" v-model="answerHub.overview.control.schedule_enabled" :disabled="answerHub.updating" @change="saveAnswerHubControl"> 每日计划</label>
+        <label class="review-check-label">计划时间 <input class="inp" type="time" v-model="answerHub.overview.control.schedule_time" :disabled="answerHub.updating" @change="saveAnswerHubControl"></label>
+        <span class="hint">固定时区：{{answerHub.overview.control.timezone || 'Asia/Shanghai'}}</span>
+      </div>
+      <div class="integration-hint" v-if="!answerHub.overview.control.enabled">自动化总开关当前关闭。可以查看状态，但不会创建新拉取、手动运行或失败重试。</div>
+    </section>
+    <section class="review-panel" v-if="answerHub.overview.problems.length">
+      <div class="dashboard-section-head"><div><h3>问题中心</h3><p>最近 10 条需处理问题，错误内容已由服务端脱敏。</p></div></div>
+      <div class="tw"><table><thead><tr><th>任务</th><th>阶段</th><th>问题</th><th>处理建议</th></tr></thead><tbody><tr v-for="problem in answerHub.overview.problems" :key="problem.job_id + problem.type"><td>{{problem.job_id || '-'}}</td><td>{{problem.stage || '-'}}</td><td>{{problem.message}}</td><td>{{problem.suggestion}}</td></tr></tbody></table></div>
+    </section>
+    <section class="review-panel">
+      <div class="dashboard-section-head"><div><h3>任务列表</h3><p>默认展示最近 100 条任务；路径、密钥、原始会话和完整日志不会显示在浏览器中。</p></div></div>
+      <div class="tw"><table><thead><tr><th>任务</th><th>来源</th><th>状态</th><th>当前阶段</th><th>输入</th><th>主题候选</th><th>模型失败</th><th>最近更新</th><th>错误摘要</th><th>操作</th></tr></thead><tbody><tr v-if="!answerHub.overview.jobs.length"><td colspan="10" style="text-align:center;color:#86909c;padding:24px">暂无可展示的自动化任务</td></tr><tr v-for="job in answerHub.overview.jobs" :key="job.record_id || job.job_id"><td><b>{{job.job_id || job.record_id}}</b></td><td>{{job.source_label || job.source_name || '-'}}</td><td><span class="tg" :class="answerHubStatusClass(job.health_status)">{{job.health_label || job.status_label || '未知'}}</span></td><td>{{(job.current_stage && (job.current_stage.label || job.current_stage.stage_id)) || '-'}}</td><td>{{answerHubSummaryNumber(job,'source_total_rows','source_rows')}}</td><td>{{answerHubSummaryNumber(job,'topic_rows')}}</td><td>{{answerHubSummaryNumber(job,'model_failed_calls')}}</td><td>{{formatDate(job.updated_at)}}</td><td>{{job.error || '-'}}</td><td><button v-if="isSuperAdmin() && job.health_status==='failed'" class="btn bd bsm" @click="retryAnswerHubJob(job)" :disabled="answerHub.updating||!answerHub.overview.control.enabled">失败重试</button><span v-else>-</span></td></tr></tbody></table></div>
+    </section>
   </div>
   <div class="mn embedding-shell" v-if="view==='embeddingModel'">
     <section class="embedding-hero">
@@ -1536,6 +1577,18 @@ Vue.createApp({
         submitting: false,
         updatedAt: '-'
       },
+      answerHub: {
+        loading: false,
+        updating: false,
+        updatedAt: '-',
+        overview: {
+          service: {status:'unknown', label:'状态未知'},
+          control: {enabled:false, schedule_enabled:false, schedule_time:'02:00', timezone:'Asia/Shanghai', running:false, last_run:{}},
+          metrics: {queue_tasks:0, processing:0, failed:0, waiting_review:0, stalled:0, recent_pull_records:0, recent_queued_records:0, recent_quarantined_records:0},
+          jobs: [],
+          problems: []
+        }
+      },
       changeLogs: {item:null, entries:[]},
       knowledgeReviewSelection: [],
       batchApproving: false,
@@ -1617,6 +1670,7 @@ Vue.createApp({
         overview:'运营总览',
         knowledge:'知识库管理',
         candidateReviews:'候选价值复核',
+        answerHub:'Answer Hub 自动化',
         embeddingModel:'向量模型',
         changeLogs:'变更日志',
         users:'账号管理'
@@ -1627,6 +1681,7 @@ Vue.createApp({
         overview:'知识运营工作台',
         knowledge:'知识内容维护与审核',
         candidateReviews:'候选价值判断与批量送审',
+        answerHub:'运行状态、问题中心与受控操作',
         embeddingModel:'召回分析、上传查重、纠错与离线训练',
         changeLogs:'已发布知识变更追溯',
         users:'创建和查看后台账号'
@@ -2552,6 +2607,85 @@ Vue.createApp({
       if (!this.businessTypes.length) this.loadBusinessTypes();
       this.loadCats();
       this.loadCandidateReviews();
+    },
+    openAnswerHub: function() {
+      if (!this.can('knowledge:submit')) return;
+      this.view = 'answerHub';
+      this.loadAnswerHub();
+    },
+    loadAnswerHub: function() {
+      var self = this;
+      self.answerHub.loading = true;
+      fetch(API + '/answer-hub/overview', {headers:self.authHeaders()})
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(data.detail || '加载自动化运行状态失败');
+            return data;
+          });
+        })
+        .then(function(data) {
+          self.answerHub.overview = Object.assign(self.answerHub.overview, data || {});
+          self.answerHub.overview.service = Object.assign({status:'unknown',label:'状态未知'}, data.service || {});
+          self.answerHub.overview.control = Object.assign({enabled:false,schedule_enabled:false,schedule_time:'02:00',timezone:'Asia/Shanghai',running:false,last_run:{}}, data.control || {});
+          self.answerHub.overview.metrics = Object.assign({queue_tasks:0,processing:0,failed:0,waiting_review:0,stalled:0,recent_pull_records:0,recent_queued_records:0,recent_quarantined_records:0}, data.metrics || {});
+          self.answerHub.overview.jobs = Array.isArray(data.jobs) ? data.jobs : [];
+          self.answerHub.overview.problems = Array.isArray(data.problems) ? data.problems : [];
+          self.answerHub.updatedAt = self.formatDate(new Date());
+        })
+        .catch(function(error) { alert(error.message); })
+        .finally(function() { self.answerHub.loading = false; });
+    },
+    saveAnswerHubControl: function() {
+      var self = this;
+      if (!self.isSuperAdmin()) return;
+      self.answerHub.updating = true;
+      var control = self.answerHub.overview.control;
+      fetch(API + '/answer-hub/control', {
+        method:'PATCH',
+        headers:self.authHeaders({'Content-Type':'application/json'}),
+        body:JSON.stringify({enabled:!!control.enabled,schedule_enabled:!!control.schedule_enabled,schedule_time:control.schedule_time})
+      })
+        .then(function(response) { return response.json().then(function(data) { if (!response.ok) throw new Error(data.detail || '保存自动化控制失败'); return data; }); })
+        .then(function(data) { self.answerHub.overview.control = Object.assign(self.answerHub.overview.control, data || {}); })
+        .catch(function(error) { alert(error.message); self.loadAnswerHub(); })
+        .finally(function() { self.answerHub.updating = false; });
+    },
+    startAnswerHubRun: function() {
+      var self = this;
+      if (!self.isSuperAdmin() || !self.answerHub.overview.control.enabled || self.answerHub.overview.control.running) return;
+      if (!confirm('确认立即拉取并处理？系统只会同步候选到“候选价值复核”，不会自动送审或发布。')) return;
+      self.answerHub.updating = true;
+      fetch(API + '/answer-hub/runs', {method:'POST',headers:self.authHeaders({'Content-Type':'application/json'})})
+        .then(function(response) { return response.json().then(function(data) { if (!response.ok) throw new Error(data.detail || '启动自动化失败'); return data; }); })
+        .then(function() { return self.loadAnswerHub(); })
+        .catch(function(error) { alert(error.message); })
+        .finally(function() { self.answerHub.updating = false; });
+    },
+    retryAnswerHubJob: function(job) {
+      var self = this;
+      var jobId = job && job.job_id;
+      if (!self.isSuperAdmin() || !jobId || !self.answerHub.overview.control.enabled) return;
+      if (!confirm('确认重试该失败任务？原任务与重试记录都会保留。')) return;
+      self.answerHub.updating = true;
+      fetch(API + '/answer-hub/jobs/' + encodeURIComponent(jobId) + '/retry', {method:'POST',headers:self.authHeaders({'Content-Type':'application/json'})})
+        .then(function(response) { return response.json().then(function(data) { if (!response.ok) throw new Error(data.detail || '重试失败'); return data; }); })
+        .then(function() { return self.loadAnswerHub(); })
+        .catch(function(error) { alert(error.message); })
+        .finally(function() { self.answerHub.updating = false; });
+    },
+    answerHubSummaryNumber: function(job) {
+      var summary = (job && job.summary) || {};
+      for (var index = 1; index < arguments.length; index += 1) {
+        var value = Number(summary[arguments[index]] || 0);
+        if (value) return value;
+      }
+      return 0;
+    },
+    answerHubStatusClass: function(status) {
+      return {active:'tg-r',failed:'tg-x',stalled:'tg-x',attention:'tg-l',review_pending:'tg-p',completed:'tg-p',healthy:'tg-p'}[status] || 'tg-d';
+    },
+    answerHubServiceClass: function(status) {
+      return status === 'online' ? 'tg-p' : (status === 'not_configured' ? 'tg-l' : 'tg-x');
     },
     openCandidateReviewStatus: function(status, priorityOnly) {
       if (!this.can('knowledge:submit')) return;

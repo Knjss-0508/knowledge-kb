@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 import base64
+import json
 import socket
 
 
@@ -56,8 +57,32 @@ def _detect_mime(data: bytes, header_type: str) -> str:
     return header_type.split(";", 1)[0].strip().lower()
 
 
-def split_image_urls(value: str) -> list[str]:
-    return [line.strip() for line in str(value or "").splitlines() if line.strip()]
+def split_image_urls(value: Any) -> list[str]:
+    """Normalize line-delimited and JSON-array image link fields."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        urls: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                urls.extend(split_image_urls(item))
+        return urls
+
+    text = str(value).strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            urls: list[str] = []
+            for item in parsed:
+                if isinstance(item, str):
+                    urls.extend(split_image_urls(item))
+            return urls
+    return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 class ImageDownloader:

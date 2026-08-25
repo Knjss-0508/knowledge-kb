@@ -255,15 +255,29 @@ def test_pull_rejects_records_missing_profile_required_fields(
         }
     )
 
-    with pytest.raises(SecondPartPullError, match="缺少必填字段.*产品类型"):
-        pull_second_part_to_queue(
-            profile,
-            queue_root=tmp_path / "queue",
-            output_root=tmp_path / "runs",
-            state_path=tmp_path / "pull-state.json",
-            fetcher=fetcher,
-        )
+    summary = pull_second_part_to_queue(
+        profile,
+        queue_root=tmp_path / "queue",
+        output_root=tmp_path / "runs",
+        state_path=tmp_path / "pull-state.json",
+        fetcher=fetcher,
+    )
 
+    assert summary["status"] == "rejected"
+    assert summary["fetched_records"] == 1
+    assert summary["queued_jobs"] == 0
+    assert summary["rejected_records"] == 1
+    assert len(summary["rejection_reports"]) == 1
+    report = json.loads(
+        Path(summary["rejection_reports"][0]["path"]).read_text(encoding="utf-8")
+    )
+    assert report["rejected_records"] == [
+        {
+            "source_index": 1,
+            "source_record_id": "WO-MISSING-001",
+            "missing_required_fields": ["产品类型"],
+        }
+    ]
     assert not list((tmp_path / "queue" / "pending").glob("*.xlsx"))
 
 

@@ -347,11 +347,20 @@ def _mapping_value(item: Any, source_path: Any) -> Any:
 def _map_records(
     profile: SecondPartPullProfile,
     items: list[Any],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
+    rejected_records: list[dict[str, Any]] = []
     for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
-            raise SecondPartPullError("第二部分接口 items 必须由 JSON 对象组成")
+            rejected_records.append(
+                {
+                    "source_index": index,
+                    "source_record_id": "",
+                    "missing_required_fields": [],
+                    "reason": "第二部分接口 item 不是 JSON 对象",
+                }
+            )
+            continue
         row = {
             _text(target): _normalize_cell(
                 _mapping_value(item, source_path)
@@ -372,15 +381,26 @@ def _map_records(
             if row.get(field) in (None, "")
         ]
         if missing_required_fields:
-            raise SecondPartPullError(
-                "第二部分字段映射后缺少必填字段"
-                f"（第 {index} 条）："
-                + "、".join(missing_required_fields)
+            rejected_records.append(
+                {
+                    "source_index": index,
+                    "source_record_id": _text(row.get("工单ID")),
+                    "missing_required_fields": missing_required_fields,
+                }
             )
+            continue
         if not any(value not in (None, "") for value in row.values()):
-            raise SecondPartPullError("第二部分字段映射后产生了空记录")
+            rejected_records.append(
+                {
+                    "source_index": index,
+                    "source_record_id": "",
+                    "missing_required_fields": [],
+                    "reason": "第二部分字段映射后产生了空记录",
+                }
+            )
+            continue
         rows.append(row)
-    return rows
+    return rows, rejected_records
 
 
 def _workbook_bytes(
@@ -415,6 +435,7 @@ def _batch_key(
     cursor: str,
     next_cursor: str,
     rows: list[dict[str, Any]],
+    rejected_records: list[dict[str, Any]],
 ) -> str:
     payload = json.dumps(
         {
@@ -422,6 +443,11 @@ def _batch_key(
             "cursor": cursor,
             "next_cursor": next_cursor,
             "rows": rows,
+            **(
+                {"rejected_records": rejected_records}
+                if rejected_records
+                else {}
+            ),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -429,6 +455,36 @@ def _batch_key(
         separators=(",", ":"),
     )
     return f"sha256:{sha256(payload.encode('utf-8')).hexdigest()}"
+
+
+def _write_rejection_report(
+    output_root: str | Path,
+    *,
+    profile: SecondPartPullProfile,
+    cursor: str,
+    next_cursor: str,
+    batch_key: str,
+    rejected_records: list[dict[str, Any]],
+) -> Path:
+    report_dir = Path(output_root) / "second-part-pull-rejections"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / (
+        f"{_safe_filename_fragment(profile.name)}-"
+        f"{batch_key.split(':', 1)[-1][:16]}.json"
+    )
+    report_payload = {
+        "profile": profile.name,
+        "source_cursor": cursor,
+        "source_next_cursor": next_cursor,
+        "rejected_records": rejected_records,
+    }
+    temporary = report_path.with_suffix(f"{report_path.suffix}.tmp")
+    temporary.write_text(
+        json.dumps(report_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(report_path)
+    return report_path
 
 
 def _find_existing_batch(
@@ -560,7 +616,9 @@ def pull_second_part_to_queue(
         "fetched_records": 0,
         "queued_jobs": 0,
         "reused_jobs": 0,
+        "rejected_records": 0,
         "jobs": [],
+        "rejection_reports": [],
     }
 
     for _page_index in range(page_limit):
@@ -610,53 +668,73 @@ def pull_second_part_to_queue(
         summary["fetched_records"] += len(items)
 
         if items:
-            rows = _map_records(profile, items)
+            rows, rejected_records = _map_records(profile, items)
             batch_key = _batch_key(
                 profile,
                 cursor,
                 next_cursor,
                 rows,
+                rejected_records,
             )
-            existing = _find_existing_batch(queue, batch_key)
-            if existing is not None:
-                job_id = _text(existing.get("job_id"))
-                summary["reused_jobs"] += 1
-                result_status = "reused"
+            if rejected_records:
+                rejection_report = _write_rejection_report(
+                    output_root,
+                    profile=profile,
+                    cursor=cursor,
+                    next_cursor=next_cursor,
+                    batch_key=batch_key,
+                    rejected_records=rejected_records,
+                )
+                summary["rejected_records"] += len(rejected_records)
+                summary["rejection_reports"].append(
+                    {
+                        "path": str(rejection_report),
+                        "records": len(rejected_records),
+                    }
+                )
+            if rows:
+                existing = _find_existing_batch(queue, batch_key)
+                if existing is not None:
+                    job_id = _text(existing.get("job_id"))
+                    summary["reused_jobs"] += 1
+                    result_status = "reused"
+                else:
+                    workbook = _workbook_bytes(profile, rows)
+                    filename = (
+                        f"{_safe_filename_fragment(profile.name)}-"
+                        f"{datetime.now():%Y%m%d-%H%M%S}-"
+                        f"{batch_key.split(':', 1)[-1][:10]}.xlsx"
+                    )
+                    options = {
+                        **profile.workflow,
+                        "submit_to_cz": profile.workflow[
+                            "sync_to_cz_review"
+                        ],
+                        "source_system": profile.name,
+                        "source_batch_key": batch_key,
+                        "source_cursor": cursor,
+                        "source_next_cursor": next_cursor,
+                    }
+                    metadata = job_store.create(
+                        filename,
+                        workbook,
+                        options,
+                    )
+                    job_id = _text(metadata.get("job_id"))
+                    summary["queued_jobs"] += 1
+                    result_status = "queued"
+                summary["jobs"].append(
+                    {
+                        "job_id": job_id,
+                        "status": result_status,
+                        "source_batch_key": batch_key,
+                        "records": len(rows),
+                        "cursor": cursor,
+                        "next_cursor": next_cursor,
+                    }
+                )
             else:
-                workbook = _workbook_bytes(profile, rows)
-                filename = (
-                    f"{_safe_filename_fragment(profile.name)}-"
-                    f"{datetime.now():%Y%m%d-%H%M%S}-"
-                    f"{batch_key.split(':', 1)[-1][:10]}.xlsx"
-                )
-                options = {
-                    **profile.workflow,
-                    "submit_to_cz": profile.workflow[
-                        "sync_to_cz_review"
-                    ],
-                    "source_system": profile.name,
-                    "source_batch_key": batch_key,
-                    "source_cursor": cursor,
-                    "source_next_cursor": next_cursor,
-                }
-                metadata = job_store.create(
-                    filename,
-                    workbook,
-                    options,
-                )
-                job_id = _text(metadata.get("job_id"))
-                summary["queued_jobs"] += 1
-                result_status = "queued"
-            summary["jobs"].append(
-                {
-                    "job_id": job_id,
-                    "status": result_status,
-                    "source_batch_key": batch_key,
-                    "records": len(rows),
-                    "cursor": cursor,
-                    "next_cursor": next_cursor,
-                }
-            )
+                job_id = ""
         else:
             batch_key = ""
             job_id = ""
@@ -687,4 +765,6 @@ def pull_second_part_to_queue(
         summary["status"] = "queued"
     elif summary["reused_jobs"]:
         summary["status"] = "reused"
+    elif summary["rejected_records"]:
+        summary["status"] = "rejected"
     return summary
