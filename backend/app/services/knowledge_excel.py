@@ -41,7 +41,6 @@ MODEL_CONFIGURATION_HEADER_ALIASES = {
     "content": {"综合内容", "正文", "知识内容"},
 }
 MODEL_CONFIGURATION_REQUIRED_HEADER_LABELS = {
-    "source_record_id": "来源知识ID",
     "title": "标题",
     "brand_id": "品牌ID",
     "brand_name": "品牌",
@@ -721,7 +720,6 @@ def parse_model_configuration_workbook(
 
     raw_records: list[dict[str, Any]] = []
     row_numbers: list[int] = []
-    seen_record_rows: dict[str, int] = {}
     seen_model_key_rows: dict[tuple[str, str, str], int] = {}
     category_columns_present = (
         "category_id" in indexes and "category_name" in indexes
@@ -780,12 +778,6 @@ def parse_model_configuration_workbook(
                 f"机型配置信息第 {row_number} 行：{exc}"
             ) from exc
 
-        previous_record_row = seen_record_rows.get(record.source_record_id)
-        if previous_record_row is not None:
-            raise KnowledgeExcelError(
-                f"机型配置信息第 {row_number} 行：来源知识ID "
-                f"{record.source_record_id} 与第 {previous_record_row} 行重复。"
-            )
         model_key = (
             record.category_id,
             record.brand_id,
@@ -798,7 +790,6 @@ def parse_model_configuration_workbook(
                 f"{record.category_id}/{record.brand_id}/{record.model_id} "
                 f"与第 {previous_model_row} 行重复。"
             )
-        seen_record_rows[record.source_record_id] = row_number
         seen_model_key_rows[model_key] = row_number
         raw_records.append(raw_record)
         row_numbers.append(row_number)
@@ -1572,7 +1563,7 @@ def build_model_configuration_import_template() -> bytes:
     instructions_sheet = workbook.create_sheet("填写说明")
 
     headers = [
-        "来源知识ID（必填）",
+        "来源知识ID（选填）",
         "标题（必填）",
         "品类ID（必填）",
         "品类（必填）",
@@ -1595,7 +1586,7 @@ def build_model_configuration_import_template() -> bytes:
     import_sheet.auto_filter.ref = "A1:Q1"
     import_sheet.row_dimensions[1].height = 28
 
-    required_columns = {1, 2, 3, 4, 5, 6, 7, 8, 17}
+    required_columns = {2, 3, 4, 5, 6, 7, 8, 17}
     required_fill = PatternFill("solid", fgColor="0F766E")
     optional_fill = PatternFill("solid", fgColor="475569")
     for index, cell in enumerate(import_sheet[1], start=1):
@@ -1632,7 +1623,8 @@ def build_model_configuration_import_template() -> bytes:
         import_sheet.column_dimensions[column].width = width
 
     import_sheet["A1"].comment = Comment(
-        "上游来源知识ID，用于重复导入时幂等更新，不是中台 A-xxxxx 知识ID。",
+        "其他知识库的追溯ID，可留空；不是中台 A-xxxxx 知识ID，"
+        "也不作为机型配置信息的唯一标识。",
         "知识库",
     )
     import_sheet["C1"].comment = Comment(
@@ -1654,8 +1646,12 @@ def build_model_configuration_import_template() -> bytes:
         ("导入类型", "上传时请选择“机型配置信息”。"),
         (
             "必填列",
-            "来源知识ID、标题、品类ID、品类、品牌ID、品牌、"
-            "型号ID、型号、综合内容。",
+            "标题、品类ID、品类、品牌ID、品牌、型号ID、型号、综合内容。",
+        ),
+        (
+            "来源知识ID",
+            "选填。该字段来自其他知识库，仅用于追溯；留空不影响导入，"
+            "中台以品类ID、品牌ID、型号ID组合识别同一条机型配置信息。",
         ),
         (
             "原表兼容",
@@ -1669,7 +1665,8 @@ def build_model_configuration_import_template() -> bytes:
         ),
         (
             "幂等规则",
-            "重复上传不会新增重复知识；内容变化会保留中台知识ID并原地更新。",
+            "同一品类ID、品牌ID、型号ID组合重复上传不会新增重复知识；"
+            "内容变化会保留中台知识ID并原地更新。",
         ),
         (
             "发布规则",

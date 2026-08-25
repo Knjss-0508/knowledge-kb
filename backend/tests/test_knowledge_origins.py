@@ -40,12 +40,12 @@ class KnowledgeOriginTests(unittest.TestCase):
             ),
         )
         self.assertTrue(
-            {
-                "uq_knowledge_items_model_configuration_source_record_id",
-                "uq_knowledge_items_model_configuration_source_knowledge_key",
-            }.issubset(
-                {index.name for index in Knowledge.__table__.indexes}
-            )
+            "uq_knowledge_items_model_configuration_source_knowledge_key"
+            in {index.name for index in Knowledge.__table__.indexes}
+        )
+        self.assertNotIn(
+            "uq_knowledge_items_model_configuration_source_record_id",
+            {index.name for index in Knowledge.__table__.indexes},
         )
         managed_indexes = {
             index.name: index

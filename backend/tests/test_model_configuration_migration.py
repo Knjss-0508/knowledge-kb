@@ -67,7 +67,7 @@ class ModelConfigurationMigrationTests(unittest.TestCase):
             ):
                 MIGRATION.downgrade()
 
-    def test_schema_snapshots_include_managed_origin_and_indexes(self):
+    def test_schema_snapshots_include_managed_origin_and_current_unique_key(self):
         for schema_path in SCHEMA_PATHS:
             with self.subTest(schema=schema_path.name):
                 schema = schema_path.read_text(encoding="utf-8")
@@ -75,7 +75,7 @@ class ModelConfigurationMigrationTests(unittest.TestCase):
                     "'model_configuration'::character varying",
                     schema,
                 )
-                self.assertIn(
+                self.assertNotIn(
                     "CREATE UNIQUE INDEX "
                     "uq_knowledge_items_model_configuration_source_record_id",
                     schema,
