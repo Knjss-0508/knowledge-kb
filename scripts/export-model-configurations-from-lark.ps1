@@ -86,13 +86,22 @@ for ($columnIndex = 0; $columnIndex -lt $columns.Count; $columnIndex += 1) {
 }
 
 $requiredHeaders = @(
-    "知识ID",
     "标题",
     "品牌ID",
     "品牌",
     "型号ID",
     "型号",
     "综合内容"
+)
+$ignoredSourceFieldHeaders = @(
+    "是否有卡槽",
+    "Home键",
+    "指纹识别",
+    "3D面容",
+    "内置手写笔",
+    "闪光灯",
+    "蜂窝网络",
+    "光线传感器"
 )
 foreach ($requiredHeader in $requiredHeaders) {
     if (-not $headers.ContainsKey($requiredHeader)) {
@@ -116,8 +125,7 @@ function Get-CellText {
 }
 
 $records = [System.Collections.Generic.List[object]]::new()
-$seenRecordIds = [System.Collections.Generic.HashSet[string]]::new()
-$seenModelIds = [System.Collections.Generic.HashSet[string]]::new()
+$seenModelKeys = [System.Collections.Generic.HashSet[string]]::new()
 for ($rowIndex = 1; $rowIndex -lt $rows.Count; $rowIndex += 1) {
     $row = @($rows[$rowIndex])
     $sourceRowNumber = if (
@@ -129,7 +137,6 @@ for ($rowIndex = 1; $rowIndex -lt $rows.Count; $rowIndex += 1) {
         [string]($rowIndex + 1)
     }
     $requiredValues = [ordered]@{
-        "知识ID" = Get-CellText -Row $row -Header "知识ID"
         "标题" = Get-CellText -Row $row -Header "标题"
         "品牌ID" = Get-CellText -Row $row -Header "品牌ID"
         "品牌" = Get-CellText -Row $row -Header "品牌"
@@ -156,22 +163,22 @@ for ($rowIndex = 1; $rowIndex -lt $rows.Count; $rowIndex += 1) {
         )
     }
 
-    $sourceRecordId = [string]$requiredValues["知识ID"]
+    $sourceRecordId = Get-CellText -Row $row -Header "知识ID"
+    $brandId = [string]$requiredValues["品牌ID"]
     $modelId = [string]$requiredValues["型号ID"]
-    if (-not $seenRecordIds.Add($sourceRecordId)) {
-        throw "飞书表格知识ID重复：$sourceRecordId"
-    }
-    if (-not $seenModelIds.Add($modelId)) {
-        throw "飞书表格型号ID重复：$modelId"
+    $modelKey = "119|$brandId|$modelId"
+    if (-not $seenModelKeys.Add($modelKey)) {
+        throw "飞书表格品类/品牌/型号ID组合重复：119/$brandId/$modelId"
     }
 
     $sourceFields = [ordered]@{}
     foreach ($header in $headers.Keys) {
-        if ($header) {
-            $value = Get-CellText -Row $row -Header $header
-            if ($value) {
-                $sourceFields[$header] = $value
-            }
+        if ($ignoredSourceFieldHeaders -contains $header) {
+            continue
+        }
+        $value = Get-CellText -Row $row -Header $header
+        if ($value) {
+            $sourceFields[$header] = $value
         }
     }
     $sourceFields["来源工作表"] = "个性化配置信息"
@@ -185,7 +192,7 @@ for ($rowIndex = 1; $rowIndex -lt $rows.Count; $rowIndex += 1) {
             title = [string]$requiredValues["标题"]
             category_id = "119"
             category_name = "平板电脑"
-            brand_id = [string]$requiredValues["品牌ID"]
+            brand_id = $brandId
             brand_name = [string]$requiredValues["品牌"]
             model_id = $modelId
             model_name = [string]$requiredValues["型号"]

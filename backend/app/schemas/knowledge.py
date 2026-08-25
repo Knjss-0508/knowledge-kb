@@ -1,7 +1,7 @@
 ﻿from datetime import datetime
 from typing import Literal, Optional, Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 BusinessType = Literal["self_operated", "aggregated"]
@@ -153,27 +153,6 @@ class KnowledgeUpdate(BaseModel):
         return value
 
 
-class ModelConfigurationAttributes(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-        extra="forbid",
-    )
-
-    has_card_slot: str = Field(..., alias="是否有卡槽")
-    home_button: str = Field(..., alias="Home键")
-    fingerprint_recognition: str = Field(..., alias="指纹识别")
-    face_id_3d: str = Field(..., alias="3D面容")
-    built_in_stylus: str = Field(..., alias="内置手写笔")
-    flash: str = Field(..., alias="闪光灯")
-    cellular_network: str = Field(..., alias="蜂窝网络")
-    ambient_light_sensor: str = Field(..., alias="光线传感器")
-
-    @field_validator("*")
-    @classmethod
-    def normalize_attribute_text(cls, value: str) -> str:
-        return value.strip()
-
-
 class ModelConfigurationUpdate(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -189,7 +168,15 @@ class ModelConfigurationUpdate(BaseModel):
     brand_name: str = Field(..., min_length=1, max_length=500)
     model_id: str = Field(..., min_length=1, max_length=128)
     model_name: str = Field(..., min_length=1, max_length=500)
-    attributes: ModelConfigurationAttributes
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_attributes(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "attributes" not in value:
+            return value
+        normalized = dict(value)
+        normalized.pop("attributes", None)
+        return normalized
 
     @field_validator(
         "title",
@@ -223,7 +210,6 @@ class ModelConfigurationDetail(BaseModel):
     brand_name: str
     model_id: str
     model_name: str
-    attributes: ModelConfigurationAttributes
 
 
 class KnowledgeResponse(BaseModel):

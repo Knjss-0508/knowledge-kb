@@ -67,7 +67,6 @@ from app.services.knowledge_dedup import (
     search_embeddings,
 )
 from app.services.model_configuration import (
-    MODEL_CONFIGURATION_ATTRIBUTE_FIELDS,
     MODEL_CONFIGURATION_ORIGIN,
     ModelConfigurationAmbiguousError,
     ModelConfigurationMatch,
@@ -1059,11 +1058,6 @@ def _to_model_configuration_result(
             item=None,
         )
     item = match.item
-    attributes = {
-        field: value
-        for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
-        if (value := _model_configuration_source_field(item, field))
-    }
     return IntegrationModelConfigurationResult(
         status="success",
         match_mode=match.match_mode,
@@ -1077,7 +1071,6 @@ def _to_model_configuration_result(
             model=_model_configuration_source_field(item, "型号"),
             title=item.title,
             content=_content_to_text(item.content),
-            attributes=attributes,
             source_ref=f"knowledge-kb://knowledge/{item.id}",
         ),
     )

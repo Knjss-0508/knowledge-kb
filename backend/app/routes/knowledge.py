@@ -62,7 +62,6 @@ from app.services.knowledge_excel import (
     parse_knowledge_update_workbook,
 )
 from app.services.model_configuration import (
-    MODEL_CONFIGURATION_ATTRIBUTE_FIELDS,
     ModelConfigurationSyncError,
     acquire_model_configuration_write_lock,
     parse_model_configuration_payload,
@@ -863,10 +862,6 @@ def _model_configuration_detail(item: Knowledge) -> dict | None:
         "brand_name": str(source_fields.get("品牌") or "").strip(),
         "model_id": str(source_fields.get("型号ID") or "").strip(),
         "model_name": str(source_fields.get("型号") or "").strip(),
-        "attributes": {
-            field: str(source_fields.get(field) or "").strip()
-            for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
-        },
     }
 
 
@@ -3425,13 +3420,6 @@ def update_model_configuration(
         if isinstance(item.source_fields, dict)
         else {}
     )
-    attributes = body.attributes.model_dump(by_alias=True)
-    for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS:
-        value = str(attributes[field] or "").strip()
-        if value:
-            source_fields[field] = value
-        else:
-            source_fields.pop(field, None)
 
     payload = {
         "records": [

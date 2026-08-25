@@ -31,18 +31,6 @@ from app.services.model_configuration import (
 )
 
 
-ATTRIBUTE_FIELDS = (
-    "是否有卡槽",
-    "Home键",
-    "指纹识别",
-    "3D面容",
-    "内置手写笔",
-    "闪光灯",
-    "蜂窝网络",
-    "光线传感器",
-)
-
-
 def _update_body(
     *,
     category_id: str = "120",
@@ -61,16 +49,6 @@ def _update_body(
         brand_name=brand_name,
         model_id=model_id,
         model_name=model_name,
-        attributes={
-            "是否有卡槽": "",
-            "Home键": "",
-            "指纹识别": "屏下指纹",
-            "3D面容": "",
-            "内置手写笔": "支持",
-            "闪光灯": "支持",
-            "蜂窝网络": "支持 5G",
-            "光线传感器": "",
-        },
     )
 
 
@@ -229,7 +207,7 @@ class ModelConfigurationEditTests(unittest.TestCase):
         self.db.commit()
         return item
 
-    def test_edit_updates_scope_attributes_and_exact_matches_without_vectors(self):
+    def test_edit_updates_scope_content_and_removes_legacy_attributes(self):
         self._add_model_configuration()
         body = _update_body(
             category_name="伪造类目名称",
@@ -276,7 +254,7 @@ class ModelConfigurationEditTests(unittest.TestCase):
         self.assertEqual(item.source_fields["是否更新"], "是")
         self.assertNotIn("是否有卡槽", item.source_fields)
         self.assertNotIn("Home键", item.source_fields)
-        self.assertEqual(item.source_fields["指纹识别"], "屏下指纹")
+        self.assertNotIn("指纹识别", item.source_fields)
         self.assertEqual(
             item.source_fields["_model_configuration_normalized_name_key"],
             '["手机","测试品牌","测试机型 pro"]',
@@ -303,9 +281,11 @@ class ModelConfigurationEditTests(unittest.TestCase):
         self.assertEqual(detail["category_name"], "手机")
         self.assertEqual(detail["brand_name"], "测试品牌")
         self.assertEqual(detail["model_name"], "测试机型 Pro")
-        self.assertEqual(detail["attributes"]["指纹识别"], "屏下指纹")
-        self.assertEqual(detail["attributes"]["Home键"], "")
-        self.assertEqual(set(detail["attributes"]), set(ATTRIBUTE_FIELDS))
+        self.assertEqual(
+            detail["content"],
+            "指纹识别：屏下指纹；\n蜂窝网络：支持 5G；",
+        )
+        self.assertNotIn("attributes", detail)
 
         new_id_match = find_exact_model_configuration(
             self.db,
@@ -818,11 +798,11 @@ class ModelConfigurationEditTests(unittest.TestCase):
             "MODEL_CONFIGURATION_ONLY",
         )
 
-    def test_request_contract_requires_all_attributes_and_locks_source_id(self):
+    def test_request_contract_ignores_legacy_attributes_and_locks_source_id(self):
         payload = _update_body().model_dump(by_alias=True)
-        del payload["attributes"]["Home键"]
-        with self.assertRaises(ValidationError):
-            ModelConfigurationUpdate.model_validate(payload)
+        payload["attributes"] = {"Home键": "旧前端缓存值"}
+        parsed = ModelConfigurationUpdate.model_validate(payload)
+        self.assertNotIn("attributes", parsed.model_dump())
 
         payload = _update_body().model_dump(by_alias=True)
         payload["source_record_id"] = "should-not-change"
@@ -849,11 +829,10 @@ class ModelConfigurationEditTests(unittest.TestCase):
             "source_record_id",
             update_schema["properties"],
         )
-        attribute_schema = schemas["ModelConfigurationAttributes"]
-        self.assertEqual(
-            set(attribute_schema["required"]),
-            set(ATTRIBUTE_FIELDS),
-        )
+        self.assertNotIn("attributes", update_schema["properties"])
+        self.assertNotIn("ModelConfigurationAttributes", schemas)
+        detail_schema = schemas["ModelConfigurationDetail"]
+        self.assertNotIn("attributes", detail_schema["properties"])
         self.assertIn(
             "model_configuration",
             schemas["KnowledgeResponse"]["properties"],

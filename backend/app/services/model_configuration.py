@@ -26,7 +26,7 @@ MODEL_CONFIGURATION_CATEGORY_ID = "cat-extra-knowledge"
 MODEL_CONFIGURATION_SOURCE = "integration"
 MODEL_CONFIGURATION_CATEGORY_SOURCE_ID = "119"
 MODEL_CONFIGURATION_CATEGORY_NAME = "平板电脑"
-MODEL_CONFIGURATION_ATTRIBUTE_FIELDS = (
+_LEGACY_MODEL_CONFIGURATION_ATTRIBUTE_FIELDS = (
     "是否有卡槽",
     "Home键",
     "指纹识别",
@@ -323,6 +323,8 @@ def parse_model_configuration_payload(
         for source_id_field in ("来源知识ID", "知识ID", "记录ID"):
             if not _clean_text(source_fields.get(source_id_field)):
                 source_fields.pop(source_id_field, None)
+        for legacy_field in _LEGACY_MODEL_CONFIGURATION_ATTRIBUTE_FIELDS:
+            source_fields.pop(legacy_field, None)
         if source_record_id:
             source_fields["知识ID"] = source_record_id
         source_fields.update(

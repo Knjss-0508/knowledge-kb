@@ -163,6 +163,14 @@ const assert = function(condition, message) {{
             'v-model="fm.modelConfiguration.content"',
             self.html,
         )
+        self.assertNotIn(
+            "modelConfigurationAttributeNames",
+            self.html,
+        )
+        self.assertNotIn(
+            "modelConfiguration.attributes",
+            self.html,
+        )
 
     def test_model_configuration_save_requires_current_manhattan_options(self):
         self.assertIn(

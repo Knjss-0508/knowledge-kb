@@ -27,7 +27,6 @@ from app.schemas.integration import (
 )
 from app.schemas.knowledge import KnowledgeCreate
 from app.services.model_configuration import (
-    MODEL_CONFIGURATION_ATTRIBUTE_FIELDS,
     ModelConfigurationAmbiguousError,
     ModelConfigurationMatch,
     ModelConfigurationSyncError,
@@ -428,7 +427,7 @@ class ModelConfigurationTests(unittest.TestCase):
         "app.services.model_configuration._find_existing_record",
         return_value=None,
     )
-    def test_dedicated_sync_creates_published_items_without_embeddings(
+    def test_dedicated_sync_keeps_only_comprehensive_content(
         self,
         _find_existing,
         _generate_id,
@@ -471,16 +470,16 @@ class ModelConfigurationTests(unittest.TestCase):
         self.assertEqual(created.applicable_categories, ["119"])
         self.assertEqual(created.applicable_brands, ["10530"])
         self.assertEqual(created.applicable_models, ["97001"])
-        self.assertEqual(
-            {
-                field: created.source_fields[field]
-                for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
-            },
-            personalized_attributes,
+        self.assertTrue(
+            all(
+                field not in created.source_fields
+                for field in personalized_attributes
+            )
         )
+        self.assertNotIn("attributes", _model_configuration_detail(created))
         self.assertEqual(
-            _model_configuration_detail(created)["attributes"],
-            personalized_attributes,
+            created.source_fields["综合内容"],
+            "指纹识别：有指纹；",
         )
         self.assertEqual(
             created.source_fields[
