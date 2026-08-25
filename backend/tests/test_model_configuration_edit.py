@@ -162,7 +162,7 @@ class ModelConfigurationEditTests(unittest.TestCase):
         self,
         *,
         knowledge_id: str = "A-00001",
-        source_record_id: str = "56383",
+        source_record_id: str | None = "56383",
         category_id: str = "119",
         category_name: str = "平板电脑",
         brand_id: str = "10530",
@@ -171,7 +171,6 @@ class ModelConfigurationEditTests(unittest.TestCase):
         model_name: str = "iPad 10",
     ) -> Knowledge:
         source_fields = {
-            "知识ID": source_record_id,
             "标题": f"{model_name} 配置信息",
             "品类ID": category_id,
             "品类": category_name,
@@ -195,6 +194,8 @@ class ModelConfigurationEditTests(unittest.TestCase):
                 f'"{model_name.casefold()}"]'
             ),
         }
+        if source_record_id:
+            source_fields["知识ID"] = source_record_id
         item = Knowledge(
             id=knowledge_id,
             knowledge_origin="model_configuration",
@@ -360,6 +361,119 @@ class ModelConfigurationEditTests(unittest.TestCase):
             current_user=self.user,
         )
         self.assertEqual(self.db.query(KnowledgeChangeLog).count(), 1)
+
+    def test_edit_without_external_source_id_updates_the_same_knowledge(self):
+        self._add_model_configuration(source_record_id=None)
+
+        response = update_model_configuration(
+            "A-00001",
+            _update_body(),
+            db=self.db,
+            current_user=self.user,
+        )
+
+        item = self.db.get(Knowledge, "A-00001")
+        self.assertIsNone(item.source_record_id)
+        self.assertEqual(
+            item.source_knowledge_key,
+            "model-configuration:120:200:300",
+        )
+        self.assertEqual(item.title, "测试机型 Pro 配置信息")
+        self.assertNotIn("知识ID", item.source_fields)
+        self.assertEqual(response["id"], "A-00001")
+
+    def test_sync_accepts_multiple_records_without_external_source_ids(self):
+        records = parse_model_configuration_payload(
+            {
+                "records": [
+                    {
+                        "title": "无外部ID机型一",
+                        "category_id": "119",
+                        "category_name": "平板电脑",
+                        "brand_id": "10530",
+                        "brand_name": "苹果",
+                        "model_id": "97520",
+                        "model_name": "无外部ID机型一",
+                        "content": "配置正文一",
+                    },
+                    {
+                        "source_record_id": "",
+                        "title": "无外部ID机型二",
+                        "category_id": "119",
+                        "category_name": "平板电脑",
+                        "brand_id": "10530",
+                        "brand_name": "苹果",
+                        "model_id": "97521",
+                        "model_name": "无外部ID机型二",
+                        "content": "配置正文二",
+                    },
+                ]
+            }
+        )
+
+        with patch(
+            "app.services.model_configuration._generate_knowledge_id",
+            side_effect=["A-00010", "A-00011"],
+        ):
+            first_result = sync_model_configurations(
+                self.db,
+                records,
+                actor="excel-importer",
+            )
+        self.db.commit()
+
+        second_result = sync_model_configurations(
+            self.db,
+            records,
+            actor="excel-importer",
+        )
+        self.db.commit()
+
+        self.assertEqual(first_result.created, 2)
+        self.assertEqual(second_result.unchanged, 2)
+        saved = (
+            self.db.query(Knowledge)
+            .filter(Knowledge.id.in_(["A-00010", "A-00011"]))
+            .order_by(Knowledge.id)
+            .all()
+        )
+        self.assertEqual(len(saved), 2)
+        self.assertTrue(all(item.source_record_id is None for item in saved))
+        self.assertTrue(
+            all("知识ID" not in item.source_fields for item in saved)
+        )
+
+    def test_blank_external_source_id_clears_existing_trace_value(self):
+        self._add_model_configuration()
+        record = parse_model_configuration_payload(
+            {
+                "records": [
+                    {
+                        "source_record_id": "",
+                        "title": "iPad 10 配置信息",
+                        "category_id": "119",
+                        "category_name": "平板电脑",
+                        "brand_id": "10530",
+                        "brand_name": "苹果",
+                        "model_id": "97519",
+                        "model_name": "iPad 10",
+                        "content": "更新后的配置正文",
+                    }
+                ]
+            }
+        )[0]
+
+        result = sync_model_configurations(
+            self.db,
+            [record],
+            actor="excel-importer",
+        )
+        self.db.commit()
+
+        item = self.db.get(Knowledge, "A-00001")
+        self.assertEqual(result.updated, 1)
+        self.assertIsNone(item.source_record_id)
+        self.assertNotIn("知识ID", item.source_fields)
 
     def test_brand_is_strict_when_present_and_pair_is_ambiguous_without_it(self):
         self._add_model_configuration()

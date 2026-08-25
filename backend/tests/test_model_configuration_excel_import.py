@@ -270,8 +270,9 @@ class ModelConfigurationExcelImportTaskTests(unittest.TestCase):
             db.flush()
             raise ModelConfigurationSyncError(
                 "SOURCE_IDENTIFIER_CONFLICT",
-                "来源知识ID与机型键冲突。",
+                "机型键已绑定其他机型配置信息。",
                 source_record_id=records[0].source_record_id,
+                source_knowledge_key=records[0].source_knowledge_key,
             )
 
         with (

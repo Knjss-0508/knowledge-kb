@@ -78,10 +78,12 @@ class ModelConfigurationSyncError(ValueError):
         message: str,
         *,
         source_record_id: str | None = None,
+        source_knowledge_key: str | None = None,
     ):
         super().__init__(message)
         self.code = code
         self.source_record_id = source_record_id
+        self.source_knowledge_key = source_knowledge_key
 
 
 @dataclass(frozen=True)
@@ -220,6 +222,22 @@ def _required_text(
     return value
 
 
+def _optional_text(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    max_length: int,
+) -> str:
+    value = _clean_text(payload.get(key))
+    label = _PAYLOAD_FIELD_LABELS.get(key, key)
+    if len(value) > max_length:
+        raise ModelConfigurationSyncError(
+            "MODEL_CONFIGURATION_FIELD_TOO_LONG",
+            f"机型配置字段“{label}”超过 {max_length} 个字符。",
+        )
+    return value
+
+
 def parse_model_configuration_payload(
     payload: dict[str, Any],
 ) -> list[ModelConfigurationRecord]:
@@ -238,7 +256,6 @@ def parse_model_configuration_payload(
     ) or MODEL_CONFIGURATION_CATEGORY_NAME
 
     records: list[ModelConfigurationRecord] = []
-    seen_record_ids: set[str] = set()
     seen_model_keys: set[tuple[str, str, str]] = set()
     for index, raw_record in enumerate(raw_records, start=1):
         if not isinstance(raw_record, dict):
@@ -246,7 +263,7 @@ def parse_model_configuration_payload(
                 "MODEL_CONFIGURATION_RECORD_INVALID",
                 f"第 {index} 条机型配置不是对象。",
             )
-        source_record_id = _required_text(
+        source_record_id = _optional_text(
             raw_record,
             "source_record_id",
             max_length=256,
@@ -283,11 +300,6 @@ def parse_model_configuration_payload(
         content = _required_text(raw_record, "content", max_length=100_000)
 
         model_key = (category_id, brand_id, model_id)
-        if source_record_id in seen_record_ids:
-            raise ModelConfigurationSyncError(
-                "MODEL_CONFIGURATION_RECORD_ID_DUPLICATED",
-                f"上游知识ID {source_record_id} 在同步文件中重复。",
-            )
         if model_key in seen_model_keys:
             raise ModelConfigurationSyncError(
                 "MODEL_CONFIGURATION_MODEL_ID_DUPLICATED",
@@ -296,7 +308,6 @@ def parse_model_configuration_payload(
                     f"{category_id}/{brand_id}/{model_id} 在同步文件中重复。"
                 ),
             )
-        seen_record_ids.add(source_record_id)
         seen_model_keys.add(model_key)
 
         raw_source_fields = raw_record.get("source_fields")
@@ -309,9 +320,13 @@ def parse_model_configuration_payload(
             )
             if _clean_text(key)
         }
+        for source_id_field in ("来源知识ID", "知识ID", "记录ID"):
+            if not _clean_text(source_fields.get(source_id_field)):
+                source_fields.pop(source_id_field, None)
+        if source_record_id:
+            source_fields["知识ID"] = source_record_id
         source_fields.update(
             {
-                "知识ID": source_record_id,
                 "标题": title,
                 "品类ID": category_id,
                 "品类": category_name,
@@ -370,8 +385,11 @@ def acquire_model_configuration_write_lock(db: Session) -> None:
         )
 
 
-def _record_values(record: ModelConfigurationRecord) -> dict[str, Any]:
+def _record_values(
+    record: ModelConfigurationRecord,
+) -> dict[str, Any]:
     source_fields = dict(record.source_fields)
+    source_record_id = record.source_record_id or None
     source_fields[_NORMALIZED_NAME_KEY_FIELD] = _normalized_name_key(
         category_name=record.category_name,
         brand_name=record.brand_name,
@@ -397,7 +415,7 @@ def _record_values(record: ModelConfigurationRecord) -> dict[str, Any]:
         "applicable_brands": [record.brand_id],
         "applicable_models": [record.model_id],
         "related_standard_items": [],
-        "source_record_id": record.source_record_id,
+        "source_record_id": source_record_id,
         "source_knowledge_key": record.source_knowledge_key,
         "source_fields": source_fields,
     }
@@ -409,16 +427,6 @@ def _find_existing_record(
     *,
     allow_source_key_change_for: str | None = None,
 ) -> Knowledge | None:
-    by_record_id = (
-        db.query(Knowledge)
-        .populate_existing()
-        .filter(
-            Knowledge.knowledge_origin == MODEL_CONFIGURATION_ORIGIN,
-            Knowledge.source_record_id == record.source_record_id,
-        )
-        .with_for_update()
-        .all()
-    )
     by_knowledge_key = (
         db.query(Knowledge)
         .populate_existing()
@@ -429,40 +437,39 @@ def _find_existing_record(
         .with_for_update()
         .all()
     )
-    if len(by_record_id) > 1 or len(by_knowledge_key) > 1:
+    allowed_target = None
+    if allow_source_key_change_for:
+        allowed_target = (
+            db.query(Knowledge)
+            .populate_existing()
+            .filter(
+                Knowledge.knowledge_origin == MODEL_CONFIGURATION_ORIGIN,
+                Knowledge.id == allow_source_key_change_for,
+            )
+            .with_for_update()
+            .first()
+        )
+    if len(by_knowledge_key) > 1:
         raise ModelConfigurationSyncError(
             "SOURCE_IDENTIFIER_AMBIGUOUS",
             (
-                f"机型配置 {record.source_record_id}/{record.source_knowledge_key} "
-                "匹配到多条知识。"
+                f"机型键 {record.source_knowledge_key} 匹配到多条知识。"
             ),
             source_record_id=record.source_record_id,
+            source_knowledge_key=record.source_knowledge_key,
         )
-    record_match = by_record_id[0] if by_record_id else None
     key_match = by_knowledge_key[0] if by_knowledge_key else None
-    if record_match and key_match and record_match.id != key_match.id:
+    if allowed_target and key_match and allowed_target.id != key_match.id:
         raise ModelConfigurationSyncError(
             "SOURCE_IDENTIFIER_CONFLICT",
             (
-                f"上游知识ID {record.source_record_id} 与机型键 "
-                f"{record.source_knowledge_key} 指向不同知识。"
+                f"机型键 {record.source_knowledge_key} "
+                "已绑定其他机型配置信息。"
             ),
             source_record_id=record.source_record_id,
+            source_knowledge_key=record.source_knowledge_key,
         )
-    if record_match and (
-        record_match.source_knowledge_key
-        and record_match.source_knowledge_key != record.source_knowledge_key
-        and record_match.id != allow_source_key_change_for
-    ):
-        raise ModelConfigurationSyncError(
-            "SOURCE_RECORD_ID_REUSED",
-            (
-                f"上游知识ID {record.source_record_id} 已绑定其他机型键，"
-                "拒绝覆盖。"
-            ),
-            source_record_id=record.source_record_id,
-        )
-    return record_match or key_match
+    return allowed_target or key_match
 
 
 def _snapshot(item: Knowledge) -> dict[str, Any]:

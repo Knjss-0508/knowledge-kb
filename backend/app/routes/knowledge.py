@@ -2422,21 +2422,23 @@ def _process_model_configuration_import_task(
         task.updated = 0
         task.unchanged = 0
         if isinstance(exc, ModelConfigurationSyncError):
-            row_by_source_record_id = {
-                record.source_record_id: row_number
+            row_by_source_knowledge_key = {
+                record.source_knowledge_key: row_number
                 for row_number, record in zip(
                     workbook.row_numbers,
                     workbook.records,
                     strict=True,
                 )
             }
-            excel_row = row_by_source_record_id.get(
-                exc.source_record_id or ""
+            excel_row = row_by_source_knowledge_key.get(
+                exc.source_knowledge_key or ""
             )
             row_prefix = f"Excel 第 {excel_row} 行，" if excel_row else ""
             message = f"{row_prefix}{exc.code}：{exc}"
         elif isinstance(exc, IntegrityError):
-            message = "数据库唯一键冲突，请检查来源知识ID和机型ID组合。"
+            message = (
+                "数据库唯一键冲突，请检查品类/品牌/型号ID组合。"
+            )
         else:
             logger.exception(
                 "Model configuration import task %s failed.",
@@ -3408,15 +3410,6 @@ def update_model_configuration(
             },
         )
     source_record_id = str(item.source_record_id or "").strip()
-    if not source_record_id:
-        db.rollback()
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "MODEL_CONFIGURATION_SOURCE_RECORD_ID_MISSING",
-                "message": "当前机型配置信息缺少来源知识ID，不能执行原地更新。",
-            },
-        )
     try:
         resolved_scope = _resolve_model_configuration_scope(
             category_id=body.category_id,
@@ -3476,7 +3469,6 @@ def update_model_configuration(
         conflict_codes = {
             "SOURCE_IDENTIFIER_AMBIGUOUS",
             "SOURCE_IDENTIFIER_CONFLICT",
-            "SOURCE_RECORD_ID_REUSED",
             "MODEL_CONFIGURATION_TARGET_MISMATCH",
         }
         raise HTTPException(

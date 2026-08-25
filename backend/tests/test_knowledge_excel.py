@@ -165,7 +165,7 @@ class KnowledgeExcelTests(unittest.TestCase):
 
     def test_model_configuration_template_has_dedicated_contract(self):
         payload = build_model_configuration_import_template()
-        workbook = load_workbook(BytesIO(payload), read_only=True)
+        workbook = load_workbook(BytesIO(payload))
 
         self.assertEqual(
             workbook.sheetnames,
@@ -180,7 +180,7 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertEqual(
             headers,
             [
-                "来源知识ID（必填）",
+                "来源知识ID（选填）",
                 "标题（必填）",
                 "品类ID（必填）",
                 "品类（必填）",
@@ -195,6 +195,24 @@ class KnowledgeExcelTests(unittest.TestCase):
                 "综合内容（必填）",
             ],
         )
+        self.assertNotEqual(
+            workbook["机型配置信息"]["A1"].fill.fgColor.rgb,
+            workbook["机型配置信息"]["B1"].fill.fgColor.rgb,
+        )
+        self.assertIn(
+            "可留空",
+            workbook["机型配置信息"]["A1"].comment.text,
+        )
+        instructions = dict(
+            workbook["填写说明"].iter_rows(
+                min_row=2,
+                max_col=2,
+                values_only=True,
+            )
+        )
+        self.assertNotIn("来源知识ID", instructions["必填列"])
+        self.assertIn("选填", instructions["来源知识ID"])
+        self.assertIn("品类ID、品牌ID、型号ID组合", instructions["幂等规则"])
 
     def test_parse_model_configuration_template_preserves_source_fields(self):
         personalized_attributes = {
@@ -209,7 +227,7 @@ class KnowledgeExcelTests(unittest.TestCase):
         }
         payload = self.model_configuration_workbook_bytes(
             [
-                "来源知识ID（必填）",
+                "来源知识ID（选填）",
                 "标题（必填）",
                 "品类ID（必填）",
                 "品类（必填）",
@@ -261,6 +279,90 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertEqual(record.source_fields["来源工作表"], "机型配置信息")
         self.assertEqual(record.source_fields["来源行号"], "2")
 
+    def test_model_configuration_source_id_column_and_values_are_optional(self):
+        blank_id_payload = self.model_configuration_workbook_bytes(
+            [
+                "来源知识ID（选填）",
+                "标题（必填）",
+                "品类ID（必填）",
+                "品类（必填）",
+                "品牌ID（必填）",
+                "品牌（必填）",
+                "型号ID（必填）",
+                "型号（必填）",
+                "综合内容（必填）",
+            ],
+            [
+                [
+                    "",
+                    "测试机型一",
+                    "119",
+                    "平板电脑",
+                    "10530",
+                    "苹果",
+                    "97519",
+                    "测试机型一",
+                    "配置正文一",
+                ],
+                [
+                    None,
+                    "测试机型二",
+                    "119",
+                    "平板电脑",
+                    "10530",
+                    "苹果",
+                    "97520",
+                    "测试机型二",
+                    "配置正文二",
+                ],
+            ],
+        )
+
+        blank_id_records = parse_model_configuration_workbook(
+            blank_id_payload
+        ).records
+
+        self.assertEqual(len(blank_id_records), 2)
+        self.assertEqual(
+            [record.source_record_id for record in blank_id_records],
+            ["", ""],
+        )
+        self.assertTrue(
+            all("知识ID" not in record.source_fields for record in blank_id_records)
+        )
+
+        missing_column_payload = self.model_configuration_workbook_bytes(
+            [
+                "标题",
+                "品类ID",
+                "品类",
+                "品牌ID",
+                "品牌",
+                "型号ID",
+                "型号",
+                "综合内容",
+            ],
+            [
+                [
+                    "无来源ID列的机型",
+                    "119",
+                    "平板电脑",
+                    "10530",
+                    "苹果",
+                    "97521",
+                    "无来源ID列的机型",
+                    "配置正文",
+                ]
+            ],
+        )
+
+        missing_column_record = parse_model_configuration_workbook(
+            missing_column_payload
+        ).records[0]
+
+        self.assertEqual(missing_column_record.source_record_id, "")
+        self.assertNotIn("知识ID", missing_column_record.source_fields)
+
     def test_parse_legacy_model_configuration_defaults_category_and_ignores_unheaded_cells(self):
         payload = self.model_configuration_workbook_bytes(
             [
@@ -301,7 +403,7 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertNotIn("", record.source_fields)
         self.assertNotIn("有表头数据行上的残留", record.source_fields.values())
 
-    def test_model_configuration_rejects_mixed_or_duplicate_rows_before_sync(self):
+    def test_model_configuration_rejects_mixed_rows_and_allows_duplicate_trace_ids(self):
         mixed_payload = self.model_configuration_workbook_bytes(
             [
                 "知识ID",
@@ -338,11 +440,12 @@ class KnowledgeExcelTests(unittest.TestCase):
                 ["1", "配置二", "2", "品牌", "4", "型号二", "正文二"],
             ],
         )
-        with self.assertRaisesRegex(
-            KnowledgeExcelError,
-            "第 3 行.*第 2 行重复",
-        ):
-            parse_model_configuration_workbook(duplicate_payload)
+        parsed = parse_model_configuration_workbook(duplicate_payload)
+        self.assertEqual(len(parsed.records), 2)
+        self.assertEqual(
+            parsed.records[0].source_record_id,
+            parsed.records[1].source_record_id,
+        )
 
     def test_regular_import_rejects_workbook_with_model_configuration_data(self):
         payload = self.model_configuration_workbook_bytes(

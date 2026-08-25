@@ -876,13 +876,6 @@ CREATE UNIQUE INDEX uq_knowledge_items_model_configuration_source_knowledge_key 
 
 
 --
--- Name: uq_knowledge_items_model_configuration_source_record_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX uq_knowledge_items_model_configuration_source_record_id ON public.knowledge_items USING btree (source_record_id) WHERE (((knowledge_origin)::text = 'model_configuration'::text) AND (source_record_id IS NOT NULL));
-
-
---
 -- Name: ix_knowledge_media_knowledge_id; Type: INDEX; Schema: public; Owner: -
 --
 

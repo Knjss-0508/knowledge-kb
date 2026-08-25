@@ -103,7 +103,27 @@ class ModelConfigurationTests(unittest.TestCase):
         self.assertEqual(records[0].category_id, "119")
         self.assertEqual(records[-1].source_record_id, str(56000 + 832))
 
-    def test_payload_rejects_duplicate_source_or_model_ids(self):
+    def test_payload_accepts_missing_external_source_id(self):
+        first = _payload_record(1)
+        second = _payload_record(2)
+        first.pop("source_record_id")
+        first["source_fields"].pop("知识ID")
+        second["source_record_id"] = ""
+        second["source_fields"]["知识ID"] = ""
+
+        records = parse_model_configuration_payload(
+            {"records": [first, second]}
+        )
+
+        self.assertEqual(
+            [record.source_record_id for record in records],
+            ["", ""],
+        )
+        self.assertTrue(
+            all("知识ID" not in record.source_fields for record in records)
+        )
+
+    def test_payload_allows_duplicate_source_ids_but_rejects_model_keys(self):
         duplicated_source = _payload_record(1)
         duplicated_model = _payload_record(2)
         duplicated_model["model_id"] = duplicated_source["model_id"]
@@ -115,15 +135,13 @@ class ModelConfigurationTests(unittest.TestCase):
                 {"records": [duplicated_source, duplicated_model]}
             )
 
-        duplicate_record = _payload_record(1)
-        duplicate_record["model_id"] = "99999"
-        with self.assertRaisesRegex(
-            ModelConfigurationSyncError,
-            "知识ID",
-        ):
-            parse_model_configuration_payload(
-                {"records": [_payload_record(1), duplicate_record]}
-            )
+        duplicate_source = _payload_record(1)
+        duplicate_source["model_id"] = "99999"
+        records = parse_model_configuration_payload(
+            {"records": [_payload_record(1), duplicate_source]}
+        )
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0].source_record_id, records[1].source_record_id)
 
     def test_brand_triplet_has_priority_over_mismatched_names(self):
         item = _knowledge()
@@ -476,6 +494,36 @@ class ModelConfigurationTests(unittest.TestCase):
             ],
             '["平板电脑","测试平板 1"]',
         )
+
+    @patch(
+        "app.services.model_configuration._generate_knowledge_id",
+        return_value="A-00002",
+    )
+    @patch(
+        "app.services.model_configuration._find_existing_record",
+        return_value=None,
+    )
+    def test_sync_stores_missing_external_source_id_as_null(
+        self,
+        _find_existing,
+        _generate_id,
+    ):
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = (
+            "cat-extra-knowledge"
+        )
+        payload_record = _payload_record(2)
+        payload_record["source_record_id"] = ""
+        payload_record["source_fields"]["知识ID"] = ""
+        record = parse_model_configuration_payload(
+            {"records": [payload_record]}
+        )[0]
+
+        sync_model_configurations(db, [record], actor="test-sync")
+
+        created = db.add.call_args.args[0]
+        self.assertIsNone(created.source_record_id)
+        self.assertNotIn("知识ID", created.source_fields)
 
 
 if __name__ == "__main__":

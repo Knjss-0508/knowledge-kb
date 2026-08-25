@@ -83,19 +83,6 @@ class Knowledge(Base):
             name="ck_knowledge_items_business_type",
         ),
         Index(
-            "uq_knowledge_items_model_configuration_source_record_id",
-            "source_record_id",
-            unique=True,
-            sqlite_where=text(
-                "knowledge_origin = 'model_configuration' "
-                "AND source_record_id IS NOT NULL"
-            ),
-            postgresql_where=text(
-                "knowledge_origin = 'model_configuration' "
-                "AND source_record_id IS NOT NULL"
-            ),
-        ),
-        Index(
             "uq_knowledge_items_model_configuration_source_knowledge_key",
             "source_knowledge_key",
             unique=True,

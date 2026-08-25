@@ -62,7 +62,7 @@ docker compose exec -T backend \
 - `knowledge_origin = model_configuration`
 - `business_type = self_operated`，仅用于满足现有存储约束；精确查询不按请求业务类型排除
 - `category_id = cat-extra-knowledge`
-- `source_record_id = 飞书知识ID`
+- `source_record_id = 其他知识库的可选追溯ID`（可为空，不参与机型配置唯一识别）
 - `source_knowledge_key = model-configuration:品类ID:品牌ID:型号ID`
 - 状态直接写为 `published`
 - 不创建查重向量和检索向量
