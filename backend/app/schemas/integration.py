@@ -492,7 +492,6 @@ class IntegrationModelConfigurationItem(BaseModel):
     model: str = ""
     title: str
     content: str
-    attributes: dict[str, str] = Field(default_factory=dict)
     source_ref: str = Field(alias="sourceRef")
 
 

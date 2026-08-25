@@ -632,11 +632,6 @@ Content-Type: application/json
       "model": "iPad 10 (2022) 10.9英寸",
       "title": "iPad 10 (2022) 10.9英寸 机型的硬件与基础信息",
       "content": "是否有卡槽：国行单SIM卡；其他版本单SIM卡+eSIM卡；",
-      "attributes": {
-        "是否有卡槽": "国行:单SIM卡\n其他版本:单SIM卡+eSIM卡",
-        "指纹识别": "有指纹",
-        "蜂窝网络": "有蜂窝网络版"
-      },
       "sourceRef": "knowledge-kb://knowledge/A-00832"
     }
   }

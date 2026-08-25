@@ -13,9 +13,6 @@ from app.services.knowledge_excel import (
     parse_model_configuration_workbook,
     parse_knowledge_workbook,
 )
-from app.services.model_configuration import MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
-
-
 class KnowledgeExcelTests(unittest.TestCase):
     def setUp(self):
         self.categories = [
@@ -188,12 +185,17 @@ class KnowledgeExcelTests(unittest.TestCase):
                 "品牌（必填）",
                 "型号ID（必填）",
                 "型号（必填）",
-                *[
-                    f"{field}（选填）"
-                    for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
-                ],
                 "综合内容（必填）",
             ],
+        )
+        self.assertEqual(workbook["机型配置信息"].max_column, 9)
+        self.assertEqual(
+            workbook["机型配置信息"].auto_filter.ref,
+            "A1:I1",
+        )
+        self.assertIn(
+            "完整机型配置正文",
+            workbook["机型配置信息"]["I1"].comment.text,
         )
         self.assertNotEqual(
             workbook["机型配置信息"]["A1"].fill.fgColor.rgb,
@@ -213,8 +215,9 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertNotIn("来源知识ID", instructions["必填列"])
         self.assertIn("选填", instructions["来源知识ID"])
         self.assertIn("品类ID、品牌ID、型号ID组合", instructions["幂等规则"])
+        self.assertIn("只同步综合内容", instructions["原表兼容"])
 
-    def test_parse_model_configuration_template_preserves_source_fields(self):
+    def test_parse_model_configuration_ignores_legacy_attribute_columns(self):
         personalized_attributes = {
             "是否有卡槽": "蜂窝版有卡槽",
             "Home键": "不支持",
@@ -235,10 +238,7 @@ class KnowledgeExcelTests(unittest.TestCase):
                 "品牌（必填）",
                 "型号ID（必填）",
                 "型号（必填）",
-                *[
-                    f"{field}（选填）"
-                    for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
-                ],
+                *personalized_attributes,
                 "综合内容（必填）",
             ],
             [
@@ -251,10 +251,7 @@ class KnowledgeExcelTests(unittest.TestCase):
                     "苹果",
                     "97519",
                     "iPad 10 (2022) 10.9英寸",
-                    *[
-                        personalized_attributes[field]
-                        for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
-                    ],
+                    *personalized_attributes.values(),
                     "Home键：不支持；指纹识别：屏下指纹；",
                 ]
             ],
@@ -269,12 +266,12 @@ class KnowledgeExcelTests(unittest.TestCase):
         self.assertEqual(record.category_id, "119")
         self.assertEqual(record.brand_id, "10530")
         self.assertEqual(record.model_id, "97519")
+        self.assertTrue(
+            all(field not in record.source_fields for field in personalized_attributes)
+        )
         self.assertEqual(
-            {
-                field: record.source_fields[field]
-                for field in MODEL_CONFIGURATION_ATTRIBUTE_FIELDS
-            },
-            personalized_attributes,
+            record.source_fields["综合内容"],
+            "Home键：不支持；指纹识别：屏下指纹；",
         )
         self.assertEqual(record.source_fields["来源工作表"], "机型配置信息")
         self.assertEqual(record.source_fields["来源行号"], "2")

@@ -1571,22 +1571,14 @@ def build_model_configuration_import_template() -> bytes:
         "品牌（必填）",
         "型号ID（必填）",
         "型号（必填）",
-        "是否有卡槽（选填）",
-        "Home键（选填）",
-        "指纹识别（选填）",
-        "3D面容（选填）",
-        "内置手写笔（选填）",
-        "闪光灯（选填）",
-        "蜂窝网络（选填）",
-        "光线传感器（选填）",
         "综合内容（必填）",
     ]
     import_sheet.append(headers)
     import_sheet.freeze_panes = "A2"
-    import_sheet.auto_filter.ref = "A1:Q1"
+    import_sheet.auto_filter.ref = "A1:I1"
     import_sheet.row_dimensions[1].height = 28
 
-    required_columns = {2, 3, 4, 5, 6, 7, 8, 17}
+    required_columns = {2, 3, 4, 5, 6, 7, 8, 9}
     required_fill = PatternFill("solid", fgColor="0F766E")
     optional_fill = PatternFill("solid", fgColor="475569")
     for index, cell in enumerate(import_sheet[1], start=1):
@@ -1609,15 +1601,7 @@ def build_model_configuration_import_template() -> bytes:
         "F": 18,
         "G": 14,
         "H": 34,
-        "I": 24,
-        "J": 20,
-        "K": 20,
-        "L": 24,
-        "M": 24,
-        "N": 20,
-        "O": 24,
-        "P": 24,
-        "Q": 72,
+        "I": 72,
     }
     for column, width in widths.items():
         import_sheet.column_dimensions[column].width = width
@@ -1637,7 +1621,7 @@ def build_model_configuration_import_template() -> bytes:
         f"“{MODEL_CONFIGURATION_CATEGORY_NAME}”。",
         "知识库",
     )
-    import_sheet["Q1"].comment = Comment(
+    import_sheet["I1"].comment = Comment(
         "完整机型配置正文，最多 100000 个字符。",
         "知识库",
     )
@@ -1656,7 +1640,8 @@ def build_model_configuration_import_template() -> bytes:
         (
             "原表兼容",
             "兼容工作表名“个性化配置信息”和第一列“知识ID”；"
-            "原表同时缺少品类ID、品类时默认使用 119 / 平板电脑。",
+            "原表同时缺少品类ID、品类时默认使用 119 / 平板电脑；"
+            "旧表中的卡槽、Home键等个性属性列会被忽略，只同步综合内容。",
         ),
         (
             "同步规则",

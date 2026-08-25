@@ -1857,7 +1857,6 @@ Vue.createApp({
       mhCaches: {},
       option: {applicableCategories:[], brands:[], models:[]},
       optErr: {applicableCategories:'', brands:'', models:''},
-      modelConfigurationAttributeNames: ['是否有卡槽','Home键','指纹识别','3D面容','内置手写笔','闪光灯','蜂窝网络','光线传感器'],
       fm: {title:'', subtitles:[], knowledgeOrigin:'', businessType:'', cat:'', by:'', scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], modelConfiguration:null, importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[]},
       dedupCompare: {open:false, loading:false, allowSubmit:false, feedbackEnabled:false, feedbackRecorded:false, reason:'', submitting:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', knowledge_origin:'', business_type:'', category_id:'', content:{blocks:[]}}, target:{}},
       full:{show:false, src:'', isVideo:false, error:false}
@@ -1965,16 +1964,6 @@ Vue.createApp({
         ? detail.content
         : this.contentPreview(item.content);
       if (preview === '暂无正文') preview = '';
-      var attributes = {};
-      var detailAttributes = detail.attributes && typeof detail.attributes === 'object'
-        ? detail.attributes
-        : {};
-      this.modelConfigurationAttributeNames.forEach(function(attributeName) {
-        var value = Object.prototype.hasOwnProperty.call(detailAttributes, attributeName)
-          ? detailAttributes[attributeName]
-          : sourceFields[attributeName];
-        attributes[attributeName] = clean(value);
-      });
       return {
         sourceRecordId: clean(
           detail.source_record_id || item.source_record_id
@@ -1995,8 +1984,7 @@ Vue.createApp({
             || firstApplicableId(item.applicable_models)
         ),
         modelName: clean(detail.model_name || sourceFields['型号']),
-        content: clean(preview),
-        attributes: attributes
+        content: clean(preview)
       };
     },
     modelConfigurationScopeMeta: function(key) {
@@ -6084,11 +6072,6 @@ Vue.createApp({
       modelConfiguration.brandName = brandSelection.name;
       modelConfiguration.modelId = modelSelection.id;
       modelConfiguration.modelName = modelSelection.name;
-      var attributes = {};
-      var sourceAttributes = modelConfiguration.attributes || {};
-      this.modelConfigurationAttributeNames.forEach(function(attributeName) {
-        attributes[attributeName] = String(sourceAttributes[attributeName] || '').trim();
-      });
       var body = {
         title: String(form.title || '').trim(),
         content: String(modelConfiguration.content || '').trim(),
@@ -6097,8 +6080,7 @@ Vue.createApp({
         brand_id: brandSelection.id,
         brand_name: brandSelection.name,
         model_id: modelSelection.id,
-        model_name: modelSelection.name,
-        attributes: attributes
+        model_name: modelSelection.name
       };
       var self = this;
       var operationId = ++this.saveOperationId;

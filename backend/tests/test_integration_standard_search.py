@@ -284,7 +284,11 @@ class IntegrationStandardSearchTests(unittest.TestCase):
             "model_configuration",
         )
         self.assertEqual(exact["item"]["modelId"], "97519")
-        self.assertEqual(exact["item"]["attributes"]["指纹识别"], "有指纹")
+        self.assertEqual(
+            exact["item"]["content"],
+            "指纹识别：有指纹；\n蜂窝网络：有蜂窝网络版；",
+        )
+        self.assertNotIn("attributes", exact["item"])
         self.assertNotIn("score", exact["item"])
         self.assertNotIn("finalScore", exact["item"])
         _exact_match.assert_called_once()
