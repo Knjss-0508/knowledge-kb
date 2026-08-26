@@ -355,6 +355,7 @@
       <div class="nav-item" :class="{on:view==='overview'}" @click="openOverview"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg></span>运营总览</div>
       <div class="nav-item" :class="{on:view==='knowledge'}" @click="openKnowledge()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"></path><path d="M4 5.5v16"></path><path d="M8 7h8M8 11h8"></path></svg></span>知识库管理</div>
       <div class="nav-item" v-if="can('knowledge:submit')" :class="{on:view==='candidateReviews'}" @click="openCandidateReviews"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4h10a2 2 0 0 1 2 2v14H5V6a2 2 0 0 1 2-2z"></path><path d="M9 4V2h6v2M8 9h8M8 13h5"></path><path d="m14.5 16 1.5 1.5 3-3"></path></svg></span>候选价值复核</div>
+      <div class="nav-item" v-if="can('knowledge:submit')" :class="{on:view==='automationMonitor'}" @click="openAutomationMonitor"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v5M7.1 5.1l3.5 3.5M4 12h5M7.1 18.9l3.5-3.5M12 16v5M16.9 18.9l-3.5-3.5M15 12h5M16.9 5.1l3.5 3.5"></path><circle cx="12" cy="12" r="4"></circle></svg></span>运行监管</div>
       <div class="nav-item" v-if="can('knowledge:submit')" :class="{on:view==='answerHub'}" @click="openAnswerHub"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4h14v5H5zM5 15h14v5H5z"></path><path d="M8 7h.01M8 18h.01M12 7h4M12 18h4"></path></svg></span>Answer Hub 自动化</div>
       <div class="nav-item" :class="{on:view==='embeddingModel'}" @click="openEmbeddingModel()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4.5a3 3 0 0 1 5.2-2A3.5 3.5 0 0 1 18 5.8a3.2 3.2 0 0 1 1.2 5.9A3.5 3.5 0 0 1 17 18a3 3 0 0 1-5 2.2A3 3 0 0 1 7 18a3.5 3.5 0 0 1-2.2-6.3A3.2 3.2 0 0 1 6 5.8 3.5 3.5 0 0 1 8 4.5z"></path><path d="M12 4v16M8.5 8.5c1.5.3 2.5 1.2 3.5 2.5M15.5 8.5c-1.5.3-2.5 1.2-3.5 2.5M8.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5M15.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5"></path></svg></span>向量模型</div>
       <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='users'}" @click="openUsers"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c.8-3.2 3.1-5 7-5s6.2 1.8 7 5"></path><path d="M19 8v4M21 10h-4"></path></svg></span>账号管理</div>
@@ -680,6 +681,9 @@
         <option :value="false">全部查重状态</option>
         <option :value="true">疑似重复确认</option>
       </select>
+      <select class="inp" v-model="candidateReviews.filter.productCategory" @change="loadCandidateReviews(true)"><option value="">全部品类</option><option v-for="category in candidateReviews.productCategories" :key="category.value" :value="category.value">{{category.label}}</option></select>
+      <select class="inp" v-model="candidateReviews.filter.annotationStatus" @change="loadCandidateReviews(true)"><option value="">全部标注状态</option><option value="annotated">已标注</option><option value="unannotated">未标注</option></select>
+      <select class="inp" v-model="candidateReviews.filter.modelKnowledgeValue" @change="loadCandidateReviews(true)"><option value="">全部模型初标</option><option value="worthy">模型初标：值得沉淀</option><option value="unworthy">模型初标：不值得沉淀</option><option value="pending">模型初标：待确定</option></select>
       <label class="review-check-label"><input type="checkbox" v-model="candidateReviews.filter.priorityOnly" @change="loadCandidateReviews"> 仅重点复核</label>
       <span class="review-selected-note">已选 <b>{{candidateReviews.selected.length}}</b> 条</span>
       <button class="btn bd" @click="loadCandidateReviews" :disabled="candidateReviews.loading">{{candidateReviews.loading?'加载中...':'刷新'}}</button>
@@ -707,6 +711,15 @@
         </tbody>
       </table>
     </div>
+    <div class="bar"><span class="hint">第 {{candidateReviewPageStart()}}-{{candidateReviewPageEnd()}} 条 / 共 {{candidateReviews.total}} 条</span><button class="btn bd bsm" @click="changeCandidateReviewPage(candidateReviews.page-1)" :disabled="candidateReviews.page<=1">上一页</button><span class="hint">第 {{candidateReviews.page}} / {{candidateReviewPageCount()}} 页</span><button class="btn bd bsm" @click="changeCandidateReviewPage(candidateReviews.page+1)" :disabled="candidateReviews.page>=candidateReviewPageCount()">下一页</button><select class="inp" v-model.number="candidateReviews.pageSize" @change="changeCandidateReviewPageSize"><option :value="20">20 条/页</option><option :value="50">50 条/页</option><option :value="100">100 条/页</option></select></div>
+  </div>
+  <div class="mn" v-if="view==='automationMonitor' && can('knowledge:submit')">
+    <section class="overview"><div><h2>自动化流程监管</h2><p>查看自动化队列、异常反馈和 CZ 候选同步；所有知识仍需人工复核和终审。</p></div><div class="overview-status">最近更新：<b>{{answerHubMonitor.updatedAt}}</b></div></section>
+    <div class="bar review-toolbar"><span class="tt">运行监管</span><span class="hint">暂停只影响后续队列扫描，不中断已开始的运行；不会自动送审或发布知识。</span><button class="btn bp" v-if="isSuperAdmin() && !answerHubMonitor.control.enabled" @click="runAutomationMonitorAction('enable')" :disabled="answerHubMonitor.actionLoading">启用自动化</button><button class="btn bd" v-if="isSuperAdmin() && answerHubMonitor.control.enabled" @click="runAutomationMonitorAction('pause')" :disabled="answerHubMonitor.actionLoading">暂停自动化</button><button class="btn bd" v-if="isSuperAdmin()" @click="runAutomationMonitorAction('run')" :disabled="answerHubMonitor.actionLoading||answerHubMonitor.control.running">立即执行一次</button><button class="btn bd" v-if="isSuperAdmin()" @click="runAutomationMonitorAction('retry')" :disabled="answerHubMonitor.actionLoading||!answerHubMonitor.summary.attention">重试失败任务</button></div>
+    <div class="cards review-metric-cards"><div class="card" @click="setAutomationMonitorFilter('pending')"><div class="lb">待处理</div><div class="vl gy">{{answerHubMonitor.summary.pending}}</div></div><div class="card" @click="setAutomationMonitorFilter('running')"><div class="lb">运行中</div><div class="vl bl">{{answerHubMonitor.summary.running}}</div></div><div class="card" @click="setAutomationMonitorFilter('attention')"><div class="lb">待人工处理</div><div class="vl og">{{answerHubMonitor.summary.attention}}</div></div><div class="card" @click="setAutomationMonitorFilter('completed')"><div class="lb">已完成</div><div class="vl gn">{{answerHubMonitor.summary.completed}}</div></div><div class="card" @click="setAutomationMonitorFilter('cz_sync_failed')"><div class="lb">候选价值复核同步异常</div><div class="vl" style="color:#c83827!important">{{answerHubMonitor.summary.cz_sync_failed}}</div></div></div>
+    <div class="bar review-toolbar"><span class="tt">运行记录</span><select class="inp" v-model="answerHubMonitor.filter.status" @change="resetAutomationMonitorPage"><option value="">全部状态</option><option value="pending">待处理</option><option value="running">运行中</option><option value="attention">需人工处理</option><option value="completed">已完成</option><option value="cz_sync_failed">候选价值复核同步异常</option></select><input class="inp" v-model="answerHubMonitor.filter.keyword" placeholder="搜索运行 ID、来源或错误摘要" @keyup.enter="resetAutomationMonitorPage"><label class="review-check-label"><input type="checkbox" v-model="answerHubMonitor.autoRefresh"> 自动刷新 15 秒</label><button class="btn bd" @click="loadAutomationMonitor" :disabled="answerHubMonitor.loading">{{answerHubMonitor.loading?'加载中...':'刷新'}}</button></div>
+    <div class="tw"><table class="review-table"><thead><tr><th>健康状态</th><th>运行 / 来源</th><th>当前阶段</th><th>CZ 同步</th><th>更新时间</th></tr></thead><tbody><tr v-for="job in automationMonitorVisibleJobs()" :key="job.record_id"><td>{{automationMonitorHealthLabel(job)}}</td><td>{{job.source_label || job.record_id}}</td><td>{{(job.current_stage||{}).label || '-'}}</td><td>{{automationMonitorCzSyncLabel(job)}}</td><td>{{formatDate(job.updated_at)}}</td></tr><tr v-if="!automationMonitorVisibleJobs().length"><td colspan="5" class="review-empty">暂无符合条件的自动化运行记录</td></tr></tbody></table></div>
+    <div class="bar"><span class="hint">第 {{automationMonitorPageStart()}}-{{automationMonitorPageEnd()}} 条 / 共 {{automationMonitorFilteredJobs().length}} 条</span><button class="btn bd bsm" @click="changeAutomationMonitorPage(answerHubMonitor.page-1)" :disabled="answerHubMonitor.page<=1">上一页</button><button class="btn bd bsm" @click="changeAutomationMonitorPage(answerHubMonitor.page+1)" :disabled="answerHubMonitor.page>=automationMonitorPageCount()">下一页</button><select class="inp" v-model.number="answerHubMonitor.pageSize" @change="resetAutomationMonitorPage"><option :value="20">20 条/页</option><option :value="50">50 条/页</option><option :value="100">100 条/页</option></select></div>
   </div>
   <div class="mn" v-if="view==='changeLogs'">
     <section class="overview">
@@ -1833,7 +1846,10 @@ Vue.createApp({
         items: [],
         total: 0,
         summary: {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
-        filter: {keyword:'', status:'', priorityOnly:false, deduplicationRequired:false},
+        page: 1,
+        pageSize: 20,
+        filter: {keyword:'', status:'', priorityOnly:false, deduplicationRequired:false, productCategory:'', annotationStatus:'', modelKnowledgeValue:''},
+        productCategories: [],
         loading: false,
         selected: [],
         dlg: false,
@@ -1860,6 +1876,7 @@ Vue.createApp({
           problems: []
         }
       },
+      answerHubMonitor: {loading:false, actionLoading:false, autoRefresh:false, updatedAt:'-', page:1, pageSize:20, service:{status:'unknown',message:''}, control:{installed:false,enabled:false,running:false}, summary:{pending:0,running:0,attention:0,completed:0,cz_sync_failed:0}, jobs:[], filter:{status:'',keyword:''}},
       changeLogs: {item:null, entries:[]},
       knowledgeReviewSelection: [],
       batchApproving: false,
@@ -1960,6 +1977,7 @@ Vue.createApp({
         overview:'运营总览',
         knowledge:'知识库管理',
         candidateReviews:'候选价值复核',
+        automationMonitor:'运行监管',
         answerHub:'Answer Hub 自动化',
         embeddingModel:'向量模型',
         changeLogs:'变更日志',
@@ -1971,6 +1989,7 @@ Vue.createApp({
         overview:'知识运营工作台',
         knowledge:'知识内容维护与审核',
         candidateReviews:'候选价值判断与批量送审',
+        automationMonitor:'自动化队列、异常反馈与运行日志',
         answerHub:'运行状态、问题中心与受控操作',
         embeddingModel:'召回分析、上传查重、纠错与离线训练',
         changeLogs:'已发布知识变更追溯',
@@ -3500,6 +3519,38 @@ Vue.createApp({
       this.view = 'answerHub';
       this.loadAnswerHub();
     },
+    openAutomationMonitor: function() {
+      if (!this.can('knowledge:submit')) return;
+      this.view = 'automationMonitor';
+      this.loadAutomationMonitor();
+    },
+    loadAutomationMonitor: function() {
+      var self = this;
+      self.answerHubMonitor.loading = true;
+      fetch(API + '/automation-monitor/overview', {headers:self.authHeaders()})
+        .then(function(response) { return response.json().then(function(data) { if (!response.ok) throw new Error(data.detail || '加载运行监管失败'); return data; }); })
+        .then(function(data) { self.answerHubMonitor.service=data.service||{}; self.answerHubMonitor.control=data.control||{}; self.answerHubMonitor.summary=Object.assign(self.answerHubMonitor.summary,data.summary||{}); self.answerHubMonitor.jobs=Array.isArray(data.jobs)?data.jobs:[]; self.answerHubMonitor.updatedAt=self.formatDate(new Date()); })
+        .catch(function(error) { self.answerHubMonitor.service={status:'unavailable',message:error.message}; })
+        .finally(function() { self.answerHubMonitor.loading=false; if (self.answerHubMonitor.autoRefresh && self.view==='automationMonitor') setTimeout(function(){self.loadAutomationMonitor();},15000); });
+    },
+    runAutomationMonitorAction: function(action) {
+      var self=this, route={enable:'/automation-monitor/control',pause:'/automation-monitor/control',run:'/automation-monitor/runs',retry:'/automation-monitor/retry-failed'}[action];
+      if (!route) return;
+      var options={method:action==='enable'||action==='pause'?'PATCH':'POST',headers:self.authHeaders({'Content-Type':'application/json'})};
+      if (action==='enable'||action==='pause') options.body=JSON.stringify({enabled:action==='enable'});
+      self.answerHubMonitor.actionLoading=true;
+      fetch(API+route,options).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'操作失败');return d;});}).then(function(){return self.loadAutomationMonitor();}).catch(function(e){alert(e.message);}).finally(function(){self.answerHubMonitor.actionLoading=false;});
+    },
+    setAutomationMonitorFilter: function(status) { this.answerHubMonitor.filter.status=status; this.resetAutomationMonitorPage(); },
+    resetAutomationMonitorPage: function() { this.answerHubMonitor.page=1; },
+    automationMonitorFilteredJobs: function() { var m=this.answerHubMonitor, k=(m.filter.keyword||'').trim().toLowerCase(); return m.jobs.filter(function(job){var s=String(job.effective_status||''), h=String(job.health_status||''), failed=Number(((job.cz_sync)||{}).failed||0)>0; var ok=!m.filter.status || (m.filter.status==='running'&&['running','processing'].indexOf(s)!==-1) || (m.filter.status==='attention'&&(h==='failed'||h==='stalled'||failed)) || (m.filter.status==='cz_sync_failed'&&failed) || m.filter.status===s; return ok && (!k || [job.record_id,job.run_id,job.source_label,job.error].join(' ').toLowerCase().indexOf(k)!==-1);}); },
+    automationMonitorPageCount: function() { return Math.max(1,Math.ceil(this.automationMonitorFilteredJobs().length/this.answerHubMonitor.pageSize)); },
+    changeAutomationMonitorPage: function(page) { this.answerHubMonitor.page=Math.max(1,Math.min(Number(page)||1,this.automationMonitorPageCount())); },
+    automationMonitorVisibleJobs: function() { var start=(this.answerHubMonitor.page-1)*this.answerHubMonitor.pageSize; return this.automationMonitorFilteredJobs().slice(start,start+this.answerHubMonitor.pageSize); },
+    automationMonitorPageStart: function() { return this.automationMonitorFilteredJobs().length ? (this.answerHubMonitor.page-1)*this.answerHubMonitor.pageSize+1 : 0; },
+    automationMonitorPageEnd: function() { return Math.min(this.automationMonitorFilteredJobs().length,this.answerHubMonitor.page*this.answerHubMonitor.pageSize); },
+    automationMonitorHealthLabel: function(job) { var h=String(job.health_status||''), s=String(job.effective_status||''); if(h==='stalled')return '疑似卡住'; if(h==='failed')return '运行失败'; if(Number(((job.cz_sync)||{}).failed||0)>0)return '同步异常'; if(['running','processing'].indexOf(s)!==-1)return '运行中'; if(s==='pending')return '待处理'; return '已完成'; },
+    automationMonitorCzSyncLabel: function(job) { var sync=job.cz_sync||{}; return Number(sync.failed||0)>0?'失败 '+sync.failed:(Number(sync.queued||0)>0?'已排队 '+sync.queued:'等待同步'); },
     loadAnswerHub: function() {
       var self = this;
       self.answerHub.loading = true;
@@ -3630,15 +3681,25 @@ Vue.createApp({
         })
         .finally(function() { self.candidateDashboard.loading = false; });
     },
-    loadCandidateReviews: function() {
+    candidateReviewPageCount: function() { return Math.max(1, Math.ceil(this.candidateReviews.total / this.candidateReviews.pageSize)); },
+    candidateReviewPageStart: function() { return this.candidateReviews.total ? (this.candidateReviews.page - 1) * this.candidateReviews.pageSize + 1 : 0; },
+    candidateReviewPageEnd: function() { return Math.min(this.candidateReviews.total, this.candidateReviews.page * this.candidateReviews.pageSize); },
+    changeCandidateReviewPage: function(page) { this.candidateReviews.page = Math.max(1, Math.min(Number(page) || 1, this.candidateReviewPageCount())); this.candidateReviews.selected=[]; this.loadCandidateReviews(); },
+    changeCandidateReviewPageSize: function() { this.candidateReviews.page=1; this.candidateReviews.selected=[]; this.loadCandidateReviews(); },
+    loadCandidateReviews: function(resetPage) {
       var self = this;
+      if (resetPage) self.candidateReviews.page=1;
       var params = new URLSearchParams();
       var filter = self.candidateReviews.filter;
       if (filter.keyword && filter.keyword.trim()) params.set('keyword', filter.keyword.trim());
       if (filter.status) params.set('review_status', filter.status);
       if (filter.priorityOnly) params.set('priority_only', 'true');
       if (filter.deduplicationRequired) params.set('deduplication_required', 'true');
-      params.set('limit', '500');
+      if (filter.productCategory) params.set('product_category', filter.productCategory);
+      if (filter.annotationStatus) params.set('annotation_status', filter.annotationStatus);
+      if (filter.modelKnowledgeValue) params.set('model_knowledge_value', filter.modelKnowledgeValue);
+      params.set('limit', String(self.candidateReviews.pageSize));
+      params.set('offset', String((self.candidateReviews.page - 1) * self.candidateReviews.pageSize));
       self.candidateReviews.loading = true;
       fetch(API + '/integration/candidate-reviews?' + params.toString(), {headers:self.authHeaders()})
         .then(function(response) {
@@ -3649,7 +3710,8 @@ Vue.createApp({
         })
         .then(function(data) {
           self.candidateReviews.items = Array.isArray(data.items) ? data.items : [];
-          self.candidateReviews.total = Number(data.total || 0);
+           self.candidateReviews.total = Number(data.total || 0);
+           self.candidateReviews.productCategories = Array.isArray(data.product_categories) ? data.product_categories : self.candidateReviews.productCategories;
           self.candidateReviews.summary = Object.assign(
             {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
             data.summary || {}

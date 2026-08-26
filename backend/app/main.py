@@ -13,6 +13,7 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.database import engine
 from app.routes import (
+    automation_monitor,
     answer_hub,
     auth,
     business_type,
@@ -89,11 +90,11 @@ app.include_router(category.router, prefix=settings.API_V1_PREFIX)
 app.include_router(tag.router, prefix=settings.API_V1_PREFIX)
 app.include_router(manhattan.router, prefix=settings.API_V1_PREFIX)
 app.include_router(auth.router, prefix=settings.API_V1_PREFIX)
+app.include_router(automation_monitor.router, prefix=settings.API_V1_PREFIX)
 app.include_router(integration.router, prefix=settings.API_V1_PREFIX)
 app.include_router(answer_hub.router, prefix=settings.API_V1_PREFIX)
 app.include_router(embedding_admin.router, prefix=settings.API_V1_PREFIX)
 app.include_router(media.router)
-
 app.mount("/lib", StaticFiles(directory=str(FRONTEND_DIR / "lib")), name="lib")
 app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")
 
