@@ -1456,6 +1456,11 @@
             <div class="sec-t">{{isModelConfigurationForm()?'综合内容':'知识内容'}}</div>
             <div v-if="!viewOnly && !isModelConfigurationForm()" class="content-editor-note">支持按顺序混排文本、图片和视频；插件媒体标记使用 [img:https://...] / [video:https://...]，正文中的其他 URL 保持原文。</div>
           </div>
+          <div class="fg" v-if="!isModelConfigurationForm()" style="margin-bottom:12px">
+            <label class="fl">推荐回复</label>
+            <textarea class="fi" rows="3" v-model="fm.recommendedReply" :disabled="viewOnly" placeholder="供答疑人员直接使用的推荐回复"></textarea>
+            <div class="hint">可填写答疑人员可直接发送的回复；留空表示不设置推荐回复。</div>
+          </div>
           <div v-if="isModelConfigurationForm() && fm.modelConfiguration">
             <textarea v-if="!viewOnly" class="content-textarea model-configuration-content" v-model="fm.modelConfiguration.content" placeholder="输入机型配置综合内容"></textarea>
             <div v-else class="content-article-text">{{fm.modelConfiguration.content || '暂无综合内容'}}</div>
@@ -4728,6 +4733,8 @@ Vue.createApp({
       }).filter(function(value) {
         return String(value || '').trim();
       });
+      var recommendedReply = String(content.recommended_reply || '').trim();
+      if (recommendedReply) values.push('推荐回复：' + recommendedReply);
       return values.join('\n\n') || '（空）';
     },
     changeLogValue: function(field, value, hasValue, isAfter) {
@@ -5483,7 +5490,7 @@ Vue.createApp({
       this.viewOnly = false;
       this.auditMode = false;
       this.eid = '';
-      this.fm = {title:'', subtitles:[], knowledgeOrigin:'', businessType:'', cat:'', by:(this.currentUser.username || ''), scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], modelConfiguration:null, importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[this.createTextEditorBlock('')]};
+      this.fm = {title:'', subtitles:[], knowledgeOrigin:'', businessType:'', cat:'', by:(this.currentUser.username || ''), scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], recommendedReply:'', modelConfiguration:null, importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[this.createTextEditorBlock('')]};
       this.ns = '';
       this.relatedStandardItemInput = '';
       this._hoverTarget = null;
@@ -5532,6 +5539,11 @@ Vue.createApp({
         by: r.created_by,
         scenes: r.applicable_scenes ? r.applicable_scenes.slice() : [],
         relatedStandardItems: r.related_standard_items ? r.related_standard_items.slice() : [],
+        recommendedReply: (
+          r.content && typeof r.content === 'object'
+            ? String(r.content.recommended_reply || '')
+            : ''
+        ),
         applicableCategories: isModelConfiguration
           ? (modelConfiguration.categoryId ? [modelConfiguration.categoryId] : [])
           : (r.applicable_categories ? r.applicable_categories.slice() : []),
@@ -6319,10 +6331,13 @@ Vue.createApp({
       function buildBody() {
         var form = operation.form;
         var useManhattan = self.showManhattanFields(form);
+        var content = {blocks:self.buildContentBlocks(form)};
+        var recommendedReply = String(form.recommendedReply || '').trim();
+        if (recommendedReply) content.recommended_reply = recommendedReply;
         return {
           title: form.title,
           subtitles: form.subtitles.filter(function(s) { return s && s.trim(); }),
-          content: {blocks:self.buildContentBlocks(form)},
+          content: content,
           knowledge_origin: form.knowledgeOrigin,
           business_type: form.businessType,
           category_id: form.cat,

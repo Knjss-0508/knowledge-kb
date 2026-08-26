@@ -10,9 +10,21 @@ def test_content_editor_uses_flat_stable_blocks() -> None:
     assert 'v-for="(b,bi) in fm.blocks" :key="b._uid"' in FRONTEND
     assert "createTextEditorBlock: function(value)" in FRONTEND
     assert "createMediaEditorBlock: function(type, source)" in FRONTEND
-    assert "content: {blocks:self.buildContentBlocks(form)}" in FRONTEND
+    assert "var content = {blocks:self.buildContentBlocks(form)};" in FRONTEND
     assert "b.children" not in FRONTEND
     assert "block.children" not in FRONTEND
+
+
+def test_knowledge_editor_exposes_and_persists_recommended_reply() -> None:
+    assert (
+        '<textarea class="fi" rows="3" v-model="fm.recommendedReply" '
+        ':disabled="viewOnly" placeholder="供答疑人员直接使用的推荐回复"></textarea>'
+        in FRONTEND
+    )
+    assert 'v-if="!isModelConfigurationForm()" style="margin-bottom:12px"' in FRONTEND
+    assert "recommendedReply: (" in FRONTEND
+    assert "content.recommended_reply = recommendedReply" in FRONTEND
+    assert "values.push('推荐回复：' + recommendedReply)" in FRONTEND
 
 
 def test_media_decorators_are_only_trimmed_next_to_media() -> None:
