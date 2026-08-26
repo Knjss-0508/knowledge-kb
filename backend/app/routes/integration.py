@@ -1076,6 +1076,93 @@ def _to_model_configuration_result(
     )
 
 
+def _request_identity_mismatch_response(
+    body: Any,
+    *,
+    x_conversation_id: str,
+    x_request_id: str,
+) -> JSONResponse | None:
+    """校验插件 Header 与正文中的请求身份是否完全一致。"""
+
+    if (
+        x_conversation_id == body.conversation_id
+        and x_request_id == body.request_id
+    ):
+        return None
+    logger.warning(
+        "Integration request identity mismatch: "
+        "body_conversation_id=%s body_request_id=%s "
+        "header_conversation_id=%s header_request_id=%s",
+        body.conversation_id,
+        body.request_id,
+        x_conversation_id,
+        x_request_id,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "conversationId": body.conversation_id,
+            "requestId": body.request_id,
+            "code": "REQUEST_IDENTITY_MISMATCH",
+            "message": (
+                "请求 Header 与正文中的 conversationId/requestId "
+                "必须完全一致"
+            ),
+        },
+    )
+
+
+def _find_model_configuration_for_request(
+    db: Session,
+    body: IntegrationStandardSearchRequest,
+) -> IntegrationModelConfigurationResult:
+    """按独立机型配置请求执行一次严格匹配。"""
+
+    try:
+        match = find_exact_model_configuration(
+            db,
+            category_id=(
+                body.category_id
+                or body.order_info.category_id
+            ),
+            category_name=(
+                body.product_type
+                or body.order_info.category
+            ),
+            brand_id=(
+                body.brand_id
+                or body.order_info.brand_id
+            ),
+            brand_name=(
+                body.brand
+                or body.order_info.brand
+            ),
+            model_id=(
+                body.model_id
+                or body.order_info.model_id
+            ),
+            model_name=(
+                body.model
+                or body.order_info.model
+            ),
+        )
+    except ModelConfigurationAmbiguousError as exc:
+        logger.warning(
+            "%s conversation_id=%s request_id=%s match_mode=%s "
+            "category=%s model=%s match_count=%s knowledge_ids=%s",
+            exc.code,
+            body.conversation_id,
+            body.request_id,
+            exc.match_mode,
+            exc.category_value,
+            exc.model_value,
+            exc.match_count,
+            ",".join(exc.knowledge_ids),
+        )
+        match = None
+    return _to_model_configuration_result(match)
+
+
 @router.post(
     "/standard-search",
     response_model=IntegrationStandardSearchResponse,
@@ -1088,30 +1175,25 @@ def search_standard_provider_knowledge(
     db: Session = Depends(get_db),
     _: None = Depends(require_retrieval_key),
 ):
-    if (
-        x_conversation_id != body.conversation_id
-        or x_request_id != body.request_id
-    ):
-        logger.warning(
-            "Standard search identity mismatch: "
-            "body_conversation_id=%s body_request_id=%s "
-            "header_conversation_id=%s header_request_id=%s",
-            body.conversation_id,
-            body.request_id,
-            x_conversation_id,
-            x_request_id,
-        )
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={
-                "conversationId": body.conversation_id,
-                "requestId": body.request_id,
-                "code": "REQUEST_IDENTITY_MISMATCH",
-                "message": (
-                    "请求 Header 与正文中的 conversationId/requestId "
-                    "必须完全一致"
-                ),
-            },
+    identity_error = _request_identity_mismatch_response(
+        body,
+        x_conversation_id=x_conversation_id,
+        x_request_id=x_request_id,
+    )
+    if identity_error is not None:
+        return identity_error
+    if body.request_mode == "model_configuration":
+        model_configuration = _find_model_configuration_for_request(db, body)
+        return IntegrationStandardSearchResponse(
+            conversation_id=body.conversation_id,
+            request_id=body.request_id,
+            provider="knowledge-kb",
+            status=model_configuration.status,
+            retrieval_mode="model_configuration_exact",
+            knowledge_version=settings.VERSION,
+            score_threshold=0,
+            candidates=[],
+            model_configuration=model_configuration,
         )
     runtime_config = get_active_runtime_values(db)
     top_k_by_origin = _standard_search_top_k_by_origin(
@@ -1159,51 +1241,9 @@ def search_standard_provider_knowledge(
             body.order_info.model,
         ),
     )
-    try:
-        model_configuration_match = find_exact_model_configuration(
-            db,
-            category_id=(
-                body.category_id
-                or body.order_info.category_id
-            ),
-            category_name=(
-                body.order_info.category
-                or body.product_type
-            ),
-            brand_id=(
-                body.brand_id
-                or body.order_info.brand_id
-            ),
-            brand_name=(
-                body.brand
-                or body.order_info.brand
-            ),
-            model_id=(
-                body.model_id
-                or body.order_info.model_id
-            ),
-            model_name=(
-                body.model
-                or body.order_info.model
-            ),
-        )
-    except ModelConfigurationAmbiguousError as exc:
-        logger.warning(
-            "%s conversation_id=%s request_id=%s match_mode=%s "
-            "category=%s model=%s match_count=%s knowledge_ids=%s",
-            exc.code,
-            body.conversation_id,
-            body.request_id,
-            exc.match_mode,
-            exc.category_value,
-            exc.model_value,
-            exc.match_count,
-            ",".join(exc.knowledge_ids),
-        )
-        model_configuration_match = None
-    model_configuration = _to_model_configuration_result(
-        model_configuration_match
-    )
+    # 机型配置已迁移到同一路径的独立 requestMode 请求。保留固定的
+    # no_match 字段兼容旧插件响应结构，但普通语义检索不再执行精确查询。
+    model_configuration = _to_model_configuration_result(None)
     try:
         ranked_by_origin = {
             knowledge_origin: search_embeddings(
@@ -1219,25 +1259,6 @@ def search_standard_provider_knowledge(
             for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS
         }
     except EmbeddingServiceUnavailable as exc:
-        if model_configuration.status == "success":
-            logger.warning(
-                "Embedding unavailable but exact model configuration matched: "
-                "conversation_id=%s request_id=%s error=%s",
-                body.conversation_id,
-                body.request_id,
-                exc,
-            )
-            return IntegrationStandardSearchResponse(
-                conversation_id=body.conversation_id,
-                request_id=body.request_id,
-                provider="knowledge-kb",
-                status="success",
-                retrieval_mode="exact_scope_fallback",
-                knowledge_version=settings.VERSION,
-                score_threshold=score_threshold,
-                candidates=[],
-                model_configuration=model_configuration,
-            )
         logger.warning(
             "Embedding unavailable during standard provider search: "
             "conversation_id=%s request_id=%s error=%s",
@@ -1277,18 +1298,10 @@ def search_standard_provider_knowledge(
         provider="knowledge-kb",
         status=(
             "success"
-            if candidates or model_configuration.status == "success"
+            if candidates
             else "no_match"
         ),
-        retrieval_mode=(
-            "hybrid_exact_scope_pgvector"
-            if candidates and model_configuration.status == "success"
-            else (
-                "exact_scope"
-                if model_configuration.status == "success"
-                else "semantic_pgvector"
-            )
-        ),
+        retrieval_mode="semantic_pgvector",
         knowledge_version=settings.VERSION,
         score_threshold=score_threshold,
         candidates=candidates,

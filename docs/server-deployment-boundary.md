@@ -1,6 +1,6 @@
 # 生产服务器部署边界与安全更新说明
 
-> 最后只读核验：2026-08-12
+> 最后只读核验：2026-08-26
 > 目的：明确本项目在共享服务器上的部署范围。后续任何运维操作只能作用于本文件列出的项目资源，不能影响服务器上的其他网站、服务、数据或容器。
 
 ## 1. 已确认的项目范围
@@ -17,7 +17,7 @@
 
 ## 2. 已确认的运行服务
 
-服务器于 2026-08-05 只读核验以下知识库专属容器：
+服务器于 2026-08-26 只读核验以下知识库专属容器：
 
 | 容器 | 当前状态 | 用途 | 操作边界 |
 |---|---|---|---|
@@ -31,18 +31,17 @@
 
 ```text
 127.0.0.1:8000 -> 8000/tcp
-127.0.0.1:8080 -> kb-embedding-qwen:80/tcp
 ```
 
-`8080`只供同机Answer Hub调用Qwen3 Embedding，不加入Nginx代理。
-公网访问必须经项目专属 Nginx/宝塔站点反向代理进入。不得把 `8000`、
-`8080`、PostgreSQL 或 Redis 直接暴露到公网。
+Qwen3 Embedding 只在项目容器网络内提供服务，不映射宿主机端口，也不加入
+Nginx 代理。公网访问必须经项目专属 Nginx/宝塔站点反向代理进入。不得把
+`8000`、Embedding、PostgreSQL 或 Redis 直接暴露到公网。
 
-知识库当前通过新部署入口 `qa-kb.10.47.193.5.nip.io` 提供页面和 API。
-该域名解析到 `10.47.193.5`，但不能仅根据 DNS 结果判断访问范围；
+知识库当前通过正式入口 `knowledgekb.powerzhuan.cn` 提供页面和 API。
 需要外部接入的客户端统一使用该入口，访问范围由网关和接口鉴权控制。
-项目 Nginx 站点中的受限 API 代理规则必须与仓库
-`deploy/nginx/knowledge-kb-integration.conf` 保持一致，且只允许代理：
+当前站点通过统一反向代理提供页面和后端 API，接口权限由后端鉴权控制。若后续
+改为插件接口白名单代理，仓库 `deploy/nginx/knowledge-kb-integration.conf`
+至少必须同时放行：
 
 ```text
 /api/v1/integration/standard-search
@@ -50,12 +49,11 @@
 /api/v1/embedding-model/runner/tasks/etj-*/{probe|claim|heartbeat|progress|complete|fail}
 ```
 
-第三组路径只允许 `POST`，并且仍需通过任务创建时签发的单任务密钥鉴权；
+Runner 路径只允许 `POST`，并且仍需通过任务创建时签发的单任务密钥鉴权；
 不得代理 `/api/v1/embedding-model` 下的管理页面、任务创建、参数配置或模型
-发布接口。不得修改 `qa-kb.10.47.193.5.nip.io` 的站点根目录、重写规则或
-其他接口。页面入口统一使用
-`http://qa-kb.10.47.193.5.nip.io/app`，API 根地址统一使用
-`http://qa-kb.10.47.193.5.nip.io/api/v1`；旧公网入口不再作为客户端配置。
+发布接口。页面入口统一使用
+`https://knowledgekb.powerzhuan.cn/app`，API 根地址统一使用
+`https://knowledgekb.powerzhuan.cn/api/v1`；旧公网入口不再作为客户端配置。
 
 ## 3. 项目专属更新配置
 
@@ -67,6 +65,7 @@
 docker-compose.yml
 docker-compose.local.yml
 docker-compose.embedding-cpu.yml
+/opt/knowledge-kb-runtime/docker-compose.server.yml
 ```
 
 当前服务器按本地 PostgreSQL、本地媒体目录和 CPU Embedding 的方案运行。普通后端或前端代码更新时，前端会随 `kb-backend` 镜像一起更新，只允许构建和替换后端：
@@ -80,44 +79,28 @@ docker compose -p knowledge-kb \
   -f docker-compose.yml \
   -f docker-compose.local.yml \
   -f docker-compose.embedding-cpu.yml \
+  -f /opt/knowledge-kb-runtime/docker-compose.server.yml \
   build backend
 
 docker compose -p knowledge-kb \
   -f docker-compose.yml \
   -f docker-compose.local.yml \
   -f docker-compose.embedding-cpu.yml \
+  -f /opt/knowledge-kb-runtime/docker-compose.server.yml \
   up -d --no-deps backend
 ```
 
 `--no-deps` 是服务器日常更新的必要保护，确保不会重建或重启 PostgreSQL、Redis、Qwen Embedding 和迁移容器。
 
-首次增加或修复Embedding宿主机回环映射时，只允许重建
-`embedding-qwen`服务：
-
-```bash
-cd /opt/knowledge-kb
-
-docker compose -p knowledge-kb \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
-  -f docker-compose.embedding-cpu.yml \
-  config --quiet
-
-docker compose -p knowledge-kb \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
-  -f docker-compose.embedding-cpu.yml \
-  up -d --force-recreate embedding-qwen
-```
-
-该操作不得携带`--remove-orphans`，不得重建PostgreSQL、Redis或后端。
-完成后必须确认端口为`127.0.0.1:8080->80/tcp`，并分别验证
-`http://127.0.0.1:8080/health`、`/v1/embeddings`和后端`/ready`。
+当前运行时覆盖文件明确取消 Embedding 的宿主机端口映射。普通代码更新不得
+重建 `embedding-qwen`，也不得删除
+`/opt/knowledge-kb-runtime/docker-compose.server.yml`；需要调整 Embedding 拓扑时
+必须作为独立基础设施变更评审。
 
 启用任务级本机 GPU 训练接入时，只在项目 `.env` 中设置：
 
 ```text
-EMBEDDING_TRAINING_PUBLIC_BASE_URL=http://qa-kb.10.47.193.5.nip.io
+EMBEDDING_TRAINING_PUBLIC_BASE_URL=https://knowledgekb.powerzhuan.cn
 ```
 
 该值只用于创建 LoRA 任务时生成可复制的 URL，不包含 `/app` 或 `/api/v1`。
@@ -148,6 +131,7 @@ docker compose -p knowledge-kb \
   -f docker-compose.yml \
   -f docker-compose.local.yml \
   -f docker-compose.embedding-cpu.yml \
+  -f /opt/knowledge-kb-runtime/docker-compose.server.yml \
   build migrate backend
 
 docker inspect kb-postgres --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}'
@@ -156,18 +140,21 @@ docker compose -p knowledge-kb \
   -f docker-compose.yml \
   -f docker-compose.local.yml \
   -f docker-compose.embedding-cpu.yml \
+  -f /opt/knowledge-kb-runtime/docker-compose.server.yml \
   stop -t 30 backend
 
 docker compose -p knowledge-kb \
   -f docker-compose.yml \
   -f docker-compose.local.yml \
   -f docker-compose.embedding-cpu.yml \
+  -f /opt/knowledge-kb-runtime/docker-compose.server.yml \
   run --rm --no-deps migrate
 
 docker compose -p knowledge-kb \
   -f docker-compose.yml \
   -f docker-compose.local.yml \
   -f docker-compose.embedding-cpu.yml \
+  -f /opt/knowledge-kb-runtime/docker-compose.server.yml \
   up -d --no-deps backend
 ```
 
