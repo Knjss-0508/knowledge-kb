@@ -376,6 +376,14 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn("requestId", request_properties)
         self.assertIn("conversationId", request_required)
         self.assertIn("requestId", request_required)
+        self.assertIn("requestMode", request_properties)
+        self.assertEqual(
+            request_properties["requestMode"]["enum"],
+            ["semantic", "model_configuration"],
+        )
+        self.assertEqual(request_properties["requestMode"]["default"], "semantic")
+        self.assertNotIn("requestMode", request_required)
+        self.assertNotIn("normalizedQuestion", request_required)
         self.assertIn("knowledgeOrigin", request_properties)
         self.assertNotIn("knowledgeOrigin", request_required)
         self.assertIn("businessType", request_properties)
@@ -387,6 +395,12 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn("knowledgeVersion", response_properties)
         self.assertIn("conversationId", response_properties)
         self.assertIn("requestId", response_properties)
+
+        self.assertNotIn(
+            "/api/v1/integration/model-configuration",
+            specification["paths"],
+        )
+        self.assertIn("modelConfiguration", response_properties)
 
         feedback_schema = schemas["RetrievalQualityEventPayload"]
         feedback_properties = feedback_schema["properties"]

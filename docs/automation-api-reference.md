@@ -55,7 +55,7 @@ Content-Type: application/json
 答疑智能推荐助手调用 `/integration/standard-search` 和
 `/integration/retrieval-events:batch` 时，必须在同一个
 `X-Integration-Key` 请求头中传入独立的 `RETRIEVAL_API_KEY`。该密钥只允许
-标准检索和召回质量反馈，不能调用自动入库、字典或查重接口；
+语义检索、机型配置精确查询和召回质量反馈，不能调用自动入库、字典或查重接口；
 `INTEGRATION_API_KEY` 也不能替代它。内部运营页面使用的 `/knowledge/search`
 仍使用平台账号 Bearer 会话，不应将网页登录令牌配置到插件中。
 
@@ -526,8 +526,9 @@ Content-Type: application/json
 该接口与“答疑智能推荐助手 0.2.2”的 `external-standard-provider` 契约兼容。
 服务端只检索 `published` 已发布知识，并分别检索“总部标准”和“业务沉淀”。
 每个知识池的返回数量由中台独立配置，范围 1～10、当前默认均为 5；合并后最多
-20 条。机型配置信息使用独立的品类、品牌、机型精确匹配结果，不进入向量候选、
-阈值、TOP 或召回质量反馈。待审核、草稿和已废弃知识不会出现在响应中。
+20 条。机型配置信息通过同一路径的独立 `requestMode=model_configuration`
+请求查询，不进入语义候选、阈值、TOP 或召回质量反馈。待审核、草稿和已废弃
+知识不会出现在响应中。
 
 请求示例：
 
@@ -535,6 +536,7 @@ Content-Type: application/json
 {
   "conversationId": "202608100001",
   "requestId": "qa-plugin-202608100001-1",
+  "requestMode": "semantic",
   "normalizedQuestion": "屏幕四周胶条破损怎么判定",
   "knowledgeOrigin": "headquarters_standard",
   "businessType": "self_operated",
@@ -565,24 +567,20 @@ Content-Type: application/json
 |---|---:|---|
 | `conversationId` | 是 | 插件从当前页面读取的原始纯数字工单 ID；必须与 `X-Conversation-Id` 完全一致 |
 | `requestId` | 是 | 插件生成的单次请求标识；必须与 `X-Request-Id` 完全一致 |
-| `normalizedQuestion` | 是 | 插件整理后的检索问题，不能为空 |
+| `requestMode` | 否 | `semantic` 或 `model_configuration`；默认 `semantic` |
+| `normalizedQuestion` | 条件必填 | `semantic` 模式下必须提供；机型配置模式不需要 |
 | `knowledgeOrigin` | 否 | 兼容旧插件的来源字段；当前接口固定同时检索总部标准和业务沉淀 |
 | `businessType` | 否 | 业务类型硬过滤，只允许 `self_operated` 或 `aggregated`；新插件应明确传递 |
-| `productType` / `categoryId` | 否 | 插件提供的品类名称和 ID；机型配置精确匹配需要品类、品牌、机型三层信息完整 |
+| `productType` / `categoryId` | 否 | 插件提供的品类名称和 ID，用于语义知识适用范围过滤 |
 | `brand` / `brandId` | 否 | 插件提供的品牌名称和 ID |
 | `model` / `modelId` | 否 | 插件提供的机型名称和 ID |
 | `orderInfo` | 否 | 插件订单上下文，支持同名的品类、品牌、机型名称与 ID |
 | `partTerms` / `phenomenonTerms` / `categoryIntent` | 否 | 插件已解析的检索上下文 |
 | `limit` | 否 | 调用方对每个知识来源设置的兼容上限；允许 1～20，实际返回量还受中台为总部标准、业务沉淀分别设置的 1～10 条上限约束 |
 
-`normalizedQuestion` 用于总部标准和业务沉淀的语义检索，`businessType` 用于业务
+`requestMode=semantic` 时，`normalizedQuestion` 用于总部标准和业务沉淀的语义检索，`businessType` 用于业务
 类型硬过滤。品类、品牌、机型上下文先统一解析为可比较的名称和 ID，再作为两类
 语义知识的适用范围过滤条件。
-
-机型配置信息不生成查询向量。服务端优先严格匹配
-`categoryId + brandId + modelId`；ID 组合未命中且三个名称都完整时，再对
-`category + brand + model` 做 NFKC、大小写和空白归一后的精确匹配。任一层缺失、
-不一致或匹配到多条时均返回 `no_match`，不做模糊、包含或向量兜底。
 
 为兼容尚未发送 `businessType` 的旧插件，服务端仍会检查 `productType` 和
 `orderInfo.category`：任一字段明确等于“聚合回收”时按 `aggregated` 检索，
@@ -597,7 +595,7 @@ Content-Type: application/json
   "requestId": "qa-plugin-202608100001-1",
   "provider": "knowledge-kb",
   "status": "success",
-  "retrievalMode": "hybrid_exact_scope_pgvector",
+  "retrievalMode": "semantic_pgvector",
   "knowledgeVersion": "0.1.0",
   "scoreThreshold": 0.42,
   "candidates": [
@@ -619,21 +617,9 @@ Content-Type: application/json
     }
   ],
   "modelConfiguration": {
-    "status": "success",
-    "matchMode": "id",
-    "item": {
-      "knowledgeId": "A-00832",
-      "knowledgeOrigin": "model_configuration",
-      "categoryId": "119",
-      "category": "平板电脑",
-      "brandId": "10530",
-      "brand": "苹果",
-      "modelId": "97519",
-      "model": "iPad 10 (2022) 10.9英寸",
-      "title": "iPad 10 (2022) 10.9英寸 机型的硬件与基础信息",
-      "content": "是否有卡槽：国行单SIM卡；其他版本单SIM卡+eSIM卡；",
-      "sourceRef": "knowledge-kb://knowledge/A-00832"
-    }
+    "status": "no_match",
+    "matchMode": "none",
+    "item": null
   }
 }
 ```
@@ -658,11 +644,10 @@ Header 与正文不一致时返回 `REQUEST_IDENTITY_MISMATCH`，Embedding 服�
 不会用另一来源补位或
 复制结果；当前接口不会跨业务类型扩大检索。服务端会在适用类目、品牌和机型过滤后，
 使用当前激活的知识检索阈值过滤低分候选，并通过 `scoreThreshold` 返回本次生效值。
-`modelConfiguration` 始终返回独立状态；未命中时为
-`{"status":"no_match","matchMode":"none","item":null}`。精确命中不受 `limit`、
-阈值和两个向量知识池的 TOP 配置影响，也不计入 `candidates`。Embedding 服务
-不可用但机型配置精确命中时，接口仍以 HTTP 200 返回该精确结果；精确结果也未
-命中时才返回 HTTP 503。
+`modelConfiguration` 仅作为旧插件兼容占位，固定返回
+`{"status":"no_match","matchMode":"none","item":null}`，普通语义检索不会查询
+机型配置信息。Embedding 服务不可用时，语义请求直接返回 HTTP 503；机型配置
+独立请求不依赖 Embedding，不受该故障影响。
 
 插件的 Provider 配置示例：
 
@@ -680,7 +665,97 @@ Header 与正文不一致时返回 `REQUEST_IDENTITY_MISMATCH`，Embedding 服�
 ]
 ```
 
-### 5.2 平台账号语义搜索
+### 5.2 答疑智能推荐助手机型配置查询
+
+```http
+POST /integration/standard-search
+X-Integration-Key: <RETRIEVAL_API_KEY>
+X-Conversation-Id: 202608100001
+X-Request-Id: qa-plugin-202608100001-model-configuration
+Content-Type: application/json
+```
+
+该请求通过 `requestMode=model_configuration` 只做机型配置精确匹配，不需要
+`normalizedQuestion`、`businessType`、`limit` 或其他语义检索字段。插件应在
+工单的品类和机型信息读取完整后调用一次，并以 `conversationId` 缓存命中或未
+命中结果；同一工单后续会话变化不再重复请求。
+
+请求示例：
+
+```json
+{
+  "conversationId": "202608100001",
+  "requestId": "qa-plugin-202608100001-model-configuration",
+  "requestMode": "model_configuration",
+  "productType": "平板电脑",
+  "categoryId": "119",
+  "model": "iPad 10 (2022) 10.9英寸",
+  "modelId": "97519",
+  "orderInfo": {
+    "category": "平板电脑",
+    "categoryId": "119",
+    "model": "iPad 10 (2022) 10.9英寸",
+    "modelId": "97519"
+  }
+}
+```
+
+字段说明：
+
+| 字段 | 必填 | 说明 |
+|---|---:|---|
+| `conversationId` | 是 | 原始纯数字工单 ID；必须与 `X-Conversation-Id` 完全一致 |
+| `requestId` | 是 | 本次独立请求标识；必须与 `X-Request-Id` 完全一致 |
+| `requestMode` | 是 | 固定为 `model_configuration` |
+| `productType` / `categoryId` | 条件必填 | 顶层或 `orderInfo` 至少提供一种品类名称或 ID |
+| `model` / `modelId` | 条件必填 | 顶层或 `orderInfo` 至少提供一种机型名称或 ID |
+| `brand` / `brandId` | 否 | 插件可读取到品牌时作为额外精确约束；无法读取时不影响品类+机型匹配 |
+| `orderInfo` | 否 | 兼容现有插件的品类、品牌、机型字段容器 |
+
+品牌未提供时，服务端优先严格匹配 `categoryId + modelId`；品牌已提供时，严格
+匹配 `categoryId + brandId + modelId`。完整 ID 组合未命中且相应名称完整时，再按
+NFKC、大小写和空白归一后的名称组合精确匹配。完整 ID 组合命中时以 ID 为准，
+名称仅作为无完整 ID 命中时的兼容回退，避免名称调整导致同一机型失配。信息不足、
+可用的 ID/名称组合未命中或匹配到多条时均返回 `no_match`，不做模糊、包含或
+向量兜底。
+
+响应示例：
+
+```json
+{
+  "conversationId": "202608100001",
+  "requestId": "qa-plugin-202608100001-model-configuration",
+  "provider": "knowledge-kb",
+  "status": "success",
+  "retrievalMode": "model_configuration_exact",
+  "knowledgeVersion": "0.1.0",
+  "scoreThreshold": 0,
+  "candidates": [],
+  "modelConfiguration": {
+    "status": "success",
+    "matchMode": "id",
+    "item": {
+      "knowledgeId": "A-00832",
+      "knowledgeOrigin": "model_configuration",
+      "categoryId": "119",
+      "category": "平板电脑",
+      "brandId": "10530",
+      "brand": "苹果",
+      "modelId": "97519",
+      "model": "iPad 10 (2022) 10.9英寸",
+      "title": "iPad 10 (2022) 10.9英寸机型配置信息",
+      "content": "该机型的完整配置信息与使用说明。",
+      "sourceRef": "knowledge-kb://knowledge/A-00832"
+    }
+  }
+}
+```
+
+未命中时仍返回 HTTP 200，最外层和 `modelConfiguration.status` 均为 `no_match`。
+该请求只读且重复调用不会修改数据，但“每工单只请求一次”由插件按
+`conversationId` 缓存保证。
+
+### 5.3 平台账号语义搜索
 
 ```http
 POST /knowledge/search
@@ -733,7 +808,7 @@ POST /knowledge/search
 
 `score` 是当前查询与该知识最佳副标题向量或正文分块向量的余弦相似度，范围为 0 到 1。它用于排序，不应单独作为业务正确性的绝对判定。
 
-### 5.3 调用建议
+### 5.4 调用建议
 
 1. 下游先根据业务上下文传入 `category_id` 等可确定的过滤条件。
 2. 以 `score` 排序取回 `top_k` 条候选知识。
@@ -873,7 +948,8 @@ GET  /integration/ingestions/{ingestion_id}    （按需查询）
 ### 7.2 下游召回与反馈
 
 ```text
-POST /integration/standard-search              （答疑智能推荐助手）
+POST /integration/standard-search              （semantic：答疑智能推荐助手）
+POST /integration/standard-search              （model_configuration：每个工单一次）
 POST /knowledge/search                         （平台账号）
 POST /integration/retrieval-events:batch
 ```
@@ -909,10 +985,30 @@ curl -X POST "$KB_BASE_URL/api/v1/integration/standard-search" \
   -d '{
     "conversationId": "202608100001",
     "requestId": "qa-plugin-202608100001-1",
+    "requestMode": "semantic",
     "normalizedQuestion": "手机黑屏无法开机应该怎么排查",
     "knowledgeOrigin": "headquarters_standard",
     "businessType": "self_operated",
     "productType": "手机",
     "limit": 10
+  }'
+```
+
+答疑智能推荐助手机型配置查询：
+
+```bash
+curl -X POST "$KB_BASE_URL/api/v1/integration/standard-search" \
+  -H "X-Integration-Key: $KB_RETRIEVAL_KEY" \
+  -H "X-Conversation-Id: 202608100001" \
+  -H "X-Request-Id: qa-plugin-202608100001-model-configuration" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conversationId": "202608100001",
+    "requestId": "qa-plugin-202608100001-model-configuration",
+    "requestMode": "model_configuration",
+    "productType": "平板电脑",
+    "categoryId": "119",
+    "model": "iPad 10 (2022) 10.9英寸",
+    "modelId": "97519"
   }'
 ```

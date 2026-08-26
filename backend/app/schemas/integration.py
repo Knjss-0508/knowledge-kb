@@ -374,10 +374,17 @@ class IntegrationStandardSearchRequest(BaseModel):
         pattern=r"^[A-Za-z0-9._:-]{1,80}$",
         description="插件生成的单次请求标识，服务器必须原样回传。",
     )
+    request_mode: Literal["semantic", "model_configuration"] = Field(
+        "semantic",
+        alias="requestMode",
+        description=(
+            "semantic 为普通双知识池语义检索；model_configuration 为"
+            "同一路径上的独立机型配置精确查询。"
+        ),
+    )
     normalized_question: str = Field(
-        ...,
+        "",
         alias="normalizedQuestion",
-        min_length=1,
         max_length=8000,
     )
     knowledge_origin: KnowledgeOrigin | None = Field(
@@ -385,7 +392,7 @@ class IntegrationStandardSearchRequest(BaseModel):
         alias="knowledgeOrigin",
         description=(
             "兼容旧客户端的知识来源字段；标准检索固定同时检索"
-            "总部标准和业务沉淀，并独立精确匹配机型配置信息。"
+            "总部标准和业务沉淀。机型配置使用独立请求模式。"
         ),
     )
     business_type: BusinessType | None = Field(None, alias="businessType")
@@ -416,17 +423,14 @@ class IntegrationStandardSearchRequest(BaseModel):
         le=20,
         description=(
             "每个语义知识来源的兼容上限，实际还受总部标准、业务沉淀 "
-            "各自 1～10 条返回数量配置约束；不限制独立机型配置结果。"
+            "各自 1～10 条返回数量配置约束。"
         ),
     )
 
     @field_validator("normalized_question")
     @classmethod
-    def normalized_question_must_not_be_blank(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("normalizedQuestion must not be blank")
-        return value
+    def normalize_question(cls, value: str) -> str:
+        return value.strip()
 
     @field_validator(
         "product_type",
@@ -452,6 +456,32 @@ class IntegrationStandardSearchRequest(BaseModel):
                 raise ValueError("context term must not exceed 500 characters")
             normalized.append(item)
         return normalized
+
+    @model_validator(mode="after")
+    def validate_request_mode_fields(self):
+        if self.request_mode == "semantic":
+            if not self.normalized_question:
+                raise ValueError("normalizedQuestion must not be blank")
+            return self
+        category_available = bool(
+            self.category_id
+            or self.product_type
+            or self.order_info.category_id
+            or self.order_info.category
+        )
+        model_available = bool(
+            self.model_id
+            or self.model
+            or self.order_info.model_id
+            or self.order_info.model
+        )
+        if not category_available:
+            raise ValueError(
+                "categoryId/productType or orderInfo.category is required"
+            )
+        if not model_available:
+            raise ValueError("modelId/model or orderInfo.model is required")
+        return self
 
 
 class IntegrationStandardSearchCandidate(BaseModel):
@@ -544,6 +574,10 @@ class IntegrationStandardSearchResponse(BaseModel):
     candidates: list[IntegrationStandardSearchCandidate]
     model_configuration: IntegrationModelConfigurationResult = Field(
         alias="modelConfiguration",
+        description=(
+            "旧插件兼容占位；普通语义检索固定返回 no_match，"
+            "requestMode=model_configuration 时返回独立精确查询结果。"
+        ),
     )
 
 
