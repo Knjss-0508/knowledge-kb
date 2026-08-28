@@ -3,19 +3,8 @@ set -euo pipefail
 project_root=/opt/knowledge-kb/prototypes/answer-hub
 cd "$project_root"
 today=${ANSWER_HUB_SCHEDULE_DATE:-$(/usr/bin/date +%F)}
-case "$today" in
-  2026-08-24) from_date=2026-08-07; to_date=2026-08-14 ;;
-  2026-08-25) from_date=2026-08-15; to_date=2026-08-21 ;;
-  2026-08-26) from_date=2026-08-22; to_date=2026-08-26 ;;
-  *)
-    if [[ "$today" < 2026-08-27 ]]; then
-      echo "No scheduled Answer Hub batch for $today."
-      exit 0
-    fi
-    from_date="$today"
-    to_date="$today"
-    ;;
-esac
+from_date=${ANSWER_HUB_SCHEDULE_FROM_DATE:-$today}
+to_date=${ANSWER_HUB_SCHEDULE_TO_DATE:-$today}
 for bucket in pending processing failed; do
   if find "data/automation-queue/$bucket" -maxdepth 1 -type f -name '*.xlsx' -print -quit | grep -q .; then
     echo "Queue has unresolved $bucket work; skip $from_date to $to_date."
@@ -43,4 +32,4 @@ if [[ "$pull_succeeded" -ne 1 ]]; then
   echo "Second-part pull failed after 3 attempts; MiMo was not started."
   exit 1
 fi
-"$project_root/.venv/bin/python" -m answer_hub.cli automation-queue --queue-dir data/automation-queue --standards data/standards/active_standards.json --output-dir outputs/automation-runs --clustering-mode direct_mimo --max-files 10 --stale-after-seconds 7200 --sync-to-cz-review
+"$project_root/.venv/bin/python" -m answer_hub.cli automation-queue --queue-dir data/automation-queue --output-dir outputs/automation-runs --clustering-mode direct_mimo --max-files 10 --stale-after-seconds 7200 --sync-to-cz-review

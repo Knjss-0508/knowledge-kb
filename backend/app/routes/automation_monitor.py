@@ -21,10 +21,16 @@ router = APIRouter(prefix="/automation-monitor", tags=["自动化运行监管"])
 
 
 def _gateway() -> AutomationMonitorGateway:
+    base_url = settings.ANSWER_HUB_API_BASE_URL or settings.ANSWER_HUB_BASE_URL
+    timeout_seconds = (
+        settings.ANSWER_HUB_API_TIMEOUT_SECONDS
+        if settings.ANSWER_HUB_API_BASE_URL
+        else settings.ANSWER_HUB_TIMEOUT_SECONDS
+    )
     return AutomationMonitorGateway(
-        settings.ANSWER_HUB_API_BASE_URL,
+        base_url,
         settings.ANSWER_HUB_API_KEY,
-        settings.ANSWER_HUB_API_TIMEOUT_SECONDS,
+        timeout_seconds,
     )
 
 

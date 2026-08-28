@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # Narrow key for the QA plugin's published-knowledge retrieval and feedback.
     RETRIEVAL_API_KEY: str = ""
     # Answer Hub is contacted only by the backend; browser clients never receive this key.
+    # Keep the legacy names while deployments migrate to the API-prefixed names.
+    ANSWER_HUB_BASE_URL: str = ""
+    ANSWER_HUB_TIMEOUT_SECONDS: float = 10.0
     ANSWER_HUB_API_BASE_URL: str = ""
     ANSWER_HUB_API_KEY: str = ""
     ANSWER_HUB_API_TIMEOUT_SECONDS: float = 15.0

@@ -646,8 +646,10 @@ def process_automation_queue(
 ) -> dict[str, Any]:
     terminology = ensure_terminology_loaded()
     standards = Path(standards_path) if standards_path else None
-    if standards is not None and not standards.is_file():
-        raise FileNotFoundError(f"标准文件不存在：{standards}")
+    if standards is not None:
+        raise ValueError(
+            "批量队列不允许读取标准文件；标准只能在明确的后续转写流程中使用。"
+        )
 
     queue = AutomationQueue(queue_root)
     output_path = Path(output_root)

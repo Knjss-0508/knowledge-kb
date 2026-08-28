@@ -740,7 +740,7 @@
     </div>
     <div class="cards review-metric-cards"><div class="card" @click="setAutomationMonitorFilter('pending')"><div class="lb">待处理</div><div class="vl gy">{{answerHubMonitor.summary.pending}}</div></div><div class="card" @click="setAutomationMonitorFilter('running')"><div class="lb">运行中</div><div class="vl bl">{{answerHubMonitor.summary.running}}</div></div><div class="card" @click="setAutomationMonitorFilter('attention')"><div class="lb">待人工处理</div><div class="vl og">{{answerHubMonitor.summary.attention}}</div></div><div class="card" @click="setAutomationMonitorFilter('completed')"><div class="lb">已完成</div><div class="vl gn">{{answerHubMonitor.summary.completed}}</div></div><div class="card"><div class="lb">候选价值复核同步异常</div><div class="vl" style="color:#c83827!important">{{answerHubMonitor.summary.cz_sync_failed}}</div></div></div>
     <div class="bar review-toolbar"><span class="tt">运行记录</span><select class="inp" v-model="answerHubMonitor.filter.status" @change="resetAutomationMonitorPage"><option value="">全部状态</option><option value="pending">待处理</option><option value="running">运行中</option><option value="attention">需人工处理</option><option value="completed">已完成</option><option value="cz_sync_failed">候选价值复核同步异常</option></select><input class="inp review-search" v-model="answerHubMonitor.filter.keyword" placeholder="搜索运行 ID、来源或错误摘要" @keyup.enter="resetAutomationMonitorPage"></div>
-    <div class="tw"><table class="review-table"><thead><tr><th>健康状态</th><th>运行 / 来源</th><th>当前阶段</th><th>CZ 同步</th><th>更新时间</th></tr></thead><tbody><tr v-for="job in automationMonitorVisibleJobs()" :key="job.record_id"><td>{{automationMonitorHealthLabel(job)}}</td><td>{{job.source_label || job.record_id}}</td><td>{{(job.current_stage||{}).label || '-'}}</td><td>{{automationMonitorCzSyncLabel(job)}}</td><td>{{formatDate(job.updated_at)}}</td></tr><tr v-if="!automationMonitorVisibleJobs().length"><td colspan="5" class="review-empty">暂无符合条件的自动化运行记录</td></tr></tbody></table></div>
+    <div class="tw"><table class="review-table"><thead><tr><th>健康状态</th><th>运行 / 来源</th><th>当前阶段</th><th>CZ 同步</th><th>更新时间</th><th>任务反馈</th></tr></thead><tbody><tr v-for="job in automationMonitorVisibleJobs()" :key="job.record_id"><td>{{automationMonitorHealthLabel(job)}}</td><td>{{job.source_label || job.record_id}}</td><td>{{(job.current_stage||{}).label || '-'}}</td><td>{{automationMonitorCzSyncLabel(job)}}</td><td>{{formatDate(job.updated_at)}}</td><td><div class="automation-feedback"><select class="inp" v-model="job.feedbackDraft.status"><option value="">状态</option><option value="resolved">已处理</option><option value="ignored">已忽略</option><option value="pending">待处理</option></select><input class="inp" v-model="job.feedbackDraft.owner" placeholder="负责人"><input class="inp" v-model="job.feedbackDraft.cause_type" placeholder="原因类型"><input class="inp" v-model="job.feedbackDraft.note" placeholder="备注"><button class="btn bd bsm" type="button" @click="saveAutomationMonitorFeedback(job)" :disabled="job.feedbackSaving">{{job.feedbackSaving?'保存中':'保存'}}</button></div></td></tr><tr v-if="!automationMonitorVisibleJobs().length"><td colspan="6" class="review-empty">暂无符合条件的自动化运行记录</td></tr></tbody></table></div>
     <div class="bar"><span class="hint">第 {{automationMonitorPageStart()}}-{{automationMonitorPageEnd()}} 条 / 共 {{automationMonitorFilteredJobs().length}} 条</span><button class="btn bd bsm" @click="changeAutomationMonitorPage(answerHubMonitor.page-1)" :disabled="answerHubMonitor.page<=1">上一页</button><button class="btn bd bsm" @click="changeAutomationMonitorPage(answerHubMonitor.page+1)" :disabled="answerHubMonitor.page>=automationMonitorPageCount()">下一页</button></div>
     <section class="review-panel" v-if="answerHubMonitor.log.content"><h3>{{answerHubMonitor.log.name || '最新运行日志'}}</h3><pre style="max-height:260px;overflow:auto;white-space:pre-wrap">{{answerHubMonitor.log.content}}</pre></section>
   </div>
@@ -1853,6 +1853,7 @@ Vue.createApp({
         updatedAt: '-'
       },
       answerHubMonitor: {loading:false,logsLoading:false,actionLoading:false,updatedAt:'-',page:1,pageSize:20,service:{status:'unknown',message:''},control:{enabled:false,schedule_enabled:false,schedule_time:'02:00',running:false,plan:{knowledge_settle_from_date:'',knowledge_settle_to_date:'',second_part_query_from_date:'',second_part_query_to_date:'',timezone:'Asia/Shanghai'}},summary:{pending:0,running:0,attention:0,completed:0,cz_sync_failed:0},jobs:[],filter:{status:'',keyword:''},log:{name:'',content:''}},
+      legacyAnswerHubPaths: {overview:'/answer-hub/overview',control:'/answer-hub/control',runs:'/answer-hub/runs'},
       changeLogs: {item:null, entries:[]},
       knowledgeReviewSelection: [],
       batchApproving: false,
@@ -3489,7 +3490,18 @@ Vue.createApp({
       fetch(API + '/automation-monitor/overview',{headers:self.authHeaders()})
         .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'加载运行监管失败');return d;});})
         .then(function(d){self.answerHubMonitor.service=d.service||{};self.answerHubMonitor.control=Object.assign(self.answerHubMonitor.control,d.control||{});self.answerHubMonitor.control.plan=Object.assign(self.answerHubMonitor.control.plan||{},(d.control||{}).plan||{});self.answerHubMonitor.summary=Object.assign(self.answerHubMonitor.summary,d.summary||{});self.answerHubMonitor.jobs=Array.isArray(d.jobs)?d.jobs:[];self.answerHubMonitor.updatedAt=self.formatDate(new Date());})
-        .catch(function(e){self.answerHubMonitor.service={status:'unavailable',message:e.message};})
+        .catch(function(e){
+          // Compatibility fallback for deployments that still expose the legacy gateway.
+          return fetch(API + '/answer-hub/overview',{headers:self.authHeaders()})
+            .then(function(r){return r.json().then(function(d){if(!r.ok)throw e;return d;});})
+            .then(function(d){
+              self.answerHubMonitor.service=d.service||{status:'online',message:''};
+              self.answerHubMonitor.control=Object.assign(self.answerHubMonitor.control,d.control||{});
+              self.answerHubMonitor.summary=Object.assign(self.answerHubMonitor.summary,d.metrics||d.summary||{});
+              self.answerHubMonitor.jobs=Array.isArray(d.jobs)?d.jobs:[];
+            })
+            .catch(function(){self.answerHubMonitor.service={status:'unavailable',message:e.message};});
+        })
         .finally(function(){self.answerHubMonitor.loading=false;});
     },
     saveAutomationMonitorControl: function(){
@@ -3533,7 +3545,7 @@ Vue.createApp({
       if (filter==='cz_sync_failed') return czFailed;
       return status===filter || health===filter;
     },
-    automationMonitorFilteredJobs: function(){var self=this,m=this.answerHubMonitor,k=(m.filter.keyword||'').trim().toLowerCase();return m.jobs.filter(function(j){var ok=self.automationMonitorStatusMatches(j,m.filter.status);return ok&&(!k||[j.record_id,j.run_id,j.source_label,j.error].join(' ').toLowerCase().indexOf(k)!==-1);});},
+    automationMonitorFilteredJobs: function(){var self=this,m=this.answerHubMonitor,k=(m.filter.keyword||'').trim().toLowerCase();return m.jobs.filter(function(j){var ok=self.automationMonitorStatusMatches(j,m.filter.status);return ok&&(!k||[j.record_id,j.run_id,j.source_label,j.error].join(' ').toLowerCase().indexOf(k)!==-1);}).map(function(j){if(!j.feedbackDraft){var f=j.feedback||{};j.feedbackDraft={status:String(f.status||''),owner:String(f.owner||''),cause_type:String(f.cause_type||''),note:String(f.note||'')};j.feedbackSaving=false;}return j;});},
     automationMonitorPageCount: function(){return Math.max(1,Math.ceil(this.automationMonitorFilteredJobs().length/this.answerHubMonitor.pageSize));},
     changeAutomationMonitorPage: function(page){this.answerHubMonitor.page=Math.max(1,Math.min(Number(page)||1,this.automationMonitorPageCount()));},
     automationMonitorVisibleJobs: function(){var start=(this.answerHubMonitor.page-1)*this.answerHubMonitor.pageSize;return this.automationMonitorFilteredJobs().slice(start,start+this.answerHubMonitor.pageSize);},
@@ -3541,6 +3553,7 @@ Vue.createApp({
     automationMonitorPageEnd: function(){return Math.min(this.automationMonitorFilteredJobs().length,this.answerHubMonitor.page*this.answerHubMonitor.pageSize);},
     automationMonitorHealthLabel: function(j){var h=String(j.health_status||''),s=String(j.effective_status||'');if(h==='stalled')return '疑似卡住';if(h==='failed')return '运行失败';if(Number(((j.cz_sync)||{}).failed||0)>0)return '同步异常';if(['running','processing'].indexOf(s)!==-1)return '运行中';if(s==='pending')return '待处理';return '已完成';},
     automationMonitorCzSyncLabel: function(j){var s=j.cz_sync||{};return Number(s.failed||0)>0?'失败 '+s.failed:(Number(s.queued||0)>0?'已排队 '+s.queued:'等待同步');},
+    saveAutomationMonitorFeedback: function(job){var self=this;if(!job||!job.record_id)return;job.feedbackSaving=true;fetch(API+'/automation-monitor/jobs/'+encodeURIComponent(job.record_id)+'/feedback',{method:'PATCH',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify(job.feedbackDraft||{})}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'保存任务反馈失败');return d;});}).then(function(d){job.feedback=d.feedback||d;alert('任务反馈已保存');}).catch(function(e){alert(e.message);}).finally(function(){job.feedbackSaving=false;});},
     showAutomationMonitorLogs: function(){var self=this;self.answerHubMonitor.logsLoading=true;fetch(API+'/automation-monitor/logs/latest?lines=120',{headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'读取日志失败');return d;});}).then(function(d){self.answerHubMonitor.log=d||{name:'',content:''};}).catch(function(e){self.answerHubMonitor.log={name:'日志暂不可读取',content:e.message};}).finally(function(){self.answerHubMonitor.logsLoading=false;});},
     candidateReviewPageCount: function(){return Math.max(1,Math.ceil(this.candidateReviews.total/this.candidateReviews.pageSize));},
     candidateReviewPageStart: function(){return this.candidateReviews.total?(this.candidateReviews.page-1)*this.candidateReviews.pageSize+1:0;},

@@ -10,6 +10,7 @@ import hmac
 import json
 import os
 import re
+import threading
 import uuid
 
 from flask import Flask, jsonify, request, send_file
@@ -393,6 +394,10 @@ def create_automation_api_app(
     queue_root: str | Path | None = None,
     output_root: str | Path | None = None,
     feedback_path: str | Path | None = None,
+    # Legacy hooks retained for callers that embedded the original in-process
+    # worker before the Windows task-controller boundary was introduced.
+    run_worker: Callable[[str], dict[str, Any]] | None = None,
+    start_scheduler: Callable[..., Any] | None = None,
     task_controller: Any | None = None,
     project_root: str | Path | None = None,
 ) -> Flask:
@@ -419,7 +424,58 @@ def create_automation_api_app(
         or os.getenv("ANSWER_HUB_RUN_FEEDBACK_PATH", "").strip()
         or (job_store.queue.root / "run_feedback.db")
     )
-    automation_controller = task_controller or AutomationTaskController()
+    if task_controller is not None:
+        automation_controller = task_controller
+    elif run_worker is not None:
+        class _LegacyController:
+            def __init__(self) -> None:
+                self.enabled = False
+                self.running = False
+                self.last_run: dict[str, Any] = {}
+                self._lock = threading.Lock()
+
+            def status(self) -> dict[str, Any]:
+                with self._lock:
+                    return {
+                        "installed": True,
+                        "enabled": self.enabled,
+                        "running": self.running,
+                        "last_run": dict(self.last_run),
+                    }
+
+            def set_enabled(self, enabled: bool) -> dict[str, Any]:
+                with self._lock:
+                    self.enabled = bool(enabled)
+                return {"enabled": self.enabled, "installed": True}
+
+            def run_now(self) -> dict[str, Any]:
+                with self._lock:
+                    if self.running:
+                        raise AutomationTaskControlError("已有自动化任务正在运行。")
+                    self.running = True
+
+                def worker() -> None:
+                    try:
+                        result = run_worker("管理员")
+                        with self._lock:
+                            self.last_run = dict(result or {})
+                            self.last_run.setdefault("status", "completed")
+                    except Exception as exc:  # pragma: no cover - legacy hook boundary
+                        with self._lock:
+                            self.last_run = {"status": "failed", "error": str(exc)}
+                    finally:
+                        with self._lock:
+                            self.running = False
+
+                threading.Thread(target=worker, daemon=True).start()
+                return {"status": "accepted"}
+
+            def retry_failed(self, _: Path) -> dict[str, Any]:
+                return self.run_now()
+
+        automation_controller = _LegacyController()
+    else:
+        automation_controller = AutomationTaskController()
     automation_project_root = Path(project_root or Path(__file__).resolve().parents[2])
     automation_plan_path = Path(
         os.getenv("ANSWER_HUB_AUTOMATION_PLAN_PATH", "data/automation-plan.json")
@@ -580,6 +636,8 @@ def create_automation_api_app(
             ),
             "timezone": str(plan.get("timezone") or "Asia/Shanghai"),
         }
+        # Keep the legacy root-level field for older clients.
+        snapshot["timezone"] = snapshot["plan"]["timezone"]
         snapshot["schedule_enabled"] = bool(plan.get("schedule_enabled"))
         snapshot["schedule_time"] = str(plan.get("schedule_time") or "02:00")
         return snapshot
@@ -639,16 +697,43 @@ def create_automation_api_app(
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         })
         write_automation_plan(plan)
-        return jsonify({**result, "control": automation_control_snapshot()})
+        snapshot = automation_control_snapshot()
+        return jsonify({
+            **result,
+            **{
+                key: snapshot.get(key)
+                for key in (
+                    "enabled",
+                    "running",
+                    "schedule_enabled",
+                    "schedule_time",
+                    "timezone",
+                    "last_run",
+                )
+                if key in snapshot
+            },
+            "control": snapshot,
+        })
 
     @app.post("/api/v1/automation/runs")
     @require_api_key
     def start_controlled_automation_run():
         control = automation_control_snapshot()
         if not control.get("enabled"):
-            return jsonify({"error": "自动化已暂停，请先启用后再立即执行。"}), 409
+            return jsonify({"error": "自动化总开关已关闭，请先启用后再立即执行。"}), 409
         if control.get("running"):
             return jsonify({"error": "已有自动化任务正在运行。"}), 409
+        records = list_automation_run_records(
+            job_store.output_root,
+            job_store.queue.root,
+            limit=100,
+        )
+        if any(
+            str(record.get("effective_status") or "")
+            in {"processing", "running"}
+            for record in records
+        ):
+            return jsonify({"error": "已有自动化任务正在运行，请等待完成后再试。"}), 409
         try:
             result = automation_controller.run_now()
         except AutomationTaskControlError as exc:
