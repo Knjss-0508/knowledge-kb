@@ -352,6 +352,7 @@ class CandidateSubmit(BaseModel):
     content: Any = Field(..., description="内容")
     category_id: str = Field(..., description="所属分类ID")
     applicable_scenes: list[str] = Field(default=[], description="场景标签")
+    applicable_categories: list[Any] = Field(default=[], description="适用类目")
     related_standard_items: list[str] = Field(default=[], description="关联标准项")
     confirm_dedup_review: bool = Field(
         False,
