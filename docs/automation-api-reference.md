@@ -83,6 +83,7 @@ Content-Type: application/json
 ```
 
 副标题、分类、层级、场景标签、品牌和机型不参与查重向量，避免结构化元数据或大量副标题干扰重复判断。
+适用类目不拼入向量，但用于限定查重候选范围：双方都明确填写且适用类目没有交集时，不互相查重；任意一方未填写时仍按通用范围查重，以兼容历史数据。
 
 ### 3.2 召回向量
 
@@ -251,7 +252,7 @@ POST /integration/knowledge-dedup:check
 }
 ```
 
-查重只比较同一 `knowledge_origin` + `business_type` 组合下处于待审核或已发布状态的知识。
+查重只比较同一 `knowledge_origin` + `business_type` 组合下处于待审核或已发布状态、且适用类目范围兼容的知识。
 不同知识来源或业务类型中的相同标题或正文不会互相拦截；`matches[]` 同时返回
 `knowledge_origin` 和 `business_type`，供审核时核对命中范围。
 

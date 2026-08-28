@@ -1749,6 +1749,7 @@ def check_knowledge_deduplication(
             scene_tags=body.knowledge.scene_tags,
             knowledge_origin=body.knowledge.knowledge_origin,
             business_type=body.knowledge.business_type,
+            applicable_categories=body.knowledge.applicable_categories,
             exclude_knowledge_id=body.exclude_knowledge_id,
         )
         db.commit()
@@ -1838,6 +1839,7 @@ def submit_knowledge_candidates(
                 scene_tags=candidate.knowledge.scene_tags,
                 knowledge_origin=candidate.knowledge.knowledge_origin,
                 business_type=candidate.knowledge.business_type,
+                applicable_categories=candidate.knowledge.applicable_categories,
             )
         except EmbeddingServiceUnavailable as exc:
             rejected += 1
@@ -2421,6 +2423,7 @@ def submit_candidate_reviews(
                 scene_tags=candidate.knowledge.scene_tags,
                 knowledge_origin=candidate.knowledge.knowledge_origin,
                 business_type=candidate.knowledge.business_type,
+                applicable_categories=candidate.knowledge.applicable_categories,
             )
             deduplication = _to_dedup_response(decision)
             if decision.action == "block_duplicate":

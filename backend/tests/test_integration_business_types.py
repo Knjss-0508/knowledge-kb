@@ -23,6 +23,7 @@ def _candidate_payload(
     *,
     knowledge_origin: str = "business_accumulation",
     business_type: str = "aggregated",
+    applicable_categories: list[str] | None = None,
 ) -> dict:
     return {
         "event_id": "event-business-1",
@@ -47,6 +48,7 @@ def _candidate_payload(
             "knowledge_origin": knowledge_origin,
             "business_type": business_type,
             "category_id": "cat-qc-standard",
+            "applicable_categories": applicable_categories or ["手机"],
         },
     }
 
@@ -99,6 +101,10 @@ class IntegrationBusinessTypeTests(unittest.TestCase):
             "aggregated",
         )
         self.assertEqual(
+            check_duplicate.call_args.kwargs["applicable_categories"],
+            ["手机"],
+        )
+        self.assertEqual(
             response.matches[0].knowledge_origin,
             "business_accumulation",
         )
@@ -143,6 +149,10 @@ class IntegrationBusinessTypeTests(unittest.TestCase):
             check_duplicate.call_args.kwargs["business_type"],
             "aggregated",
         )
+        self.assertEqual(
+            check_duplicate.call_args.kwargs["applicable_categories"],
+            ["手机"],
+        )
         created = [
             call.args[0]
             for call in db.add.call_args_list
@@ -151,6 +161,7 @@ class IntegrationBusinessTypeTests(unittest.TestCase):
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0].knowledge_origin, "business_accumulation")
         self.assertEqual(created[0].business_type, "aggregated")
+        self.assertEqual(created[0].applicable_categories, ["手机"])
         ensure_search_embeddings.assert_called_once_with(db, created[0])
 
     def test_candidate_review_item_returns_origin_and_business_type(self):
@@ -233,6 +244,10 @@ class IntegrationBusinessTypeTests(unittest.TestCase):
             check_duplicate.call_args.kwargs["business_type"],
             "aggregated",
         )
+        self.assertEqual(
+            check_duplicate.call_args.kwargs["applicable_categories"],
+            ["手机"],
+        )
         created = [
             call.args[0]
             for call in db.add.call_args_list
@@ -241,6 +256,7 @@ class IntegrationBusinessTypeTests(unittest.TestCase):
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0].knowledge_origin, "business_accumulation")
         self.assertEqual(created[0].business_type, "aggregated")
+        self.assertEqual(created[0].applicable_categories, ["手机"])
         self.assertEqual(item.review_status, "submitted")
         ensure_search_embeddings.assert_called_once_with(db, created[0])
 

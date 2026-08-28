@@ -744,6 +744,7 @@ def _check_manual_deduplication(
     scene_tags: list[str],
     knowledge_origin: str,
     business_type: str,
+    applicable_categories: list[object] | None = None,
     exclude_knowledge_id: str | None = None,
     confirm_dedup_review: bool = False,
     allow_duplicate_review: bool = False,
@@ -758,6 +759,7 @@ def _check_manual_deduplication(
             scene_tags=scene_tags,
             knowledge_origin=knowledge_origin,
             business_type=business_type,
+            applicable_categories=applicable_categories,
             exclude_knowledge_id=exclude_knowledge_id,
             embedding_vectors=embedding_vectors,
         )
@@ -956,6 +958,7 @@ def _create_knowledge_item(
         knowledge_origin=body.knowledge_origin,
         scene_tags=body.applicable_scenes or [],
         business_type=body.business_type,
+        applicable_categories=body.applicable_categories,
         confirm_dedup_review=body.confirm_dedup_review,
         allow_duplicate_review=allow_duplicate_review,
         embedding_vectors=embedding_vectors,
@@ -3535,6 +3538,10 @@ def update_knowledge(
         "business_type" in updates
         and updates["business_type"] != item.business_type
     )
+    applicable_categories_changed = (
+        "applicable_categories" in updates
+        and updates["applicable_categories"] != item.applicable_categories
+    )
     if (
         "business_type" in updates
         and updates["business_type"] != item.business_type
@@ -3598,7 +3605,7 @@ def update_knowledge(
                 setattr(item, field, KnowledgeStatus(val))
             else:
                 setattr(item, field, val)
-        if origin_changed or business_type_changed:
+        if origin_changed or business_type_changed or applicable_categories_changed:
             refreshed_decision = _check_manual_deduplication(
                 db,
                 title=item.title,
@@ -3611,6 +3618,7 @@ def update_knowledge(
                     "business_accumulation",
                 ),
                 business_type=item.business_type,
+                applicable_categories=getattr(item, "applicable_categories", None),
                 exclude_knowledge_id=item.id,
                 allow_duplicate_review=True,
             )
@@ -3793,6 +3801,7 @@ def submit_review(
         scene_tags=item.applicable_scenes or [],
         knowledge_origin=item.knowledge_origin,
         business_type=item.business_type,
+        applicable_categories=getattr(item, "applicable_categories", None),
         exclude_knowledge_id=item.id,
         confirm_dedup_review=confirm_dedup_review,
     )
@@ -4353,6 +4362,7 @@ def submit_candidate(
         scene_tags=body.applicable_scenes,
         knowledge_origin=body.knowledge_origin,
         business_type=body.business_type,
+        applicable_categories=body.applicable_categories,
         confirm_dedup_review=body.confirm_dedup_review,
     )
 
@@ -4365,6 +4375,7 @@ def submit_candidate(
         category_id=body.category_id,
         status=KnowledgeStatus.REVIEW,
         applicable_scenes=body.applicable_scenes,
+        applicable_categories=body.applicable_categories,
         source=body.source,
         source_session_id=body.source_session_id,
         related_standard_items=body.related_standard_items,

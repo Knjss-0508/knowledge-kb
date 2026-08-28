@@ -91,7 +91,7 @@ class DeduplicationWorkflowTests(unittest.TestCase):
         with patch(
             "app.routes.knowledge.check_duplicate",
             return_value=decision,
-        ):
+        ) as check_duplicate:
             with self.assertRaises(HTTPException) as raised:
                 _check_manual_deduplication(
                     MagicMock(),
@@ -101,6 +101,7 @@ class DeduplicationWorkflowTests(unittest.TestCase):
                     knowledge_origin="business_accumulation",
                     scene_tags=[],
                     business_type="self_operated",
+                    applicable_categories=["手机"],
                 )
             self.assertEqual(raised.exception.status_code, 409)
             self.assertEqual(
@@ -116,9 +117,14 @@ class DeduplicationWorkflowTests(unittest.TestCase):
                     knowledge_origin="business_accumulation",
                     scene_tags=[],
                 business_type="self_operated",
+                applicable_categories=["手机"],
                 confirm_dedup_review=True,
             )
         self.assertIs(confirmed, decision)
+        self.assertEqual(
+            check_duplicate.call_args.kwargs["applicable_categories"],
+            ["手机"],
+        )
 
     def test_manual_confirmation_is_recorded_for_review_traceability(self):
         metadata = _deduplication_metadata(
