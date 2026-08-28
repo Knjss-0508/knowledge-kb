@@ -21,7 +21,12 @@ if (Test-Path -LiteralPath $envFile) {
 
 $python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python)) {
-    throw "Project Python was not found: $python"
+    $systemPython = Get-Command python.exe -ErrorAction SilentlyContinue
+    if (-not $systemPython) {
+        throw "Project Python was not found: $python; system python.exe is also unavailable."
+    }
+    $python = $systemPython.Source
+    Write-Output "Project virtualenv not found; using system Python: $python"
 }
 
 $queueDir = if ($env:ANSWER_HUB_AUTOMATION_QUEUE) {
@@ -55,8 +60,37 @@ $secondPartPullMaxPages = if ($env:SECOND_PART_PULL_MAX_PAGES) {
 } else {
     "10"
 }
+$automationPlanPath = if ($env:ANSWER_HUB_AUTOMATION_PLAN_PATH) {
+    $env:ANSWER_HUB_AUTOMATION_PLAN_PATH
+} else {
+    Join-Path $ProjectRoot "data\automation-plan.json"
+}
+$automationPlan = $null
+if (Test-Path -LiteralPath $automationPlanPath) {
+    try {
+        $automationPlan = Get-Content -Raw -Encoding UTF8 $automationPlanPath | ConvertFrom-Json
+    } catch {
+        throw "无法读取执行计划文件：$automationPlanPath"
+    }
+}
 $secondPartQueryFromDate = $env:SECOND_PART_QUERY_FROM_DATE
 $secondPartQueryToDate = $env:SECOND_PART_QUERY_TO_DATE
+$planFromDate = ""
+$planToDate = ""
+if ($automationPlan) {
+    $planFromDate = [string]$automationPlan.knowledge_settle_from_date
+    $planToDate = [string]$automationPlan.knowledge_settle_to_date
+    if (-not $planFromDate) {
+        $planFromDate = [string]$automationPlan.second_part_query_from_date
+    }
+    if (-not $planToDate) {
+        $planToDate = [string]$automationPlan.second_part_query_to_date
+    }
+}
+if ($planFromDate -or $planToDate) {
+    $secondPartQueryFromDate = $planFromDate
+    $secondPartQueryToDate = $planToDate
+}
 $legacySecondPartQueryDate = $env:SECOND_PART_QUERY_DATE
 if ($secondPartQueryFromDate -or $secondPartQueryToDate) {
     if (-not $secondPartQueryFromDate -or -not $secondPartQueryToDate) {

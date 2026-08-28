@@ -5,7 +5,6 @@ from functools import wraps
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, Thread
 from typing import Any, Callable
 import hmac
 import json
@@ -17,10 +16,9 @@ from flask import Flask, jsonify, request, send_file
 
 from .automation import AutomationRunStore
 from .automation_control import (
-    AutomationControlError,
-    AutomationControlStore,
-    AutomationDisabled,
-    AutomationRunActive,
+    AutomationTaskControlError,
+    AutomationTaskController,
+    read_automation_log_tail,
 )
 from .automation_queue import (
     JOB_METADATA_SUFFIX,
@@ -28,7 +26,6 @@ from .automation_queue import (
     AutomationQueue,
     queue_job_metadata_path,
     read_queue_job_metadata,
-    process_automation_queue,
     write_queue_job_metadata,
 )
 from .excel_io import write_rows_to_workbook
@@ -396,8 +393,8 @@ def create_automation_api_app(
     queue_root: str | Path | None = None,
     output_root: str | Path | None = None,
     feedback_path: str | Path | None = None,
-    run_worker: Callable[[str], dict[str, Any]] | None = None,
-    start_scheduler: bool = True,
+    task_controller: Any | None = None,
+    project_root: str | Path | None = None,
 ) -> Flask:
     load_dotenv()
     configured_key = (
@@ -422,111 +419,28 @@ def create_automation_api_app(
         or os.getenv("ANSWER_HUB_RUN_FEEDBACK_PATH", "").strip()
         or (job_store.queue.root / "run_feedback.db")
     )
-    control_store = AutomationControlStore(job_store.output_root)
+    automation_controller = task_controller or AutomationTaskController()
+    automation_project_root = Path(project_root or Path(__file__).resolve().parents[2])
+    automation_plan_path = Path(
+        os.getenv("ANSWER_HUB_AUTOMATION_PLAN_PATH", "data/automation-plan.json")
+    )
+    if not automation_plan_path.is_absolute():
+        automation_plan_path = automation_project_root / automation_plan_path
+
+    def read_automation_plan() -> dict[str, Any]:
+        try:
+            payload = json.loads(automation_plan_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        return payload if isinstance(payload, dict) else {}
+
+    def write_automation_plan(payload: dict[str, Any]) -> None:
+        automation_plan_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = automation_plan_path.with_suffix(automation_plan_path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(automation_plan_path)
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
-
-    def _default_run_worker(_actor: str) -> dict[str, Any]:
-        from .second_part_pull import pull_second_part_to_queue
-
-        load_dotenv()
-        profile_path = os.getenv("SECOND_PART_PULL_PROFILE", "").strip()
-        if not profile_path:
-            raise RuntimeError("第二部分拉取配置尚未完成，无法立即执行。")
-        state_path = os.getenv(
-            "SECOND_PART_PULL_STATE",
-            "data/second-part-pull/state.json",
-        ).strip()
-        try:
-            max_pages = max(1, int(os.getenv("SECOND_PART_PULL_MAX_PAGES", "10")))
-        except ValueError:
-            max_pages = 10
-        pull_summary = pull_second_part_to_queue(
-            profile_path,
-            queue_root=job_store.queue.root,
-            output_root=job_store.output_root,
-            state_path=state_path,
-            max_pages=max_pages,
-        )
-        queue_summary = process_automation_queue(
-            job_store.queue.root,
-            None,
-            job_store.output_root,
-            submit_to_cz=(
-                os.getenv("ANSWER_HUB_AUTOMATION_SYNC_TO_CZ_REVIEW", "false")
-                .strip()
-                .lower()
-                in {"1", "true", "yes", "on"}
-            ),
-        )
-        return {
-            "status": str(queue_summary.get("status") or "completed"),
-            "fetched_records": int(pull_summary.get("fetched_records") or 0),
-            "queued_jobs": int(pull_summary.get("queued_jobs") or 0),
-            "rejected_records": int(pull_summary.get("rejected_records") or 0),
-            "processed": int(queue_summary.get("succeeded") or 0),
-            "failed": int(queue_summary.get("failed") or 0),
-        }
-
-    effective_run_worker = run_worker or _default_run_worker
-
-    def _finish_controlled_run(actor: str, trigger: str) -> None:
-        try:
-            result = effective_run_worker(actor)
-            control_store.finish_run(_public_value(dict(result or {})))
-        except Exception as exc:
-            control_store.finish_run(
-                {
-                    "status": "failed",
-                    "error": _public_text(exc),
-                }
-            )
-
-    def _start_controlled_run(actor: str, trigger: str) -> dict[str, Any]:
-        records = list_automation_run_records(
-            job_store.output_root,
-            job_store.queue.root,
-            limit=100,
-        )
-        if any(
-            str(record.get("effective_status") or "")
-            in {"processing", "running"}
-            for record in records
-        ):
-            raise AutomationRunActive("已有自动化任务正在运行，请等待完成后再试。")
-        control = control_store.start_run(actor=actor, trigger=trigger)
-        Thread(
-            target=_finish_controlled_run,
-            args=(actor, trigger),
-            daemon=True,
-            name="answer-hub-automation-run",
-        ).start()
-        return control
-
-    scheduler_stop = Event()
-
-    def _run_daily_schedule() -> None:
-        while not scheduler_stop.is_set():
-            try:
-                if control_store.schedule_due():
-                    _start_controlled_run("系统计划", "schedule")
-            except (AutomationDisabled, AutomationRunActive):
-                # A busy run does not consume today's schedule. The next poll will
-                # launch it after the queue becomes idle.
-                pass
-            except Exception:
-                # The operator page exposes the retained failure summary. A daemon
-                # must keep polling even when one scheduling attempt is malformed.
-                pass
-            scheduler_stop.wait(30)
-
-    if start_scheduler:
-        Thread(
-            target=_run_daily_schedule,
-            daemon=True,
-            name="answer-hub-automation-scheduler",
-        ).start()
-    app.extensions["answer_hub_automation_scheduler_stop"] = scheduler_stop
 
     def require_api_key(
         view: Callable[..., Any],
@@ -638,36 +552,134 @@ def create_automation_api_app(
             }
         )
 
+    def automation_control_snapshot() -> dict[str, Any]:
+        try:
+            snapshot = dict(automation_controller.status())
+        except AutomationTaskControlError as exc:
+            return {
+                "installed": False,
+                "enabled": False,
+                "running": False,
+                "message": f"无法读取自动化计划任务状态：{exc}",
+                "available": False,
+            }
+        snapshot["available"] = bool(snapshot.get("installed"))
+        plan = read_automation_plan()
+        snapshot["plan"] = {
+            "second_part_query_from_date": str(plan.get("second_part_query_from_date") or ""),
+            "second_part_query_to_date": str(plan.get("second_part_query_to_date") or ""),
+            "knowledge_settle_from_date": str(
+                plan.get("knowledge_settle_from_date")
+                or plan.get("second_part_query_from_date")
+                or ""
+            ),
+            "knowledge_settle_to_date": str(
+                plan.get("knowledge_settle_to_date")
+                or plan.get("second_part_query_to_date")
+                or ""
+            ),
+            "timezone": str(plan.get("timezone") or "Asia/Shanghai"),
+        }
+        snapshot["schedule_enabled"] = bool(plan.get("schedule_enabled"))
+        snapshot["schedule_time"] = str(plan.get("schedule_time") or "02:00")
+        return snapshot
+
     @app.get("/api/v1/automation/control")
     @require_api_key
     def get_automation_control():
-        return jsonify(control_store.snapshot())
+        return jsonify(automation_control_snapshot())
 
     @app.patch("/api/v1/automation/control")
     @require_api_key
     def update_automation_control():
         body = request.get_json(silent=True)
-        if not isinstance(body, dict):
-            return jsonify({"error": "控制请求必须是 JSON 对象"}), 400
+        if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+            return jsonify({"error": "enabled 必须是布尔值。"}), 400
+        from_date = str(body.get("second_part_query_from_date") or "").strip()
+        to_date = str(body.get("second_part_query_to_date") or "").strip()
+        from_date = str(
+            body.get("knowledge_settle_from_date") or from_date
+        ).strip()
+        to_date = str(
+            body.get("knowledge_settle_to_date") or to_date
+        ).strip()
+        if bool(from_date) != bool(to_date):
+            return jsonify({"error": "第二部分采集开始日期和结束日期必须同时填写。"}), 400
+        if from_date and (not re.fullmatch(r"\d{4}-\d{2}-\d{2}", from_date) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", to_date) or from_date > to_date):
+            return jsonify({"error": "第二部分采集日期范围无效，请使用 YYYY-MM-DD 且开始日期不晚于结束日期。"}), 400
+        schedule_enabled = body.get("schedule_enabled")
+        if schedule_enabled is not None and not isinstance(schedule_enabled, bool):
+            return jsonify({"error": "schedule_enabled 必须是布尔值。"}), 400
+        schedule_time = str(body.get("schedule_time") or "02:00").strip()
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time):
+            return jsonify({"error": "schedule_time 必须是 HH:MM 格式。"}), 400
         try:
-            return jsonify(control_store.update(body))
-        except AutomationControlError as exc:
-            return jsonify({"error": str(exc)}), 400
+            result = automation_controller.set_enabled(body["enabled"])
+        except AutomationTaskControlError as exc:
+            allow_uninstalled = _bool_value(
+                os.getenv("ANSWER_HUB_AUTOMATION_ALLOW_UNINSTALLED_CONTROL"),
+                False,
+            )
+            if not allow_uninstalled:
+                return jsonify({"error": _public_text(str(exc))}), 409
+            result = {
+                "enabled": bool(body["enabled"]),
+                "message": "本地测试模式：未安装 Windows 计划任务，仅保存控制状态和采集范围。",
+                "installed": False,
+            }
+        plan = read_automation_plan()
+        plan.update({
+            "second_part_query_from_date": from_date,
+            "second_part_query_to_date": to_date,
+            "knowledge_settle_from_date": from_date,
+            "knowledge_settle_to_date": to_date,
+            "schedule_enabled": bool(schedule_enabled) if schedule_enabled is not None else bool(plan.get("schedule_enabled")),
+            "schedule_time": schedule_time,
+            "timezone": str(body.get("timezone") or plan.get("timezone") or "Asia/Shanghai"),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        write_automation_plan(plan)
+        return jsonify({**result, "control": automation_control_snapshot()})
 
     @app.post("/api/v1/automation/runs")
     @require_api_key
-    def start_automation_run():
-        body = request.get_json(silent=True) or {}
-        if not isinstance(body, dict):
-            return jsonify({"error": "运行请求必须是 JSON 对象"}), 400
-        actor = _public_text(body.get("actor") or "管理员")[:80]
+    def start_controlled_automation_run():
+        control = automation_control_snapshot()
+        if not control.get("enabled"):
+            return jsonify({"error": "自动化已暂停，请先启用后再立即执行。"}), 409
+        if control.get("running"):
+            return jsonify({"error": "已有自动化任务正在运行。"}), 409
         try:
-            control = _start_controlled_run(actor, "manual")
-        except AutomationDisabled as exc:
-            return jsonify({"error": str(exc)}), 409
-        except AutomationRunActive as exc:
-            return jsonify({"error": str(exc)}), 409
-        return jsonify({"status": "accepted", "control": control}), 202
+            result = automation_controller.run_now()
+        except AutomationTaskControlError as exc:
+            return jsonify({"error": _public_text(str(exc))}), 409
+        return jsonify({"status": "accepted", **result}), 202
+
+    @app.post("/api/v1/automation/retry-failed")
+    @require_api_key
+    def retry_failed_automation_runs():
+        control = automation_control_snapshot()
+        if not control.get("enabled"):
+            return jsonify({"error": "自动化已暂停，不能重试失败任务。"}), 409
+        if control.get("running"):
+            return jsonify({"error": "已有自动化任务正在运行。"}), 409
+        try:
+            result = automation_controller.retry_failed(automation_project_root)
+        except AutomationTaskControlError as exc:
+            return jsonify({"error": _public_text(str(exc))}), 409
+        return jsonify({"status": "accepted", **result}), 202
+
+    @app.get("/api/v1/automation/logs/latest")
+    @require_api_key
+    def get_latest_automation_log():
+        lines = max(1, min(_int_value(request.args.get("lines"), 120), 200))
+        log = read_automation_log_tail(automation_project_root, lines=lines)
+        return jsonify(
+            {
+                "name": _public_text(log.get("name")),
+                "content": _public_text(log.get("content")),
+            }
+        )
 
     @app.post("/api/v1/automation/jobs")
     @require_api_key
@@ -977,22 +989,12 @@ def create_automation_api_app(
     @app.post("/api/v1/automation/jobs/<job_id>/retry")
     @require_api_key
     def retry_job(job_id: str):
-        if not control_store.snapshot()["enabled"]:
-            return jsonify({"error": "自动化总开关已关闭，不能重试失败任务。"}), 409
         try:
             metadata = job_store.retry(job_id)
         except FileNotFoundError:
             return jsonify({"error": "job not found"}), 404
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 409
-        body = request.get_json(silent=True) or {}
-        actor = _public_text(body.get("actor") if isinstance(body, dict) else "")[:80]
-        located = job_store.locate(job_id)
-        if located is not None:
-            source_path, persisted = located
-            persisted["retry_requested_by"] = actor or "管理员"
-            persisted["retry_requested_at"] = datetime.now().isoformat(timespec="seconds")
-            write_queue_job_metadata(source_path, persisted)
         return jsonify(job_payload(metadata)), 202
 
     @app.get("/api/v1/automation/jobs/<job_id>/artifacts/<artifact_name>")

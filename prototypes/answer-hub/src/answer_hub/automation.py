@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 import json
+import math
 import os
 import shutil
 import threading
@@ -12,7 +13,7 @@ import time
 import uuid
 
 from .embedding import EmbeddingClient
-from .mimo import MimoClient, MimoError, load_dotenv
+from .mimo import MimoClient, MimoError
 from .operations import duration_seconds, evaluate_run_sla
 from .terminology import ensure_terminology_loaded
 from .version import AUTOMATION_MANIFEST_VERSION, release_metadata
@@ -49,6 +50,9 @@ AUTOMATION_RUN_STATUSES = {
     "needs_confirmation": "等待人工确认",
     "failed": "运行失败",
 }
+
+DEFAULT_CLUSTER_FAILURE_ABORT_RATIO = 0.5
+CLUSTER_FAILURE_ABORT_RATIO_ENV = "ANSWER_HUB_CLUSTER_FAILURE_ABORT_RATIO"
 
 AutomationProgressCallback = Callable[[dict[str, Any]], None]
 _JSON_WRITE_LOCK = threading.Lock()
@@ -437,6 +441,120 @@ def _mimo_confirmation_alert(error: str) -> str:
     )
 
 
+def _cluster_failure_abort_ratio() -> float:
+    """Return the guarded failure ratio used before downstream delivery."""
+    raw_value = os.getenv(
+        CLUSTER_FAILURE_ABORT_RATIO_ENV,
+        str(DEFAULT_CLUSTER_FAILURE_ABORT_RATIO),
+    )
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        value = DEFAULT_CLUSTER_FAILURE_ABORT_RATIO
+    if not math.isfinite(value) or value <= 0:
+        value = DEFAULT_CLUSTER_FAILURE_ABORT_RATIO
+    return max(0.0, min(value, 1.0))
+
+
+def _cluster_failure_guard(summary: dict[str, Any]) -> dict[str, Any]:
+    """Detect a systemic clustering failure before creating external candidates."""
+    threshold = _cluster_failure_abort_ratio()
+    direct_calls = int(summary.get("direct_cluster_calls") or 0)
+    direct_failed = int(summary.get("direct_cluster_failed") or 0)
+    atomic_calls = int(summary.get("atomic_extraction_calls") or 0)
+    atomic_failed = int(summary.get("atomic_extraction_failed") or 0)
+    direct_ratio = direct_failed / direct_calls if direct_calls else 0.0
+    atomic_ratio = atomic_failed / atomic_calls if atomic_calls else 0.0
+    reasons: list[str] = []
+    if direct_calls and direct_ratio >= threshold:
+        reasons.append(
+            f"direct_mimo 聚类失败 {direct_failed}/{direct_calls} "
+            f"（{direct_ratio:.1%}）"
+        )
+    if atomic_calls and atomic_ratio >= threshold:
+        reasons.append(
+            f"原子问题提取失败 {atomic_failed}/{atomic_calls} "
+            f"（{atomic_ratio:.1%}）"
+        )
+    return {
+        "cluster_failure_guard_triggered": bool(reasons),
+        "cluster_failure_ratio": round(max(direct_ratio, atomic_ratio), 4),
+        "cluster_failure_guard_threshold": threshold,
+        "cluster_failure_guard_reason": "；".join(reasons),
+        "cz_candidate_sync_blocked": bool(reasons),
+    }
+
+
+def _apply_cluster_failure_guard(
+    manifest: dict[str, Any],
+    store: AutomationRunStore,
+    guard: dict[str, Any],
+    *,
+    cluster_only: bool,
+) -> bool:
+    if not guard["cluster_failure_guard_triggered"] or cluster_only:
+        return False
+    guard_reason = str(guard["cluster_failure_guard_reason"])
+    guard_error = (
+        "聚类失败保护已触发："
+        f"{guard_reason}。本批次不会生成或同步 CZ 候选，"
+        "请修复 MiMo/网络配置后使用 retry-run 重试。"
+    )
+    _prepare_cluster_checkpoint_for_retry(manifest, guard)
+    manifest["status"] = "failed"
+    manifest["error"] = guard_error
+    manifest.setdefault("alerts", []).append(guard_error)
+    store.update_stage(
+        manifest,
+        "topic_cluster",
+        "failed",
+        guard_error,
+        guard,
+    )
+    return True
+
+
+def _prepare_cluster_checkpoint_for_retry(
+    manifest: dict[str, Any],
+    guard: dict[str, Any],
+) -> None:
+    """Make retry-run execute topic clustering again instead of restoring failures."""
+    run_dir = Path(str(manifest.get("run_dir") or ""))
+    checkpoint_path = run_dir / "artifacts" / "workflow_checkpoint.json"
+    if not checkpoint_path.is_file():
+        checkpoint_path = run_dir / "workflow_checkpoint.json"
+    if not checkpoint_path.is_file():
+        return
+    try:
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(checkpoint, dict):
+        return
+    checkpoint["stage"] = "semantic_label"
+    checkpoint["updated_at"] = _now()
+    checkpoint["cluster_failure_guard"] = guard
+    checkpoint.pop("topic_summary", None)
+    checkpoint.pop("cluster_summary", None)
+    _write_json_atomic(checkpoint_path, checkpoint)
+
+
+def _persist_cluster_failure_guard(
+    manifest: dict[str, Any],
+    store: AutomationRunStore,
+    notify: Callable[[], None],
+) -> None:
+    manifest["sla"] = evaluate_run_sla(manifest)
+    manifest["alerts"] = list(
+        dict.fromkeys(
+            list(manifest.get("alerts") or [])
+            + list(manifest["sla"].get("breaches") or [])
+        )
+    )
+    store.save(manifest)
+    notify()
+
+
 def automation_run_succeeded(manifest: dict[str, Any]) -> bool:
     return str(manifest.get("status") or "") not in {
         "failed",
@@ -464,11 +582,10 @@ def run_automation_pipeline(
     direct_mimo_progress_path: str | Path | None = None,
     cluster_media_policy: str | None = None,
 ) -> dict[str, Any]:
-    load_dotenv()
     source = Path(source_path)
+    standards = Path(standards_path) if standards_path else None
     if not source.is_file():
         raise FileNotFoundError(f"会话文件不存在：{source}")
-    standards = Path(standards_path) if standards_path else None
     if standards is not None and not standards.is_file():
         raise FileNotFoundError(f"标准文件不存在：{standards}")
     if source_row_limit is not None:
@@ -476,8 +593,6 @@ def run_automation_pipeline(
             raise ValueError("source_row_limit 必须是正整数")
         if not cluster_only:
             raise ValueError("source_row_limit 仅允许用于仅聚类小样本验证")
-    # 只有调用方明确传入标准文件时才开启标准引用；未传入时保持
-    # 无标准模式，避免隐式改变历史批量运行策略。
     use_standard_references = standards is not None
 
     effective_cluster_media_policy = resolve_cluster_media_policy(
@@ -500,6 +615,7 @@ def run_automation_pipeline(
         "enforce_cluster_admission": not bool(cluster_only),
         "direct_mimo_progress_path": str(direct_mimo_progress_path or ""),
         "cluster_media_policy": effective_cluster_media_policy,
+        "cluster_failure_abort_ratio": _cluster_failure_abort_ratio(),
     }
     store = AutomationRunStore(output_root)
     manifest = store.create(
@@ -632,6 +748,9 @@ def run_automation_pipeline(
         )
         if preflight_summary is not None:
             summary["mimo_preflight"] = preflight_summary
+        cluster_failure_guard = _cluster_failure_guard(summary)
+        summary.update(cluster_failure_guard)
+        _write_json_atomic(artifact_dir / "summary.json", summary)
         if summary.get("cluster_only"):
             artifacts = {
                 "cluster_result": str(Path(summary["output_file"])),
@@ -648,6 +767,14 @@ def run_automation_pipeline(
             }
         manifest["summary"] = summary
         manifest["artifacts"] = artifacts
+        if _apply_cluster_failure_guard(
+            manifest,
+            store,
+            cluster_failure_guard,
+            cluster_only=cluster_only,
+        ):
+            _persist_cluster_failure_guard(manifest, store, notify)
+            return manifest
         manifest["status"] = "review_pending"
         store.save(manifest)
         existing_alerts = list(manifest.get("alerts") or [])
@@ -835,6 +962,18 @@ def resume_automation_pipeline(
                 "summary": str(artifact_dir / "summary.json"),
                 "audit_db": str(summary.get("audit_db") or ""),
             }
+        cluster_failure_guard = _cluster_failure_guard(summary)
+        summary.update(cluster_failure_guard)
+        _write_json_atomic(artifact_dir / "summary.json", summary)
+        manifest["summary"] = summary
+        if _apply_cluster_failure_guard(
+            manifest,
+            store,
+            cluster_failure_guard,
+            cluster_only=bool(options.get("cluster_only", False)),
+        ):
+            _persist_cluster_failure_guard(manifest, store, notify)
+            return manifest
         manifest["status"] = "review_pending"
         store.save(manifest)
         manifest["sla"] = evaluate_run_sla(manifest)

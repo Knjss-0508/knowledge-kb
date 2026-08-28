@@ -120,6 +120,9 @@ ANSWER_HUB_DIRECT_PROGRESS_FLUSH_EVERY=5
 ANSWER_HUB_DIRECT_RECONCILE_MODEL_FLOOR=0.68
 ANSWER_HUB_DIRECT_RECONCILE_LIMIT=24
 ANSWER_HUB_CLUSTER_ADMISSION_MIN_CONFIDENCE=0.75
+# Safety gate for systemic model failures. A run at or above this ratio is
+# marked failed and is not synchronized to CZ; repair MiMo/network and retry.
+ANSWER_HUB_CLUSTER_FAILURE_ABORT_RATIO=0.5
 MIMO_CLUSTER_MEDIA_POLICY=on_demand
 MIMO_CLUSTER_MEDIA_MIN_TEXT_CHARS=220
 MIMO_API_KEYS=
@@ -157,10 +160,15 @@ MIMO_OUTPUT_COST_PER_MILLION_TOKENS=0.28
 完整自动化在聚类完成后执行准入门禁。`single_topic`只保留1个原子问题，只有
 `multi_topic`拆成2～3个，`uncertain`最多保留1个暂定问题。只有成功的
 `direct_mimo`聚类、原子与聚类置信度达到0.75、没有复核/降级/失败/冲突标记，并且
-回收业务层级和产品品类完全一致时，才允许自动合并并调用后续主题模型。业务层级或
-产品品类冲突、未识别时写入`pending_cluster_rows`供人工聚类复核；低置信、复核、
-降级、失败或冲突拆分时，按原子问题生成暂定单主题候选，继续转写并强制人工价值复核。
-清晰单成员主题可以放行，不按成员数量直接拦截。
+回收业务层级和产品品类完全一致时，才调用主题分类、沉淀价值、知识转写和内容初审。
+其余主题写入`pending_cluster_rows`供人工聚类复核。清晰单成员主题可以放行，不按
+成员数量直接拦截。
+
+如果本轮 direct_mimo 聚类或原子问题提取的失败比例达到
+`ANSWER_HUB_CLUSTER_FAILURE_ABORT_RATIO`（默认`0.5`），自动化会触发“聚类失败保护”：
+运行标记为失败、保留输入快照和检查点、禁止同步整批候选到 CZ，并可在修复 MiMo 或网络
+后使用 `retry-run` 重试。该保护只作用于完整自动化；`--cluster-only` 验证仍会保留结果
+供人工诊断。
 
 `on_demand`模式下，聊天证据达到220字时图片暂不附加给原子提取模型；短聊天和视频
 仍保留媒体输入。长聊天中明确出现“请看图、图中、截图、照片中、圈出位置、视频中”

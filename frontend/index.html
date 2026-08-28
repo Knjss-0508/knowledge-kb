@@ -294,10 +294,10 @@
     .dashboard-asset,.dashboard-flow{background:#fff;border:1px solid var(--line);border-radius:7px;padding:20px 21px}.dashboard-flow{grid-column:2/4}
     .dashboard-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:17px}.dashboard-section-head h3{margin:0;font-size:16px;color:var(--ink)}.dashboard-section-head p{margin:4px 0 0;color:var(--muted);font-size:12px;line-height:1.5}.dashboard-section-head .hint{margin:0;white-space:nowrap}
     .asset-main{position:relative;isolation:isolate;width:100%;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:15px 16px;border:1px solid #dce8ff;border-radius:7px;background:radial-gradient(circle at calc(100% - 60px) calc(100% - 40px),transparent 0 78px,#dce8ff 79px 112px,transparent 113px),#f7faff;color:var(--ink);cursor:pointer;text-align:left;transition:border-color .18s ease,background-color .18s ease,filter .18s ease}.asset-main:hover{border-color:#9dbfff;filter:brightness(.985)}.asset-main-label{font-size:12px;color:var(--muted)}.asset-main-value{display:block;margin-top:4px;font-size:36px;line-height:1;font-weight:750;font-variant-numeric:tabular-nums}.asset-main-action{color:var(--blue);font-size:12px;font-weight:700}
-    .asset-status-grid{display:grid;grid-template-columns:minmax(120px,.72fr) minmax(0,1.28fr);gap:8px;margin-top:10px}.asset-status,.asset-progress{position:relative;isolation:isolate;min-width:0;min-height:76px;padding:10px 12px;border:1px solid #edf0f2;border-radius:6px;background:#fff;text-align:left;cursor:pointer;transition:border-color .18s ease,filter .18s ease}.asset-status{background:radial-gradient(circle at calc(100% - 37px) calc(100% - 24px),transparent 0 46px,#edf0f2 47px 68px,transparent 69px),#fff}.asset-status:hover,.asset-progress:hover{border-color:#b7d4ff;filter:brightness(.985)}.asset-main>*,.asset-status>*,.asset-progress>*,.flow-step>*{position:relative;z-index:1}.asset-status span{display:block;color:var(--muted);font-size:11px;white-space:nowrap}.asset-status b{display:block;margin-top:7px;color:var(--ink);font-size:22px;font-variant-numeric:tabular-nums}.asset-status.draft{background:radial-gradient(circle at calc(100% - 37px) calc(100% - 24px),transparent 0 46px,#fff0d3 47px 68px,transparent 69px),#fff}.asset-status.draft b{color:#c65b00}.asset-progress{background:radial-gradient(circle at calc(100% - 43px) calc(100% - 29px),transparent 0 56px,#d9f5ed 57px 80px,transparent 81px),#fff}.asset-progress-head{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--muted);font-size:11px}.asset-progress-head b{color:#168f45;font-size:17px;font-variant-numeric:tabular-nums}.asset-progress-track{display:block;height:6px;margin-top:9px;overflow:hidden;border-radius:999px;background:#edf0f2}.asset-progress-track i{display:block;height:100%;min-width:0;border-radius:inherit;background:linear-gradient(90deg,#00a98f,#3bc56f);transition:width .25s ease}.asset-progress small{display:block;margin-top:6px;color:#98a2b3;font-size:10px}
+    .asset-status-grid{display:block;margin-top:10px}.asset-progress{position:relative;isolation:isolate;width:100%;min-width:0;min-height:76px;padding:10px 12px;border:1px solid #edf0f2;border-radius:6px;background:radial-gradient(circle at calc(100% - 43px) calc(100% - 29px),transparent 0 56px,#d9f5ed 57px 80px,transparent 81px),#fff;text-align:left;cursor:pointer;transition:border-color .18s ease,filter .18s ease}.asset-progress:hover{border-color:#b7d4ff;filter:brightness(.985)}.asset-main>*,.asset-progress>*,.flow-step>*{position:relative;z-index:1}.asset-progress-head{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--muted);font-size:11px}.asset-progress-head b{color:#168f45;font-size:17px;font-variant-numeric:tabular-nums}.asset-progress-track{display:block;height:6px;margin-top:9px;overflow:hidden;border-radius:999px;background:#edf0f2}.asset-progress-track i{display:block;height:100%;min-width:0;border-radius:inherit;background:linear-gradient(90deg,#00a98f,#3bc56f);transition:width .25s ease}.asset-progress small{display:block;margin-top:6px;color:#98a2b3;font-size:10px}
     .flow-meta{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex-wrap:wrap}.dashboard-chip{height:25px;padding:0 8px;border:1px solid transparent;border-radius:999px;background:#f2f4f7;color:#475467;font-size:11px;font-weight:700;cursor:pointer}.dashboard-chip.violet{background:#eeeafe;color:#644bd1}.dashboard-chip.danger{background:#fff0ed;color:#c83827}.dashboard-chip:hover{filter:brightness(.97)}
     .flow-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:28px}.flow-step{position:relative;isolation:isolate;min-height:122px;padding:15px 14px;border:1px solid #e7eaee;border-radius:7px;background:radial-gradient(circle at calc(100% - 58px) calc(100% - 38px),transparent 0 78px,#edf0f2 79px 108px,transparent 109px),#fff;text-align:left;color:var(--ink);cursor:pointer;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease,filter .18s ease}.flow-step:hover{transform:translateY(-2px);border-color:#a9dcd2;box-shadow:0 8px 20px rgba(16,24,40,.06);filter:brightness(.99)}.flow-step:after{content:"";position:absolute;top:50%;right:-20px;width:10px;height:10px;border-top:2px solid #cbd5df;border-right:2px solid #cbd5df;transform:translateY(-50%) rotate(45deg);pointer-events:none}.flow-step:last-child:after{display:none}.flow-step-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.flow-step-index{width:23px;height:23px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:#f2f4f7;color:#667085;font-size:11px;font-weight:800}.flow-step-state{font-size:10px;font-weight:700;color:#98a2b3}.flow-step strong{display:block;margin-top:12px;font-size:25px;line-height:1;font-variant-numeric:tabular-nums}.flow-step-label{display:block;margin-top:7px;font-size:12px;font-weight:700;color:#344054}.flow-step-note{display:block;margin-top:4px;color:#98a2b3;font-size:10px;line-height:1.45}.flow-step.pending{background:radial-gradient(circle at calc(100% - 58px) calc(100% - 38px),transparent 0 78px,#fff0d3 79px 108px,transparent 109px),#fff}.flow-step.ready{background:radial-gradient(circle at calc(100% - 58px) calc(100% - 38px),transparent 0 78px,#d9f5ed 79px 108px,transparent 109px),#fff}.flow-step.review{background:radial-gradient(circle at calc(100% - 58px) calc(100% - 38px),transparent 0 78px,#e9e4ff 79px 108px,transparent 109px),#fff}.flow-step.published{background:radial-gradient(circle at calc(100% - 58px) calc(100% - 38px),transparent 0 78px,#d8f5e1 79px 108px,transparent 109px),#fff}.flow-step.pending .flow-step-index{background:#fff5df;color:#a96800}.flow-step.ready .flow-step-index{background:#e4f8f2;color:#007f6b}.flow-step.review .flow-step-index{background:#eeeafe;color:#644bd1}.flow-step.published .flow-step-index{background:#e5f8e9;color:#168f45}
-    .asset-main:focus-visible,.asset-status:focus-visible,.asset-progress:focus-visible,.flow-step:focus-visible,.dashboard-chip:focus-visible{outline:3px solid rgba(0,155,131,.22);outline-offset:2px}
+    .asset-main:focus-visible,.asset-progress:focus-visible,.flow-step:focus-visible,.dashboard-chip:focus-visible{outline:3px solid rgba(0,155,131,.22);outline-offset:2px}
     .dashboard-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;margin-bottom:18px}
     .dashboard-work-grid{grid-template-columns:minmax(290px,.78fr) repeat(2,minmax(0,.81fr));align-items:stretch}.dashboard-work-grid.without-candidates{grid-template-columns:repeat(2,minmax(0,1fr))}
     .insight-panel{background:#fff;border:1px solid var(--line);border-radius:7px;overflow:hidden}
@@ -340,10 +340,12 @@
     @media(max-width:1120px){.embedding-config-grid.retrieval-settings{grid-template-columns:1fr}}
     @media(max-width:760px){.embedding-topk-item{grid-template-columns:1fr}.embedding-topk-control{justify-content:flex-start}.embedding-candidate-pools,.retrieval-judgement-options{grid-template-columns:1fr}.embedding-candidate-pool.unclassified{grid-column:auto}.retrieval-period-filter{align-items:stretch}.retrieval-period-tabs{width:100%}.retrieval-period-btn{flex:1 1 auto}.retrieval-custom-range{width:100%}.retrieval-custom-range .inp{flex:1 1 130px;width:auto}.retrieval-period-caption{width:100%;margin-left:0}}
     @media(max-width:760px){.retrieval-review-dialog .dlg-b{padding:14px}.retrieval-review-layout{gap:12px}.retrieval-review-candidate-scroll{max-height:38vh}.retrieval-review-conclusion{max-height:42vh;overflow-y:auto;padding-right:4px}.retrieval-review-shortcuts{width:100%;margin-left:0}.retrieval-review-footer{align-items:stretch}.retrieval-review-nav,.retrieval-review-save-actions{width:100%;justify-content:center}.retrieval-review-save-actions{flex-wrap:wrap}.retrieval-review-save-actions .btn{flex:1 1 auto}}
-    @media(max-width:1120px){.cards{grid-template-columns:repeat(2,1fr)}.review-metric-cards{grid-template-columns:repeat(4,1fr)}.dashboard-summary-grid{grid-template-columns:1fr}.dashboard-summary-grid>.dashboard-asset,.dashboard-summary-grid>.dashboard-flow{grid-column:1}.dashboard-work-grid,.dashboard-work-grid.without-candidates{grid-template-columns:1fr}.review-detail-grid{grid-template-columns:1fr}.embedding-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.embedding-two,.embedding-hero{grid-template-columns:1fr}.embedding-config-grid{grid-template-columns:1fr 1fr}.embedding-flow{grid-template-columns:repeat(3,minmax(0,1fr))}.embedding-flow-step:after{display:none}.embedding-control-grid{grid-template-columns:1fr}}@media(max-width:760px){.side{width:100%;min-height:auto;padding:12px 16px;display:block}.layout{display:block}.brand{padding:0}.nav{display:flex;flex-direction:row;overflow-x:auto;overflow-y:hidden;margin-top:12px;gap:6px;padding-bottom:2px;scrollbar-width:none;overscroll-behavior-inline:contain}.nav::-webkit-scrollbar{display:none}.nav-item{white-space:nowrap;flex:0 0 auto}.side-foot{display:none}.hd{height:58px;padding:0 16px}.mn{padding:24px 16px 32px}.overview{display:block}.overview h2{font-size:26px}.overview-status{margin-top:10px}.cards,.review-metric-cards{grid-template-columns:1fr 1fr;gap:10px}.card{min-height:124px;padding:15px}.dashboard-summary-grid,.dashboard-grid{gap:12px}.dashboard-asset,.dashboard-flow{padding:17px 16px}.flow-steps{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.flow-step:after{display:none}.insight-head{padding:17px 16px 0}.trend-chart{margin:14px 16px 18px}.todo-list{padding-left:16px;padding-right:16px}.todo-link{margin-left:16px;margin-right:16px}.filter-app-field{width:100%}.filter-app-field .ms{width:auto;flex:1 1 auto}.review-search{width:100%}.review-dialog .dlg-b{padding:14px}.review-panel{padding:14px}.review-form-grid,.review-meta{grid-template-columns:1fr}.review-form-grid .span-2{grid-column:auto}.review-gate{display:none}.embedding-grid,.embedding-config-grid,.embedding-flow{grid-template-columns:1fr}.embedding-hero-side{grid-template-columns:1fr 1fr}.embedding-lab-scope,.embedding-lab-form{grid-template-columns:1fr}.embedding-result{grid-template-columns:36px minmax(0,1fr)}.embedding-score{grid-column:2;text-align:left}.retrieval-review-grid{grid-template-columns:1fr}.retrieval-review-grid .span-2{grid-column:auto}.embedding-readiness{grid-template-columns:1fr}.embedding-release-stage{grid-template-columns:34px minmax(0,1fr)}.embedding-release-stage .btn{grid-column:2;justify-self:start}.embedding-access-input{grid-template-columns:1fr}.embedding-access-buttons{justify-content:flex-start}.embedding-access-meta{display:block}.embedding-access-steps{grid-template-columns:1fr}}@media(max-width:420px){.cards,.review-metric-cards{grid-template-columns:1fr}.asset-status-grid,.flow-steps{grid-template-columns:1fr}.period button{padding:0 7px}.embedding-hero-side{grid-template-columns:1fr}}
+    @media(max-width:1120px){.cards{grid-template-columns:repeat(2,1fr)}.review-metric-cards{grid-template-columns:repeat(4,1fr)}.dashboard-summary-grid{grid-template-columns:1fr}.dashboard-summary-grid>.dashboard-asset,.dashboard-summary-grid>.dashboard-flow{grid-column:1}.dashboard-work-grid,.dashboard-work-grid.without-candidates{grid-template-columns:1fr}.review-detail-grid{grid-template-columns:1fr}.embedding-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.embedding-two,.embedding-hero{grid-template-columns:1fr}.embedding-config-grid{grid-template-columns:1fr 1fr}.embedding-flow{grid-template-columns:repeat(3,minmax(0,1fr))}.embedding-flow-step:after{display:none}.embedding-control-grid{grid-template-columns:1fr}}@media(max-width:760px){.side{width:100%;min-height:auto;padding:12px 16px;display:block}.layout{display:block}.brand{padding:0}.nav{display:flex;flex-direction:row;overflow-x:auto;overflow-y:hidden;margin-top:12px;gap:6px;padding-bottom:2px;scrollbar-width:none;overscroll-behavior-inline:contain}.nav::-webkit-scrollbar{display:none}.nav-item{white-space:nowrap;flex:0 0 auto}.side-foot{display:none}.hd{height:58px;padding:0 16px}.mn{padding:24px 16px 32px}.overview{display:block}.overview h2{font-size:26px}.overview-status{margin-top:10px}.cards,.review-metric-cards{grid-template-columns:1fr 1fr;gap:10px}.card{min-height:124px;padding:15px}.dashboard-summary-grid,.dashboard-grid{gap:12px}.dashboard-asset,.dashboard-flow{padding:17px 16px}.flow-steps{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.flow-step:after{display:none}.insight-head{padding:17px 16px 0}.trend-chart{margin:14px 16px 18px}.todo-list{padding-left:16px;padding-right:16px}.todo-link{margin-left:16px;margin-right:16px}.filter-app-field{width:100%}.filter-app-field .ms{width:auto;flex:1 1 auto}.review-search{width:100%}.review-dialog .dlg-b{padding:14px}.review-panel{padding:14px}.review-form-grid,.review-meta{grid-template-columns:1fr}.review-form-grid .span-2{grid-column:auto}.review-gate{display:none}.embedding-grid,.embedding-config-grid,.embedding-flow{grid-template-columns:1fr}.embedding-hero-side{grid-template-columns:1fr 1fr}.embedding-lab-scope,.embedding-lab-form{grid-template-columns:1fr}.embedding-result{grid-template-columns:36px minmax(0,1fr)}.embedding-score{grid-column:2;text-align:left}.retrieval-review-grid{grid-template-columns:1fr}.retrieval-review-grid .span-2{grid-column:auto}.embedding-readiness{grid-template-columns:1fr}.embedding-release-stage{grid-template-columns:34px minmax(0,1fr)}.embedding-release-stage .btn{grid-column:2;justify-self:start}.embedding-access-input{grid-template-columns:1fr}.embedding-access-buttons{justify-content:flex-start}.embedding-access-meta{display:block}.embedding-access-steps{grid-template-columns:1fr}}@media(max-width:420px){.cards,.review-metric-cards{grid-template-columns:1fr}.flow-steps{grid-template-columns:1fr}.period button{padding:0 7px}.embedding-hero-side{grid-template-columns:1fr}}
     @media(max-width:760px){.layout{min-height:100vh}.side{position:static;top:auto;left:auto;z-index:auto;min-width:0;max-width:none;height:auto;max-height:none;overflow:visible}.main{width:100%;min-height:0;margin-left:0}}
     .import-validation-cell{max-width:210px}.import-validation-cell .tg{margin-bottom:4px}.import-validation-summary{color:#667085;font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.import-review-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px}.import-review-card{padding:11px 12px;border:1px solid #f1dfbd;border-radius:6px;background:#fffaf0}.import-review-card span{display:block;margin-bottom:5px;color:#a96800;font-size:11px;font-weight:700}.import-review-card div{color:#475467;font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.import-review-block{margin-top:10px}.import-review-block-label{margin-bottom:5px;color:#667085;font-size:11px;font-weight:700}.import-review-raw{padding:11px 12px;border:1px solid #edf0f2;border-radius:6px;background:#fafbfc;color:#475467;font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
     @media(max-width:760px){.import-review-grid{grid-template-columns:1fr}}
+    .automation-control-card{margin-bottom:14px;padding:18px 20px;border:1px solid #dce7e5;border-radius:10px;background:linear-gradient(135deg,#fff 0%,#f8fcfb 100%);box-shadow:0 3px 12px rgba(16,24,40,.04)}.automation-control-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}.automation-control-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.automation-control-title .tt{font-size:16px}.automation-control-title .hint{max-width:760px;line-height:1.55}.automation-control-status{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;background:#edf7f5;color:#007f6b;font-size:12px;font-weight:700;white-space:nowrap}.automation-control-status.off{background:#f2f4f7;color:#667085}.automation-control-status.running{background:#fff4e5;color:#b54708}.automation-control-row{display:flex;align-items:center;gap:12px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}.automation-action-row{margin-top:12px;padding-top:12px;border-top:1px solid #edf2f1}.automation-date-field{display:flex;align-items:center;gap:7px;color:#475467;font-size:12px;white-space:nowrap;flex:0 0 auto}.automation-date-field .inp{width:148px}.automation-schedule-field{display:flex;align-items:center;gap:7px;color:#475467;font-size:12px;white-space:nowrap;flex:0 0 auto}.automation-action-group{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;overflow-x:auto}.automation-action-group .btn{min-width:112px;flex:0 0 auto}.automation-action-group .btn.start{border-color:#0f9f88;background:#0f9f88;color:#fff}.automation-action-group .btn.start:hover:not(:disabled){background:#087e6c}.automation-action-group .btn.stop{border-color:#e7b8b1;background:#fff6f4;color:#c43f2f}.automation-action-group .btn.stop:hover:not(:disabled){background:#ffede9}.automation-action-group .btn:disabled{opacity:.5;cursor:not-allowed}.automation-running-hint{margin-top:10px;color:#b54708}
+    @media(max-width:1120px){.automation-control-row{flex-wrap:wrap}.automation-action-group{margin-left:0}}
   </style>
 </head>
 <body>
@@ -355,8 +357,8 @@
       <div class="nav-item" :class="{on:view==='overview'}" @click="openOverview"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg></span>运营总览</div>
       <div class="nav-item" :class="{on:view==='knowledge'}" @click="openKnowledge()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"></path><path d="M4 5.5v16"></path><path d="M8 7h8M8 11h8"></path></svg></span>知识库管理</div>
       <div class="nav-item" v-if="can('knowledge:submit')" :class="{on:view==='candidateReviews'}" @click="openCandidateReviews"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4h10a2 2 0 0 1 2 2v14H5V6a2 2 0 0 1 2-2z"></path><path d="M9 4V2h6v2M8 9h8M8 13h5"></path><path d="m14.5 16 1.5 1.5 3-3"></path></svg></span>候选价值复核</div>
-      <div class="nav-item" v-if="can('knowledge:submit')" :class="{on:view==='answerHub'}" @click="openAnswerHub"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4h14v5H5zM5 15h14v5H5z"></path><path d="M8 7h.01M8 18h.01M12 7h4M12 18h4"></path></svg></span>Answer Hub 自动化</div>
-      <div class="nav-item" :class="{on:view==='embeddingModel'}" @click="openEmbeddingModel()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4.5a3 3 0 0 1 5.2-2A3.5 3.5 0 0 1 18 5.8a3.2 3.2 0 0 1 1.2 5.9A3.5 3.5 0 0 1 17 18a3 3 0 0 1-5 2.2A3 3 0 0 1 7 18a3.5 3.5 0 0 1-2.2-6.3A3.2 3.2 0 0 1 6 5.8 3.5 3.5 0 0 1 8 4.5z"></path><path d="M12 4v16M8.5 8.5c1.5.3 2.5 1.2 3.5 2.5M15.5 8.5c-1.5.3-2.5 1.2-3.5 2.5M8.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5M15.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5"></path></svg></span>向量模型</div>
+      <div class="nav-item" v-if="can('knowledge:submit')" :class="{on:view==='automationMonitor'}" @click="openAutomationMonitor"><span class="nav-icon" aria-hidden="true">◉</span>运行监管</div>
+      <div class="nav-item" :class="{on:view==='embeddingModel'}" @click="openEmbeddingModel()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4.5a3 3 0 0 1 5.2-2A3.5 3.5 0 0 1 18 5.8a3.2 3.2 0 0 1 1.2 5.9A3.5 3.5 0 0 1 17 18a3 3 0 0 1-5 2.2A3 3 0 0 1 7 18a3.5 3.5 0 0 1-2.2-6.3A3.2 3.2 0 0 1 6 5.8 3.5 3.5 0 0 1 8 4.5z"></path><path d="M12 4v16M8.5 8.5c1.5.3 2.5 1.2 3.5 2.5M15.5 8.5c-1.5.3-2.5 1.2-3.5 2.5M8.5 15.5c1.5-.3 2.5-1.2 3.5-2.5M15.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5"></path></svg></span>向量模型</div>
       <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='users'}" @click="openUsers"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c.8-3.2 3.1-5 7-5s6.2 1.8 7 5"></path><path d="M19 8v4M21 10h-4"></path></svg></span>账号管理</div>
     </div>
     <div class="side-foot">
@@ -387,7 +389,6 @@
           <span class="asset-main-action">查看全部 →</span>
         </button>
         <div class="asset-status-grid">
-          <button type="button" class="asset-status draft" @click="openKnowledge('draft')"><span>待完善草稿</span><b>{{stats.draft}}</b></button>
           <button type="button" class="asset-progress" @click="openKnowledge('published')">
             <span class="asset-progress-head"><span>可检索率</span><b>{{knowledgePublishRate()}}%</b></span>
             <span class="asset-progress-track"><i :style="{width:knowledgePublishRate()+'%'}"></i></span>
@@ -680,6 +681,9 @@
         <option :value="false">全部查重状态</option>
         <option :value="true">疑似重复确认</option>
       </select>
+      <select class="inp" v-model="candidateReviews.filter.productCategory" @change="loadCandidateReviews(true)"><option value="">全部品类</option><option v-for="category in candidateReviews.productCategories" :key="category.value" :value="category.value">{{category.label}}</option></select>
+      <select class="inp" v-model="candidateReviews.filter.annotationStatus" @change="loadCandidateReviews(true)"><option value="">全部标注状态</option><option value="annotated">已标注</option><option value="unannotated">未标注</option></select>
+      <select class="inp" v-model="candidateReviews.filter.modelKnowledgeValue" @change="loadCandidateReviews(true)"><option value="">全部模型初标</option><option value="worthy">模型初标：值得沉淀</option><option value="unworthy">模型初标：不值得沉淀</option><option value="pending">模型初标：待确定</option></select>
       <label class="review-check-label"><input type="checkbox" v-model="candidateReviews.filter.priorityOnly" @change="loadCandidateReviews"> 仅重点复核</label>
       <span class="review-selected-note">已选 <b>{{candidateReviews.selected.length}}</b> 条</span>
       <button class="btn bd" @click="loadCandidateReviews" :disabled="candidateReviews.loading">{{candidateReviews.loading?'加载中...':'刷新'}}</button>
@@ -707,6 +711,38 @@
         </tbody>
       </table>
     </div>
+    <div class="bar"><span class="hint">第 {{candidateReviewPageStart()}}-{{candidateReviewPageEnd()}} 条 / 共 {{candidateReviews.total}} 条</span><button class="btn bd bsm" @click="changeCandidateReviewPage(candidateReviews.page-1)" :disabled="candidateReviews.page<=1">上一页</button><span class="hint">第 {{candidateReviews.page}} / {{candidateReviewPageCount()}} 页</span><button class="btn bd bsm" @click="changeCandidateReviewPage(candidateReviews.page+1)" :disabled="candidateReviews.page>=candidateReviewPageCount()">下一页</button><select class="inp" v-model.number="candidateReviews.pageSize" @change="changeCandidateReviewPageSize"><option :value="20">20 条/页</option><option :value="50">50 条/页</option><option :value="100">100 条/页</option></select></div>
+  </div>
+  <div class="mn" v-if="view==='automationMonitor' && can('knowledge:submit')">
+    <section class="overview"><div><h2>自动化流程监管</h2><p>查看自动化队列、异常反馈和 CZ 候选同步；所有知识仍需人工复核和终审。</p></div><div class="overview-status">最近更新：<b>{{answerHubMonitor.updatedAt}}</b></div></section>
+    <div class="automation-control-card">
+      <div class="automation-control-head">
+        <div class="automation-control-title"><span class="tt">自定义沉淀任务</span><span class="hint">按第二部分“分析时间”筛选业务知识范围，先设置范围，再启动自动化流程。</span></div>
+        <span class="automation-control-status" :class="{off:!answerHubMonitor.control.enabled}">{{answerHubMonitor.control.enabled?'自动化已开始':'自动化已停止'}}</span>
+      </div>
+      <div class="automation-control-row">
+          <label class="automation-date-field">沉淀开始日期 <input class="inp" type="date" v-model="answerHubMonitor.control.plan.knowledge_settle_from_date" @change="saveAutomationMonitorControl"></label>
+          <label class="automation-date-field">沉淀结束日期 <input class="inp" type="date" v-model="answerHubMonitor.control.plan.knowledge_settle_to_date" @change="saveAutomationMonitorControl"></label>
+          <label class="review-check-label"><input type="checkbox" v-model="answerHubMonitor.control.schedule_enabled" @change="saveAutomationMonitorControl"> 定时任务</label>
+          <label class="automation-schedule-field">执行时间 <input class="inp" type="time" v-model="answerHubMonitor.control.schedule_time" @change="saveAutomationMonitorControl"></label>
+      </div>
+      <div class="automation-action-row">
+        <div class="automation-action-group">
+          <button class="btn start" type="button" @click="startAutomationProcess" :disabled="answerHubMonitor.actionLoading||answerHubMonitor.control.enabled">开始自动化流程</button>
+          <button class="btn stop" type="button" @click="stopAutomationProcess" :disabled="answerHubMonitor.actionLoading||!answerHubMonitor.control.enabled">停止自动化流程</button>
+          <button class="btn bd" type="button" @click="runAutomationMonitorOnce" :disabled="answerHubMonitor.actionLoading||!answerHubMonitor.control.enabled||answerHubMonitor.control.running" :title="answerHubMonitor.control.running?'已有自动化任务运行中，请等待完成':'按当前日期范围执行一次自动化流程'">立即执行一次</button>
+          <button class="btn bd" type="button" @click="loadAutomationMonitor" :disabled="answerHubMonitor.loading">刷新</button>
+          <button class="btn bd" type="button" @click="showAutomationMonitorLogs" :disabled="answerHubMonitor.logsLoading">查看运行日志</button>
+          <button class="btn bd" type="button" @click="retryAutomationMonitor" :disabled="answerHubMonitor.actionLoading||answerHubMonitor.control.running" :title="answerHubMonitor.control.running?'已有自动化任务运行中，请等待完成':'重试失败任务'">重试失败任务</button>
+        </div>
+      </div>
+      <div class="hint automation-running-hint" v-if="answerHubMonitor.control.running">已有自动化任务运行中，请等待当前任务完成后再执行。</div>
+    </div>
+    <div class="cards review-metric-cards"><div class="card" @click="setAutomationMonitorFilter('pending')"><div class="lb">待处理</div><div class="vl gy">{{answerHubMonitor.summary.pending}}</div></div><div class="card" @click="setAutomationMonitorFilter('running')"><div class="lb">运行中</div><div class="vl bl">{{answerHubMonitor.summary.running}}</div></div><div class="card" @click="setAutomationMonitorFilter('attention')"><div class="lb">待人工处理</div><div class="vl og">{{answerHubMonitor.summary.attention}}</div></div><div class="card" @click="setAutomationMonitorFilter('completed')"><div class="lb">已完成</div><div class="vl gn">{{answerHubMonitor.summary.completed}}</div></div><div class="card"><div class="lb">候选价值复核同步异常</div><div class="vl" style="color:#c83827!important">{{answerHubMonitor.summary.cz_sync_failed}}</div></div></div>
+    <div class="bar review-toolbar"><span class="tt">运行记录</span><select class="inp" v-model="answerHubMonitor.filter.status" @change="resetAutomationMonitorPage"><option value="">全部状态</option><option value="pending">待处理</option><option value="running">运行中</option><option value="attention">需人工处理</option><option value="completed">已完成</option><option value="cz_sync_failed">候选价值复核同步异常</option></select><input class="inp review-search" v-model="answerHubMonitor.filter.keyword" placeholder="搜索运行 ID、来源或错误摘要" @keyup.enter="resetAutomationMonitorPage"></div>
+    <div class="tw"><table class="review-table"><thead><tr><th>健康状态</th><th>运行 / 来源</th><th>当前阶段</th><th>CZ 同步</th><th>更新时间</th></tr></thead><tbody><tr v-for="job in automationMonitorVisibleJobs()" :key="job.record_id"><td>{{automationMonitorHealthLabel(job)}}</td><td>{{job.source_label || job.record_id}}</td><td>{{(job.current_stage||{}).label || '-'}}</td><td>{{automationMonitorCzSyncLabel(job)}}</td><td>{{formatDate(job.updated_at)}}</td></tr><tr v-if="!automationMonitorVisibleJobs().length"><td colspan="5" class="review-empty">暂无符合条件的自动化运行记录</td></tr></tbody></table></div>
+    <div class="bar"><span class="hint">第 {{automationMonitorPageStart()}}-{{automationMonitorPageEnd()}} 条 / 共 {{automationMonitorFilteredJobs().length}} 条</span><button class="btn bd bsm" @click="changeAutomationMonitorPage(answerHubMonitor.page-1)" :disabled="answerHubMonitor.page<=1">上一页</button><button class="btn bd bsm" @click="changeAutomationMonitorPage(answerHubMonitor.page+1)" :disabled="answerHubMonitor.page>=automationMonitorPageCount()">下一页</button></div>
+    <section class="review-panel" v-if="answerHubMonitor.log.content"><h3>{{answerHubMonitor.log.name || '最新运行日志'}}</h3><pre style="max-height:260px;overflow:auto;white-space:pre-wrap">{{answerHubMonitor.log.content}}</pre></section>
   </div>
   <div class="mn" v-if="view==='changeLogs'">
     <section class="overview">
@@ -759,46 +795,6 @@
         </tbody>
       </table>
     </div>
-  </div>
-  <div class="mn" v-if="view==='answerHub' && can('knowledge:submit')">
-    <section class="overview">
-      <div><h2>Answer Hub 自动化运行治理台</h2><p>查看拉取、队列处理、候选同步和异常。结果只进入候选价值复核，不会自动送审、终审或发布。</p></div>
-      <div class="overview-status">页面更新时间：<b>{{answerHub.updatedAt}}</b></div>
-    </section>
-    <div class="bar review-toolbar">
-      <span class="tt">服务状态</span><span class="tg" :class="answerHubServiceClass(answerHub.overview.service.status)">{{answerHub.overview.service.label}}</span>
-      <span class="hint">{{answerHub.overview.control.running?'当前已有任务正在运行，已阻止重复启动。':'当前没有运行中的人工触发任务。'}}</span>
-      <button class="btn bd" @click="loadAnswerHub" :disabled="answerHub.loading">{{answerHub.loading?'加载中...':'刷新'}}</button>
-      <button v-if="isSuperAdmin()" class="btn bp" @click="startAnswerHubRun" :disabled="answerHub.updating||answerHub.overview.control.running||!answerHub.overview.control.enabled">{{answerHub.overview.control.running?'运行中...':'立即拉取并处理'}}</button>
-    </div>
-    <div class="cards review-metric-cards">
-      <div class="card"><div class="lb">队列任务</div><div class="vl bl">{{answerHub.overview.metrics.queue_tasks}}</div><div class="metric-note">最近 100 条可追踪任务</div></div>
-      <div class="card"><div class="lb">正在处理</div><div class="vl og">{{answerHub.overview.metrics.processing}}</div><div class="metric-note">排队或运行中的任务</div></div>
-      <div class="card"><div class="lb">处理失败</div><div class="vl" style="color:#c83827!important">{{answerHub.overview.metrics.failed}}</div><div class="metric-note">可由管理员重试</div></div>
-      <div class="card"><div class="lb">等待人工复核</div><div class="vl gn">{{answerHub.overview.metrics.waiting_review}}</div><div class="metric-note">已同步到候选价值复核</div></div>
-      <div class="card"><div class="lb">疑似卡住</div><div class="vl" style="color:#765be6!important">{{answerHub.overview.metrics.stalled}}</div><div class="metric-note">超过阈值未更新</div></div>
-      <div class="card"><div class="lb">最近拉取记录</div><div class="vl bl">{{answerHub.overview.metrics.recent_pull_records}}</div><div class="metric-note">最近一次运行已拉取</div></div>
-      <div class="card"><div class="lb">最近入队记录</div><div class="vl gn">{{answerHub.overview.metrics.recent_queued_records}}</div><div class="metric-note">最近一次运行新增任务</div></div>
-      <div class="card"><div class="lb">最近隔离记录</div><div class="vl og">{{answerHub.overview.metrics.recent_quarantined_records}}</div><div class="metric-note">字段或产品类型异常</div></div>
-    </div>
-    <section class="review-panel" v-if="isSuperAdmin()">
-      <div class="dashboard-section-head"><div><h3>管理员控制</h3><p>开关只影响新拉取、新任务和失败重试；不会强制中断正在运行的批次。</p></div></div>
-      <div class="bar" style="margin:0">
-        <label class="review-check-label"><input type="checkbox" v-model="answerHub.overview.control.enabled" :disabled="answerHub.updating" @change="saveAnswerHubControl"> 自动化总开关</label>
-        <label class="review-check-label"><input type="checkbox" v-model="answerHub.overview.control.schedule_enabled" :disabled="answerHub.updating" @change="saveAnswerHubControl"> 每日计划</label>
-        <label class="review-check-label">计划时间 <input class="inp" type="time" v-model="answerHub.overview.control.schedule_time" :disabled="answerHub.updating" @change="saveAnswerHubControl"></label>
-        <span class="hint">固定时区：{{answerHub.overview.control.timezone || 'Asia/Shanghai'}}</span>
-      </div>
-      <div class="integration-hint" v-if="!answerHub.overview.control.enabled">自动化总开关当前关闭。可以查看状态，但不会创建新拉取、手动运行或失败重试。</div>
-    </section>
-    <section class="review-panel" v-if="answerHub.overview.problems.length">
-      <div class="dashboard-section-head"><div><h3>问题中心</h3><p>最近 10 条需处理问题，错误内容已由服务端脱敏。</p></div></div>
-      <div class="tw"><table><thead><tr><th>任务</th><th>阶段</th><th>问题</th><th>处理建议</th></tr></thead><tbody><tr v-for="problem in answerHub.overview.problems" :key="problem.job_id + problem.type"><td>{{problem.job_id || '-'}}</td><td>{{problem.stage || '-'}}</td><td>{{problem.message}}</td><td>{{problem.suggestion}}</td></tr></tbody></table></div>
-    </section>
-    <section class="review-panel">
-      <div class="dashboard-section-head"><div><h3>任务列表</h3><p>默认展示最近 100 条任务；路径、密钥、原始会话和完整日志不会显示在浏览器中。</p></div></div>
-      <div class="tw"><table><thead><tr><th>任务</th><th>来源</th><th>状态</th><th>当前阶段</th><th>输入</th><th>主题候选</th><th>模型失败</th><th>最近更新</th><th>错误摘要</th><th>操作</th></tr></thead><tbody><tr v-if="!answerHub.overview.jobs.length"><td colspan="10" style="text-align:center;color:#86909c;padding:24px">暂无可展示的自动化任务</td></tr><tr v-for="job in answerHub.overview.jobs" :key="job.record_id || job.job_id"><td><b>{{job.job_id || job.record_id}}</b></td><td>{{job.source_label || job.source_name || '-'}}</td><td><span class="tg" :class="answerHubStatusClass(job.health_status)">{{job.health_label || job.status_label || '未知'}}</span></td><td>{{(job.current_stage && (job.current_stage.label || job.current_stage.stage_id)) || '-'}}</td><td>{{answerHubSummaryNumber(job,'source_total_rows','source_rows')}}</td><td>{{answerHubSummaryNumber(job,'topic_rows')}}</td><td>{{answerHubSummaryNumber(job,'model_failed_calls')}}</td><td>{{formatDate(job.updated_at)}}</td><td>{{job.error || '-'}}</td><td><button v-if="isSuperAdmin() && job.health_status==='failed'" class="btn bd bsm" @click="retryAnswerHubJob(job)" :disabled="answerHub.updating||!answerHub.overview.control.enabled">失败重试</button><span v-else>-</span></td></tr></tbody></table></div>
-    </section>
   </div>
   <div class="mn embedding-shell" v-if="view==='embeddingModel'">
     <section class="embedding-hero">
@@ -1357,6 +1353,11 @@
             <div class="fg"><label class="fl">适用品牌</label><div class="ms"><div class="ms-box" @click="focusMultiInput('brandInput','brands')"><span class="ms-tag" v-for="v in fm.brands" :key="v"><span class="ms-tag-text">{{selectedLabel('brands',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('brands',v)">&times;</span></span><input ref="brandInput" class="ms-inline-input" v-model="brandKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.brands.length?'':'请选择品牌'" @focus="!viewOnly && (drop='brands')"><span class="ms-clear" @click.stop="clearMultiSelect('brands')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='brands'"><div class="ms-all" @click="selectAllVisible('brands', filteredBrands())">全选</div><div class="ms-empty" v-if="optErr.brands">{{optErr.brands}}</div><div class="ms-empty" v-else-if="!option.brands.length">请先选择类目</div><div class="ms-opt" :class="{on:isSelected('brands',optValue(o))}" v-for="o in filteredBrands()" :key="optKey(o)" @click="toggleSelected('brands',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('brands',optValue(o))">✓</span></div></div></div><div class="hint" v-if="optErr.brands">{{optErr.brands}}</div></div>
             <div class="fg"><label class="fl">适用机型</label><div class="ms"><div class="ms-box" @click="focusMultiInput('modelInput','models')"><span class="ms-tag" v-for="v in fm.models" :key="v"><span class="ms-tag-text">{{selectedLabel('models',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('models',v)">&times;</span></span><input ref="modelInput" class="ms-inline-input" v-model="modelKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.models.length?'':'请选择机型'" @focus="!viewOnly && (drop='models')"><span class="ms-clear" @click.stop="clearMultiSelect('models')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='models'"><div class="ms-all" @click="selectAllVisible('models', visibleModels())">全选</div><div class="ms-empty" v-if="optErr.models">{{optErr.models}}</div><div class="ms-empty" v-else-if="!option.models.length">请先选择类目/品牌</div><div class="ms-opt" :class="{on:isSelected('models',optValue(o))}" v-for="o in visibleModels()" :key="optKey(o)" @click="toggleSelected('models',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('models',optValue(o))">✓</span></div><div class="ms-more" v-if="hiddenModelCount() > 0">还有 {{hiddenModelCount()}} 个机型，请搜索缩小范围</div></div></div><div class="hint" v-if="optErr.models">{{optErr.models}}</div></div>
           </div>
+          <div class="fg" v-if="!isModelConfigurationForm()">
+            <label class="fl">推荐回复</label>
+            <textarea class="fi" rows="3" v-model="fm.recommendedReply" :disabled="viewOnly" placeholder="供答疑人员直接使用的推荐回复"></textarea>
+            <div class="hint">可填写答疑人员可直接发送给用户的回复；留空表示不设置推荐回复。</div>
+          </div>
         </div>
         <div class="sec" v-if="isModelConfigurationForm() && fm.modelConfiguration">
           <div class="sec-t">机型适用范围</div>
@@ -1769,7 +1770,7 @@ Vue.createApp({
         {value:'business_accumulation', label:'业务沉淀'},
         {value:'model_configuration', label:'机型配置信息'}
       ],
-      stats: {total:0, published:0, review:0, draft:0},
+      stats: {total:0, published:0, review:0},
       dashboard: {pending:[], recentUpdates:[], updatedAt:'-'},
       candidateDashboard: {
         summary: {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
@@ -1833,7 +1834,10 @@ Vue.createApp({
         items: [],
         total: 0,
         summary: {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
-        filter: {keyword:'', status:'', priorityOnly:false, deduplicationRequired:false},
+        page: 1,
+        pageSize: 20,
+        filter: {keyword:'', status:'', priorityOnly:false, deduplicationRequired:false, productCategory:'', annotationStatus:'', modelKnowledgeValue:''},
+        productCategories: [],
         loading: false,
         selected: [],
         dlg: false,
@@ -1848,18 +1852,7 @@ Vue.createApp({
         submitting: false,
         updatedAt: '-'
       },
-      answerHub: {
-        loading: false,
-        updating: false,
-        updatedAt: '-',
-        overview: {
-          service: {status:'unknown', label:'状态未知'},
-          control: {enabled:false, schedule_enabled:false, schedule_time:'02:00', timezone:'Asia/Shanghai', running:false, last_run:{}},
-          metrics: {queue_tasks:0, processing:0, failed:0, waiting_review:0, stalled:0, recent_pull_records:0, recent_queued_records:0, recent_quarantined_records:0},
-          jobs: [],
-          problems: []
-        }
-      },
+      answerHubMonitor: {loading:false,logsLoading:false,actionLoading:false,updatedAt:'-',page:1,pageSize:20,service:{status:'unknown',message:''},control:{enabled:false,schedule_enabled:false,schedule_time:'02:00',running:false,plan:{knowledge_settle_from_date:'',knowledge_settle_to_date:'',second_part_query_from_date:'',second_part_query_to_date:'',timezone:'Asia/Shanghai'}},summary:{pending:0,running:0,attention:0,completed:0,cz_sync_failed:0},jobs:[],filter:{status:'',keyword:''},log:{name:'',content:''}},
       changeLogs: {item:null, entries:[]},
       knowledgeReviewSelection: [],
       batchApproving: false,
@@ -1960,7 +1953,7 @@ Vue.createApp({
         overview:'运营总览',
         knowledge:'知识库管理',
         candidateReviews:'候选价值复核',
-        answerHub:'Answer Hub 自动化',
+        automationMonitor:'运行监管',
         embeddingModel:'向量模型',
         changeLogs:'变更日志',
         users:'账号管理'
@@ -1971,7 +1964,7 @@ Vue.createApp({
         overview:'知识运营工作台',
         knowledge:'知识内容维护与审核',
         candidateReviews:'候选价值判断与批量送审',
-        answerHub:'运行状态、问题中心与受控操作',
+        automationMonitor:'自动化队列、异常反馈与运行日志',
         embeddingModel:'召回分析、上传查重、纠错与离线训练',
         changeLogs:'已发布知识变更追溯',
         users:'创建和查看后台账号'
@@ -2102,7 +2095,6 @@ Vue.createApp({
       if (this.currentUser && this.currentUser.role === 'visitor') return [{label:'已发布', value:'published'}];
       return [
         {label:'全部状态', value:''},
-        {label:'草稿', value:'draft'},
         {label:'待发布审核', value:'review'},
         {label:'已发布', value:'published'},
         {label:'已废弃', value:'deprecated'}
@@ -3487,6 +3479,74 @@ Vue.createApp({
       };
       alert(messages[action] || '当前操作尚未获得授权。');
     },
+    openAutomationMonitor: function() {
+      if (!this.can('knowledge:submit')) return;
+      this.view = 'automationMonitor';
+      this.loadAutomationMonitor();
+    },
+    loadAutomationMonitor: function() {
+      var self=this; self.answerHubMonitor.loading=true;
+      fetch(API + '/automation-monitor/overview',{headers:self.authHeaders()})
+        .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'加载运行监管失败');return d;});})
+        .then(function(d){self.answerHubMonitor.service=d.service||{};self.answerHubMonitor.control=Object.assign(self.answerHubMonitor.control,d.control||{});self.answerHubMonitor.control.plan=Object.assign(self.answerHubMonitor.control.plan||{},(d.control||{}).plan||{});self.answerHubMonitor.summary=Object.assign(self.answerHubMonitor.summary,d.summary||{});self.answerHubMonitor.jobs=Array.isArray(d.jobs)?d.jobs:[];self.answerHubMonitor.updatedAt=self.formatDate(new Date());})
+        .catch(function(e){self.answerHubMonitor.service={status:'unavailable',message:e.message};})
+        .finally(function(){self.answerHubMonitor.loading=false;});
+    },
+    saveAutomationMonitorControl: function(){
+      var self=this, control=self.answerHubMonitor.control||{};
+      self.answerHubMonitor.actionLoading=true;
+      fetch(API+'/automation-monitor/control',{method:'PATCH',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({enabled:!!control.enabled,schedule_enabled:!!control.schedule_enabled,schedule_time:control.schedule_time||'02:00',knowledge_settle_from_date:(control.plan||{}).knowledge_settle_from_date||'',knowledge_settle_to_date:(control.plan||{}).knowledge_settle_to_date||'',second_part_query_from_date:(control.plan||{}).knowledge_settle_from_date||'',second_part_query_to_date:(control.plan||{}).knowledge_settle_to_date||'',timezone:(control.plan||{}).timezone||'Asia/Shanghai'})})
+        .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'保存自动化控制失败');return d;});})
+        .then(function(d){self.answerHubMonitor.control=Object.assign(self.answerHubMonitor.control,d||{});})
+        .catch(function(e){alert(e.message);self.loadAutomationMonitor();})
+        .finally(function(){self.answerHubMonitor.actionLoading=false;});
+    },
+    startAutomationProcess: function(){
+      this.answerHubMonitor.control.enabled=true;
+      this.saveAutomationMonitorControl();
+    },
+    stopAutomationProcess: function(){
+      this.answerHubMonitor.control.enabled=false;
+      this.saveAutomationMonitorControl();
+    },
+    runAutomationMonitorOnce: function(){this.runAutomationMonitorAction('run');},
+    retryAutomationMonitor: function(){this.runAutomationMonitorAction('retry');},
+    runAutomationMonitorAction: function(action){
+      var self=this, route=action==='run'?'/automation-monitor/runs':'/automation-monitor/retry-failed';
+      self.answerHubMonitor.actionLoading=true;
+      fetch(API+route,{method:'POST',headers:self.authHeaders({'Content-Type':'application/json'})})
+        .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'操作失败');return d;});})
+        .then(function(){return self.loadAutomationMonitor();})
+        .catch(function(e){alert(e.message);})
+        .finally(function(){self.answerHubMonitor.actionLoading=false;});
+    },
+    setAutomationMonitorFilter: function(status){this.answerHubMonitor.filter.status=status;this.resetAutomationMonitorPage();},
+    resetAutomationMonitorPage: function(){this.answerHubMonitor.page=1;},
+    automationMonitorStatusMatches: function(job, filter){
+      if (!filter) return true;
+      var status=String(job.effective_status||''), health=String(job.health_status||'');
+      var czFailed=Number(((job.cz_sync)||{}).failed||0)>0;
+      if (filter==='pending') return status==='pending';
+      if (filter==='running') return ['running','processing'].indexOf(status)!==-1 || health==='active';
+      if (filter==='attention') return ['failed','stalled','attention'].indexOf(health)!==-1 || status==='needs_confirmation' || czFailed;
+      if (filter==='completed') return ['completed','done','review_pending'].indexOf(status)!==-1 || ['completed','review_pending','healthy'].indexOf(health)!==-1;
+      if (filter==='cz_sync_failed') return czFailed;
+      return status===filter || health===filter;
+    },
+    automationMonitorFilteredJobs: function(){var self=this,m=this.answerHubMonitor,k=(m.filter.keyword||'').trim().toLowerCase();return m.jobs.filter(function(j){var ok=self.automationMonitorStatusMatches(j,m.filter.status);return ok&&(!k||[j.record_id,j.run_id,j.source_label,j.error].join(' ').toLowerCase().indexOf(k)!==-1);});},
+    automationMonitorPageCount: function(){return Math.max(1,Math.ceil(this.automationMonitorFilteredJobs().length/this.answerHubMonitor.pageSize));},
+    changeAutomationMonitorPage: function(page){this.answerHubMonitor.page=Math.max(1,Math.min(Number(page)||1,this.automationMonitorPageCount()));},
+    automationMonitorVisibleJobs: function(){var start=(this.answerHubMonitor.page-1)*this.answerHubMonitor.pageSize;return this.automationMonitorFilteredJobs().slice(start,start+this.answerHubMonitor.pageSize);},
+    automationMonitorPageStart: function(){return this.automationMonitorFilteredJobs().length?(this.answerHubMonitor.page-1)*this.answerHubMonitor.pageSize+1:0;},
+    automationMonitorPageEnd: function(){return Math.min(this.automationMonitorFilteredJobs().length,this.answerHubMonitor.page*this.answerHubMonitor.pageSize);},
+    automationMonitorHealthLabel: function(j){var h=String(j.health_status||''),s=String(j.effective_status||'');if(h==='stalled')return '疑似卡住';if(h==='failed')return '运行失败';if(Number(((j.cz_sync)||{}).failed||0)>0)return '同步异常';if(['running','processing'].indexOf(s)!==-1)return '运行中';if(s==='pending')return '待处理';return '已完成';},
+    automationMonitorCzSyncLabel: function(j){var s=j.cz_sync||{};return Number(s.failed||0)>0?'失败 '+s.failed:(Number(s.queued||0)>0?'已排队 '+s.queued:'等待同步');},
+    showAutomationMonitorLogs: function(){var self=this;self.answerHubMonitor.logsLoading=true;fetch(API+'/automation-monitor/logs/latest?lines=120',{headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'读取日志失败');return d;});}).then(function(d){self.answerHubMonitor.log=d||{name:'',content:''};}).catch(function(e){self.answerHubMonitor.log={name:'日志暂不可读取',content:e.message};}).finally(function(){self.answerHubMonitor.logsLoading=false;});},
+    candidateReviewPageCount: function(){return Math.max(1,Math.ceil(this.candidateReviews.total/this.candidateReviews.pageSize));},
+    candidateReviewPageStart: function(){return this.candidateReviews.total?(this.candidateReviews.page-1)*this.candidateReviews.pageSize+1:0;},
+    candidateReviewPageEnd: function(){return Math.min(this.candidateReviews.total,this.candidateReviews.page*this.candidateReviews.pageSize);},
+    changeCandidateReviewPage: function(page){this.candidateReviews.page=Math.max(1,Math.min(Number(page)||1,this.candidateReviewPageCount()));this.candidateReviews.selected=[];this.loadCandidateReviews();},
+    changeCandidateReviewPageSize: function(){this.candidateReviews.page=1;this.candidateReviews.selected=[];this.loadCandidateReviews();},
     openCandidateReviews: function() {
       if (!this.can('knowledge:submit')) return;
       this.view = 'candidateReviews';
@@ -3494,85 +3554,6 @@ Vue.createApp({
       if (!this.businessTypes.length) this.loadBusinessTypes();
       this.loadCats();
       this.loadCandidateReviews();
-    },
-    openAnswerHub: function() {
-      if (!this.can('knowledge:submit')) return;
-      this.view = 'answerHub';
-      this.loadAnswerHub();
-    },
-    loadAnswerHub: function() {
-      var self = this;
-      self.answerHub.loading = true;
-      fetch(API + '/answer-hub/overview', {headers:self.authHeaders()})
-        .then(function(response) {
-          return response.json().then(function(data) {
-            if (!response.ok) throw new Error(data.detail || '加载自动化运行状态失败');
-            return data;
-          });
-        })
-        .then(function(data) {
-          self.answerHub.overview = Object.assign(self.answerHub.overview, data || {});
-          self.answerHub.overview.service = Object.assign({status:'unknown',label:'状态未知'}, data.service || {});
-          self.answerHub.overview.control = Object.assign({enabled:false,schedule_enabled:false,schedule_time:'02:00',timezone:'Asia/Shanghai',running:false,last_run:{}}, data.control || {});
-          self.answerHub.overview.metrics = Object.assign({queue_tasks:0,processing:0,failed:0,waiting_review:0,stalled:0,recent_pull_records:0,recent_queued_records:0,recent_quarantined_records:0}, data.metrics || {});
-          self.answerHub.overview.jobs = Array.isArray(data.jobs) ? data.jobs : [];
-          self.answerHub.overview.problems = Array.isArray(data.problems) ? data.problems : [];
-          self.answerHub.updatedAt = self.formatDate(new Date());
-        })
-        .catch(function(error) { alert(error.message); })
-        .finally(function() { self.answerHub.loading = false; });
-    },
-    saveAnswerHubControl: function() {
-      var self = this;
-      if (!self.isSuperAdmin()) return;
-      self.answerHub.updating = true;
-      var control = self.answerHub.overview.control;
-      fetch(API + '/answer-hub/control', {
-        method:'PATCH',
-        headers:self.authHeaders({'Content-Type':'application/json'}),
-        body:JSON.stringify({enabled:!!control.enabled,schedule_enabled:!!control.schedule_enabled,schedule_time:control.schedule_time})
-      })
-        .then(function(response) { return response.json().then(function(data) { if (!response.ok) throw new Error(data.detail || '保存自动化控制失败'); return data; }); })
-        .then(function(data) { self.answerHub.overview.control = Object.assign(self.answerHub.overview.control, data || {}); })
-        .catch(function(error) { alert(error.message); self.loadAnswerHub(); })
-        .finally(function() { self.answerHub.updating = false; });
-    },
-    startAnswerHubRun: function() {
-      var self = this;
-      if (!self.isSuperAdmin() || !self.answerHub.overview.control.enabled || self.answerHub.overview.control.running) return;
-      if (!confirm('确认立即拉取并处理？系统只会同步候选到“候选价值复核”，不会自动送审或发布。')) return;
-      self.answerHub.updating = true;
-      fetch(API + '/answer-hub/runs', {method:'POST',headers:self.authHeaders({'Content-Type':'application/json'})})
-        .then(function(response) { return response.json().then(function(data) { if (!response.ok) throw new Error(data.detail || '启动自动化失败'); return data; }); })
-        .then(function() { return self.loadAnswerHub(); })
-        .catch(function(error) { alert(error.message); })
-        .finally(function() { self.answerHub.updating = false; });
-    },
-    retryAnswerHubJob: function(job) {
-      var self = this;
-      var jobId = job && job.job_id;
-      if (!self.isSuperAdmin() || !jobId || !self.answerHub.overview.control.enabled) return;
-      if (!confirm('确认重试该失败任务？原任务与重试记录都会保留。')) return;
-      self.answerHub.updating = true;
-      fetch(API + '/answer-hub/jobs/' + encodeURIComponent(jobId) + '/retry', {method:'POST',headers:self.authHeaders({'Content-Type':'application/json'})})
-        .then(function(response) { return response.json().then(function(data) { if (!response.ok) throw new Error(data.detail || '重试失败'); return data; }); })
-        .then(function() { return self.loadAnswerHub(); })
-        .catch(function(error) { alert(error.message); })
-        .finally(function() { self.answerHub.updating = false; });
-    },
-    answerHubSummaryNumber: function(job) {
-      var summary = (job && job.summary) || {};
-      for (var index = 1; index < arguments.length; index += 1) {
-        var value = Number(summary[arguments[index]] || 0);
-        if (value) return value;
-      }
-      return 0;
-    },
-    answerHubStatusClass: function(status) {
-      return {active:'tg-r',failed:'tg-x',stalled:'tg-x',attention:'tg-l',review_pending:'tg-p',completed:'tg-p',healthy:'tg-p'}[status] || 'tg-d';
-    },
-    answerHubServiceClass: function(status) {
-      return status === 'online' ? 'tg-p' : (status === 'not_configured' ? 'tg-l' : 'tg-x');
     },
     openCandidateReviewStatus: function(status, priorityOnly) {
       if (!this.can('knowledge:submit')) return;
@@ -3630,15 +3611,20 @@ Vue.createApp({
         })
         .finally(function() { self.candidateDashboard.loading = false; });
     },
-    loadCandidateReviews: function() {
+    loadCandidateReviews: function(resetPage) {
       var self = this;
+      if (resetPage) self.candidateReviews.page=1;
       var params = new URLSearchParams();
       var filter = self.candidateReviews.filter;
       if (filter.keyword && filter.keyword.trim()) params.set('keyword', filter.keyword.trim());
       if (filter.status) params.set('review_status', filter.status);
       if (filter.priorityOnly) params.set('priority_only', 'true');
       if (filter.deduplicationRequired) params.set('deduplication_required', 'true');
-      params.set('limit', '500');
+      if (filter.productCategory) params.set('product_category', filter.productCategory);
+      if (filter.annotationStatus) params.set('annotation_status', filter.annotationStatus);
+      if (filter.modelKnowledgeValue) params.set('model_knowledge_value', filter.modelKnowledgeValue);
+      params.set('limit', String(self.candidateReviews.pageSize));
+      params.set('offset', String((self.candidateReviews.page-1)*self.candidateReviews.pageSize));
       self.candidateReviews.loading = true;
       fetch(API + '/integration/candidate-reviews?' + params.toString(), {headers:self.authHeaders()})
         .then(function(response) {
@@ -3649,7 +3635,8 @@ Vue.createApp({
         })
         .then(function(data) {
           self.candidateReviews.items = Array.isArray(data.items) ? data.items : [];
-          self.candidateReviews.total = Number(data.total || 0);
+           self.candidateReviews.total = Number(data.total || 0);
+           self.candidateReviews.productCategories = Array.isArray(data.product_categories) ? data.product_categories : self.candidateReviews.productCategories;
           self.candidateReviews.summary = Object.assign(
             {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
             data.summary || {}
@@ -4016,10 +4003,9 @@ Vue.createApp({
         })
         .then(function(data) {
           var counts = data.counts || {};
-          self.stats.total = (counts.draft || 0) + (counts.review || 0) + (counts.published || 0) + (counts.deprecated || 0);
+          self.stats.total = (counts.review || 0) + (counts.published || 0) + (counts.deprecated || 0);
           self.stats.published = counts.published || 0;
           self.stats.review = counts.review || 0;
-          self.stats.draft = counts.draft || 0;
           self.dashboard.pending = Array.isArray(data.pending) ? data.pending : [];
           self.dashboard.recentUpdates = Array.isArray(data.recent_updates) ? data.recent_updates : [];
           self.dashboard.updatedAt = self.formatDate(new Date());
@@ -5483,7 +5469,7 @@ Vue.createApp({
       this.viewOnly = false;
       this.auditMode = false;
       this.eid = '';
-      this.fm = {title:'', subtitles:[], knowledgeOrigin:'', businessType:'', cat:'', by:(this.currentUser.username || ''), scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], modelConfiguration:null, importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[this.createTextEditorBlock('')]};
+      this.fm = {title:'', subtitles:[], knowledgeOrigin:'', businessType:'', cat:'', by:(this.currentUser.username || ''), scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], recommendedReply:'', modelConfiguration:null, importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[this.createTextEditorBlock('')]};
       this.ns = '';
       this.relatedStandardItemInput = '';
       this._hoverTarget = null;
@@ -5516,6 +5502,11 @@ Vue.createApp({
       self.eid = r.id;
       var mediaList = Array.isArray(r.media) ? r.media.slice() : [];
       var blocks = self.editorBlocksFromContent(r.content, mediaList);
+      var recommendedReply = (
+        r.content && typeof r.content === 'object' && !Array.isArray(r.content)
+          ? r.content.recommended_reply
+          : ''
+      );
       var modelConfiguration = isModelConfiguration
         ? self.modelConfigurationFormFromKnowledge(r)
         : null;
@@ -5532,6 +5523,7 @@ Vue.createApp({
         by: r.created_by,
         scenes: r.applicable_scenes ? r.applicable_scenes.slice() : [],
         relatedStandardItems: r.related_standard_items ? r.related_standard_items.slice() : [],
+        recommendedReply: String(recommendedReply || ''),
         applicableCategories: isModelConfiguration
           ? (modelConfiguration.categoryId ? [modelConfiguration.categoryId] : [])
           : (r.applicable_categories ? r.applicable_categories.slice() : []),
@@ -6319,10 +6311,12 @@ Vue.createApp({
       function buildBody() {
         var form = operation.form;
         var useManhattan = self.showManhattanFields(form);
+        var content = {blocks:self.buildContentBlocks(form)};
+        content.recommended_reply = String(form.recommendedReply || '').trim();
         return {
           title: form.title,
           subtitles: form.subtitles.filter(function(s) { return s && s.trim(); }),
-          content: {blocks:self.buildContentBlocks(form)},
+          content: content,
           knowledge_origin: form.knowledgeOrigin,
           business_type: form.businessType,
           category_id: form.cat,

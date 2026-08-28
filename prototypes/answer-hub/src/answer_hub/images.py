@@ -58,7 +58,12 @@ def _detect_mime(data: bytes, header_type: str) -> str:
 
 
 def split_image_urls(value: Any) -> list[str]:
-    """Normalize line-delimited and JSON-array image link fields."""
+    """Normalize image links from line-delimited or JSON-array fields.
+
+    The second-part API may serialize a list of image URLs as a JSON string
+    in an Excel cell. Invalid JSON deliberately falls back to the existing
+    line-based behavior so malformed input is not silently reinterpreted.
+    """
     if value is None:
         return []
     if isinstance(value, (list, tuple)):

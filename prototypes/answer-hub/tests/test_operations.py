@@ -12,6 +12,7 @@ from answer_hub.operations import (
     apply_retention_cleanup,
     build_operations_snapshot,
     enforce_redaction,
+    partition_redaction_rows,
     evaluate_run_sla,
     scan_redaction_rows,
 )
@@ -27,10 +28,13 @@ def test_operations_policy_uses_online_clustering_runtime_sla_by_default(
     assert policy.max_seconds_per_100_rows == 900.0
 
 
-def test_redaction_scan_blocks_sensitive_values_without_echoing_them() -> None:
+def test_redaction_scan_blocks_high_confidence_identifiers_without_echoing_them() -> None:
     rows = [
         {
-            "聊天内容": "请联系 13812345678，邮箱 user@example.com。",
+            "聊天内容": (
+                "请联系 13812345678，银行卡 6222020202020202，"
+                "邮箱 user@example.com。"
+            ),
             "核心问题": "测试",
         }
     ]
@@ -38,9 +42,59 @@ def test_redaction_scan_blocks_sensitive_values_without_echoing_them() -> None:
 
     assert report["passed"] is False
     assert report["blocking_count"] == 2
+    assert report["warning_count"] == 1
     samples = " ".join(item["sample"] for item in report["findings"])
     assert "13812345678" not in samples
+    assert "6222020202020202" not in samples
     assert "user@example.com" not in samples
+
+
+def test_redaction_scan_only_warns_on_video_accounts_and_address_like_phrases() -> None:
+    rows = [
+        {
+            "聊天内容": (
+                "T@y.Gi 机械革命电脑清灰，"
+                "https://v.douyin.com/80AaG5HngTs/，有什么区别？"
+            )
+        }
+    ]
+
+    report = scan_redaction_rows(rows)
+
+    assert report["passed"] is True
+    assert report["blocking_count"] == 0
+    assert {item["type"] for item in report["findings"]} == {
+        "address_like",
+        "email",
+        "learning_link",
+    }
+
+
+def test_redaction_enforcement_reports_the_first_blocking_finding(
+    monkeypatch,
+) -> None:
+    rows = [
+        {"聊天内容": "这两个有什么区别？"},
+        {"聊天内容": "联系电话 13812345678"},
+    ]
+    monkeypatch.setenv("ANSWER_HUB_REDACTION_ENFORCE", "true")
+
+    with pytest.raises(RedactionRiskError, match="第2行.*mobile_phone"):
+        enforce_redaction(rows)
+
+
+def test_redaction_enforcement_scans_past_warning_sample_limit(
+    monkeypatch,
+) -> None:
+    rows = [
+        {"聊天内容": f"工程师学习账号 user{index}@example.com"}
+        for index in range(20)
+    ]
+    rows.append({"聊天内容": "联系电话 13812345678"})
+    monkeypatch.setenv("ANSWER_HUB_REDACTION_ENFORCE", "true")
+
+    with pytest.raises(RedactionRiskError, match="第21行.*mobile_phone"):
+        enforce_redaction(rows)
 
 
 def test_redaction_enforcement_can_be_disabled_for_controlled_migration(
@@ -60,6 +114,27 @@ def test_redaction_enforcement_rejects_unredacted_input(monkeypatch) -> None:
 
     with pytest.raises(RedactionRiskError):
         enforce_redaction(rows)
+
+
+def test_partition_redaction_rows_skips_only_sensitive_rows() -> None:
+    rows = [
+        {"工单ID": "safe-1", "产品类型": "手机", "聊天内容": "屏幕有漏液"},
+        {
+            "工单ID": "unsafe-1",
+            "产品类型": "手机",
+            "聊天内容": "请联系 13812345678，地址是上海市浦东新区。",
+        },
+    ]
+
+    safe_rows, excluded_rows, report = partition_redaction_rows(rows)
+
+    assert [row["工单ID"] for row in safe_rows] == ["safe-1"]
+    assert [row["工单ID"] for row in excluded_rows] == ["unsafe-1"]
+    assert report["blocking_rows"] == [2]
+    assert report["skipped_rows"] == 1
+    assert excluded_rows[0]["排除原因"].startswith("未通过脱敏校验")
+    assert "13812345678" not in str(excluded_rows[0])
+    assert "上海市浦东新区" not in str(excluded_rows[0])
 
 
 def test_operations_snapshot_and_sla_report_runtime_risks() -> None:

@@ -1172,7 +1172,14 @@ class CzIntegrationAdapter:
                         },
                         "knowledge_origin": CZ_BUSINESS_ACCUMULATION_ORIGIN,
                         "business_type": business_type,
-                        "recommended_reply": _text(candidate.get("推荐回复")) or None,
+                        # MiMo 转写被人工复核门禁拦截时，推荐回复仍不能丢失。
+                        # 只使用来源中的历史实际回复/参考话术兜底，不改变 pending 状态。
+                        "recommended_reply": (
+                            _text(candidate.get("推荐回复"))
+                            or _text(candidate.get("历史实际回复"))
+                            or _text(candidate.get("参考话术"))
+                            or None
+                        ),
                         "category_id": category_id,
                         "scene_tags": scene_tags,
                         "applicable_categories": _candidate_applicable_categories(

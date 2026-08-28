@@ -58,11 +58,10 @@ class Settings(BaseSettings):
     INTEGRATION_API_KEY: str = ""
     # Narrow key for the QA plugin's published-knowledge retrieval and feedback.
     RETRIEVAL_API_KEY: str = ""
-
-    # CZ is the only browser-facing gateway for the Answer Hub automation API.
-    ANSWER_HUB_BASE_URL: str = ""
+    # Answer Hub is contacted only by the backend; browser clients never receive this key.
+    ANSWER_HUB_API_BASE_URL: str = ""
     ANSWER_HUB_API_KEY: str = ""
-    ANSWER_HUB_TIMEOUT_SECONDS: float = 10.0
+    ANSWER_HUB_API_TIMEOUT_SECONDS: float = 15.0
 
     # OpenAI-compatible embedding service, normally the internal Qwen3 service.
     EMBEDDING_PROVIDER: str = "openai_compatible"

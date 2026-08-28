@@ -14,7 +14,7 @@ from answer_hub.product_taxonomy import (
     configured_product_names,
     normalize_product_scope,
 )
-from answer_hub.workflow import build_topic_review_rows, preprocess_source_rows
+from answer_hub.workflow import preprocess_source_rows
 
 
 def test_default_taxonomy_contains_configured_categories() -> None:
@@ -80,6 +80,33 @@ def test_source_preprocessing_maps_business_aliases_to_configured_products() -> 
     assert {row["回收业务层级编码"] for row in rows} == {"self_operated"}
 
 
+def test_source_preprocessing_prefers_category_over_legacy_product_type() -> None:
+    rows = preprocess_source_rows(
+        [
+            {
+                "工单ID": "LAPTOP-CATEGORY-1",
+                "聊天内容": "笔记本底部外壳破损怎么判定",
+                "类目": "笔记本",
+                "产品类型": "电脑",
+            },
+            {
+                "工单ID": "TABLET-CATEGORY-1",
+                "聊天内容": "平板屏幕怎么判定",
+                "类目": "平板电脑",
+                "产品类型": "平板",
+            },
+        ]
+    )
+
+    assert [(row["产品类型"], row["产品类型编码"]) for row in rows] == [
+        ("笔记本", "laptop"),
+        ("平板电脑", "tablet"),
+    ]
+    assert {row["回收业务层级"] for row in rows} == {"自营回收"}
+    assert all(row["产品类型原值"] in {"电脑", "平板"} for row in rows)
+    assert all("类目优先" in row["预处理备注"] for row in rows)
+
+
 def test_custom_taxonomy_cannot_change_fixed_categories_or_add_ambiguous_camera_alias(
     tmp_path: Path,
 ) -> None:
@@ -133,7 +160,7 @@ def test_taxonomy_cache_refreshes_when_same_file_content_changes(
     assert canonical_product_name("测试手机别名乙乙", custom_path) == "手机"
 
 
-def test_source_preprocessing_routes_concrete_unconfigured_product_to_aggregate_recovery() -> None:
+def test_source_preprocessing_sends_ambiguous_camera_body_to_manual_confirmation() -> None:
     row = preprocess_source_rows(
         [
             {
@@ -144,11 +171,9 @@ def test_source_preprocessing_routes_concrete_unconfigured_product_to_aggregate_
         ]
     )[0]
 
-    assert row["产品类型"] == "相机机身"
+    assert row["产品类型"] == UNKNOWN_PRODUCT_NAME
     assert row["产品类型编码"] == ""
-    assert row["回收业务层级"] == "聚合回收"
-    assert row["回收业务层级编码"] == "aggregate"
-    assert "聚合回收产品品类" in row["预处理备注"]
+    assert "进入人工确认" in row["预处理备注"]
 
 
 def test_source_preprocessing_reserves_aggregate_business_hierarchy() -> None:
@@ -180,75 +205,20 @@ def test_source_preprocessing_reserves_aggregate_business_hierarchy() -> None:
     assert legacy["产品类型"] == UNKNOWN_PRODUCT_NAME
 
 
-def test_source_preprocessing_keeps_concrete_non_standard_products_and_rejects_placeholders() -> None:
-    aggregate_rows = preprocess_source_rows(
+def test_unknown_category_never_defaults_to_phone() -> None:
+    row = preprocess_source_rows(
         [
             {
-                "工单ID": "AGG-CAMERA-1",
-                "聊天内容": "运动相机镜头如何检测",
-                "产品类型": "运动相机",
-            },
-            {
-                "工单ID": "AGG-ASSEMBLED-1",
-                "聊天内容": "组装机配置如何核对",
-                "产品类型": "组装机",
-            },
-        ]
-    )
-    placeholder_rows = preprocess_source_rows(
-        [
-            {
-                "工单ID": "PENDING-MODEL-1",
+                "工单ID": "UNKNOWN-1",
                 "聊天内容": "需要确认这个设备如何检测",
-                "产品类型": "机型",
-            },
-            {
-                "工单ID": "PENDING-CONFIRM-1",
-                "聊天内容": "需要确认这个设备如何检测",
-                "产品类型": "待确定",
-            },
-        ]
-    )
-
-    assert [(row["产品类型"], row["回收业务层级"]) for row in aggregate_rows] == [
-        ("运动相机", "聚合回收"),
-        ("组装机", "聚合回收"),
-    ]
-    assert all(row["产品类型编码"] == "" for row in aggregate_rows)
-    assert all("聚合回收产品品类" in row["预处理备注"] for row in aggregate_rows)
-    assert all(row["产品类型"] == UNKNOWN_PRODUCT_NAME for row in placeholder_rows)
-    assert all(row["产品类型编码"] == "" for row in placeholder_rows)
-    assert all("进入人工确认" in row["预处理备注"] for row in placeholder_rows)
-
-
-def test_aggregate_product_remains_isolated_and_transcribes_without_self_operated_standards() -> None:
-    rows = preprocess_source_rows(
-        [
-            {
-                "工单ID": f"AGG-CAMERA-{index}",
-                "聊天内容": "运动相机镜头起雾时如何检查",
-                "核心问题": "运动相机镜头起雾如何检查",
-                "产品类型": "运动相机",
+                "产品类型": "未知新品类",
             }
-            for index in (1, 2)
         ]
-    )
+    )[0]
 
-    topics, _mapping, gaps, pending = build_topic_review_rows(
-        rows,
-        use_mimo=False,
-        clustering_mode="rule",
-        use_standard_references=False,
-        enforce_cluster_admission=True,
-    )
-
-    assert len(topics) == 2
-    assert not gaps
-    assert not pending
-    assert all(topic["主题样本数"] == 1 for topic in topics)
-    assert all(topic["回收业务层级"] == "聚合回收" for topic in topics)
-    assert all(topic["适用范围"] == "运动相机" for topic in topics)
-    assert all(topic["关联标准项"] == "" for topic in topics)
+    assert row["产品类型"] == UNKNOWN_PRODUCT_NAME
+    assert row["产品类型编码"] == ""
+    assert "进入人工确认" in row["预处理备注"]
 
 
 def test_scope_normalization_only_returns_one_of_the_configured_categories() -> None:
