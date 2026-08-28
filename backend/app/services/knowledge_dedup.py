@@ -23,7 +23,11 @@ from app.models.knowledge import (
     KnowledgeStatus,
     KnowledgeTag,
 )
-from app.services.applicability import filter_applicable_rows
+from app.services.applicability import (
+    applicability_layer_matches,
+    filter_applicable_rows,
+    scope_keys,
+)
 from app.services.embedding import embed_texts
 from app.services.embedding_runtime import get_active_runtime_values
 
@@ -395,6 +399,57 @@ def _knowledge_dedup_documents(item: Knowledge) -> tuple[str, str, str]:
     return build_dedup_documents(item.title, item.content)
 
 
+def _categories_overlap_for_deduplication(
+    incoming_values: Any,
+    existing_values: Any,
+) -> bool:
+    """只有双方明确指定且完全不相交时，才视为不同查重范围。"""
+    incoming_keys = scope_keys(incoming_values, "category")
+    existing_keys = scope_keys(existing_values, "category")
+    return applicability_layer_matches(
+        existing_values,
+        incoming_keys,
+        "category",
+    ) or applicability_layer_matches(
+        incoming_values,
+        existing_keys,
+        "category",
+    )
+
+
+def _applicable_category_scope_ids(
+    db: Session,
+    *,
+    active_statuses: list[KnowledgeStatus],
+    knowledge_origin: str,
+    business_type: str,
+    applicable_categories: Any,
+    exclude_knowledge_id: str | None,
+) -> list[str] | None:
+    incoming_keys = scope_keys(applicable_categories, "category")
+    if not incoming_keys:
+        return None
+
+    query = db.query(
+        Knowledge.id.label("knowledge_id"),
+        Knowledge.applicable_categories,
+    ).filter(
+        Knowledge.status.in_(active_statuses),
+        Knowledge.knowledge_origin == knowledge_origin,
+        Knowledge.business_type == business_type,
+    )
+    if exclude_knowledge_id:
+        query = query.filter(Knowledge.id != exclude_knowledge_id)
+    return [
+        row.knowledge_id
+        for row in query.all()
+        if _categories_overlap_for_deduplication(
+            applicable_categories,
+            row.applicable_categories,
+        )
+    ]
+
+
 def _find_embedding(db: Session, knowledge_id: str) -> KnowledgeEmbedding | None:
     return (
         db.query(KnowledgeEmbedding)
@@ -477,6 +532,7 @@ def check_duplicate(
     scene_tags: list[str] | None,
     knowledge_origin: str,
     business_type: str,
+    applicable_categories: Any = None,
     exclude_knowledge_id: str | None = None,
     embedding_vectors: tuple[list[float], list[float], list[float]] | None = None,
 ) -> DedupDecision:
@@ -510,15 +566,18 @@ def check_duplicate(
     )
     if exclude_knowledge_id:
         title_query = title_query.filter(Knowledge.id != exclude_knowledge_id)
-    title_matches = [
-        item
-        for item in (
-            title_query.order_by(Knowledge.updated_at.desc())
-            .limit(max_candidates)
-            .all()
-        )
-        if _normalized_comparison_text(item.title) == normalized_title
-    ]
+    title_matches: list[Knowledge] = []
+    for item in title_query.order_by(Knowledge.updated_at.desc()).all():
+        if not _categories_overlap_for_deduplication(
+            applicable_categories,
+            getattr(item, "applicable_categories", None),
+        ):
+            continue
+        if _normalized_comparison_text(item.title) != normalized_title:
+            continue
+        title_matches.append(item)
+        if len(title_matches) >= max_candidates:
+            break
     exact_title_and_content_matches = [
         item
         for item in title_matches
@@ -578,6 +637,24 @@ def check_duplicate(
             ],
         )
 
+    scoped_knowledge_ids = _applicable_category_scope_ids(
+        db,
+        active_statuses=active_statuses,
+        knowledge_origin=knowledge_origin,
+        business_type=business_type,
+        applicable_categories=applicable_categories,
+        exclude_knowledge_id=exclude_knowledge_id,
+    )
+    if scoped_knowledge_ids == []:
+        return _decision(
+            action="create",
+            content_hash=content_hash,
+            embedding=query_vector,
+            title_embedding=title_vector,
+            content_embedding=content_vector,
+            matches=[],
+        )
+
     query = db.query(Knowledge).join(
         KnowledgeEmbedding,
         KnowledgeEmbedding.knowledge_id == Knowledge.id,
@@ -591,6 +668,8 @@ def check_duplicate(
         Knowledge.knowledge_origin == knowledge_origin,
         Knowledge.business_type == business_type,
     )
+    if scoped_knowledge_ids is not None:
+        query = query.filter(Knowledge.id.in_(scoped_knowledge_ids))
     exact_matches = (
         query.filter(KnowledgeEmbedding.content_hash == content_hash)
         .order_by(Knowledge.updated_at.desc())

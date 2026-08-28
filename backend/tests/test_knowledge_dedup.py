@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.knowledge import Category, Knowledge, KnowledgeEmbedding, KnowledgeStatus
 from app.services.knowledge_dedup import (
+    _categories_overlap_for_deduplication,
     _combined_dedup_similarity,
     _has_content_containment,
     _has_enough_semantic_content,
@@ -121,6 +122,25 @@ class KnowledgeDedupTextTests(unittest.TestCase):
         self.assertTrue(_has_content_containment("1234567890123456", "345678901234"))
         self.assertTrue(_has_content_containment(" 1234 5678 9012 3456 ", "345678901234"))
         self.assertFalse(_has_content_containment("1234567890123456", "999999999999"))
+
+    def test_category_scope_only_skips_two_explicit_disjoint_categories(self):
+        self.assertTrue(
+            _categories_overlap_for_deduplication(
+                [{"categoryId": "phone", "categoryName": "手机"}],
+                ["phone"],
+            )
+        )
+        self.assertTrue(
+            _categories_overlap_for_deduplication(
+                ["手机", "平板"],
+                ["平板电脑"],
+            )
+        )
+        self.assertTrue(_categories_overlap_for_deduplication([], ["手机"]))
+        self.assertTrue(_categories_overlap_for_deduplication(["全部"], ["手机"]))
+        self.assertFalse(
+            _categories_overlap_for_deduplication(["手机"], ["笔记本"])
+        )
 
     @staticmethod
     def _title_match_session(matches):
@@ -284,6 +304,125 @@ class KnowledgeDedupTextTests(unittest.TestCase):
             same_business_other_origin.matches[0].knowledge_origin,
             "headquarters_standard",
         )
+
+    def test_exact_duplicate_is_skipped_for_disjoint_applicable_categories(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Category.__table__.create(engine)
+        Knowledge.__table__.create(engine)
+        KnowledgeEmbedding.__table__.create(engine)
+        with Session(engine) as db:
+            db.add(Category(id="cat-qc-standard", name="质检标准"))
+            existing = Knowledge(
+                id="A-00001",
+                knowledge_origin="business_accumulation",
+                business_type="self_operated",
+                title="储存容量如何判断",
+                content={"blocks": [{"type": "text", "value": "按系统显示容量判断。"}]},
+                category_id="cat-qc-standard",
+                applicable_categories=["安卓手机"],
+                status=KnowledgeStatus.PUBLISHED,
+                created_by="tester",
+            )
+            db.add(existing)
+            db.commit()
+
+            same_category = check_duplicate(
+                db,
+                title="储存容量如何判断",
+                subtitles=[],
+                content={"blocks": [{"type": "text", "value": "按系统显示容量判断。"}]},
+                scene_tags=[],
+                knowledge_origin="business_accumulation",
+                business_type="self_operated",
+                applicable_categories=[{"categoryName": "安卓手机"}],
+            )
+            with patch(
+                "app.services.knowledge_dedup.embed_texts",
+                return_value=[[0.1], [0.2], [0.3]],
+            ):
+                different_category = check_duplicate(
+                    db,
+                    title="储存容量如何判断",
+                    subtitles=[],
+                    content={"blocks": [{"type": "text", "value": "按系统显示容量判断。"}]},
+                    scene_tags=[],
+                    knowledge_origin="business_accumulation",
+                    business_type="self_operated",
+                    applicable_categories=["苹果手机"],
+                )
+            missing_incoming_category = check_duplicate(
+                db,
+                title="储存容量如何判断",
+                subtitles=[],
+                content={"blocks": [{"type": "text", "value": "按系统显示容量判断。"}]},
+                scene_tags=[],
+                knowledge_origin="business_accumulation",
+                business_type="self_operated",
+                applicable_categories=[],
+            )
+
+            existing.applicable_categories = []
+            db.commit()
+            missing_existing_category = check_duplicate(
+                db,
+                title="储存容量如何判断",
+                subtitles=[],
+                content={"blocks": [{"type": "text", "value": "按系统显示容量判断。"}]},
+                scene_tags=[],
+                knowledge_origin="business_accumulation",
+                business_type="self_operated",
+                applicable_categories=["苹果手机"],
+            )
+
+        self.assertEqual(same_category.action, "block_duplicate")
+        self.assertEqual(different_category.action, "create")
+        self.assertEqual(different_category.matches, [])
+        self.assertEqual(missing_incoming_category.action, "block_duplicate")
+        self.assertEqual(missing_existing_category.action, "block_duplicate")
+
+    def test_disjoint_categories_skip_containment_and_semantic_candidates(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Category.__table__.create(engine)
+        Knowledge.__table__.create(engine)
+        KnowledgeEmbedding.__table__.create(engine)
+        with Session(engine) as db:
+            db.add(Category(id="cat-qc-standard", name="质检标准"))
+            db.add(
+                Knowledge(
+                    id="A-00001",
+                    knowledge_origin="business_accumulation",
+                    business_type="self_operated",
+                    title="安卓设备容量规则",
+                    content={
+                        "blocks": [
+                            {
+                                "type": "text",
+                                "value": "先打开系统设置，再查看设备当前显示的存储容量并记录结果。",
+                            }
+                        ]
+                    },
+                    category_id="cat-qc-standard",
+                    applicable_categories=["安卓手机"],
+                    status=KnowledgeStatus.PUBLISHED,
+                    created_by="tester",
+                )
+            )
+            db.commit()
+
+            decision = check_duplicate(
+                db,
+                title="苹果设备容量规则",
+                subtitles=[],
+                content={"blocks": [{"type": "text", "value": "查看设备当前显示的存储容量并记录结果"}]},
+                scene_tags=[],
+                knowledge_origin="business_accumulation",
+                business_type="self_operated",
+                applicable_categories=["苹果手机"],
+                embedding_vectors=([0.1], [0.2], [0.3]),
+            )
+
+        self.assertEqual(decision.action, "create")
+        self.assertEqual(decision.matches, [])
 
 
 class QueryEmbeddingCacheTests(unittest.TestCase):
