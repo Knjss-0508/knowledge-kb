@@ -1707,6 +1707,21 @@ def match_clustering_judgment_rule(
             for value, aliases in rule.phenomenon_values
             if _contains_any(phenomenon_text, aliases)
         ]
+        if len(phenomenon_matches) != 1 and phenomenon_text:
+            # MiMo sometimes appends a concrete explanation to the primary
+            # phenomenon, for example ``漏液（显示绿色、粉色色块）``.  The
+            # explanatory color word also matches the separate ``色斑``
+            # value, but it must not turn an otherwise clear leakage label
+            # into an ambiguous boundary.  Prefer the text before the first
+            # parenthesized explanation when it identifies one value.
+            primary_phenomenon = re.split(r"[（(]", phenomenon_text, maxsplit=1)[0].strip()
+            primary_matches = [
+                (value, aliases)
+                for value, aliases in rule.phenomenon_values
+                if _contains_any(primary_phenomenon, aliases)
+            ]
+            if len(primary_matches) == 1:
+                phenomenon_matches = primary_matches
         if phenomenon_text:
             # A structured phenomenon is the strongest signal. If it is not
             # one exact configured value, do not infer a hard rule from a

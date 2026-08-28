@@ -25,15 +25,28 @@ TEXT_FIELDS = (
 
 BLOCKING_PATTERNS = {
     "mobile_phone": re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"),
-    "email": re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
     "national_id": re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)"),
+    "bank_card_like": re.compile(r"(?<!\d)\d{16,19}(?!\d)"),
 }
 
 WARNING_PATTERNS = {
-    "bank_card_like": re.compile(r"(?<!\d)\d{16,19}(?!\d)"),
+    "email": re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
+    "learning_link": re.compile(r"(?i)https?://[^\s<>\"']+"),
     "address_like": re.compile(
         r"[\u4e00-\u9fff]{2,}(?:省|市|区|县|镇|乡|街道|路|街|巷|号楼|栋|单元|室)"
     ),
+}
+
+_REDACTION_METADATA_FIELDS = {
+    "序号",
+    "上传者",
+    "分析时间",
+    "工单ID",
+    "回收单号",
+    "回收业务层级",
+    "回收业务层级编码",
+    "产品类型",
+    "产品类型编码",
 }
 
 
@@ -133,7 +146,13 @@ def scan_redaction_rows(
     sample_limit: int = 20,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
+    first_blocking: dict[str, Any] | None = None
+    first_blocking_by_row: dict[int, dict[str, Any]] = {}
+    blocking_rows: set[int] = set()
+    blocking_count = 0
+    warning_count = 0
     row_count = 0
+    finding_limit = max(1, sample_limit)
     field_names = tuple(fields)
     pattern_groups = (
         ("blocking", BLOCKING_PATTERNS),
@@ -149,41 +168,81 @@ def scan_redaction_rows(
             for severity, patterns in pattern_groups:
                 for finding_type, pattern in patterns.items():
                     for match in pattern.finditer(text):
-                        findings.append(
-                            {
-                                "severity": severity,
-                                "type": finding_type,
-                                "row": row_index,
-                                "field": field,
-                                "sample": _mask(match.group(0)),
-                            }
-                        )
-                        if len(findings) >= max(1, sample_limit):
-                            break
-                    if len(findings) >= max(1, sample_limit):
-                        break
-                if len(findings) >= max(1, sample_limit):
-                    break
-            if len(findings) >= max(1, sample_limit):
-                break
-        if len(findings) >= max(1, sample_limit):
-            break
-    blocking = [item for item in findings if item["severity"] == "blocking"]
-    warnings = [item for item in findings if item["severity"] == "warning"]
+                        finding = {
+                            "severity": severity,
+                            "type": finding_type,
+                            "row": row_index,
+                            "field": field,
+                            "sample": _mask(match.group(0)),
+                        }
+                        if severity == "blocking":
+                            blocking_count += 1
+                            blocking_rows.add(row_index)
+                            if first_blocking is None:
+                                first_blocking = finding
+                            first_blocking_by_row.setdefault(row_index, finding)
+                        else:
+                            warning_count += 1
+                        if len(findings) < finding_limit:
+                            findings.append(finding)
+                        elif finding is first_blocking:
+                            findings[-1] = finding
     return {
         "rows_scanned": row_count,
-        "passed": not blocking,
-        "blocking_count": len(blocking),
-        "warning_count": len(warnings),
+        "passed": blocking_count == 0,
+        "blocking_count": blocking_count,
+        "warning_count": warning_count,
         "findings": findings,
+        "first_blocking": first_blocking,
+        "blocking_rows": sorted(blocking_rows),
+        "first_blocking_by_row": first_blocking_by_row,
     }
+
+
+def partition_redaction_rows(
+    rows: Iterable[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Keep safe rows flowing while isolating rows blocked by redaction checks.
+
+    Excluded rows intentionally retain only non-sensitive metadata. Their text,
+    links, and model payloads are never copied into review workbooks or audit
+    records.
+    """
+    source_rows = list(rows)
+    report = scan_redaction_rows(source_rows)
+    blocking_rows = set(report["blocking_rows"])
+    first_blocking_by_row = report["first_blocking_by_row"]
+    safe_rows: list[dict[str, Any]] = []
+    excluded_rows: list[dict[str, Any]] = []
+    for row_index, row in enumerate(source_rows, start=1):
+        if row_index not in blocking_rows:
+            safe_rows.append(row)
+            continue
+        finding = first_blocking_by_row[row_index]
+        excluded = {
+            field: row.get(field)
+            for field in _REDACTION_METADATA_FIELDS
+            if field in row
+        }
+        excluded["排除原因"] = (
+            "未通过脱敏校验："
+            f"命中{finding['type']}（字段：{finding['field']}）"
+        )
+        excluded["脱敏状态"] = "未通过"
+        excluded_rows.append(excluded)
+    report = dict(report)
+    report["safe_rows"] = len(safe_rows)
+    report["skipped_rows"] = len(excluded_rows)
+    return safe_rows, excluded_rows, report
 
 
 def enforce_redaction(rows: list[dict[str, Any]]) -> dict[str, Any]:
     report = scan_redaction_rows(rows)
     enforce = os.getenv("ANSWER_HUB_REDACTION_ENFORCE", "true").strip().lower()
     if report["blocking_count"] and enforce not in {"0", "false", "no", "off"}:
-        first = report["findings"][0]
+        first = report["first_blocking"]
+        if first is None:
+            raise RuntimeError("脱敏扫描结果缺少阻断项详情。")
         raise RedactionRiskError(
             "输入数据疑似包含未脱敏敏感信息："
             f"第{first['row']}行“{first['field']}”命中{first['type']}。"

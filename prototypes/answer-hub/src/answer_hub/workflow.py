@@ -31,6 +31,7 @@ from .business_taxonomy import (
     SELF_OPERATED_BUSINESS_LINE_CODE,
     SELF_OPERATED_BUSINESS_LINE_NAME,
     UNKNOWN_BUSINESS_LINE_NAME,
+    default_business_line,
     business_line_from_record,
     business_line_metadata,
 )
@@ -73,7 +74,7 @@ from .mimo import (
     candidate_title_structure_issue,
     candidate_title_style_issue,
 )
-from .operations import enforce_redaction
+from .operations import partition_redaction_rows
 from .product_taxonomy import (
     UNKNOWN_PRODUCT_NAME,
     canonical_product_code,
@@ -1328,39 +1329,75 @@ def _cluster_title_matches_topic(
     )
     if not normalized_title or _has_internal_title_tag(normalized_title):
         return False
-    anchors: list[str] = []
-    fields = ("对象/部位", "异常现象", "判定目标")
+    def anchor_variants(value: Any) -> set[str]:
+        text = re.sub(r"\s+", "", _clean_text(value)).casefold()
+        if not text or text in {
+            "待确认",
+            "未知",
+            "通用",
+            "不限",
+            "无明确阈值",
+        }:
+            return set()
+        variants = {
+            part
+            for part in re.split(r"[｜|；;，,、/\\]+", text)
+            if len(part) >= 2
+        }
+        expanded = set(variants)
+        for part in variants:
+            for prefix in ("疑似", "存在", "是否", "缺少"):
+                if part.startswith(prefix) and len(part) - len(prefix) >= 2:
+                    expanded.add(part[len(prefix) :])
+            for suffix in ("痕迹", "现象", "情况", "问题", "的判定方法", "判定方法"):
+                if part.endswith(suffix) and len(part) - len(suffix) >= 2:
+                    expanded.add(part[: -len(suffix)])
+        return expanded
+
+    subject_terms = anchor_variants(query.get("对象/部位"))
+    phenomenon_terms = anchor_variants(query.get("异常现象"))
+    target_terms = anchor_variants(query.get("判定目标"))
     if include_core:
-        fields = (*fields, "核心问题")
-    for field in fields:
-        value = _clean_text(query.get(field))
-        if not value:
-            continue
-        for part in re.split(r"[｜|；;，,、\n]+", value):
-            part = re.sub(r"\s+", "", part)
-            if len(part) >= 2 and part not in {
-                "待确认",
-                "未知",
-                "通用",
-                "不限",
-                "无明确阈值",
-            }:
-                anchors.append(part.casefold())
-    if not anchors:
+        target_terms.update(anchor_variants(query.get("核心问题")))
+    if not subject_terms and not phenomenon_terms and not target_terms:
         return True
-    return any(
-        anchor in normalized_title
-        for anchor in dict.fromkeys(anchors)
+    subject_hit = bool(subject_terms.intersection({normalized_title})) or any(
+        term in normalized_title for term in subject_terms
     )
+    phenomenon_hit = any(term in normalized_title for term in phenomenon_terms)
+    target_hit = any(term in normalized_title for term in target_terms)
+    # A visible cluster title must carry the business object and either the
+    # observed phenomenon or the explicit judgment target.  A title such as
+    # “后盖素皮如何判定” has the object but drops the actual defect, while
+    # “无帮助如何判定” has neither and must be rebuilt from structured data.
+    if subject_terms and not subject_hit:
+        return False
+    if phenomenon_terms:
+        return phenomenon_hit or target_hit
+    return subject_hit or target_hit
 
 
 def _topic_has_multiple_targets(query: dict[str, Any]) -> bool:
-    core = _clean_text(query.get("核心问题"))
+    source_text = "\n".join(
+        _clean_text(query.get(field))
+        for field in (
+            "核心问题",
+            "人工核心问题",
+            "人工判定结论",
+        )
+        if _clean_text(query.get(field))
+    )
     return bool(
-        re.search(r"(?:^|[；;。\n])\s*[12]\s*[.、)]", core)
+        re.search(r"(?:^|[；;。\n])\s*[12]\s*[.、)]", source_text)
         or any(
-            marker in core
-            for marker in ("分别", "两个问题", "两个主要问题", "两项问题")
+            marker in source_text
+            for marker in (
+                "同时",
+                "分别",
+                "两个问题",
+                "两个主要问题",
+                "两项问题",
+            )
         )
     )
 
@@ -1369,11 +1406,33 @@ def _structured_topic_question_title(
     query: dict[str, Any],
     rows: list[dict[str, Any]],
 ) -> str:
+    def business_term(value: Any) -> str:
+        text = _clean_text(value)
+        if not text or text in {"待确认", "未知", "通用", "不限"}:
+            return ""
+        text = re.sub(r"[（(][^（）()]{0,60}[）)]", "", text)
+        parts = [
+            part.strip()
+            for part in re.split(r"[/／|｜、,，]+", text)
+            if part.strip()
+        ]
+        if len(parts) >= 3:
+            text = "、".join(parts[:2]) + "等"
+        elif len(parts) == 2:
+            text = "和".join(parts)
+        else:
+            text = parts[0] if parts else text
+        return text.strip("：:；;，,、 ")
+
+    subject_term = business_term(query.get("对象/部位"))
+    phenomenon_term = business_term(query.get("异常现象"))
+    if subject_term.endswith("镜头") and phenomenon_term.startswith("镜头"):
+        phenomenon_term = phenomenon_term[len("镜头") :].lstrip("表面")
     structured_title = _safe_join(
         [
             _topic_product_type(query, rows),
-            _clean_text(query.get("对象/部位")),
-            _clean_text(query.get("异常现象")),
+            subject_term,
+            phenomenon_term,
         ],
         "",
     )
@@ -2922,7 +2981,21 @@ def preprocess_source_rows(source_rows: list[dict[str, Any]]) -> list[dict[str, 
             or row.get("回收业务")
             or row.get("业务线")
         )
-        business_line = business_line_from_record(row)
+        raw_product_type = _clean_text(row.get("产品类型"))
+        raw_product_code = _clean_text(row.get("产品类型编码"))
+        raw_category = _clean_text(row.get("类目"))
+        category_product = resolve_product_category(raw_category)
+        legacy_product = resolve_product_category(raw_product_code or raw_product_type)
+        product_category = category_product or legacy_product
+        # The source workbook's 类目 is the business-owned product category.
+        # Keep 产品类型 as an audit field, but do not let a legacy value such as
+        # “电脑” move a clearly identified notebook row into aggregate recall.
+        if raw_business_line:
+            business_line = business_line_from_record(row)
+        elif category_product:
+            business_line = default_business_line()
+        else:
+            business_line = business_line_from_record(row)
         row["回收业务层级原值"] = raw_business_line
         row["回收业务层级"] = (
             business_line.name
@@ -2930,10 +3003,8 @@ def preprocess_source_rows(source_rows: list[dict[str, Any]]) -> list[dict[str, 
             else UNKNOWN_BUSINESS_LINE_NAME
         )
         row["回收业务层级编码"] = business_line.code if business_line else ""
-        raw_product_type = _clean_text(row.get("产品类型"))
-        raw_product_code = _clean_text(row.get("产品类型编码"))
-        product_category = resolve_product_category(raw_product_code or raw_product_type)
         row["产品类型原值"] = raw_product_type
+        row["类目原值"] = raw_category
         aggregate_product = bool(
             business_line
             and business_line.code == AGGREGATE_BUSINESS_LINE_CODE
@@ -2966,6 +3037,16 @@ def preprocess_source_rows(source_rows: list[dict[str, Any]]) -> list[dict[str, 
             notes.append("图片链接已去重")
         if row["视频链接"] and "\n" in row["视频链接"]:
             notes.append("视频链接已去重")
+        if category_product:
+            notes.append("产品类型按类目优先")
+            if raw_product_type and not legacy_product:
+                notes.append(
+                    f"产品类型原值未识别：{raw_product_type}；已按类目“{category_product.name}”处理"
+                )
+            elif legacy_product and legacy_product.name != category_product.name:
+                notes.append(
+                    f"类目与产品类型不一致：类目={category_product.name}，产品类型={raw_product_type}；已按类目处理"
+                )
         if ai_result_conflicts:
             notes.append(
                 "ai_result 与已有结构化字段冲突："
@@ -13663,7 +13744,16 @@ def _failed_topic_transcription_row(
             "模型初标运行ID": "",
             "模型初标状态": "topic_initial_review_skipped_transcription_failed",
             "知识内容": evidence_content,
-            "推荐回复": "",
+            # 模型转写失败仍会进入候选价值复核；不能因为草稿被拦截就丢失
+            # 推荐回复。这里仅从来源事实/历史实际回复生成保守话术，供人工修改。
+            "推荐回复": _recommended_reply(
+                failed_title,
+                evidence_content,
+                existing_reply=_clean_text(
+                    failed_query.get("历史实际回复")
+                ),
+                use_standard_references=use_standard_references,
+            ),
             "校验备注": reason,
             "流程状态": "review_pending",
             "模型阶段状态": transcription_status,
@@ -15900,9 +15990,21 @@ def _cluster_only_topic_row(
         ),
         "",
     )
-    title = (
+    # A source row may contain multiple human questions.  A model cluster name
+    # can then leak the sibling question into this atomic topic (for example,
+    # using “更换表带” for the separate “充电线缺失” topic).  Prefer the
+    # current atomic object's structured title whenever the source is explicitly
+    # multi-topic; single-topic rows keep the existing model-title path.
+    structured_title = _structured_topic_question_title(query, rows)
+    # The clustering review sheet is an operational result, not a place to
+    # preserve a model's conversational label.  Build its visible title from
+    # the resolved business fields first so first-round prompts such as
+    # “看一下后摄” or “无帮助” cannot become topic names.  Keep the model
+    # title only as a fallback for rows whose structured fields are incomplete.
+    title = structured_title or (
         raw_title
-        if _cluster_title_matches_topic(raw_title, query)
+        if not _topic_has_multiple_targets(query)
+        and _cluster_title_matches_topic(raw_title, query)
         else _untranscribed_topic_title(query, rows)
     )
     return {
@@ -18301,13 +18403,23 @@ def initial_label_from_workbook(
     source_available_rows = len(source_rows)
     if source_row_limit is not None:
         source_rows = source_rows[:source_row_limit]
+    source_total_rows = len(source_rows)
+    source_rows, redaction_excluded_rows, redaction_audit = partition_redaction_rows(
+        source_rows
+    )
     source_product_categories = {
         canonical_product_name(
-            row.get("产品类型编码") or row.get("产品类型"),
+            row.get("类目")
+            or row.get("产品类型编码")
+            or row.get("产品类型"),
             unknown=_clean_text(row.get("产品类型")),
         )
         for row in source_rows
-        if _clean_text(row.get("产品类型编码") or row.get("产品类型"))
+        if _clean_text(
+            row.get("类目")
+            or row.get("产品类型编码")
+            or row.get("产品类型")
+        )
     }
     standard_product_categories = {
         canonical_product_name(
@@ -18322,13 +18434,14 @@ def initial_label_from_workbook(
         for category in source_product_categories - standard_product_categories
         if category
     )
-    redaction_audit = enforce_redaction(source_rows)
     report(
         "load_input",
         "completed",
         "输入文件读取完成。",
         {
-            "source_rows": len(source_rows),
+            "source_rows": source_total_rows,
+            "redaction_safe_rows": len(source_rows),
+            "redaction_skipped_rows": len(redaction_excluded_rows),
             "source_available_rows": source_available_rows,
             "source_row_limit": source_row_limit or 0,
             "standards": len(standard_catalog),
@@ -18347,13 +18460,16 @@ def initial_label_from_workbook(
         preprocessed_rows = list(checkpoint.get("preprocessed_rows") or [])
         eligible_rows = list(checkpoint.get("eligible_rows") or [])
         eligible_raw_rows = list(checkpoint.get("eligible_raw_rows") or [])
-        excluded_rows = list(checkpoint.get("excluded_rows") or [])
+        excluded_rows = redaction_excluded_rows + list(
+            checkpoint.get("excluded_rows") or []
+        )
         selected_rows = list(checkpoint.get("selected_rows") or [])
         if _checkpoint_needs_ai_result_reprocessing(preprocessed_rows):
-            selected_rows, excluded_rows = filter_source_rows_by_product_type(
+            selected_rows, checkpoint_excluded_rows = filter_source_rows_by_product_type(
                 source_rows,
                 product_type,
             )
+            excluded_rows = redaction_excluded_rows + checkpoint_excluded_rows
             preprocessed_rows = preprocess_source_rows(selected_rows)
             eligible_rows, validation_excluded_rows = filter_preprocessed_rows_for_model(
                 preprocessed_rows
@@ -18389,6 +18505,7 @@ def initial_label_from_workbook(
     else:
         report("preprocess", "running", "正在执行品类筛选、字段清洗和证据校验。")
         selected_rows, excluded_rows = filter_source_rows_by_product_type(source_rows, product_type)
+        excluded_rows = redaction_excluded_rows + excluded_rows
         preprocessed_rows = preprocess_source_rows(selected_rows)
         eligible_rows, validation_excluded_rows = filter_preprocessed_rows_for_model(preprocessed_rows)
         excluded_rows.extend(validation_excluded_rows)
@@ -18564,11 +18681,13 @@ def initial_label_from_workbook(
                 "topic_review_file": str(cluster_workbook_path),
                 "candidate_output_file": "",
                 "product_type": _clean_text(product_type),
-                "source_total_rows": len(source_rows),
+                "source_total_rows": source_total_rows,
                 "source_available_rows": source_available_rows,
                 "source_row_limit": source_row_limit or 0,
                 "excluded_rows": len(excluded_rows),
                 "eligible_rows": len(eligible_rows),
+                "redaction_safe_rows": len(source_rows),
+                "redaction_skipped_rows": len(redaction_excluded_rows),
                 "run_id": run_id,
                 "audit_db": str(audit_store.path),
                 "mimo_configured": bool(mimo_client),
@@ -18722,11 +18841,13 @@ def initial_label_from_workbook(
             "topic_review_file": str(topic_workbook_path),
             "candidate_output_file": str(candidate_workbook_path),
             "product_type": _clean_text(product_type),
-            "source_total_rows": len(source_rows),
+                "source_total_rows": source_total_rows,
             "source_available_rows": source_available_rows,
             "source_row_limit": source_row_limit or 0,
             "excluded_rows": len(excluded_rows),
             "eligible_rows": len(eligible_rows),
+            "redaction_safe_rows": len(source_rows),
+            "redaction_skipped_rows": len(redaction_excluded_rows),
             "run_id": run_id,
             "audit_db": str(audit_store.path),
             "mimo_configured": bool(mimo_client),

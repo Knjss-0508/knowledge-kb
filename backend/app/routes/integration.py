@@ -55,6 +55,7 @@ from app.services.applicability import resolve_applicability_scope
 from app.services.candidate_review import (
     evaluate_review_status,
     normalize_human_review,
+    normalize_knowledge_value,
 )
 from app.services.embedding import EmbeddingServiceUnavailable
 from app.services.embedding_runtime import get_active_runtime_values
@@ -2110,6 +2111,9 @@ def list_candidate_reviews(
     review_status: str = Query(""),
     priority_only: bool = Query(False),
     deduplication_required: bool = Query(False),
+    product_category: str = Query("", max_length=128),
+    annotation_status: str = Query("", pattern="^(|annotated|unannotated)$"),
+    model_knowledge_value: str = Query("", pattern="^(|worthy|unworthy|pending)$"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -2125,6 +2129,25 @@ def list_candidate_reviews(
         .all()
     )
     all_items = [_candidate_review_item(row) for row in rows]
+    product_categories: dict[str, dict[str, str]] = {}
+    for item in all_items:
+        for raw_category in item.applicable_categories:
+            if isinstance(raw_category, dict):
+                value = next(
+                    (
+                        str(raw_category.get(key) or "").strip()
+                        for key in (
+                            "categoryName", "category_name", "name", "label",
+                            "categoryId", "category_id", "id", "value",
+                        )
+                        if str(raw_category.get(key) or "").strip()
+                    ),
+                    "",
+                )
+            else:
+                value = str(raw_category or "").strip()
+            if value:
+                product_categories.setdefault(value.lower(), {"value": value, "label": value})
     summary = {
         "total": len(all_items),
         "pending": sum(item.review_status == "pending" for item in all_items),
@@ -2161,6 +2184,32 @@ def list_candidate_reviews(
         ]
     if review_status:
         filtered = [item for item in filtered if item.review_status == review_status]
+    normalized_product_category = product_category.strip().lower()
+    if normalized_product_category:
+        def category_matches(item: CandidateReviewListItem) -> bool:
+            for value in item.applicable_categories:
+                candidates = tuple(value.get(key) for key in (
+                    "categoryName", "category_name", "name", "label",
+                    "categoryId", "category_id", "id", "value",
+                )) if isinstance(value, dict) else (value,)
+                if any(str(candidate or "").strip().lower() == normalized_product_category for candidate in candidates):
+                    return True
+            return False
+        filtered = [item for item in filtered if category_matches(item)]
+    if annotation_status:
+        def is_annotated(item: CandidateReviewListItem) -> bool:
+            review = item.human_review or {}
+            return bool(
+                review.get("knowledge_value") not in (None, "", "pending")
+                or review.get("usability") not in (None, "", "pending")
+                or str(review.get("decision") or "").strip()
+            )
+        filtered = [item for item in filtered if is_annotated(item) == (annotation_status == "annotated")]
+    if model_knowledge_value:
+        filtered = [
+            item for item in filtered
+            if normalize_knowledge_value((item.model_review or {}).get("knowledge_value")) == model_knowledge_value
+        ]
     if priority_only:
         filtered = [item for item in filtered if item.priority_review]
     if deduplication_required:
@@ -2177,6 +2226,7 @@ def list_candidate_reviews(
     return CandidateReviewListResponse(
         total=len(filtered),
         summary=summary,
+        product_categories=sorted(product_categories.values(), key=lambda category: category["label"]),
         items=filtered[offset : offset + limit],
     )
 

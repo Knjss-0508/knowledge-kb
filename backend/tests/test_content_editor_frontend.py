@@ -10,7 +10,7 @@ def test_content_editor_uses_flat_stable_blocks() -> None:
     assert 'v-for="(b,bi) in fm.blocks" :key="b._uid"' in FRONTEND
     assert "createTextEditorBlock: function(value)" in FRONTEND
     assert "createMediaEditorBlock: function(type, source)" in FRONTEND
-    assert "content: {blocks:self.buildContentBlocks(form)}" in FRONTEND
+    assert "var content = {blocks:self.buildContentBlocks(form)};" in FRONTEND
     assert "b.children" not in FRONTEND
     assert "block.children" not in FRONTEND
 
@@ -42,6 +42,13 @@ def test_content_editor_has_one_hint_and_visible_media_field_labels() -> None:
     assert "{{b.type==='image'?'图片':'视频'}}说明" in FRONTEND
     assert "📷" not in FRONTEND
     assert "🎬" not in FRONTEND
+
+
+def test_knowledge_editor_exposes_and_persists_recommended_reply() -> None:
+    assert 'v-model="fm.recommendedReply"' in FRONTEND
+    assert 'placeholder="供答疑人员直接使用的推荐回复"' in FRONTEND
+    assert "recommendedReply: String(recommendedReply || '')" in FRONTEND
+    assert "content.recommended_reply = String(form.recommendedReply || '').trim();" in FRONTEND
 
 
 def test_view_mode_media_uses_thumbnail_as_the_only_preview_entry() -> None:

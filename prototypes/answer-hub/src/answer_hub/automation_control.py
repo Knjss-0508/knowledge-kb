@@ -1,211 +1,182 @@
+"""Safe local controls for the Answer Hub Windows automation task."""
+
 from __future__ import annotations
 
-from datetime import datetime
-import json
-import os
-import re
+from collections.abc import Callable
 from pathlib import Path
-from threading import Lock
+from subprocess import CompletedProcess
+import subprocess
 from typing import Any
-from zoneinfo import ZoneInfo
 
 
-SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
-_SCHEDULE_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+AUTOMATION_TASK_NAME = "AnswerHubAutomationQueue"
 
 
-class AutomationControlError(RuntimeError):
-    pass
+class AutomationTaskControlError(RuntimeError):
+    """Raised when Windows Task Scheduler cannot complete a requested action."""
 
 
-class AutomationDisabled(AutomationControlError):
-    pass
+CommandRunner = Callable[..., CompletedProcess[str]]
+RetryLauncher = Callable[..., Any]
 
 
-class AutomationRunActive(AutomationControlError):
-    pass
+def _run_command(command: list[str], **kwargs: Any) -> CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        capture_output=True,
+        check=False,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        **kwargs,
+    )
 
 
-class AutomationControlStore:
-    """Persist safe operator controls beside the automation run state."""
+def _start_retry(command: list[str], **kwargs: Any) -> subprocess.Popen[str]:
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        creationflags=creation_flags,
+        **kwargs,
+    )
 
-    def __init__(self, root: str | Path, *, stale_after_seconds: int = 7_200) -> None:
-        self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.control_path = self.root / "automation-control.json"
-        self.run_lock_path = self.root / ".automation-control-run.lock"
-        self.stale_after_seconds = max(60, int(stale_after_seconds))
-        self._lock = Lock()
 
-    @staticmethod
-    def _now() -> str:
-        return datetime.now(SHANGHAI_TZ).isoformat(timespec="seconds")
+def _command_error(result: CompletedProcess[str]) -> str:
+    return (result.stderr or result.stdout or "任务计划程序未返回详细错误。").strip()
 
-    @staticmethod
-    def _defaults() -> dict[str, Any]:
-        return {
-            "enabled": False,
-            "schedule_enabled": False,
-            "schedule_time": "02:00",
-            "timezone": "Asia/Shanghai",
-            "updated_at": "",
-            "last_run": {},
-            "last_scheduled_date": "",
-        }
 
-    def _read_locked(self) -> dict[str, Any]:
-        data = self._defaults()
-        if not self.control_path.is_file():
-            return data
+def _status_value(output: str, *keys: str) -> str:
+    normalized_keys = {key.casefold() for key in keys}
+    for raw_line in output.splitlines():
+        if ":" not in raw_line:
+            continue
+        raw_key, value = raw_line.split(":", 1)
+        if raw_key.strip().casefold() in normalized_keys:
+            return value.strip()
+    return ""
+
+
+class AutomationTaskController:
+    """Restricts scheduler operations to the known Answer Hub task name."""
+
+    def __init__(
+        self,
+        *,
+        runner: CommandRunner = _run_command,
+        retry_launcher: RetryLauncher = _start_retry,
+        task_name: str = AUTOMATION_TASK_NAME,
+    ) -> None:
+        if task_name != AUTOMATION_TASK_NAME:
+            raise ValueError("只允许控制 Answer Hub 自动化计划任务。")
+        self._runner = runner
+        self._retry_launcher = retry_launcher
+        self.task_name = task_name
+
+    def status(self) -> dict[str, Any]:
+        command = ["schtasks.exe", "/Query", "/TN", self.task_name, "/FO", "LIST", "/V"]
         try:
-            loaded = json.loads(self.control_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return data
-        if not isinstance(loaded, dict):
-            return data
-        for key in data:
-            if key in loaded:
-                data[key] = loaded[key]
-        data["enabled"] = bool(data["enabled"])
-        data["schedule_enabled"] = bool(data["schedule_enabled"])
-        data["schedule_time"] = self._validated_schedule_time(data["schedule_time"])
-        data["timezone"] = "Asia/Shanghai"
-        data["last_run"] = data["last_run"] if isinstance(data["last_run"], dict) else {}
-        return data
-
-    def _write_locked(self, data: dict[str, Any]) -> None:
-        temporary = self.control_path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-        temporary.replace(self.control_path)
-
-    @staticmethod
-    def _validated_schedule_time(value: Any) -> str:
-        text = str(value or "").strip()
-        if not _SCHEDULE_TIME_RE.fullmatch(text):
-            return "02:00"
-        return text
-
-    def _run_is_active_locked(self) -> bool:
-        if not self.run_lock_path.exists():
-            return False
-        try:
-            age_seconds = datetime.now().timestamp() - self.run_lock_path.stat().st_mtime
-        except OSError:
-            return False
-        if age_seconds >= self.stale_after_seconds:
-            self.run_lock_path.unlink(missing_ok=True)
-            return False
-        return True
-
-    @staticmethod
-    def _public(data: dict[str, Any], running: bool) -> dict[str, Any]:
-        return {
-            "enabled": bool(data["enabled"]),
-            "schedule_enabled": bool(data["schedule_enabled"]),
-            "schedule_time": str(data["schedule_time"]),
-            "timezone": "Asia/Shanghai",
-            "running": running,
-            "updated_at": str(data.get("updated_at") or ""),
-            "last_run": dict(data.get("last_run") or {}),
-        }
-
-    def snapshot(self) -> dict[str, Any]:
-        with self._lock:
-            data = self._read_locked()
-            return self._public(data, self._run_is_active_locked())
-
-    def update(self, patch: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"enabled", "schedule_enabled", "schedule_time"}
-        unknown = set(patch) - allowed
-        if unknown:
-            raise AutomationControlError("控制请求包含不支持的字段")
-        with self._lock:
-            data = self._read_locked()
-            if "enabled" in patch:
-                if not isinstance(patch["enabled"], bool):
-                    raise AutomationControlError("自动化总开关必须是布尔值")
-                data["enabled"] = patch["enabled"]
-            if "schedule_enabled" in patch:
-                if not isinstance(patch["schedule_enabled"], bool):
-                    raise AutomationControlError("每日计划开关必须是布尔值")
-                data["schedule_enabled"] = patch["schedule_enabled"]
-            if "schedule_time" in patch:
-                value = str(patch["schedule_time"] or "").strip()
-                if not _SCHEDULE_TIME_RE.fullmatch(value):
-                    raise AutomationControlError("计划时间必须为 HH:MM 格式")
-                data["schedule_time"] = value
-            data["updated_at"] = self._now()
-            self._write_locked(data)
-            return self._public(data, self._run_is_active_locked())
-
-    def schedule_due(self, now: datetime | None = None) -> bool:
-        current = now.astimezone(SHANGHAI_TZ) if now else datetime.now(SHANGHAI_TZ)
-        with self._lock:
-            data = self._read_locked()
-            if not data["enabled"] or not data["schedule_enabled"]:
-                return False
-            if data.get("last_scheduled_date") == current.date().isoformat():
-                return False
-            hour, minute = (int(part) for part in data["schedule_time"].split(":"))
-            return (current.hour, current.minute) >= (hour, minute)
-
-    def start_run(self, *, actor: str, trigger: str) -> dict[str, Any]:
-        with self._lock:
-            data = self._read_locked()
-            if not data["enabled"]:
-                raise AutomationDisabled("自动化总开关已关闭，不能创建新运行。")
-            if self._run_is_active_locked():
-                raise AutomationRunActive("已有自动化任务正在运行，请等待完成后再试。")
-            try:
-                descriptor = os.open(
-                    self.run_lock_path,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                )
-            except FileExistsError as exc:
-                raise AutomationRunActive("已有自动化任务正在运行，请等待完成后再试。") from exc
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(json.dumps({"started_at": self._now()}, ensure_ascii=False))
-            started_at = self._now()
-            data["last_run"] = {
-                "status": "running",
-                "trigger": trigger,
-                "actor": actor[:80],
-                "started_at": started_at,
-                "finished_at": "",
-                "fetched_records": 0,
-                "queued_jobs": 0,
-                "rejected_records": 0,
-                "processed": 0,
-                "failed": 0,
-                "error": "",
+            result = self._runner(command)
+        except OSError as exc:
+            raise AutomationTaskControlError(f"无法读取计划任务状态：{exc}") from exc
+        if result.returncode != 0:
+            return {
+                "task_name": self.task_name,
+                "installed": False,
+                "enabled": False,
+                "running": False,
+                "message": "自动化计划任务尚未安装。",
             }
-            if trigger == "schedule":
-                data["last_scheduled_date"] = datetime.now(SHANGHAI_TZ).date().isoformat()
-            data["updated_at"] = started_at
-            self._write_locked(data)
-            return self._public(data, True)
 
-    def finish_run(self, result: dict[str, Any]) -> dict[str, Any]:
-        with self._lock:
-            data = self._read_locked()
-            last_run = dict(data.get("last_run") or {})
-            last_run.update(
-                {
-                    "status": str(result.get("status") or "completed"),
-                    "finished_at": self._now(),
-                    "fetched_records": int(result.get("fetched_records") or 0),
-                    "queued_jobs": int(result.get("queued_jobs") or 0),
-                    "rejected_records": int(result.get("rejected_records") or 0),
-                    "processed": int(result.get("processed") or 0),
-                    "failed": int(result.get("failed") or 0),
-                    "error": str(result.get("error") or "")[:240],
-                }
-            )
-            data["last_run"] = last_run
-            data["updated_at"] = self._now()
-            self._write_locked(data)
-            self.run_lock_path.unlink(missing_ok=True)
-            return self._public(data, False)
+        output = result.stdout or ""
+        task_state = _status_value(output, "Scheduled Task State", "计划任务状态")
+        runtime_state = _status_value(output, "Status", "状态")
+        state = task_state.casefold()
+        runtime = runtime_state.casefold()
+        enabled = not any(value in state for value in ("disabled", "已禁用", "已停用"))
+        running = any(value in runtime for value in ("running", "正在运行"))
+        if not enabled:
+            message = "计划任务已暂停，不会自动扫描新任务。"
+        elif running:
+            message = "计划任务已启用，当前正在扫描或处理队列。"
+        else:
+            message = "计划任务已启用，等待下一次计划扫描。"
+        return {
+            "task_name": self.task_name,
+            "installed": True,
+            "enabled": enabled,
+            "running": running,
+            "message": message,
+        }
+
+    def set_enabled(self, enabled: bool) -> dict[str, Any]:
+        if not enabled:
+            # Disabling a scheduled task only prevents future triggers; it does
+            # not stop a scanner that is already running. End the current task
+            # first so the next explicit run starts a fresh process.
+            try:
+                current = self.status()
+            except AutomationTaskControlError:
+                current = {"installed": False, "running": False}
+            if current.get("installed") and current.get("running"):
+                self._run_scheduler(["schtasks.exe", "/End", "/TN", self.task_name])
+        action = "/Enable" if enabled else "/Disable"
+        result = self._run_scheduler(["schtasks.exe", "/Change", "/TN", self.task_name, action])
+        return {
+            "enabled": enabled,
+            "message": "已启用自动化计划任务，将创建新的扫描进程。" if enabled else "已停止当前自动化进程并暂停计划任务。",
+        }
+
+    def run_now(self) -> dict[str, str]:
+        self._run_scheduler(["schtasks.exe", "/Run", "/TN", self.task_name])
+        return {"message": "已请求立即执行自动化队列扫描。"}
+
+    def retry_failed(self, project_root: Path) -> dict[str, str]:
+        script = project_root / "scripts" / "run_automation_queue.ps1"
+        if not script.is_file():
+            raise AutomationTaskControlError(f"未找到失败重试脚本：{script}")
+        command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(project_root),
+            "-RetryFailed",
+        ]
+        try:
+            self._retry_launcher(command, cwd=str(project_root))
+        except OSError as exc:
+            raise AutomationTaskControlError(f"无法启动失败任务重试：{exc}") from exc
+        return {"message": "已启动失败任务重试扫描，请在运行记录中查看结果。"}
+
+    def _run_scheduler(self, command: list[str]) -> CompletedProcess[str]:
+        try:
+            result = self._runner(command)
+        except OSError as exc:
+            raise AutomationTaskControlError(f"无法调用 Windows 计划任务：{exc}") from exc
+        if result.returncode != 0:
+            raise AutomationTaskControlError(_command_error(result))
+        return result
+
+
+def read_automation_log_tail(project_root: Path, *, lines: int = 80) -> dict[str, str]:
+    """Return a small, recent log tail without exposing configuration files."""
+
+    log_dir = project_root / "outputs" / "automation-logs"
+    log_paths = sorted(log_dir.glob("queue-*.log")) if log_dir.is_dir() else []
+    if not log_paths:
+        return {"name": "", "content": "暂时没有自动化队列日志。"}
+    log_path = log_paths[-1]
+    try:
+        content = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {"name": log_path.name, "content": f"无法读取运行日志：{exc}"}
+    return {
+        "name": log_path.name,
+        "content": "\n".join(content.splitlines()[-max(1, lines) :]) or "日志文件暂时为空。",
+    }

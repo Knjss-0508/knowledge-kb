@@ -118,6 +118,24 @@ def _option_float(value: Any, default: float) -> float:
         return default
 
 
+def _block_cz_sync_for_cluster_failure(manifest: dict[str, Any]) -> bool:
+    """Apply a queue-level safety net for manifests marked as unsafe to deliver."""
+    summary = manifest.setdefault("summary", {})
+    if not (
+        summary.get("cluster_failure_guard_triggered")
+        or summary.get("cz_candidate_sync_blocked")
+    ):
+        return False
+    summary["cz_candidate_sync_blocked"] = True
+    manifest["status"] = "failed"
+    manifest["error"] = str(
+        manifest.get("error")
+        or "聚类失败保护已触发：本批次不会同步 CZ 候选，请修复后重试。"
+    )
+    manifest.setdefault("alerts", []).append(manifest["error"])
+    return True
+
+
 def _option_int(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -342,10 +360,7 @@ def _run_model_review_and_cz_candidate_sync(
 ) -> dict[str, Any]:
     store = AutomationRunStore(output_root)
     _ensure_delivery_stages(manifest)
-    # This path only creates CZ candidate-review records.  Keep the legacy
-    # option explicitly false so manifests never imply automatic knowledge
-    # submission or publication.
-    manifest.setdefault("options", {})["submit_to_cz"] = False
+    manifest.setdefault("options", {})["submit_to_cz"] = True
     manifest["options"]["sync_to_cz_review"] = True
     retrying_failed_run = str(manifest.get("status") or "") == "failed"
     if retrying_failed_run:
@@ -631,8 +646,10 @@ def process_automation_queue(
 ) -> dict[str, Any]:
     terminology = ensure_terminology_loaded()
     standards = Path(standards_path) if standards_path else None
-    if standards is not None and not standards.is_file():
-        raise FileNotFoundError(f"标准文件不存在：{standards}")
+    if standards is not None:
+        raise ValueError(
+            "批量队列不允许读取标准文件；标准只能在明确的后续转写流程中使用。"
+        )
 
     queue = AutomationQueue(queue_root)
     output_path = Path(output_root)
@@ -764,7 +781,11 @@ def process_automation_queue(
                             effective_continue_on_mimo_unavailable
                         ),
                     )
-                    if (
+                    if effective_submit_to_cz and _block_cz_sync_for_cluster_failure(
+                        manifest
+                    ):
+                        AutomationRunStore(output_path).save(manifest)
+                    elif (
                         automation_run_succeeded(manifest)
                         and effective_submit_to_cz
                     ):

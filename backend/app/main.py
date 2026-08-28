@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.core.database import engine
 from app.routes import (
     answer_hub,
+    automation_monitor,
     auth,
     business_type,
     category,
@@ -89,8 +90,9 @@ app.include_router(category.router, prefix=settings.API_V1_PREFIX)
 app.include_router(tag.router, prefix=settings.API_V1_PREFIX)
 app.include_router(manhattan.router, prefix=settings.API_V1_PREFIX)
 app.include_router(auth.router, prefix=settings.API_V1_PREFIX)
-app.include_router(integration.router, prefix=settings.API_V1_PREFIX)
 app.include_router(answer_hub.router, prefix=settings.API_V1_PREFIX)
+app.include_router(automation_monitor.router, prefix=settings.API_V1_PREFIX)
+app.include_router(integration.router, prefix=settings.API_V1_PREFIX)
 app.include_router(embedding_admin.router, prefix=settings.API_V1_PREFIX)
 app.include_router(media.router)
 

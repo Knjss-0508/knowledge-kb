@@ -21,7 +21,7 @@ from .knowledge_categories import (
     UNCERTAIN_CATEGORY,
     normalize_knowledge_category,
 )
-from .operations import BLOCKING_PATTERNS, WARNING_PATTERNS
+from .operations import BLOCKING_PATTERNS
 
 
 MODEL_VERSION = "topic-label-hash-nb-v1"
@@ -38,7 +38,6 @@ _YES_VALUES = {"是", "yes", "true", "1", "进入", "纳入"}
 _NO_VALUES = {"否", "no", "false", "0", "不进入", "不纳入"}
 _SENSITIVE_PATTERNS = {
     **BLOCKING_PATTERNS,
-    "bank_card_like": WARNING_PATTERNS["bank_card_like"],
     "long_number": re.compile(r"(?<!\d)\d{8,}(?!\d)"),
 }
 _WHITESPACE_RE = re.compile(r"\s+")

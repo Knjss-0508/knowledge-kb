@@ -286,6 +286,7 @@ class CandidateReviewListItem(BaseModel):
 class CandidateReviewListResponse(BaseModel):
     total: int
     summary: dict[str, int]
+    product_categories: list[dict[str, str]] = Field(default_factory=list)
     items: list[CandidateReviewListItem]
 
 
