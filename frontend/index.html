@@ -3505,12 +3505,19 @@ Vue.createApp({
         .finally(function(){self.answerHubMonitor.loading=false;});
     },
     saveAutomationMonitorControl: function(){
-      var self=this, control=self.answerHubMonitor.control||{};
+      var self=this, control=self.answerHubMonitor.control||{}, plan=control.plan||{};
+      var fromDate=String(plan.knowledge_settle_from_date||'').trim();
+      var toDate=String(plan.knowledge_settle_to_date||'').trim();
+      if (!!fromDate !== !!toDate) {
+        self.answerHubMonitor.actionLoading=false;
+        alert('第二部分采集开始日期和结束日期必须同时填写。');
+        return;
+      }
       self.answerHubMonitor.actionLoading=true;
-      fetch(API+'/automation-monitor/control',{method:'PATCH',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({enabled:!!control.enabled,schedule_enabled:!!control.schedule_enabled,schedule_time:control.schedule_time||'02:00',knowledge_settle_from_date:(control.plan||{}).knowledge_settle_from_date||'',knowledge_settle_to_date:(control.plan||{}).knowledge_settle_to_date||'',second_part_query_from_date:(control.plan||{}).knowledge_settle_from_date||'',second_part_query_to_date:(control.plan||{}).knowledge_settle_to_date||'',timezone:(control.plan||{}).timezone||'Asia/Shanghai'})})
+      fetch(API+'/automation-monitor/control',{method:'PATCH',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({enabled:!!control.enabled,schedule_enabled:!!control.schedule_enabled,schedule_time:control.schedule_time||'02:00',knowledge_settle_from_date:fromDate,knowledge_settle_to_date:toDate,second_part_query_from_date:fromDate,second_part_query_to_date:toDate,timezone:plan.timezone||'Asia/Shanghai'})})
         .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'保存自动化控制失败');return d;});})
         .then(function(d){self.answerHubMonitor.control=Object.assign(self.answerHubMonitor.control,d||{});})
-        .catch(function(e){alert(e.message);self.loadAutomationMonitor();})
+        .catch(function(e){alert(e.message);})
         .finally(function(){self.answerHubMonitor.actionLoading=false;});
     },
     startAutomationProcess: function(){
