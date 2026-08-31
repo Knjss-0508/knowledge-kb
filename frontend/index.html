@@ -376,6 +376,16 @@
     .review-readonly-note{padding:10px 12px;border-radius:6px;background:#e8f3ff;color:#245bdb;font-size:12px;margin-bottom:13px}
     .review-error{margin-top:6px;color:#c83827;font-size:11px}
     @media(min-width:900px){.review-dialog .review-detail-grid{grid-template-columns:minmax(300px,.88fr) minmax(420px,1.12fr)}}
+
+    /* 大屏下放大审核工作台，给正文和图片足够的可视空间。 */
+    .review-desk{width:min(1080px,calc(100% - 64px));height:min(920px,calc(100vh - 40px));max-height:calc(100vh - 40px)}
+    .review-desk-b{padding:22px 24px}
+    .review-desk-overview,.review-desk-section{padding:18px}
+    .review-desk-content{max-height:420px;padding:14px}
+    .review-desk-content-media{grid-template-columns:minmax(300px,1fr) minmax(220px,.55fr);gap:18px;padding:14px}
+    .review-desk-content-media-frame{min-height:210px}
+    .review-desk-f{min-height:82px;padding:10px 24px}
+    @media(max-width:760px){.review-desk{width:100%;height:100%;max-height:100vh}.review-desk-b{padding:14px}.review-desk-overview,.review-desk-section{padding:14px}.review-desk-content-media{grid-template-columns:1fr}.review-desk-content-media-frame{min-height:132px}.review-desk-f{padding:10px 14px}}
   </style>
 </head>
 <body>

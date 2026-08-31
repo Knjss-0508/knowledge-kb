@@ -135,3 +135,9 @@ def test_candidate_review_restores_compact_two_column_layout() -> None:
     assert ".review-model-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))" in FRONTEND
     assert ".review-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))" in FRONTEND
     assert "@media(min-width:900px){.review-dialog .review-detail-grid{grid-template-columns:minmax(300px,.88fr) minmax(420px,1.12fr)}}" in FRONTEND
+
+
+def test_quick_review_desk_uses_large_centered_canvas() -> None:
+    assert ".review-desk{width:min(1080px,calc(100% - 64px));height:min(920px,calc(100vh - 40px));max-height:calc(100vh - 40px)}" in FRONTEND
+    assert ".review-desk-content{max-height:420px;padding:14px}" in FRONTEND
+    assert ".review-desk-content-media-frame{min-height:210px}" in FRONTEND
