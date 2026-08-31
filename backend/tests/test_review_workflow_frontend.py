@@ -138,6 +138,10 @@ def test_candidate_review_restores_compact_two_column_layout() -> None:
 
 
 def test_quick_review_desk_uses_large_centered_canvas() -> None:
-    assert ".review-desk{width:min(1080px,calc(100% - 64px));height:min(920px,calc(100vh - 40px));max-height:calc(100vh - 40px)}" in FRONTEND
-    assert ".review-desk-content{max-height:420px;padding:14px}" in FRONTEND
-    assert ".review-desk-content-media-frame{min-height:210px}" in FRONTEND
+    assert ".review-desk{width:min(1440px,calc(100% - 64px));height:auto;max-height:calc(100vh - 48px)" in FRONTEND
+    assert ".review-desk-b{flex:0 1 auto;max-height:calc(100vh - 210px);padding:28px 30px}" in FRONTEND
+    assert ".review-desk-content{max-height:min(560px,56vh);padding:18px;font-size:14px;line-height:1.8}" in FRONTEND
+    assert ".review-desk-content-media-frame{min-height:300px}" in FRONTEND
+    assert "@media(min-width:761px) and (max-width:1040px){.review-desk{width:calc(100% - 32px)}" in FRONTEND
+    assert ".review-desk-f .btn{min-height:36px;padding:6px 14px;font-size:13px}" in FRONTEND
+
