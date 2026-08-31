@@ -64,6 +64,7 @@ class Knowledge(Base):
     change_logs = relationship("KnowledgeChangeLog", back_populates="knowledge_item", cascade="all, delete-orphan")
     embeddings = relationship("KnowledgeEmbedding", back_populates="knowledge_item", cascade="all, delete-orphan")
     search_embeddings = relationship("KnowledgeSearchEmbedding", back_populates="knowledge_item", cascade="all, delete-orphan")
+    vector_tasks = relationship("KnowledgeVectorTask", back_populates="knowledge_item", cascade="all, delete-orphan")
     deduplication_feedbacks = relationship(
         "KnowledgeDeduplicationFeedback",
         back_populates="knowledge_item",
@@ -161,6 +162,44 @@ class KnowledgeSearchEmbedding(Base):
             "embedding_kind",
             "chunk_index",
             name="uq_knowledge_search_embedding",
+        ),
+    )
+
+
+class KnowledgeVectorTask(Base):
+    """持久化人工知识向量/查重任务。
+
+    知识内容先写入主表，再由后台 worker 生成查重和检索向量。任务携带
+    提交时的内容哈希，worker 在落库前会再次比对当前知识哈希，避免旧任务
+    覆盖后续编辑产生的新内容。
+    """
+
+    __tablename__ = "knowledge_vector_tasks"
+
+    id = Column(String(64), primary_key=True)
+    knowledge_id = Column(String(64), ForeignKey("knowledge_items.id"), nullable=False, index=True)
+    task_type = Column(String(32), nullable=False, default="manual_vectorization")
+    content_hash = Column(String(64), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="queued", index=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    lease_expires_at = Column(DateTime, nullable=True, index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    knowledge_item = relationship("Knowledge", back_populates="vector_tasks")
+
+    __table_args__ = (
+        CheckConstraint(
+            "task_type IN ('manual_vectorization')",
+            name="ck_knowledge_vector_task_type",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'superseded')",
+            name="ck_knowledge_vector_task_status",
         ),
     )
 

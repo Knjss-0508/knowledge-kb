@@ -28,6 +28,7 @@ from app.routes import (
 )
 from app.services.media_deletion import run_media_deletion_worker
 from app.services.knowledge_import_worker import run_knowledge_import_worker
+from app.services.knowledge_vector_worker import run_knowledge_vector_worker
 
 
 logger = logging.getLogger(__name__)
@@ -51,12 +52,19 @@ async def lifespan(_: FastAPI):
             knowledge.process_next_knowledge_import_task,
         )
     )
+    vector_worker = asyncio.create_task(
+        run_knowledge_vector_worker(
+            stop_event,
+            knowledge.process_next_knowledge_vector_task,
+        )
+    )
     try:
         yield
     finally:
         stop_event.set()
         await media_worker
         await import_worker
+        await vector_worker
 
 
 app = FastAPI(
