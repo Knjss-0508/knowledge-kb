@@ -126,3 +126,12 @@ const unsafe = vm.reviewDeskContentBlocks('[img:http://insecure.example.com/a.pn
 assert(!unsafe.some(function(item) { return item.type === 'image' && item.url; }), 'insecure image URL must not become a rendered media URL');
 """,
     )
+
+
+def test_candidate_review_restores_compact_two_column_layout() -> None:
+    assert ".review-dialog{width:min(1160px,100%)}" in FRONTEND
+    assert ".review-detail-grid{display:grid;grid-template-columns:minmax(0,.88fr) minmax(0,1.12fr)" in FRONTEND
+    assert ".review-content-preview{max-height:220px;overflow:auto" in FRONTEND
+    assert ".review-model-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))" in FRONTEND
+    assert ".review-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))" in FRONTEND
+    assert "@media(min-width:900px){.review-dialog .review-detail-grid{grid-template-columns:minmax(300px,.88fr) minmax(420px,1.12fr)}}" in FRONTEND
