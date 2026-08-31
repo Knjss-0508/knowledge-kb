@@ -377,15 +377,30 @@
     .review-error{margin-top:6px;color:#c83827;font-size:11px}
     @media(min-width:900px){.review-dialog .review-detail-grid{grid-template-columns:minmax(300px,.88fr) minmax(420px,1.12fr)}}
 
-    /* 大屏下放大审核工作台，给正文和图片足够的可视空间。 */
-    .review-desk{width:min(1080px,calc(100% - 64px));height:min(920px,calc(100vh - 40px));max-height:calc(100vh - 40px)}
-    .review-desk-b{padding:22px 24px}
-    .review-desk-overview,.review-desk-section{padding:18px}
-    .review-desk-content{max-height:420px;padding:14px}
-    .review-desk-content-media{grid-template-columns:minmax(300px,1fr) minmax(220px,.55fr);gap:18px;padding:14px}
-    .review-desk-content-media-frame{min-height:210px}
-    .review-desk-f{min-height:82px;padding:10px 24px}
-    @media(max-width:760px){.review-desk{width:100%;height:100%;max-height:100vh}.review-desk-b{padding:14px}.review-desk-overview,.review-desk-section{padding:14px}.review-desk-content-media{grid-template-columns:1fr}.review-desk-content-media-frame{min-height:132px}.review-desk-f{padding:10px 14px}}
+    /* 大屏下放大审核工作台，内容按实际高度展开，避免正文和图片被缩在小画布里。 */
+    .review-desk{width:min(1440px,calc(100% - 64px));height:auto;max-height:calc(100vh - 48px);display:flex;flex-direction:column;overflow:hidden;background:#fff;border-radius:12px;box-shadow:0 24px 64px rgba(16,24,40,.28)}
+    .review-desk-h{min-height:84px;padding:0 30px}
+    .review-desk-h h3{font-size:20px}
+    .review-desk-position{font-size:13px}
+    .review-desk-b{flex:0 1 auto;max-height:calc(100vh - 210px);padding:28px 30px}
+    .review-desk-overview,.review-desk-section{padding:22px}
+    .review-desk-overview h4{font-size:21px}
+    .review-desk-meta,.review-desk-scope{font-size:13px}
+    .review-desk-scope{gap:12px}
+    .review-desk-section-title{margin-bottom:12px;font-size:15px}
+    .review-desk-issue-text{max-height:120px;font-size:14px;line-height:1.75}
+    .review-desk-content{max-height:min(560px,56vh);padding:18px;font-size:14px;line-height:1.8}
+    .review-desk-content-flow{gap:16px}
+    .review-desk-content-media{grid-template-columns:minmax(520px,1fr) minmax(280px,.5fr);gap:22px;padding:18px}
+    .review-desk-content-media-frame{min-height:300px}
+    .review-desk-content-media-caption{font-size:13px;line-height:1.7}
+    .review-desk-content-media-caption strong{font-size:14px}
+    .review-desk-dedup-item{padding:12px 14px;font-size:13px;line-height:1.65}
+    .review-desk-action-message{font-size:13px}
+    .review-desk-f{min-height:92px;padding:14px 30px}
+    .review-desk-f .btn{min-height:36px;padding:6px 14px;font-size:13px}
+    @media(min-width:761px) and (max-width:1040px){.review-desk{width:calc(100% - 32px)}.review-desk-b{padding:20px}.review-desk-overview,.review-desk-section{padding:18px}.review-desk-content-media{grid-template-columns:1fr}.review-desk-content-media-frame{min-height:240px}}
+    @media(max-width:760px){.review-desk{width:100%;height:100%;max-height:100vh;border-radius:0}.review-desk-h{min-height:62px;padding:0 14px}.review-desk-h h3{font-size:17px}.review-desk-position{font-size:12px}.review-desk-b{flex:1;max-height:none;padding:14px}.review-desk-overview,.review-desk-section{padding:14px}.review-desk-overview h4{font-size:17px}.review-desk-meta,.review-desk-scope{font-size:11px}.review-desk-section-title{margin-bottom:9px;font-size:13px}.review-desk-issue-text{max-height:78px;font-size:12px;line-height:1.65}.review-desk-content{max-height:300px;padding:12px;font-size:12px;line-height:1.75}.review-desk-content-media{grid-template-columns:1fr;gap:12px;padding:10px}.review-desk-content-media-frame{min-height:132px}.review-desk-content-media-caption{font-size:12px;line-height:1.6}.review-desk-content-media-caption strong{font-size:13px}.review-desk-dedup-item{padding:9px 10px;font-size:12px;line-height:1.55}.review-desk-action-message{font-size:12px}.review-desk-f{min-height:78px;padding:10px 14px}.review-desk-f .btn{min-height:0;padding:3px 8px;font-size:11px}.review-desk-actions{width:100%;margin-left:0}.review-desk-actions .btn{flex:1 1 auto}}
   </style>
 </head>
 <body>
@@ -7262,3 +7277,4 @@ Vue.createApp({
 </script>
 </body>
 </html>
+
