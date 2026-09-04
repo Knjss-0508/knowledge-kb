@@ -1,6 +1,7 @@
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import HTTPException
 from sqlalchemy.dialects import postgresql
@@ -10,6 +11,7 @@ from app.main import app
 from app.models.knowledge import KnowledgeStatus
 from app.routes.knowledge import (
     _filtered_knowledge_query,
+    _expanded_scope_filter_values,
     _has_knowledge_export_filter,
     _import_review_metadata,
     _require_manual_applicable_category,
@@ -212,6 +214,143 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn("categories.name", statement)
         self.assertIn("jsonb_path_exists", statement)
         self.assertNotIn("CAST(knowledge_items.content AS TEXT)", statement)
+
+    def test_applicability_filter_expands_id_and_legacy_name_values(self):
+        cache = {
+            "options_by_business_type": {
+                "self_operated": {
+                    "applicable_categories": [
+                        {"categoryId": 101, "categoryName": "手机"},
+                    ],
+                    "brands_by_category": {
+                        "101": [
+                            {"brandId": 10530, "brandName": "苹果"},
+                        ],
+                    },
+                    "models": [
+                        {"modelId": 2193, "modelName": "iPhone 11"},
+                    ],
+                },
+            },
+        }
+
+        with patch(
+            "app.routes.knowledge.cached_manhattan_options_snapshot",
+            return_value=cache,
+        ):
+            self.assertEqual(
+                _expanded_scope_filter_values(
+                    ["101"],
+                    kind="category",
+                    business_type="self_operated",
+                ),
+                ["101", "手机"],
+            )
+            self.assertEqual(
+                _expanded_scope_filter_values(
+                    ["苹果"],
+                    kind="brand",
+                    business_type="self_operated",
+                ),
+                ["苹果", "10530"],
+            )
+            self.assertEqual(
+                set(
+                    _expanded_scope_filter_values(
+                        ["2193"],
+                        kind="model",
+                        business_type="self_operated",
+                    )
+                ),
+                {"2193", "iPhone 11", "iphone11"},
+            )
+
+    def test_applicability_filter_query_contains_scalar_numeric_and_object_aliases(self):
+        cache = {
+            "options_by_business_type": {
+                "self_operated": {
+                    "applicable_categories": [
+                        {"categoryId": 101, "categoryName": "手机"},
+                    ],
+                    "brands_by_category": {},
+                    "models": [],
+                },
+            },
+        }
+        session = Session()
+        try:
+            with patch(
+                "app.routes.knowledge.cached_manhattan_options_snapshot",
+                return_value=cache,
+            ):
+                query = _filtered_knowledge_query(
+                    session,
+                    SimpleNamespace(role="editor"),
+                    business_type="self_operated",
+                    applicable_category_ids=["101"],
+                )
+            statement = query.statement.compile(dialect=postgresql.dialect())
+            params = statement.params.values()
+            self.assertIn(["101"], params)
+            self.assertIn(["手机"], params)
+            self.assertIn([101], params)
+            self.assertIn([{"categoryName": "手机"}], params)
+        finally:
+            session.close()
+
+    def test_applicability_filter_aliases_respect_business_group_and_cache_fallback(self):
+        cache = {
+            "options_by_business_type": {
+                "self_operated": {
+                    "applicable_categories": [
+                        {"categoryId": 101, "categoryName": "手机"},
+                    ],
+                    "brands_by_category": {},
+                    "models": [],
+                },
+                "aggregated": {
+                    "applicable_categories": [
+                        {"categoryId": 201, "categoryName": "黄金"},
+                    ],
+                    "brands_by_category": {},
+                    "models": [],
+                },
+            },
+        }
+
+        with patch(
+            "app.routes.knowledge.cached_manhattan_options_snapshot",
+            return_value=cache,
+        ):
+            self.assertEqual(
+                _expanded_scope_filter_values(
+                    ["101"],
+                    kind="category",
+                    business_type="aggregated",
+                ),
+                ["101"],
+            )
+            self.assertEqual(
+                _expanded_scope_filter_values(
+                    ["101"],
+                    kind="category",
+                    business_type=None,
+                ),
+                ["101", "手机"],
+            )
+
+        with patch(
+            "app.routes.knowledge.cached_manhattan_options_snapshot",
+            side_effect=OSError("cache unavailable"),
+        ):
+            self.assertEqual(
+                _expanded_scope_filter_values(
+                    ["101"],
+                    kind="category",
+                    business_type="self_operated",
+                ),
+                ["101"],
+            )
 
     def test_export_requires_at_least_one_active_filter(self):
         self.assertFalse(

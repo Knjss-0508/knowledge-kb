@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from io import BytesIO
 from types import SimpleNamespace
+from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File, Form
@@ -37,7 +38,10 @@ from app.models.knowledge import (
 )
 from app.core.config import settings
 from app.services.embedding import EmbeddingServiceUnavailable, embed_texts
-from app.services.applicability import build_applicability_canonicalizer
+from app.services.applicability import (
+    build_applicability_canonicalizer,
+    scope_keys,
+)
 from app.services.knowledge_dedup import (
     DedupDecision,
     build_dedup_documents,
@@ -198,6 +202,201 @@ MANHATTAN_APPLICABILITY_CATEGORY_IDS = {
     "cat-qc-standard",
     "cat-qc-process",
 }
+
+# 适用范围历史上同时存在 Manhattan ID、中文名称和对象值三种形态。
+# 管理端筛选仍然提交选项 ID，但查询时需要把同一选项的名称/ID别名
+# 一并纳入，才能兼容历史知识而不改写存量数据。
+_SCOPE_FILTER_VALUE_KEYS = {
+    "category": (
+        "categoryId",
+        "category_id",
+        "categoryName",
+        "category_name",
+        "id",
+        "code",
+        "value",
+        "name",
+        "label",
+        "title",
+        "text",
+    ),
+    "brand": (
+        "brandId",
+        "brand_id",
+        "brandName",
+        "brand_name",
+        "id",
+        "code",
+        "value",
+        "name",
+        "label",
+        "title",
+        "text",
+    ),
+    "model": (
+        "modelId",
+        "model_id",
+        "modelName",
+        "model_name",
+        "id",
+        "code",
+        "value",
+        "name",
+        "label",
+        "title",
+        "text",
+    ),
+}
+
+
+def _clean_scope_filter_values(values: list[str] | None) -> list[str]:
+    """清理查询参数，同时保留稳定顺序，避免重复生成 SQL 条件。"""
+
+    cleaned: list[str] = []
+    for value in values or []:
+        normalized = str(value or "").strip()
+        if normalized and normalized not in cleaned:
+            cleaned.append(normalized)
+    return cleaned
+
+
+def _scope_filter_options(
+    snapshot: dict[str, Any] | None,
+    business_type: str | None,
+    kind: str,
+):
+    """从 Manhattan 快照中取得指定业务的类目/品牌/机型选项。"""
+
+    if not isinstance(snapshot, dict):
+        return
+
+    grouped = snapshot.get("options_by_business_type")
+    groups: list[dict[str, Any]] = []
+    if isinstance(grouped, dict):
+        if business_type:
+            group = grouped.get(business_type)
+            if isinstance(group, dict):
+                groups = [group]
+        else:
+            groups = [
+                group
+                for group in grouped.values()
+                if isinstance(group, dict)
+            ]
+    if not groups:
+        # 兼容旧版未分业务缓存；当前 cached_manhattan_options_snapshot
+        # 会自动补齐 options_by_business_type，但测试/迁移期间可能只有旧结构。
+        groups = [snapshot]
+
+    for group in groups:
+        if kind == "category":
+            for option in group.get("applicable_categories") or []:
+                yield option
+        elif kind == "brand":
+            brands_by_category = group.get("brands_by_category") or {}
+            if isinstance(brands_by_category, dict):
+                for brands in brands_by_category.values():
+                    for option in brands or []:
+                        yield option
+        elif kind == "model":
+            for option in group.get("models") or []:
+                yield option
+
+
+def _scope_filter_raw_values(option: Any, kind: str) -> list[str]:
+    """提取一个字典选项中可用于兼容查询的 ID/名称原值。"""
+
+    keys = _SCOPE_FILTER_VALUE_KEYS[kind]
+    if not isinstance(option, dict):
+        value = str(option or "").strip()
+        return [value] if value else []
+    values: list[str] = []
+    for key in keys:
+        raw = option.get(key)
+        if raw is None or isinstance(raw, (dict, list, tuple, set)):
+            continue
+        value = str(raw).strip()
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
+def _expanded_scope_filter_values(
+    values: list[str] | None,
+    *,
+    kind: str,
+    business_type: str | None,
+) -> list[str]:
+    """将请求值展开为同一选项的 ID、名称及历史别名。"""
+
+    requested = _clean_scope_filter_values(values)
+    if not requested:
+        return []
+
+    expanded = list(requested)
+    requested_keys: set[str] = set()
+    for value in requested:
+        requested_keys.update(scope_keys([value], kind))
+    if not requested_keys:
+        return expanded
+
+    try:
+        snapshot = cached_manhattan_options_snapshot()
+    except (OSError, ValueError, TypeError):
+        # 快照不可用时仍按原请求值查询，不能因为字典服务异常导致知识列表不可用。
+        snapshot = {}
+
+    for option in _scope_filter_options(snapshot, business_type, kind):
+        option_keys = scope_keys(option, kind)
+        if option_keys.isdisjoint(requested_keys):
+            continue
+        aliases = [
+            *_scope_filter_raw_values(option, kind),
+            *sorted(option_keys),
+        ]
+        for alias in aliases:
+            if alias not in expanded:
+                expanded.append(alias)
+    return expanded
+
+
+def _numeric_scope_value(value: str) -> int | None:
+    """JSON 中部分旧记录把 ID 保存成数字，补充数字形态的匹配。"""
+
+    if not re.fullmatch(r"[+-]?\d+", value):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _scope_filter_expression(column, values: list[str], kind: str):
+    """生成兼容标量数组及对象数组的 JSONB 筛选表达式。"""
+
+    json_column = cast(column, JSONB)
+    conditions = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        scalar_values: list[Any] = [value]
+        numeric_value = _numeric_scope_value(value)
+        if numeric_value is not None:
+            scalar_values.append(numeric_value)
+        for scalar in scalar_values:
+            scalar_key = repr(scalar)
+            marker = ("scalar", scalar_key)
+            if marker not in seen:
+                conditions.append(json_column.contains([scalar]))
+                seen.add(marker)
+            for field in _SCOPE_FILTER_VALUE_KEYS[kind]:
+                marker = (field, scalar_key)
+                if marker in seen:
+                    continue
+                conditions.append(json_column.contains([{field: scalar}]))
+                seen.add(marker)
+    return or_(*conditions) if conditions else None
+
+
 BUSINESS_TYPE_LABELS = {
     "self_operated": "自营回收",
     "aggregated": "聚合回收",
@@ -3736,8 +3935,9 @@ def process_next_knowledge_import_task(
 
 def _filtered_knowledge_query(
     db: Session,
-    current_user: User,
+    current_user: User | None,
     *,
+    _base_query=None,
     status: str | None = None,
     knowledge_origin: str | None = None,
     business_type: str | None = None,
@@ -3747,23 +3947,9 @@ def _filtered_knowledge_query(
     model_ids: list[str] | None = None,
     keyword: str | None = None,
 ):
-    q = db.query(Knowledge)
-    applicable_category_ids = [
-        value.strip()
-        for value in (applicable_category_ids or [])
-        if value and value.strip()
-    ]
-    brand_ids = [
-        value.strip()
-        for value in (brand_ids or [])
-        if value and value.strip()
-    ]
-    model_ids = [
-        value.strip()
-        for value in (model_ids or [])
-        if value and value.strip()
-    ]
-    if current_user.role == "visitor":
+    q = _base_query if _base_query is not None else db.query(Knowledge)
+    business_type_value = getattr(business_type, "value", business_type)
+    if getattr(current_user, "role", None) == "visitor":
         q = q.filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
     if status:
         q = q.filter(Knowledge.status == KnowledgeStatus(status))
@@ -3773,36 +3959,23 @@ def _filtered_knowledge_query(
         q = q.filter(Knowledge.business_type == business_type)
     if category_id:
         q = q.filter(Knowledge.category_id == category_id)
-    if applicable_category_ids:
-        q = q.filter(
-            or_(
-                *[
-                    cast(Knowledge.applicable_categories, JSONB).contains([value])
-                    for value in dict.fromkeys(applicable_category_ids)
-                    if value
-                ]
-            )
+    for column, values, kind in (
+        (
+            Knowledge.applicable_categories,
+            applicable_category_ids,
+            "category",
+        ),
+        (Knowledge.applicable_brands, brand_ids, "brand"),
+        (Knowledge.applicable_models, model_ids, "model"),
+    ):
+        expanded_values = _expanded_scope_filter_values(
+            values,
+            kind=kind,
+            business_type=business_type_value,
         )
-    if brand_ids:
-        q = q.filter(
-            or_(
-                *[
-                    cast(Knowledge.applicable_brands, JSONB).contains([value])
-                    for value in dict.fromkeys(brand_ids)
-                    if value
-                ]
-            )
-        )
-    if model_ids:
-        q = q.filter(
-            or_(
-                *[
-                    cast(Knowledge.applicable_models, JSONB).contains([value])
-                    for value in dict.fromkeys(model_ids)
-                    if value
-                ]
-            )
-        )
+        expression = _scope_filter_expression(column, expanded_values, kind)
+        if expression is not None:
+            q = q.filter(expression)
     keyword = (keyword or "").strip()
     if keyword:
         keyword_pattern = f"%{keyword}%"
@@ -3974,63 +4147,19 @@ def list_review_selection(
     model_ids: list[str] | None = Query(None, description="适用机型ID，可多选"),
     keyword: str | None = Query(None, description="知识关键词"),
 ):
-    query = db.query(Knowledge.id).filter(
-        Knowledge.status == KnowledgeStatus.REVIEW
+    query = _filtered_knowledge_query(
+        db,
+        None,
+        _base_query=db.query(Knowledge.id),
+        status=KnowledgeStatus.REVIEW.value,
+        knowledge_origin=knowledge_origin,
+        business_type=business_type,
+        category_id=category_id,
+        applicable_category_ids=applicable_category_ids,
+        brand_ids=brand_ids,
+        model_ids=model_ids,
+        keyword=keyword,
     )
-    if knowledge_origin:
-        query = query.filter(Knowledge.knowledge_origin == knowledge_origin)
-    if business_type:
-        query = query.filter(Knowledge.business_type == business_type)
-    if category_id:
-        query = query.filter(Knowledge.category_id == category_id)
-    for column, values in (
-        (Knowledge.applicable_categories, applicable_category_ids),
-        (Knowledge.applicable_brands, brand_ids),
-        (Knowledge.applicable_models, model_ids),
-    ):
-        normalized_values = [
-            value.strip()
-            for value in (values or [])
-            if value and value.strip()
-        ]
-        if normalized_values:
-            query = query.filter(
-                or_(
-                    *[
-                        cast(column, JSONB).contains([value])
-                        for value in dict.fromkeys(normalized_values)
-                    ]
-                )
-            )
-    normalized_keyword = (keyword or "").strip()
-    if normalized_keyword:
-        keyword_pattern = f"%{normalized_keyword}%"
-        query = query.filter(
-            or_(
-                Knowledge.title.ilike(keyword_pattern),
-                _jsonb_text_match(
-                    Knowledge.subtitles,
-                    "$[*]",
-                    normalized_keyword,
-                ),
-                _jsonb_text_match(
-                    Knowledge.content,
-                    "$.blocks[*].value",
-                    normalized_keyword,
-                ),
-                _jsonb_text_match(
-                    Knowledge.related_standard_items,
-                    "$[*]",
-                    normalized_keyword,
-                ),
-                _jsonb_text_match(
-                    Knowledge.applicable_scenes,
-                    "$[*]",
-                    normalized_keyword,
-                ),
-                Knowledge.category.has(Category.name.ilike(keyword_pattern)),
-            )
-        )
     knowledge_ids = [
         item_id
         for (item_id,) in (
