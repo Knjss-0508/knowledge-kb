@@ -10,13 +10,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from io import BytesIO
 from types import SimpleNamespace
+from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
-from sqlalchemy import cast, func, or_, text
+from sqlalchemy import cast, func, inspect as sqlalchemy_inspect, or_, text
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.dialects.postgresql import JSONB, JSONPATH
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
 from starlette.concurrency import run_in_threadpool
@@ -32,10 +34,14 @@ from app.models.knowledge import (
     Category, Knowledge, KnowledgeStatus,
     KnowledgeTag, KnowledgeMedia, MediaUploadStaging,
     KnowledgeDeduplicationFeedback, KnowledgeChangeLog, KnowledgeImportTask,
+    KnowledgeEmbedding, KnowledgeSearchEmbedding, KnowledgeVectorTask,
 )
 from app.core.config import settings
 from app.services.embedding import EmbeddingServiceUnavailable, embed_texts
-from app.services.applicability import build_applicability_canonicalizer
+from app.services.applicability import (
+    build_applicability_canonicalizer,
+    scope_keys,
+)
 from app.services.knowledge_dedup import (
     DedupDecision,
     build_dedup_documents,
@@ -196,6 +202,201 @@ MANHATTAN_APPLICABILITY_CATEGORY_IDS = {
     "cat-qc-standard",
     "cat-qc-process",
 }
+
+# 适用范围历史上同时存在 Manhattan ID、中文名称和对象值三种形态。
+# 管理端筛选仍然提交选项 ID，但查询时需要把同一选项的名称/ID别名
+# 一并纳入，才能兼容历史知识而不改写存量数据。
+_SCOPE_FILTER_VALUE_KEYS = {
+    "category": (
+        "categoryId",
+        "category_id",
+        "categoryName",
+        "category_name",
+        "id",
+        "code",
+        "value",
+        "name",
+        "label",
+        "title",
+        "text",
+    ),
+    "brand": (
+        "brandId",
+        "brand_id",
+        "brandName",
+        "brand_name",
+        "id",
+        "code",
+        "value",
+        "name",
+        "label",
+        "title",
+        "text",
+    ),
+    "model": (
+        "modelId",
+        "model_id",
+        "modelName",
+        "model_name",
+        "id",
+        "code",
+        "value",
+        "name",
+        "label",
+        "title",
+        "text",
+    ),
+}
+
+
+def _clean_scope_filter_values(values: list[str] | None) -> list[str]:
+    """清理查询参数，同时保留稳定顺序，避免重复生成 SQL 条件。"""
+
+    cleaned: list[str] = []
+    for value in values or []:
+        normalized = str(value or "").strip()
+        if normalized and normalized not in cleaned:
+            cleaned.append(normalized)
+    return cleaned
+
+
+def _scope_filter_options(
+    snapshot: dict[str, Any] | None,
+    business_type: str | None,
+    kind: str,
+):
+    """从 Manhattan 快照中取得指定业务的类目/品牌/机型选项。"""
+
+    if not isinstance(snapshot, dict):
+        return
+
+    grouped = snapshot.get("options_by_business_type")
+    groups: list[dict[str, Any]] = []
+    if isinstance(grouped, dict):
+        if business_type:
+            group = grouped.get(business_type)
+            if isinstance(group, dict):
+                groups = [group]
+        else:
+            groups = [
+                group
+                for group in grouped.values()
+                if isinstance(group, dict)
+            ]
+    if not groups:
+        # 兼容旧版未分业务缓存；当前 cached_manhattan_options_snapshot
+        # 会自动补齐 options_by_business_type，但测试/迁移期间可能只有旧结构。
+        groups = [snapshot]
+
+    for group in groups:
+        if kind == "category":
+            for option in group.get("applicable_categories") or []:
+                yield option
+        elif kind == "brand":
+            brands_by_category = group.get("brands_by_category") or {}
+            if isinstance(brands_by_category, dict):
+                for brands in brands_by_category.values():
+                    for option in brands or []:
+                        yield option
+        elif kind == "model":
+            for option in group.get("models") or []:
+                yield option
+
+
+def _scope_filter_raw_values(option: Any, kind: str) -> list[str]:
+    """提取一个字典选项中可用于兼容查询的 ID/名称原值。"""
+
+    keys = _SCOPE_FILTER_VALUE_KEYS[kind]
+    if not isinstance(option, dict):
+        value = str(option or "").strip()
+        return [value] if value else []
+    values: list[str] = []
+    for key in keys:
+        raw = option.get(key)
+        if raw is None or isinstance(raw, (dict, list, tuple, set)):
+            continue
+        value = str(raw).strip()
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
+def _expanded_scope_filter_values(
+    values: list[str] | None,
+    *,
+    kind: str,
+    business_type: str | None,
+) -> list[str]:
+    """将请求值展开为同一选项的 ID、名称及历史别名。"""
+
+    requested = _clean_scope_filter_values(values)
+    if not requested:
+        return []
+
+    expanded = list(requested)
+    requested_keys: set[str] = set()
+    for value in requested:
+        requested_keys.update(scope_keys([value], kind))
+    if not requested_keys:
+        return expanded
+
+    try:
+        snapshot = cached_manhattan_options_snapshot()
+    except (OSError, ValueError, TypeError):
+        # 快照不可用时仍按原请求值查询，不能因为字典服务异常导致知识列表不可用。
+        snapshot = {}
+
+    for option in _scope_filter_options(snapshot, business_type, kind):
+        option_keys = scope_keys(option, kind)
+        if option_keys.isdisjoint(requested_keys):
+            continue
+        aliases = [
+            *_scope_filter_raw_values(option, kind),
+            *sorted(option_keys),
+        ]
+        for alias in aliases:
+            if alias not in expanded:
+                expanded.append(alias)
+    return expanded
+
+
+def _numeric_scope_value(value: str) -> int | None:
+    """JSON 中部分旧记录把 ID 保存成数字，补充数字形态的匹配。"""
+
+    if not re.fullmatch(r"[+-]?\d+", value):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _scope_filter_expression(column, values: list[str], kind: str):
+    """生成兼容标量数组及对象数组的 JSONB 筛选表达式。"""
+
+    json_column = cast(column, JSONB)
+    conditions = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        scalar_values: list[Any] = [value]
+        numeric_value = _numeric_scope_value(value)
+        if numeric_value is not None:
+            scalar_values.append(numeric_value)
+        for scalar in scalar_values:
+            scalar_key = repr(scalar)
+            marker = ("scalar", scalar_key)
+            if marker not in seen:
+                conditions.append(json_column.contains([scalar]))
+                seen.add(marker)
+            for field in _SCOPE_FILTER_VALUE_KEYS[kind]:
+                marker = (field, scalar_key)
+                if marker in seen:
+                    continue
+                conditions.append(json_column.contains([{field: scalar}]))
+                seen.add(marker)
+    return or_(*conditions) if conditions else None
+
+
 BUSINESS_TYPE_LABELS = {
     "self_operated": "自营回收",
     "aggregated": "聚合回收",
@@ -700,10 +901,640 @@ def _deduplication_metadata(
     return metadata
 
 
+# 这些字段会改变查重输入，或改变查重适用范围。人工保存后只要其中任意
+# 字段发生变化，就必须让旧向量立即失效，并重新进入后台任务队列。
+_MANUAL_VECTOR_TRIGGER_FIELDS = frozenset(
+    {
+        "title",
+        "subtitles",
+        "content",
+        "knowledge_origin",
+        "business_type",
+        "category_id",
+        "applicable_scenes",
+        "applicable_categories",
+        "applicable_brands",
+        "applicable_models",
+    }
+)
+
+
+def _knowledge_vector_content_hash(item: Knowledge) -> str:
+    """计算人工向量任务使用的整套输入哈希。
+
+    查重服务自身会分别计算正文/标题哈希；队列哈希则覆盖所有会影响查重
+    结果的字段，用于 worker 写回前的乐观并发校验，避免旧任务覆盖新编辑。
+    """
+
+    payload = {
+        "title": str(getattr(item, "title", "") or ""),
+        "subtitles": deepcopy(getattr(item, "subtitles", None) or []),
+        "content": deepcopy(getattr(item, "content", None) or {}),
+        "knowledge_origin": str(
+            getattr(item, "knowledge_origin", "") or ""
+        ),
+        "business_type": str(getattr(item, "business_type", "") or ""),
+        "category_id": str(getattr(item, "category_id", "") or ""),
+        "applicable_scenes": deepcopy(
+            getattr(item, "applicable_scenes", None) or []
+        ),
+        "applicable_categories": deepcopy(
+            getattr(item, "applicable_categories", None) or []
+        ),
+        "applicable_brands": deepcopy(
+            getattr(item, "applicable_brands", None) or []
+        ),
+        "applicable_models": deepcopy(
+            getattr(item, "applicable_models", None) or []
+        ),
+    }
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _vector_task_table_available(db: Session) -> bool:
+    """判断当前数据库是否已执行向量任务迁移。
+
+    旧测试数据库和未升级的开发库可能没有新表。生产环境完成迁移后走
+    异步路径；未迁移时保留原同步路径，避免把保存误报为成功却丢失向量。
+    """
+
+    bind = getattr(db, "bind", None)
+    if not isinstance(bind, (Engine, Connection)):
+        return False
+    try:
+        return bool(
+            sqlalchemy_inspect(bind).has_table(
+                KnowledgeVectorTask.__tablename__
+            )
+        )
+    except Exception:
+        return False
+
+
+def _invalidate_knowledge_vectors(db: Session, knowledge_id: str) -> None:
+    """删除当前知识的旧查重/检索向量，防止旧正文继续参与服务。"""
+
+    db.query(KnowledgeEmbedding).filter(
+        KnowledgeEmbedding.knowledge_id == knowledge_id
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeSearchEmbedding).filter(
+        KnowledgeSearchEmbedding.knowledge_id == knowledge_id
+    ).delete(synchronize_session=False)
+
+
+def _pending_vector_metadata(
+    item: Knowledge,
+    *,
+    task_id: str,
+    requested_by: str | None = None,
+    allow_duplicate_review: bool = False,
+) -> dict:
+    metadata = {
+        "action": "pending",
+        "vector_status": "queued",
+        "vector_task_id": task_id,
+        "vector_content_hash": _knowledge_vector_content_hash(item),
+        "embedding_model": settings.EMBEDDING_MODEL,
+        "matches": [],
+    }
+    if requested_by:
+        metadata["review_confirmation_requested_by"] = requested_by
+    if allow_duplicate_review:
+        # 查重在后台完成；保留用户在保存时的“确认仍要提交”意图，
+        # worker 产生疑似重复结果后可直接附带确认记录。
+        metadata["allow_duplicate_review"] = True
+    return metadata
+
+
+def _enqueue_manual_vectorization(
+    db: Session,
+    item: Knowledge,
+    *,
+    requested_by: str | None = None,
+    allow_duplicate_review: bool = False,
+) -> KnowledgeVectorTask:
+    """使旧任务失效并为当前知识内容创建一个持久化向量任务。"""
+
+    content_hash = _knowledge_vector_content_hash(item)
+    now = datetime.utcnow()
+    previous_tasks = (
+        db.query(KnowledgeVectorTask)
+        .filter(
+            KnowledgeVectorTask.knowledge_id == item.id,
+            KnowledgeVectorTask.status.in_(
+                ["queued", "running", "completed", "failed"]
+            ),
+        )
+        .with_for_update()
+        .all()
+    )
+    for previous in previous_tasks:
+        previous.status = "superseded"
+        previous.lease_expires_at = None
+        previous.updated_at = now
+
+    task = KnowledgeVectorTask(
+        id=f"kvt-{uuid.uuid4().hex[:16]}",
+        knowledge_id=item.id,
+        task_type="manual_vectorization",
+        content_hash=content_hash,
+        status="queued",
+        attempt_count=0,
+        next_attempt_at=now,
+        error_message="",
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(task)
+    item.deduplication_metadata = _pending_vector_metadata(
+        item,
+        task_id=task.id,
+        requested_by=requested_by,
+        allow_duplicate_review=allow_duplicate_review,
+    )
+    db.flush()
+    return task
+
+
+def _vector_task_for_current_content(
+    db: Session,
+    item: Knowledge,
+) -> KnowledgeVectorTask | None:
+    current_hash = _knowledge_vector_content_hash(item)
+    return (
+        db.query(KnowledgeVectorTask)
+        .filter(
+            KnowledgeVectorTask.knowledge_id == item.id,
+            KnowledgeVectorTask.content_hash == current_hash,
+        )
+        .order_by(KnowledgeVectorTask.created_at.desc())
+        .first()
+    )
+
+
+def _vector_status_for_response(item: Knowledge) -> str:
+    metadata = getattr(item, "deduplication_metadata", None) or {}
+    if isinstance(metadata, dict) and metadata.get("vector_status"):
+        return str(metadata["vector_status"])
+    return "ready"
+
+
+def _manual_async_vector_enabled(
+    db: Session,
+    *,
+    source: str,
+    embedding_vectors: tuple[list[float], list[float], list[float]] | None,
+    search_embedding_vectors: dict[tuple[str, int, str], list[float]] | None,
+) -> bool:
+    """仅对人工写入启用异步队列，Excel 导入继续使用其批量向量计划。"""
+
+    return bool(
+        source == "manual"
+        and embedding_vectors is None
+        and search_embedding_vectors is None
+        and _vector_task_table_available(db)
+    )
+
+
+def _vector_processing_gate(
+    db: Session,
+    item: Knowledge,
+) -> tuple[str, str] | None:
+    """返回发布前的向量/查重阻断原因，旧数据库无新表时返回 None。"""
+
+    if not _vector_task_table_available(db):
+        return None
+    metadata = getattr(item, "deduplication_metadata", None) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    task = _vector_task_for_current_content(db, item)
+    status = str(metadata.get("vector_status") or "")
+    if task is not None:
+        status = task.status
+    if status in {"queued", "running"}:
+        return (
+            "VECTOR_PROCESSING",
+            "知识已保存，向量与查重仍在后台处理中，请稍后再发布。",
+        )
+    if status == "failed":
+        return (
+            "VECTOR_PROCESSING_FAILED",
+            "向量与查重后台处理失败，请重新保存知识后再发布。",
+        )
+    if task is not None and task.status != "completed":
+        return (
+            "VECTOR_NOT_READY",
+            "当前知识的向量与查重尚未完成，请稍后再发布。",
+        )
+    if status == "pending":
+        return (
+            "VECTOR_NOT_READY",
+            "当前知识的向量与查重尚未完成，请稍后再发布。",
+        )
+    action = str(metadata.get("action") or "")
+    if action == "block_duplicate":
+        return (
+            "DUPLICATE_BLOCKED",
+            "检测到重复或高度相似的已有知识，未发布。",
+        )
+    return None
+
+
+def _vector_task_lease_expiry(now: datetime) -> datetime:
+    return now + timedelta(
+        seconds=max(1, int(settings.KNOWLEDGE_VECTOR_LEASE_SECONDS))
+    )
+
+
+def _vector_retry_delay_seconds(attempt_count: int) -> int:
+    base_seconds = max(1, int(settings.KNOWLEDGE_VECTOR_RETRY_BASE_SECONDS))
+    max_seconds = max(
+        base_seconds,
+        int(settings.KNOWLEDGE_VECTOR_RETRY_MAX_SECONDS),
+    )
+    exponent = max(0, int(attempt_count) - 1)
+    return min(max_seconds, base_seconds * (2 ** min(exponent, 20)))
+
+
+def _lock_vector_task_attempt(
+    db: Session,
+    task_id: str,
+    claimed_attempt: int,
+) -> KnowledgeVectorTask | None:
+    return (
+        db.query(KnowledgeVectorTask)
+        .filter(
+            KnowledgeVectorTask.id == task_id,
+            KnowledgeVectorTask.attempt_count == claimed_attempt,
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+        .first()
+    )
+
+
+def _owns_vector_task_attempt(
+    task: KnowledgeVectorTask | None,
+    claimed_attempt: int,
+) -> bool:
+    return bool(
+        task
+        and task.status == "running"
+        and int(task.attempt_count or 0) == claimed_attempt
+    )
+
+
+def _mark_vector_task_superseded(
+    task: KnowledgeVectorTask,
+    *,
+    now: datetime,
+    reason: str = "知识内容已变化，旧向量任务不再写回。",
+) -> None:
+    task.status = "superseded"
+    task.error_message = reason
+    task.lease_expires_at = None
+    task.completed_at = now
+    task.updated_at = now
+
+
+def _mark_vector_task_failed(
+    task: KnowledgeVectorTask,
+    message: str,
+    *,
+    now: datetime,
+) -> None:
+    task.status = "failed"
+    task.error_message = message[:2000]
+    task.lease_expires_at = None
+    task.completed_at = now
+    task.updated_at = now
+
+
+def _schedule_vector_task_retry(
+    task: KnowledgeVectorTask,
+    message: str,
+    *,
+    now: datetime,
+) -> bool:
+    max_attempts = max(1, int(settings.KNOWLEDGE_VECTOR_MAX_ATTEMPTS))
+    attempt_count = int(task.attempt_count or 0)
+    if attempt_count >= max_attempts:
+        _mark_vector_task_failed(
+            task,
+            (
+                f"后台向量处理达到最大尝试次数（{attempt_count}/{max_attempts}）："
+                f"{message}"
+            ),
+            now=now,
+        )
+        return False
+    delay = _vector_retry_delay_seconds(attempt_count)
+    task.status = "queued"
+    task.error_message = (
+        f"后台向量处理暂时失败，将在 {delay} 秒后自动重试"
+        f"（{attempt_count}/{max_attempts}）：{message}"
+    )[:2000]
+    task.lease_expires_at = None
+    task.next_attempt_at = now + timedelta(seconds=delay)
+    task.completed_at = None
+    task.updated_at = now
+    return True
+
+
+def _is_retryable_vector_exception(exc: Exception) -> bool:
+    if isinstance(exc, EmbeddingServiceUnavailable):
+        return bool(exc.retryable)
+    # 只把数据库连接失效视为可重试；IntegrityError 等约束/数据错误
+    # 不能靠重试恢复，否则会把永久失败拖成多轮后台任务。
+    if isinstance(exc, OperationalError):
+        return True
+    if isinstance(exc, DBAPIError):
+        return bool(getattr(exc, "connection_invalidated", False))
+    return False
+
+
+def _set_vector_metadata_status(
+    item: Knowledge,
+    *,
+    status: str,
+    task: KnowledgeVectorTask,
+    message: str | None = None,
+) -> None:
+    metadata = dict(
+        item.deduplication_metadata
+        if isinstance(getattr(item, "deduplication_metadata", None), dict)
+        else {}
+    )
+    metadata["vector_status"] = status
+    metadata["vector_task_id"] = task.id
+    metadata["vector_content_hash"] = task.content_hash
+    if message:
+        metadata["vector_error"] = message[:2000]
+    else:
+        metadata.pop("vector_error", None)
+    item.deduplication_metadata = metadata
+
+
+def _vector_decision_metadata(
+    decision: DedupDecision,
+    *,
+    task: KnowledgeVectorTask,
+) -> dict:
+    metadata = _deduplication_metadata(decision)
+    metadata["vector_status"] = "completed"
+    metadata["vector_task_id"] = task.id
+    metadata["vector_content_hash"] = task.content_hash
+    return metadata
+
+
+def _manual_dedup_decision_for_worker(
+    db: Session,
+    item: Knowledge,
+) -> DedupDecision:
+    decision = check_duplicate(
+        db,
+        title=item.title,
+        subtitles=item.subtitles or [],
+        content=item.content,
+        scene_tags=item.applicable_scenes or [],
+        knowledge_origin=item.knowledge_origin,
+        business_type=item.business_type,
+        applicable_categories=getattr(item, "applicable_categories", None),
+        exclude_knowledge_id=item.id,
+    )
+    if (
+        decision.action == "block_duplicate"
+        and decision.matches
+        and decision.matches[0].match_type == "semantic"
+    ):
+        # 与人工提交流程保持一致：语义命中先进入疑似重复复核，不直接阻断。
+        decision.action = "review_duplicate"
+    return decision
+
+
+def process_knowledge_vector_task(
+    task_id: str,
+    *,
+    claimed_attempt: int,
+    session_factory=SessionLocal,
+) -> None:
+    """处理一个已领取的人工向量任务。
+
+    模型调用发生在事务之外；写回前重新锁定任务并比较内容哈希，确保
+    用户在后台计算期间再次编辑时，旧结果只会被标记为 superseded。
+    """
+
+    db = session_factory()
+    try:
+        task = _lock_vector_task_attempt(db, task_id, claimed_attempt)
+        if not _owns_vector_task_attempt(task, claimed_attempt):
+            return
+        item = db.query(Knowledge).filter(Knowledge.id == task.knowledge_id).first()
+        if not item:
+            _mark_vector_task_failed(
+                task,
+                "关联知识不存在，无法生成向量。",
+                now=datetime.utcnow(),
+            )
+            db.commit()
+            return
+        if _knowledge_vector_content_hash(item) != task.content_hash:
+            _mark_vector_task_superseded(task, now=datetime.utcnow())
+            db.commit()
+            return
+
+        _set_vector_metadata_status(item, status="running", task=task)
+        task.updated_at = datetime.utcnow()
+        db.commit()
+
+        # 模型请求和候选查询不持有任务行锁，避免阻塞保存/编辑接口。
+        decision = _manual_dedup_decision_for_worker(db, item)
+
+        task = _lock_vector_task_attempt(db, task_id, claimed_attempt)
+        if not _owns_vector_task_attempt(task, claimed_attempt):
+            return
+        item = (
+            db.query(Knowledge)
+            .filter(Knowledge.id == task.knowledge_id)
+            .execution_options(populate_existing=True)
+            .first()
+        )
+        if not item or _knowledge_vector_content_hash(item) != task.content_hash:
+            _mark_vector_task_superseded(task, now=datetime.utcnow())
+            db.commit()
+            return
+
+        if decision.embedding:
+            save_embedding(
+                db,
+                knowledge=item,
+                content_hash=decision.content_hash,
+                embedding=decision.embedding,
+                title_embedding=decision.title_embedding,
+                content_embedding=decision.content_embedding,
+            )
+        else:
+            # 精确重复判断会刻意跳过查重模型向量，但该知识后续仍需具备
+            # 完整查重向量，避免审批时才第一次触发模型调用。
+            ensure_embedding(db, item)
+        # Exact标题+正文命中时，查重函数会有意不生成查重向量；检索向量
+        # 仍必须建立，否则即使后续人工确认通过，该知识也无法参与检索。
+        ensure_search_embeddings(db, item)
+
+        # 已发布知识在重新计算查重后命中重复风险时，回到发布审核状态。
+        # 这保持了原先同步编辑路径的门禁语义，避免后台异步处理完成后
+        # 仍把存在重复风险的新内容继续当作已发布知识提供给检索。
+        if (
+            item.status == KnowledgeStatus.PUBLISHED
+            and decision.action in {"review_duplicate", "block_duplicate"}
+        ):
+            item.status = KnowledgeStatus.REVIEW
+
+        item.deduplication_metadata = _vector_decision_metadata(
+            decision,
+            task=task,
+        )
+        task.status = "completed"
+        task.error_message = ""
+        task.lease_expires_at = None
+        task.completed_at = datetime.utcnow()
+        task.updated_at = task.completed_at
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        task = _lock_vector_task_attempt(db, task_id, claimed_attempt)
+        if not _owns_vector_task_attempt(task, claimed_attempt):
+            return
+        item = db.query(Knowledge).filter(Knowledge.id == task.knowledge_id).first()
+        retryable = _is_retryable_vector_exception(exc)
+        if item and _knowledge_vector_content_hash(item) != task.content_hash:
+            _mark_vector_task_superseded(task, now=datetime.utcnow())
+        elif retryable:
+            scheduled = _schedule_vector_task_retry(
+                task,
+                str(exc) or type(exc).__name__,
+                now=datetime.utcnow(),
+            )
+            if item:
+                _set_vector_metadata_status(
+                    item,
+                    status="queued" if scheduled else "failed",
+                    task=task,
+                    message=None if scheduled else str(exc),
+                )
+        else:
+            _mark_vector_task_failed(
+                task,
+                str(exc) or type(exc).__name__,
+                now=datetime.utcnow(),
+            )
+            if item:
+                _set_vector_metadata_status(
+                    item,
+                    status="failed",
+                    task=task,
+                    message=str(exc),
+                )
+        db.commit()
+        if retryable:
+            logger.warning(
+                "Knowledge vector task %s failed transiently: %s",
+                task_id,
+                exc,
+            )
+        else:
+            logger.exception("Knowledge vector task %s failed.", task_id)
+    finally:
+        db.close()
+
+
+def process_next_knowledge_vector_task(
+    *,
+    session_factory=SessionLocal,
+) -> bool:
+    """领取并处理一条 queued 或租约过期的人工向量任务。"""
+
+    db = session_factory()
+    task_id = ""
+    claimed_attempt = 0
+    now = datetime.utcnow()
+    try:
+        # 迁移尚未执行时，API 仍可按旧逻辑同步保存；worker 应安静地
+        # 空转，而不是每秒对不存在的表打出数据库异常日志。
+        if not _vector_task_table_available(db):
+            return False
+        task = (
+            db.query(KnowledgeVectorTask)
+            .filter(
+                or_(
+                    (
+                        (KnowledgeVectorTask.status == "queued")
+                        & (KnowledgeVectorTask.next_attempt_at <= now)
+                    ),
+                    (
+                        (KnowledgeVectorTask.status == "running")
+                        & or_(
+                            KnowledgeVectorTask.lease_expires_at <= now,
+                            KnowledgeVectorTask.lease_expires_at.is_(None),
+                        )
+                    ),
+                )
+            )
+            .order_by(KnowledgeVectorTask.created_at)
+            .with_for_update(skip_locked=True)
+            .first()
+        )
+        if not task:
+            return False
+        max_attempts = max(1, int(settings.KNOWLEDGE_VECTOR_MAX_ATTEMPTS))
+        if int(task.attempt_count or 0) >= max_attempts:
+            _mark_vector_task_failed(
+                task,
+                (
+                    "后台向量任务租约已到期，且达到最大尝试次数"
+                    f"（{int(task.attempt_count or 0)}/{max_attempts}）。"
+                ),
+                now=now,
+            )
+            db.commit()
+            return True
+        task.status = "running"
+        task.attempt_count = int(task.attempt_count or 0) + 1
+        task.started_at = task.started_at or now
+        task.lease_expires_at = _vector_task_lease_expiry(now)
+        task.updated_at = now
+        task_id = task.id
+        claimed_attempt = int(task.attempt_count)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to claim a knowledge vector task.")
+        return False
+    finally:
+        db.close()
+
+    process_knowledge_vector_task(
+        task_id,
+        claimed_attempt=claimed_attempt,
+        session_factory=session_factory,
+    )
+    return True
+
+
 def _pending_deduplication_matches(item: Knowledge) -> list[dict]:
     """返回尚未填写“确实不同”原因的疑似重复命中。"""
     metadata = getattr(item, "deduplication_metadata", None) or {}
-    if not isinstance(metadata, dict) or metadata.get("action") != "review_duplicate":
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("action") != "review_duplicate"
+    ):
         return []
     matches = metadata.get("matches")
     if not isinstance(matches, list) or not matches:
@@ -909,6 +1740,7 @@ def _to_response(item: Knowledge) -> dict:
         "source_knowledge_key": item.source_knowledge_key,
         "import_review_metadata": _import_review_metadata(item),
         "deduplication_metadata": item.deduplication_metadata or {},
+        "vector_status": _vector_status_for_response(item),
         "created_by": item.created_by,
         "updated_by": item.updated_by,
         "created_at": item.created_at,
@@ -950,19 +1782,27 @@ def _create_knowledge_item(
         raise HTTPException(status_code=422, detail="所属分类不存在。")
 
     normalized_content = _normalize_content(body.content)
-    decision = _check_manual_deduplication(
+    async_vector = _manual_async_vector_enabled(
         db,
-        title=body.title,
-        subtitles=body.subtitles or [],
-        content=normalized_content,
-        knowledge_origin=body.knowledge_origin,
-        scene_tags=body.applicable_scenes or [],
-        business_type=body.business_type,
-        applicable_categories=body.applicable_categories,
-        confirm_dedup_review=body.confirm_dedup_review,
-        allow_duplicate_review=allow_duplicate_review,
+        source=source,
         embedding_vectors=embedding_vectors,
+        search_embedding_vectors=search_embedding_vectors,
     )
+    decision = None
+    if not async_vector:
+        decision = _check_manual_deduplication(
+            db,
+            title=body.title,
+            subtitles=body.subtitles or [],
+            content=normalized_content,
+            knowledge_origin=body.knowledge_origin,
+            scene_tags=body.applicable_scenes or [],
+            business_type=body.business_type,
+            applicable_categories=body.applicable_categories,
+            confirm_dedup_review=body.confirm_dedup_review,
+            allow_duplicate_review=allow_duplicate_review,
+            embedding_vectors=embedding_vectors,
+        )
     item = Knowledge(
         id=_generate_knowledge_id(db),
         title=body.title,
@@ -982,11 +1822,15 @@ def _create_knowledge_item(
         source_record_id=(body.source_record_id or "").strip() or None,
         source_knowledge_key=(body.source_knowledge_key or "").strip() or None,
         source_fields=body.source_fields or {},
-        deduplication_metadata=_deduplication_metadata(
-            decision,
-            confirmed_by=(
-                current_user.username if body.confirm_dedup_review else None
-            ),
+        deduplication_metadata=(
+            {}
+            if async_vector
+            else _deduplication_metadata(
+                decision,
+                confirmed_by=(
+                    current_user.username if body.confirm_dedup_review else None
+                ),
+            )
         ),
         created_by=current_user.username,
         updated_by=current_user.username,
@@ -999,7 +1843,17 @@ def _create_knowledge_item(
         item.content,
         current_user.username,
     )
-    if decision.embedding:
+    if async_vector:
+        _invalidate_knowledge_vectors(db, item.id)
+        _enqueue_manual_vectorization(
+            db,
+            item,
+            requested_by=current_user.username if body.confirm_dedup_review else None,
+            allow_duplicate_review=(
+                bool(body.confirm_dedup_review) or bool(allow_duplicate_review)
+            ),
+        )
+    elif decision and decision.embedding:
         save_embedding(
             db,
             knowledge=item,
@@ -1008,7 +1862,7 @@ def _create_knowledge_item(
             title_embedding=decision.title_embedding,
             content_embedding=decision.content_embedding,
         )
-    if ensure_search_index:
+    if ensure_search_index and not async_vector:
         ensure_search_embeddings(
             db,
             item,
@@ -1017,7 +1871,16 @@ def _create_knowledge_item(
     return item
 
 
-@router.post("", response_model=KnowledgeResponse, status_code=201, summary="创建知识条目", description="新建一条知识条目，完成查重后直接进入待审核(review)")
+@router.post(
+    "",
+    response_model=KnowledgeResponse,
+    status_code=201,
+    summary="创建知识条目",
+    description=(
+        "新建知识先保存主表并进入待审核；已完成向量任务迁移时，"
+        "查重与检索向量由后台任务异步处理。"
+    ),
+)
 def create_knowledge(
     body: KnowledgeCreate,
     db: Session = Depends(get_db),
@@ -1097,6 +1960,11 @@ async def import_knowledge_excel(
             detail=f"导入文件不能超过 {MAX_IMPORT_FILE_BYTES // (1024 * 1024)} MB。",
         )
 
+    # Fail the upload before persisting a background task.  The parser scans
+    # the entire workbook and returns row/field/reason details for malformed
+    # rows, so no valid prefix can be imported while later rows fail.
+    preflight_total_rows = _validate_excel_before_queue(data, import_type, db)
+
     task = KnowledgeImportTask(
         id=f"import-{uuid.uuid4().hex}",
         import_type=import_type,
@@ -1106,6 +1974,7 @@ async def import_knowledge_excel(
         file_sha256=hashlib.sha256(data).hexdigest(),
         file_content=data,
         status="queued",
+        total_rows=preflight_total_rows,
         next_attempt_at=datetime.utcnow(),
     )
     db.add(task)
@@ -1193,6 +2062,210 @@ def _require_import_type_permission(
     )
     if not has_permission(current_user, permission):
         raise HTTPException(status_code=403, detail="Permission denied.")
+
+
+_EXCEL_VALIDATION_FIELD_LABELS = {
+    "KNOWLEDGE_ID_REQUIRED": "知识ID",
+    "KNOWLEDGE_ID_TOO_LONG": "知识ID",
+    "KNOWLEDGE_ID_NOT_ALLOWED": "知识ID",
+    "KNOWLEDGE_ID_DUPLICATED": "知识ID",
+    "KNOWLEDGE_ORIGIN_REQUIRED": "知识来源",
+    "KNOWLEDGE_ORIGIN_INVALID": "知识来源",
+    "KNOWLEDGE_ORIGIN_MANAGED": "知识来源",
+    "BUSINESS_TYPE_REQUIRED": "业务类型",
+    "BUSINESS_TYPE_INVALID": "业务类型",
+    "SOURCE_STATUS_REQUIRED": "生效状态",
+    "SOURCE_STATUS_INVALID": "生效状态",
+    "SOURCE_STATUS_NOT_IMPORTABLE": "生效状态",
+    "SOURCE_IDENTIFIER_REQUIRED": "来源标识",
+    "TITLE_REQUIRED": "标题",
+    "TITLE_TOO_LONG": "标题",
+    "CATEGORY_REQUIRED": "知识分类",
+    "CATEGORY_NOT_FOUND": "知识分类",
+    "CATEGORY_AMBIGUOUS": "知识分类",
+    "CONTENT_REQUIRED": "正文",
+    "CONTENT_TOO_LONG": "正文",
+    "LOCAL_MEDIA_PLACEHOLDER_UNSUPPORTED": "正文",
+    "APPLICABLE_CATEGORY_INVALID": "适用类目",
+    "APPLICABLE_CATEGORY_CACHE_UNAVAILABLE": "适用类目",
+    "WORKBOOK_VALIDATION_ERROR": "数据",
+}
+
+
+def _excel_validation_issue_from_row(row) -> dict:
+    code = str(getattr(row, "error_code", "") or "INVALID_ROW")
+    return {
+        "row": int(getattr(row, "row_number", 0) or 0),
+        "title": str(getattr(row, "title", "") or ""),
+        "field": (
+            getattr(row, "error_field", None)
+            or _EXCEL_VALIDATION_FIELD_LABELS.get(code, "数据")
+        ),
+        "code": code,
+        "message": str(
+            getattr(row, "error_message", "")
+            or "数据校验失败。"
+        ),
+    }
+
+
+def _excel_validation_exception(
+    *,
+    message: str,
+    rows: list | None = None,
+    errors: list[dict] | None = None,
+) -> HTTPException:
+    """Return a stable, readable whole-workbook validation response.
+
+    The parser deliberately keeps row-level errors on ``ExcelKnowledgeRow`` so
+    the background worker can report historical task results.  Upload-time
+    validation must instead reject the complete workbook before a task is
+    persisted; this helper turns those row errors into an API response that
+    includes the original Excel row, field and reason.
+    """
+
+    validation_errors = list(errors or [])
+    if errors is None:
+        for row in rows or []:
+            if getattr(row, "is_valid", True):
+                continue
+            validation_errors.append(_excel_validation_issue_from_row(row))
+
+    # 表头、工作表组合、文件结构等错误没有对应的数据行，也必须返回
+    # 至少一条可展示的原因，避免前端收到 error_count=0 的“空失败”。
+    if not validation_errors:
+        validation_errors = [
+            {
+                "row": 1,
+                "title": "",
+                "field": "工作簿",
+                "code": "WORKBOOK_VALIDATION_ERROR",
+                "message": message or "工作簿校验失败。",
+            }
+        ]
+    message = (
+        f"Excel 全表校验失败，共 {len(validation_errors)} 条问题；"
+        "未创建导入任务，也未写入知识。请修正后重新上传。"
+    )
+    return HTTPException(
+        status_code=422,
+        detail={
+            "code": "EXCEL_VALIDATION_FAILED",
+            "message": message,
+            "error_count": len(validation_errors),
+            "errors": validation_errors,
+        },
+    )
+
+
+def _validate_excel_row_applicability(rows: list) -> list:
+    """校验已解析行的适用类目，并返回所有无效行。"""
+
+    for row in rows:
+        if not row.is_valid or row.source_status == DEPRECATED_SOURCE_STATUS:
+            continue
+        try:
+            _validate_business_applicable_categories(
+                business_type=row.business_type,
+                applicable_categories=row.applicable_categories,
+            )
+        except HTTPException as exc:
+            detail = exc.detail
+            if isinstance(detail, dict):
+                row.error_code = str(
+                    detail.get("code") or "APPLICABLE_CATEGORY_INVALID"
+                )
+                row.error_message = str(detail.get("message") or detail)
+            else:
+                row.error_code = (
+                    "APPLICABLE_CATEGORY_CACHE_UNAVAILABLE"
+                    if "缓存尚未准备" in str(detail)
+                    else "APPLICABLE_CATEGORY_INVALID"
+                )
+                row.error_message = str(detail)
+    return [row for row in rows if not row.is_valid]
+
+
+def _validate_excel_before_queue(
+    data: bytes,
+    import_type: KnowledgeImportType,
+    db: Session,
+) -> int:
+    """Parse and validate the complete workbook before creating a task.
+
+    Row-level parser errors are intentionally retained for the worker's
+    historical task-result compatibility, but an upload containing any such
+    row must never enter the asynchronous processing pipeline.  This keeps
+    malformed files from partially writing knowledge or starting embedding
+    work before the user has a chance to correct the source workbook.  The
+    returned count is written to the task immediately so the progress panel
+    can show a real denominator from the moment the upload is accepted.
+    """
+
+    try:
+        if import_type == "model_configuration":
+            workbook = parse_model_configuration_workbook(data)
+            return len(workbook.records)
+
+        categories = db.query(Category).order_by(
+            Category.level,
+            Category.sort_order,
+        ).all()
+        parser = (
+            parse_knowledge_update_workbook
+            if import_type == "knowledge_update"
+            else parse_knowledge_workbook
+        )
+        rows = parser(data, categories)
+        # Resolve and validate applicability while the request is still in the
+        # preflight phase.  This uses the same cached snapshot as the worker,
+        # but does not call Embedding or mutate the database.
+        # Canonicalization is part of validation, but an unavailable external
+        # Manhattan cache must be reported as a row/workbook validation issue
+        # instead of escaping as a 500 response.
+        try:
+            _canonicalize_excel_rows_applicability(
+                rows,
+                cached_manhattan_options_snapshot(),
+            )
+        except Exception as exc:
+            raise KnowledgeExcelError(
+                f"适用范围全表校验失败：{exc}"
+            ) from exc
+        invalid_rows = _validate_excel_row_applicability(rows)
+    except KnowledgeExcelError as exc:
+        message = str(exc)
+        issues = list(getattr(exc, "issues", []) or [])
+        if not issues:
+            row_match = re.search(
+                r"(?:第\s*)(?P<row>\d+)(?:\s*行)[：:]?\s*(?P<reason>.*)",
+                message,
+            )
+            if row_match:
+                reason = row_match.group("reason").strip() or message
+                issues.append(
+                    {
+                        "row": int(row_match.group("row")),
+                        "title": "",
+                        "field": "数据",
+                        "code": "WORKBOOK_VALIDATION_ERROR",
+                        "message": reason,
+                    }
+                )
+        raise _excel_validation_exception(
+            message=(
+                "Excel 全表校验失败，未创建导入任务，也未写入知识："
+                f"{exc}"
+            ),
+            errors=issues,
+        ) from exc
+
+    if invalid_rows:
+        raise _excel_validation_exception(
+            message="Excel 全表校验失败，未创建导入任务，也未写入知识。",
+            rows=invalid_rows,
+        )
+    return len(rows)
 
 
 @router.get(
@@ -2501,6 +3574,15 @@ def process_knowledge_import_task(
                 rows,
                 cached_manhattan_options_snapshot(),
             )
+            invalid_rows = _validate_excel_row_applicability(rows)
+            if invalid_rows:
+                raise KnowledgeExcelError(
+                    "Excel 全表校验失败：后台校验发现数据不完整，整批未写入。",
+                    issues=[
+                        _excel_validation_issue_from_row(row)
+                        for row in invalid_rows
+                    ],
+                )
         except KnowledgeExcelError as exc:
             current_task = _lock_import_task_attempt(
                 db,
@@ -2853,8 +3935,9 @@ def process_next_knowledge_import_task(
 
 def _filtered_knowledge_query(
     db: Session,
-    current_user: User,
+    current_user: User | None,
     *,
+    _base_query=None,
     status: str | None = None,
     knowledge_origin: str | None = None,
     business_type: str | None = None,
@@ -2864,23 +3947,9 @@ def _filtered_knowledge_query(
     model_ids: list[str] | None = None,
     keyword: str | None = None,
 ):
-    q = db.query(Knowledge)
-    applicable_category_ids = [
-        value.strip()
-        for value in (applicable_category_ids or [])
-        if value and value.strip()
-    ]
-    brand_ids = [
-        value.strip()
-        for value in (brand_ids or [])
-        if value and value.strip()
-    ]
-    model_ids = [
-        value.strip()
-        for value in (model_ids or [])
-        if value and value.strip()
-    ]
-    if current_user.role == "visitor":
+    q = _base_query if _base_query is not None else db.query(Knowledge)
+    business_type_value = getattr(business_type, "value", business_type)
+    if getattr(current_user, "role", None) == "visitor":
         q = q.filter(Knowledge.status == KnowledgeStatus.PUBLISHED)
     if status:
         q = q.filter(Knowledge.status == KnowledgeStatus(status))
@@ -2890,36 +3959,23 @@ def _filtered_knowledge_query(
         q = q.filter(Knowledge.business_type == business_type)
     if category_id:
         q = q.filter(Knowledge.category_id == category_id)
-    if applicable_category_ids:
-        q = q.filter(
-            or_(
-                *[
-                    cast(Knowledge.applicable_categories, JSONB).contains([value])
-                    for value in dict.fromkeys(applicable_category_ids)
-                    if value
-                ]
-            )
+    for column, values, kind in (
+        (
+            Knowledge.applicable_categories,
+            applicable_category_ids,
+            "category",
+        ),
+        (Knowledge.applicable_brands, brand_ids, "brand"),
+        (Knowledge.applicable_models, model_ids, "model"),
+    ):
+        expanded_values = _expanded_scope_filter_values(
+            values,
+            kind=kind,
+            business_type=business_type_value,
         )
-    if brand_ids:
-        q = q.filter(
-            or_(
-                *[
-                    cast(Knowledge.applicable_brands, JSONB).contains([value])
-                    for value in dict.fromkeys(brand_ids)
-                    if value
-                ]
-            )
-        )
-    if model_ids:
-        q = q.filter(
-            or_(
-                *[
-                    cast(Knowledge.applicable_models, JSONB).contains([value])
-                    for value in dict.fromkeys(model_ids)
-                    if value
-                ]
-            )
-        )
+        expression = _scope_filter_expression(column, expanded_values, kind)
+        if expression is not None:
+            q = q.filter(expression)
     keyword = (keyword or "").strip()
     if keyword:
         keyword_pattern = f"%{keyword}%"
@@ -3091,63 +4147,19 @@ def list_review_selection(
     model_ids: list[str] | None = Query(None, description="适用机型ID，可多选"),
     keyword: str | None = Query(None, description="知识关键词"),
 ):
-    query = db.query(Knowledge.id).filter(
-        Knowledge.status == KnowledgeStatus.REVIEW
+    query = _filtered_knowledge_query(
+        db,
+        None,
+        _base_query=db.query(Knowledge.id),
+        status=KnowledgeStatus.REVIEW.value,
+        knowledge_origin=knowledge_origin,
+        business_type=business_type,
+        category_id=category_id,
+        applicable_category_ids=applicable_category_ids,
+        brand_ids=brand_ids,
+        model_ids=model_ids,
+        keyword=keyword,
     )
-    if knowledge_origin:
-        query = query.filter(Knowledge.knowledge_origin == knowledge_origin)
-    if business_type:
-        query = query.filter(Knowledge.business_type == business_type)
-    if category_id:
-        query = query.filter(Knowledge.category_id == category_id)
-    for column, values in (
-        (Knowledge.applicable_categories, applicable_category_ids),
-        (Knowledge.applicable_brands, brand_ids),
-        (Knowledge.applicable_models, model_ids),
-    ):
-        normalized_values = [
-            value.strip()
-            for value in (values or [])
-            if value and value.strip()
-        ]
-        if normalized_values:
-            query = query.filter(
-                or_(
-                    *[
-                        cast(column, JSONB).contains([value])
-                        for value in dict.fromkeys(normalized_values)
-                    ]
-                )
-            )
-    normalized_keyword = (keyword or "").strip()
-    if normalized_keyword:
-        keyword_pattern = f"%{normalized_keyword}%"
-        query = query.filter(
-            or_(
-                Knowledge.title.ilike(keyword_pattern),
-                _jsonb_text_match(
-                    Knowledge.subtitles,
-                    "$[*]",
-                    normalized_keyword,
-                ),
-                _jsonb_text_match(
-                    Knowledge.content,
-                    "$.blocks[*].value",
-                    normalized_keyword,
-                ),
-                _jsonb_text_match(
-                    Knowledge.related_standard_items,
-                    "$[*]",
-                    normalized_keyword,
-                ),
-                _jsonb_text_match(
-                    Knowledge.applicable_scenes,
-                    "$[*]",
-                    normalized_keyword,
-                ),
-                Knowledge.category.has(Category.name.ilike(keyword_pattern)),
-            )
-        )
     knowledge_ids = [
         item_id
         for (item_id,) in (
@@ -3486,7 +4498,15 @@ def update_model_configuration(
     return _to_response(item)
 
 
-@router.patch("/{knowledge_id}", response_model=KnowledgeResponse, summary="更新知识条目")
+@router.patch(
+    "/{knowledge_id}",
+    response_model=KnowledgeResponse,
+    summary="更新知识条目",
+    description=(
+        "人工修改先提交主表；已完成向量任务迁移时，相关向量与查重"
+        "由后台任务异步刷新。"
+    ),
+)
 def update_knowledge(
     knowledge_id: str,
     body: KnowledgeUpdate,
@@ -3529,6 +4549,10 @@ def update_knowledge(
     was_published = item.status == KnowledgeStatus.PUBLISHED
     updates = body.model_dump(exclude_unset=True)
     updated_fields = set(updates)
+    # 这里已经进入人工 PATCH 路由，是否最初由 Excel/自动化创建不应让
+    # 操作人重新承担模型调用等待；只要队列表已迁移，所有可编辑知识都
+    # 统一走“主表先提交、向量后台处理”。
+    async_vector = _vector_task_table_available(db)
     origin_changed = (
         "knowledge_origin" in updates
         and updates["knowledge_origin"]
@@ -3605,7 +4629,21 @@ def update_knowledge(
                 setattr(item, field, KnowledgeStatus(val))
             else:
                 setattr(item, field, val)
-        if origin_changed or business_type_changed or applicable_categories_changed:
+        # 这一个快照同时用于“实际是否发生向量相关变化”的判断和变更
+        # 日志，避免前端每次携带完整表单字段时把无变化保存误判成重算。
+        after_data = _knowledge_snapshot(item)
+        vector_fields_changed = any(
+            before_data.get(field) != after_data.get(field)
+            for field in _MANUAL_VECTOR_TRIGGER_FIELDS
+        )
+        if async_vector and vector_fields_changed:
+            _invalidate_knowledge_vectors(db, item.id)
+            _enqueue_manual_vectorization(
+                db,
+                item,
+                requested_by=current_user.username,
+            )
+        elif origin_changed or business_type_changed or applicable_categories_changed:
             refreshed_decision = _check_manual_deduplication(
                 db,
                 title=item.title,
@@ -3630,6 +4668,7 @@ def update_knowledge(
                 and refreshed_decision.action == "review_duplicate"
             ):
                 item.status = KnowledgeStatus.REVIEW
+                after_data["status"] = item.status.value
             if refreshed_decision.embedding:
                 save_embedding(
                     db,
@@ -3639,7 +4678,6 @@ def update_knowledge(
                     title_embedding=refreshed_decision.title_embedding,
                     content_embedding=refreshed_decision.content_embedding,
                 )
-        after_data = _knowledge_snapshot(item)
         changed_fields = [
             field for field, before_value in (before_data or {}).items()
             if before_value != after_data.get(field)
@@ -3656,7 +4694,7 @@ def update_knowledge(
             )
             if change_log is not None:
                 db.add(change_log)
-        if {"title", "subtitles", "content"} & updated_fields:
+        if not async_vector and {"title", "subtitles", "content"} & updated_fields:
             ensure_embedding(db, item)
             ensure_search_embeddings(db, item)
         item.updated_at = changed_at
@@ -3778,7 +4816,12 @@ def submit_deduplication_feedback(
 
 # ---- 审核流程 ----
 
-@router.post("/{knowledge_id}/submit-review", response_model=KnowledgeResponse, summary="提交审核")
+@router.post(
+    "/{knowledge_id}/submit-review",
+    response_model=KnowledgeResponse,
+    summary="提交审核",
+    description="先提交知识状态，向量与查重在后台任务中完成。",
+)
 def submit_review(
     knowledge_id: str,
     confirm_dedup_review: bool = Query(False),
@@ -3793,33 +4836,46 @@ def submit_review(
     if current_user.role != "super_admin" and item.created_by != current_user.username:
         raise HTTPException(403, "Only the creator can submit this knowledge item for review.")
     before_data = _knowledge_snapshot(item)
-    decision = _check_manual_deduplication(
-        db,
-        title=item.title,
-        subtitles=item.subtitles or [],
-        content=item.content,
-        scene_tags=item.applicable_scenes or [],
-        knowledge_origin=item.knowledge_origin,
-        business_type=item.business_type,
-        applicable_categories=getattr(item, "applicable_categories", None),
-        exclude_knowledge_id=item.id,
-        confirm_dedup_review=confirm_dedup_review,
-    )
-    item.status = KnowledgeStatus.REVIEW
-    item.deduplication_metadata = _deduplication_metadata(
-        decision,
-        confirmed_by=current_user.username if confirm_dedup_review else None,
-    )
-    if decision.embedding:
-        save_embedding(
+    # 提交审核同样是人工操作；已完成迁移时不在请求线程重复调用模型。
+    async_vector = _vector_task_table_available(db)
+    decision = None
+    if not async_vector:
+        decision = _check_manual_deduplication(
             db,
-            knowledge=item,
-            content_hash=decision.content_hash,
-            embedding=decision.embedding,
-            title_embedding=decision.title_embedding,
-            content_embedding=decision.content_embedding,
+            title=item.title,
+            subtitles=item.subtitles or [],
+            content=item.content,
+            scene_tags=item.applicable_scenes or [],
+            knowledge_origin=item.knowledge_origin,
+            business_type=item.business_type,
+            applicable_categories=getattr(item, "applicable_categories", None),
+            exclude_knowledge_id=item.id,
+            confirm_dedup_review=confirm_dedup_review,
         )
-    ensure_search_embeddings(db, item)
+    item.status = KnowledgeStatus.REVIEW
+    if async_vector:
+        _invalidate_knowledge_vectors(db, item.id)
+        _enqueue_manual_vectorization(
+            db,
+            item,
+            requested_by=current_user.username if confirm_dedup_review else None,
+            allow_duplicate_review=confirm_dedup_review,
+        )
+    else:
+        item.deduplication_metadata = _deduplication_metadata(
+            decision,
+            confirmed_by=current_user.username if confirm_dedup_review else None,
+        )
+        if decision and decision.embedding:
+            save_embedding(
+                db,
+                knowledge=item,
+                content_hash=decision.content_hash,
+                embedding=decision.embedding,
+                title_embedding=decision.title_embedding,
+                content_embedding=decision.content_embedding,
+            )
+        ensure_search_embeddings(db, item)
     changed_at = datetime.utcnow()
     item.updated_by = current_user.username
     item.updated_at = changed_at
@@ -3849,6 +4905,13 @@ def approve_knowledge(
         raise HTTPException(404, "知识条目不存在")
     if item.status != KnowledgeStatus.REVIEW:
         raise HTTPException(400, "只有审核中状态才能审批通过")
+    vector_gate = _vector_processing_gate(db, item)
+    if vector_gate:
+        code, message = vector_gate
+        raise HTTPException(
+            status_code=409,
+            detail={"code": code, "message": message},
+        )
     pending_matches = _pending_deduplication_matches(item)
     if pending_matches:
         raise HTTPException(
@@ -3935,6 +4998,19 @@ def batch_approve_knowledge(
                     status="failed",
                     error_code="STATUS_NOT_REVIEW",
                     error_message="只有待审核状态的知识可以批量通过。",
+                )
+            )
+            continue
+        vector_gate = _vector_processing_gate(db, item)
+        if vector_gate:
+            failed += 1
+            code, message = vector_gate
+            results.append(
+                KnowledgeBatchApproveResult(
+                    knowledge_id=knowledge_id,
+                    status="failed",
+                    error_code=code,
+                    error_message=message,
                 )
             )
             continue
@@ -4338,8 +5414,16 @@ def delete_media(knowledge_id: str, media_file: str, db: Session = Depends(get_d
         )
         db.delete(media)
         if content_changed:
-            ensure_embedding(db, item)
-            ensure_search_embeddings(db, item)
+            if _vector_task_table_available(db):
+                _invalidate_knowledge_vectors(db, item.id)
+                _enqueue_manual_vectorization(
+                    db,
+                    item,
+                    requested_by=current_user.username,
+                )
+            else:
+                ensure_embedding(db, item)
+                ensure_search_embeddings(db, item)
         db.commit()
     except Exception:
         db.rollback()

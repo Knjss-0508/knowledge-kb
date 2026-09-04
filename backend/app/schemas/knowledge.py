@@ -241,6 +241,10 @@ class KnowledgeResponse(BaseModel):
         description="Excel 待审核知识的校验备注与来源追溯，仅用于人工审核",
     )
     deduplication_metadata: dict[str, Any] = Field(default={}, description="提交审核时的查重结果")
+    vector_status: str = Field(
+        default="ready",
+        description="向量与查重处理状态: queued/running/completed/failed/ready",
+    )
     created_by: str = Field(description="创建人")
     updated_by: Optional[str] = Field(None, description="最近变更人")
     created_at: datetime = Field(description="创建时间")

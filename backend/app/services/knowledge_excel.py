@@ -187,7 +187,17 @@ LOCAL_MEDIA_EXPORT_PLACEHOLDER_PATTERN = re.compile(
 
 
 class KnowledgeExcelError(ValueError):
-    """工作簿级错误，整个文件无法继续解析。"""
+    """工作簿级错误，整个文件无法继续解析。
+
+    ``issues`` is optional structured context used by the upload preflight to
+    report row/field/code/reason details for workbook-level validation errors
+    (for example, model-configuration rows whose payload parser fails).  The
+    string form remains unchanged for existing callers and task history.
+    """
+
+    def __init__(self, message: str, *, issues: list[dict[str, Any]] | None = None):
+        super().__init__(message)
+        self.issues = list(issues or [])
 
 
 class KnowledgeExcelRowError(ValueError):
@@ -721,6 +731,8 @@ def parse_model_configuration_workbook(
     raw_records: list[dict[str, Any]] = []
     row_numbers: list[int] = []
     seen_model_key_rows: dict[tuple[str, str, str], int] = {}
+    validation_errors: list[dict[str, Any]] = []
+    data_row_count = 0
     category_columns_present = (
         "category_id" in indexes and "category_name" in indexes
     )
@@ -731,8 +743,9 @@ def parse_model_configuration_workbook(
             if index < len(values)
         ):
             continue
+        data_row_count += 1
         source_fields = _source_fields(header_row, values)
-        if len(raw_records) >= MAX_MODEL_CONFIGURATION_IMPORT_ROWS:
+        if data_row_count > MAX_MODEL_CONFIGURATION_IMPORT_ROWS:
             raise KnowledgeExcelError(
                 "机型配置信息单次最多导入 "
                 f"{MAX_MODEL_CONFIGURATION_IMPORT_ROWS} 条，请拆分文件后重试。"
@@ -749,9 +762,16 @@ def parse_model_configuration_workbook(
             else MODEL_CONFIGURATION_CATEGORY_NAME
         )
         if category_columns_present and (not category_id or not category_name):
-            raise KnowledgeExcelError(
-                f"机型配置信息第 {row_number} 行：品类ID和品类不能为空。"
+            validation_errors.append(
+                {
+                    "row": row_number,
+                    "title": _cell_text(value_at(values, "title")),
+                    "field": "品类ID/品类",
+                    "code": "MODEL_CONFIGURATION_FIELD_REQUIRED",
+                    "message": "品类ID和品类不能为空。",
+                }
             )
+            continue
 
         source_fields["来源工作表"] = sheet.title
         source_fields["来源行号"] = str(row_number)
@@ -774,9 +794,25 @@ def parse_model_configuration_workbook(
                 {"records": [raw_record]}
             )[0]
         except ModelConfigurationSyncError as exc:
-            raise KnowledgeExcelError(
-                f"机型配置信息第 {row_number} 行：{exc}"
-            ) from exc
+            reason = str(exc)
+            field = next(
+                (
+                    label
+                    for label in MODEL_CONFIGURATION_REQUIRED_HEADER_LABELS.values()
+                    if f"“{label}”" in reason
+                ),
+                "数据",
+            )
+            validation_errors.append(
+                {
+                    "row": row_number,
+                    "title": raw_record["title"],
+                    "field": field,
+                    "code": exc.code,
+                    "message": reason,
+                }
+            )
+            continue
 
         model_key = (
             record.category_id,
@@ -785,15 +821,38 @@ def parse_model_configuration_workbook(
         )
         previous_model_row = seen_model_key_rows.get(model_key)
         if previous_model_row is not None:
-            raise KnowledgeExcelError(
-                f"机型配置信息第 {row_number} 行：品类/品牌/型号ID组合 "
-                f"{record.category_id}/{record.brand_id}/{record.model_id} "
-                f"与第 {previous_model_row} 行重复。"
+            validation_errors.append(
+                {
+                    "row": row_number,
+                    "title": record.title,
+                    "field": "品类/品牌/型号ID",
+                    "code": "MODEL_CONFIGURATION_MODEL_ID_DUPLICATED",
+                    "message": (
+                        "组合 "
+                        f"{record.category_id}/{record.brand_id}/{record.model_id} "
+                        f"与第 {previous_model_row} 行重复。"
+                    ),
+                }
             )
+            continue
         seen_model_key_rows[model_key] = row_number
         raw_records.append(raw_record)
         row_numbers.append(row_number)
 
+    if validation_errors:
+        preview = "；".join(
+            f"第 {issue['row']} 行【{issue['field']}】：{issue['message']}"
+            for issue in validation_errors[:100]
+        )
+        suffix = (
+            f"；另有 {len(validation_errors) - 100} 条错误未展开。"
+            if len(validation_errors) > 100
+            else ""
+        )
+        raise KnowledgeExcelError(
+            "机型配置信息全表校验失败：" + preview + suffix,
+            issues=validation_errors,
+        )
     if not raw_records:
         raise KnowledgeExcelError("机型配置信息中没有可导入的数据行。")
 
@@ -1037,7 +1096,21 @@ def parse_knowledge_workbook(
     if regular_import_contains_knowledge_id:
         raise KnowledgeExcelError(
             "检测到非空“知识ID”列；该文件属于批量修改数据，"
-            "请切换到“批量修改”模式，系统不会按知识ID执行普通新增导入。"
+            "请切换到“批量修改”模式，系统不会按知识ID执行普通新增导入。",
+            issues=[
+                {
+                    "row": row.row_number,
+                    "title": row.title,
+                    "field": "知识ID",
+                    "code": "KNOWLEDGE_ID_NOT_ALLOWED",
+                    "message": (
+                        "普通新增导入不能填写知识ID；如需按ID覆盖，"
+                        "请切换到“批量修改”模式。"
+                    ),
+                }
+                for row in parsed_rows
+                if row.knowledge_id
+            ],
         )
     if duplicate_knowledge_ids:
         details = "；".join(
@@ -1046,7 +1119,27 @@ def parse_knowledge_workbook(
             in duplicate_knowledge_ids[:10]
         )
         raise KnowledgeExcelError(
-            f"同一 Excel 中知识ID不能重复：{details}。"
+            f"同一 Excel 中知识ID不能重复：{details}。",
+            issues=[
+                {
+                    "row": duplicate_row,
+                    "title": next(
+                        (
+                            row.title
+                            for row in parsed_rows
+                            if row.row_number == duplicate_row
+                        ),
+                        "",
+                    ),
+                    "field": "知识ID",
+                    "code": "KNOWLEDGE_ID_DUPLICATED",
+                    "message": (
+                        f"知识ID“{knowledge_id}”与第 {first_row} 行重复。"
+                    ),
+                }
+                for knowledge_id, first_row, duplicate_row
+                in duplicate_knowledge_ids
+            ],
         )
     return parsed_rows
 

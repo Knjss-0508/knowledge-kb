@@ -92,6 +92,7 @@
     .import-task-file{min-width:0;flex:1;color:#344054;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .import-task-meta{color:#86909c;white-space:nowrap}
     .import-task-error{max-width:300px;color:#c83827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .import-upload-error{max-width:min(780px,100%);overflow:visible;text-overflow:clip;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5}
     .import-task-actions{display:flex;align-items:center;gap:6px;margin-left:auto}
     .import-task-empty{padding:16px;text-align:center;color:#98a2b3;font-size:12px}
     .dlg.import-task-detail-dialog{width:min(920px,94vw)}
@@ -312,7 +313,10 @@
     .bar{border-radius:7px;border-color:var(--line);padding:16px 18px}.bar .tt{font-size:16px;color:var(--ink)}.filter-tabs,.tw{border-radius:7px;border-color:var(--line)}.filter-tabs{padding:12px 18px}.tab-btn{border-radius:4px}.tab-btn.on,.bp{background:var(--teal);border-color:var(--teal)}.tab-btn:hover,.bp:hover{background:#007f6b}.btn{border-radius:5px}.btn.bd:hover{border-color:var(--teal);color:var(--teal)}
     .review-metric-cards{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.review-metric-cards .card{min-height:116px;cursor:pointer}.review-metric-cards .card:after{width:82px;height:82px;border-width:15px}.review-metric-cards .card.active{border-color:var(--teal);box-shadow:0 0 0 2px rgba(0,155,131,.1)}.review-metric-cards .card:nth-child(2):after{border-color:#fff0d3}.review-metric-cards .card:nth-child(3):after{border-color:#d9f5ed}.review-metric-cards .card:nth-child(4):after{border-color:#ffe3dd}.review-metric-cards .card:nth-child(5):after{border-color:#dce8ff}.review-metric-cards .card:nth-child(6):after{border-color:#fff0ed}.review-metric-cards .card:nth-child(7):after{border-color:#e9e4ff}
     .review-toolbar{align-items:center}.review-search{width:min(360px,100%)}.review-check-label{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;cursor:pointer}.review-check-label input,.review-checkbox{accent-color:var(--teal)}.review-selected-note{font-size:12px;color:var(--muted)}.review-selected-note b{color:var(--teal)}.knowledge-review-batch-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:14px;padding:12px 16px;border:1px solid #d9ebe6;border-radius:7px;background:#f7fbfa}.knowledge-pagination,.knowledge-review-batch-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.knowledge-pagination{color:var(--muted);font-size:12px}.knowledge-pagination-summary b{color:var(--ink);font-weight:700}.knowledge-pagination-size{height:28px;padding:3px 7px}.knowledge-page-list{display:flex;align-items:center;gap:4px}.knowledge-page-btn,.knowledge-page-nav{min-width:28px;height:28px;padding:0 6px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--ink);font-size:13px;line-height:26px;cursor:pointer}.knowledge-page-btn:hover,.knowledge-page-nav:hover:not(:disabled){background:#edf7f5;color:var(--teal)}.knowledge-page-btn.on{border-color:var(--teal);background:#fff;color:var(--teal);font-weight:700}.knowledge-page-nav{padding:0;font-size:22px;font-weight:400;color:#667085}.knowledge-page-nav:disabled{color:#c9cdd4;cursor:not-allowed}.knowledge-page-ellipsis{min-width:20px;color:#98a2b3;text-align:center;font-weight:700}.knowledge-pagination-jump{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.knowledge-pagination-jump-input{width:58px;height:28px;padding:3px 6px;text-align:center;font-variant-numeric:tabular-nums}.knowledge-pagination-jump-btn{height:28px;padding:3px 8px}.knowledge-review-batch-actions{margin-left:auto}.knowledge-review-batch-actions .review-selected-note{margin-right:2px}.review-table{min-width:1330px}.review-title{max-width:360px}.review-title strong{display:block;color:#344054;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-title small{display:block;margin-top:4px;color:#98a2b3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-source{max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review-source a{color:var(--teal);text-decoration:none}.review-source a:hover{text-decoration:underline}.review-badge{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}.review-status-pending{background:#fff5df;color:#a96800}.review-status-ready{background:#e4f8f2;color:#007f6b}.review-status-rejected,.review-status-failed{background:#fff0ed;color:#c83827}.review-status-submitted{background:#e8f3ff;color:#245bdb}.review-status-unknown{background:#f2f4f7;color:#667085}.priority-flag{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:4px;background:#eeeafe;color:#644bd1;font-size:11px;font-weight:700}.review-human-summary{line-height:1.65;color:#475467}.review-human-summary b{color:#344054}.review-model-summary{line-height:1.65;color:#475467}.review-empty{padding:52px 18px!important;text-align:center;color:#98a2b3!important}.review-loading{opacity:.62;pointer-events:none}
-    .review-dialog{width:min(1160px,100%)}.review-dialog .dlg-b{padding:20px}.review-detail-grid{display:grid;grid-template-columns:minmax(0,.88fr) minmax(420px,1.12fr);gap:18px;align-items:start}.review-panel{background:#fff;border:1px solid var(--line);border-radius:7px;padding:18px}.review-panel-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:15px}.review-panel-title h4{font-size:14px;color:#344054}.review-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px}.review-meta-item{padding:10px 11px;border-radius:6px;background:#f7f8fa}.review-meta-item span{display:block;color:#98a2b3;font-size:11px;margin-bottom:3px}.review-meta-item strong{display:block;color:#344054;font-size:12px;overflow-wrap:anywhere}.review-content-preview{max-height:220px;overflow:auto;padding:12px;border:1px solid #edf0f2;border-radius:6px;background:#fafbfc;color:#475467;font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.review-model-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.review-model-item{padding:9px 10px;border:1px solid #edf0f2;border-radius:6px}.review-model-item span{display:block;color:#98a2b3;font-size:10px;margin-bottom:3px}.review-model-item b{font-size:12px;color:#344054}.review-model-reason{margin-top:10px;padding:10px 11px;border-left:3px solid var(--violet);background:#f7f5ff;color:#5d4ca7;font-size:12px;line-height:1.65}.review-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}.review-form-grid .fg{margin-bottom:0}.review-form-grid .span-2{grid-column:1/-1}.review-gate{margin-right:auto;display:flex;align-items:center;gap:8px;max-width:620px;color:#667085;font-size:12px;line-height:1.5}.review-gate .review-badge{flex-shrink:0}.review-readonly-note{padding:10px 12px;border-radius:6px;background:#e8f3ff;color:#245bdb;font-size:12px;margin-bottom:13px}.review-error{margin-top:6px;color:#c83827;font-size:11px}.btn:disabled{opacity:.55;cursor:not-allowed}.btn.bp:disabled:hover{background:var(--teal)}
+    .review-issue-cell{min-width:0}.review-issue-cell .tg{margin-bottom:4px}.review-issue-cell .import-validation-summary{max-width:240px;white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;line-height:1.45}.review-issue-cell .import-validation-summary.expanded{display:block;-webkit-line-clamp:unset;overflow:visible}.review-issue-toggle{padding:0;border:0;background:transparent;color:var(--teal);font-size:11px;line-height:1.4;cursor:pointer}.review-issue-toggle:hover{text-decoration:underline}.review-issue-toggle:focus-visible{outline:2px solid rgba(0,155,131,.28);outline-offset:2px;border-radius:3px}
+    .knowledge-batch-result{margin-top:10px;padding:12px 16px;border:1px solid #dce8e5;border-radius:7px;background:#fff}.knowledge-batch-result-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.knowledge-batch-result-title{color:#344054;font-size:13px;font-weight:700}.knowledge-batch-result-summary{color:#667085;font-size:12px}.knowledge-batch-result-summary b{color:var(--teal)}.knowledge-batch-failures{display:grid;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #edf0f2}.knowledge-batch-failure{display:flex;align-items:flex-start;gap:9px;padding:8px 9px;border-radius:5px;background:#fff7f5;color:#475467;font-size:12px;line-height:1.5}.knowledge-batch-failure-id{flex:0 0 auto;color:#344054;font-family:Consolas,"SFMono-Regular",monospace;font-weight:700}.knowledge-batch-failure-reason{min-width:0;flex:1;overflow-wrap:anywhere}.knowledge-batch-failure .btn{flex:0 0 auto}
+    .review-desk-mask{align-items:center;justify-content:center;padding:24px;background:rgba(19,36,51,.48)}.review-desk{width:min(760px,calc(100% - 48px));height:min(860px,calc(100vh - 48px));max-height:calc(100vh - 48px);display:flex;flex-direction:column;overflow:hidden;background:#fff;border-radius:10px;box-shadow:0 24px 64px rgba(16,24,40,.28)}.review-desk-h{min-height:72px;padding:0 20px;border-bottom:1px solid #e8edf0;display:flex;align-items:center;justify-content:space-between;gap:12px;background:#fff}.review-desk-h h3{position:relative;margin:0;padding-left:12px;color:#1d2939;font-size:17px}.review-desk-h h3:before{content:"";position:absolute;left:0;top:3px;bottom:3px;width:4px;border-radius:2px;background:var(--teal)}.review-desk-position{color:#667085;font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}.review-desk-b{min-height:0;flex:1;overflow-y:auto;padding:18px 20px;background:#fafbfc}.review-desk-loading{padding:70px 10px;color:#98a2b3;text-align:center;font-size:13px}.review-desk-overview{padding:14px;border:1px solid #e1e8e8;border-radius:8px;background:#fff}.review-desk-overview-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.review-desk-overview h4{margin:10px 0 6px;color:#1d2939;font-size:17px;line-height:1.45;overflow-wrap:anywhere}.review-desk-id{color:#98a2b3;font:12px/1.45 Consolas,"SFMono-Regular",monospace;overflow-wrap:anywhere}.review-desk-meta{display:flex;align-items:center;gap:7px;flex-wrap:wrap;color:#667085;font-size:11px}.review-desk-scope{display:flex;align-items:flex-start;gap:9px;margin-top:12px;padding-top:11px;border-top:1px solid #edf0f2;color:#667085;font-size:11px;line-height:1.55}.review-desk-scope-label{flex:0 0 auto;color:#98a2b3}.review-desk-scope-values{min-width:0;color:#475467;overflow-wrap:anywhere}.review-desk-section{margin-top:12px;padding:14px;border:1px solid #e1e8e8;border-radius:8px;background:#fff}.review-desk-section-title{display:flex;align-items:center;justify-content:space-between;gap:9px;margin-bottom:9px;color:#344054;font-size:13px;font-weight:700}.review-desk-issue{border-color:#f2d7c9;background:#fffaf7}.review-desk-issue.pending{border-color:#f1dfbd;background:#fffaf0}.review-desk-issue.failed{border-color:#ffc9c2;background:#fff7f5}.review-desk-issue-head{display:flex;align-items:center;justify-content:space-between;gap:9px}.review-desk-issue-text{max-height:78px;overflow:hidden;color:#475467;font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.review-desk-issue-text.expanded{max-height:none}.review-desk-content{max-height:300px;overflow:auto;padding:12px;border:1px solid #edf0f2;border-radius:6px;background:#fafbfc;color:#475467;font-size:12px;line-height:1.75;white-space:pre-wrap;overflow-wrap:anywhere}.review-desk-content-flow{display:flex;flex-direction:column;gap:12px;white-space:normal}.review-desk-content-empty{color:#98a2b3;text-align:center}.review-desk-content-text{white-space:pre-wrap;overflow-wrap:anywhere}.review-desk-content-text a{color:#1677ff;text-decoration:underline;text-underline-offset:2px}.review-desk-content-media{display:grid;grid-template-columns:minmax(220px,1fr) minmax(130px,.52fr);gap:12px;align-items:start;margin:0;padding:10px;border:1px solid #e1e8e8;border-radius:8px;background:#fff}.review-desk-content-media-frame{position:relative;display:block;width:100%;min-width:0;min-height:150px;aspect-ratio:16/9;padding:0;overflow:hidden;border:1px solid #d8e0e7;border-radius:7px;background:#f2f4f7;cursor:pointer}.review-desk-content-media-frame img,.review-desk-content-media-frame video{display:block;width:100%;height:100%;object-fit:contain;background:#f7f8fa}.review-desk-content-media-frame video{background:#101828}.review-desk-content-media-frame:focus-visible{outline:2px solid #20a68c;outline-offset:2px}.review-desk-content-media-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(16,24,40,.48);color:#fff;font-size:12px;font-weight:700;opacity:0;transition:opacity .16s ease;pointer-events:none}.review-desk-content-media-frame:hover .review-desk-content-media-overlay,.review-desk-content-media-frame:focus-visible .review-desk-content-media-overlay{opacity:1}.review-desk-content-media-error{display:flex;align-items:center;justify-content:center;width:100%;height:100%;padding:10px;background:#fff7e8;color:#c65b00;font-size:11px;line-height:1.4;text-align:center}.review-desk-content-media-missing{min-height:150px}.review-desk-content-media-caption{display:flex;min-width:0;flex-direction:column;gap:6px;padding:2px 2px 0;color:#667085;font-size:12px;line-height:1.6;overflow-wrap:anywhere}.review-desk-content-media-caption strong{color:#344054;font-size:13px}.review-desk-dedup-list{display:grid;gap:7px}.review-desk-dedup-item{padding:9px 10px;border:1px solid #eee7fb;border-radius:6px;background:#faf8ff;color:#475467;font-size:12px;line-height:1.55}.review-desk-dedup-item strong{color:#344054}.review-desk-dedup-item small{display:block;margin-top:3px;color:#7b6db2}.review-desk-action-message{margin-top:12px;padding:10px 11px;border-radius:6px;background:#fff5df;color:#8a5b00;font-size:12px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}.review-desk-f{min-height:78px;padding:10px 20px;border-top:1px solid #e8edf0;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:#fff}.review-desk-nav,.review-desk-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.review-desk-actions{margin-left:auto;justify-content:flex-end}.review-desk-f .btn:focus-visible{outline:2px solid rgba(0,155,131,.28);outline-offset:2px}
+    @media(max-width:760px){.review-desk-mask{padding:0}.review-desk{width:100%;height:100%;max-height:100vh;border-radius:0}.review-desk-h{min-height:62px;padding:0 14px}.review-desk-b{padding:14px}.review-desk-f{padding:10px 14px}.review-desk-actions{width:100%;margin-left:0}.review-desk-actions .btn{flex:1 1 auto}.review-desk-content-media{grid-template-columns:1fr}.review-desk-content-media-frame{min-height:132px}.knowledge-batch-failure{flex-wrap:wrap}.knowledge-batch-failure .btn{margin-left:auto}}
     .embedding-shell{display:flex;flex-direction:column;gap:16px}
     .embedding-hero{position:relative;overflow:hidden;display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,.6fr);gap:18px;padding:24px;border-radius:12px;background:linear-gradient(135deg,#102f38,#164e55 58%,#17685e);color:#fff;box-shadow:0 16px 36px rgba(17,65,70,.18)}
     .embedding-hero:after{content:"";position:absolute;width:280px;height:280px;right:-92px;top:-145px;border:46px solid rgba(255,255,255,.09);border-radius:50%;pointer-events:none}
@@ -346,6 +350,57 @@
     @media(max-width:760px){.import-review-grid{grid-template-columns:1fr}}
     .automation-control-card{margin-bottom:14px;padding:18px 20px;border:1px solid #dce7e5;border-radius:10px;background:linear-gradient(135deg,#fff 0%,#f8fcfb 100%);box-shadow:0 3px 12px rgba(16,24,40,.04)}.automation-control-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}.automation-control-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.automation-control-title .tt{font-size:16px}.automation-control-title .hint{max-width:760px;line-height:1.55}.automation-control-status{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;background:#edf7f5;color:#007f6b;font-size:12px;font-weight:700;white-space:nowrap}.automation-control-status.off{background:#f2f4f7;color:#667085}.automation-control-status.running{background:#fff4e5;color:#b54708}.automation-control-row{display:flex;align-items:center;gap:12px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}.automation-action-row{margin-top:12px;padding-top:12px;border-top:1px solid #edf2f1}.automation-date-field{display:flex;align-items:center;gap:7px;color:#475467;font-size:12px;white-space:nowrap;flex:0 0 auto}.automation-date-field .inp{width:148px}.automation-schedule-field{display:flex;align-items:center;gap:7px;color:#475467;font-size:12px;white-space:nowrap;flex:0 0 auto}.automation-action-group{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;overflow-x:auto}.automation-action-group .btn{min-width:112px;flex:0 0 auto}.automation-action-group .btn.start{border-color:#0f9f88;background:#0f9f88;color:#fff}.automation-action-group .btn.start:hover:not(:disabled){background:#087e6c}.automation-action-group .btn.stop{border-color:#e7b8b1;background:#fff6f4;color:#c43f2f}.automation-action-group .btn.stop:hover:not(:disabled){background:#ffede9}.automation-action-group .btn:disabled{opacity:.5;cursor:not-allowed}.automation-running-hint{margin-top:10px;color:#b54708}
     @media(max-width:1120px){.automation-control-row{flex-wrap:wrap}.automation-action-group{margin-left:0}}
+
+    /* 候选价值复核：恢复双栏详情布局，避免来源、模型和编辑表单被挤成一列。 */
+    .review-dialog{width:min(1160px,100%)}
+    .review-dialog .dlg-b{padding:20px}
+    .review-detail-grid{display:grid;grid-template-columns:minmax(0,.88fr) minmax(0,1.12fr);gap:18px;align-items:start}
+    .review-panel{background:#fff;border:1px solid var(--line);border-radius:7px;padding:18px}
+    .review-panel-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:15px}
+    .review-panel-title h4{font-size:14px;color:#344054}
+    .review-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px}
+    .review-meta-item{padding:10px 11px;border-radius:6px;background:#f7f8fa}
+    .review-meta-item span{display:block;color:#98a2b3;font-size:11px;margin-bottom:3px}
+    .review-meta-item strong{display:block;color:#344054;font-size:12px;overflow-wrap:anywhere}
+    .review-content-preview{max-height:220px;overflow:auto;padding:12px;border:1px solid #edf0f2;border-radius:6px;background:#fafbfc;color:#475467;font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
+    .review-model-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}
+    .review-model-item{padding:9px 10px;border:1px solid #edf0f2;border-radius:6px}
+    .review-model-item span{display:block;color:#98a2b3;font-size:10px;margin-bottom:3px}
+    .review-model-item b{font-size:12px;color:#344054}
+    .review-model-reason{margin-top:10px;padding:10px 11px;border-left:3px solid var(--violet);background:#f7f5ff;color:#5d4ca7;font-size:12px;line-height:1.65}
+    .review-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}
+    .review-form-grid .fg{margin-bottom:0}
+    .review-form-grid .span-2{grid-column:1/-1}
+    .review-gate{margin-right:auto;display:flex;align-items:center;gap:8px;max-width:620px;color:#667085;font-size:12px;line-height:1.5}
+    .review-gate .review-badge{flex-shrink:0}
+    .review-readonly-note{padding:10px 12px;border-radius:6px;background:#e8f3ff;color:#245bdb;font-size:12px;margin-bottom:13px}
+    .review-error{margin-top:6px;color:#c83827;font-size:11px}
+    @media(min-width:900px){.review-dialog .review-detail-grid{grid-template-columns:minmax(300px,.88fr) minmax(420px,1.12fr)}}
+
+    /* 大屏下放大审核工作台，内容按实际高度展开，避免正文和图片被缩在小画布里。 */
+    .review-desk{width:min(1440px,calc(100% - 64px));height:auto;max-height:calc(100vh - 48px);display:flex;flex-direction:column;overflow:hidden;background:#fff;border-radius:12px;box-shadow:0 24px 64px rgba(16,24,40,.28)}
+    .review-desk-h{min-height:84px;padding:0 30px}
+    .review-desk-h h3{font-size:20px}
+    .review-desk-position{font-size:13px}
+    .review-desk-b{flex:0 1 auto;max-height:calc(100vh - 210px);padding:28px 30px}
+    .review-desk-overview,.review-desk-section{padding:22px}
+    .review-desk-overview h4{font-size:21px}
+    .review-desk-meta,.review-desk-scope{font-size:13px}
+    .review-desk-scope{gap:12px}
+    .review-desk-section-title{margin-bottom:12px;font-size:15px}
+    .review-desk-issue-text{max-height:120px;font-size:14px;line-height:1.75}
+    .review-desk-content{max-height:min(560px,56vh);padding:18px;font-size:14px;line-height:1.8}
+    .review-desk-content-flow{gap:16px}
+    .review-desk-content-media{grid-template-columns:minmax(520px,1fr) minmax(280px,.5fr);gap:22px;padding:18px}
+    .review-desk-content-media-frame{min-height:300px}
+    .review-desk-content-media-caption{font-size:13px;line-height:1.7}
+    .review-desk-content-media-caption strong{font-size:14px}
+    .review-desk-dedup-item{padding:12px 14px;font-size:13px;line-height:1.65}
+    .review-desk-action-message{font-size:13px}
+    .review-desk-f{min-height:92px;padding:14px 30px}
+    .review-desk-f .btn{min-height:36px;padding:6px 14px;font-size:13px}
+    @media(min-width:761px) and (max-width:1040px){.review-desk{width:calc(100% - 32px)}.review-desk-b{padding:20px}.review-desk-overview,.review-desk-section{padding:18px}.review-desk-content-media{grid-template-columns:1fr}.review-desk-content-media-frame{min-height:240px}}
+    @media(max-width:760px){.review-desk{width:100%;height:100%;max-height:100vh;border-radius:0}.review-desk-h{min-height:62px;padding:0 14px}.review-desk-h h3{font-size:17px}.review-desk-position{font-size:12px}.review-desk-b{flex:1;max-height:none;padding:14px}.review-desk-overview,.review-desk-section{padding:14px}.review-desk-overview h4{font-size:17px}.review-desk-meta,.review-desk-scope{font-size:11px}.review-desk-section-title{margin-bottom:9px;font-size:13px}.review-desk-issue-text{max-height:78px;font-size:12px;line-height:1.65}.review-desk-content{max-height:300px;padding:12px;font-size:12px;line-height:1.75}.review-desk-content-media{grid-template-columns:1fr;gap:12px;padding:10px}.review-desk-content-media-frame{min-height:132px}.review-desk-content-media-caption{font-size:12px;line-height:1.6}.review-desk-content-media-caption strong{font-size:13px}.review-desk-dedup-item{padding:9px 10px;font-size:12px;line-height:1.55}.review-desk-action-message{font-size:12px}.review-desk-f{min-height:78px;padding:10px 14px}.review-desk-f .btn{min-height:0;padding:3px 8px;font-size:11px}.review-desk-actions{width:100%;margin-left:0}.review-desk-actions .btn{flex:1 1 auto}}
   </style>
 </head>
 <body>
@@ -488,6 +543,7 @@
       <input ref="knowledgeImportFile" type="file" accept=".xlsx" style="display:none" @change="importKnowledgeExcel">
       <button class="btn bd" v-if="canAccessExcelTasks()" @click="toggleImportHistory">{{showImportHistory?'收起 Excel 记录':'Excel 记录'}}</button>
       <button class="btn bd" v-if="can('knowledge:view')" @click="exportKnowledgeExcel">导出知识</button>
+      <button class="btn bs" v-if="can('knowledge:approve') && f.status==='review' && knowledgePagination.total" @click="openReviewDesk()">进入审核工作台</button>
       <button class="btn bp" v-if="can('knowledge:create')" @click="openNew">+ 新建知识</button>
     </div>
     <div class="import-task-panel" :class="importTaskPanelTone()" v-if="canAccessExcelTasks() && (importing || importUploadError || visibleImportTasks().length || showImportHistory)">
@@ -502,7 +558,7 @@
         </div>
         <div class="import-task-row" v-if="importUploadError">
           <span class="tg tg-x">上传失败</span>
-          <span class="import-task-error" :title="importUploadError">{{importUploadError}}</span>
+          <span class="import-task-error import-upload-error" :title="importUploadError">{{importUploadError}}</span>
           <span class="import-task-actions"><button class="btn bd bsm" @click="dismissImportUploadError">关闭提醒</button></span>
         </div>
         <div class="import-task-row" v-for="task in visibleImportTasks()" :key="task.id">
@@ -604,10 +660,11 @@
             <td><span class="tg tg-l">{{knowledgeOriginLabel(r.knowledge_origin)}}</span></td>
             <td><div class="status-cell"><span class="tg" :class="{'tg-d':r.status==='draft','tg-r':r.status==='review','tg-p':r.status==='published','tg-x':r.status==='deprecated'}">{{sl(r.status)}}</span><span class="tg tg-r" v-if="r.status==='review' && r.deduplication_metadata && r.deduplication_metadata.action==='review_duplicate'" title="检测到语义相近的已有知识，请在审核时确认是否合并">疑似重复 {{dedupMatchIds(r)}}</span></div></td>
             <td class="import-validation-cell">
-              <template v-if="r.status==='review' && validationRemark(r)">
-                <span class="tg tg-r">{{validationRemarkCategory(r)}}</span>
-                <div class="import-validation-summary" :title="validationRemark(r)">{{validationRemarkSummary(r)}}</div>
-              </template>
+              <div class="review-issue-cell" v-if="r.status==='review' && reviewIssueDetail(r)">
+                <span class="tg" :class="reviewIssueTone(r)">{{reviewIssueLabel(r)}}</span>
+                <div class="import-validation-summary" :class="{expanded:isReviewIssueExpanded(r)}" :title="reviewIssueDetail(r)">{{reviewIssueSummary(r)}}</div>
+                <button type="button" class="review-issue-toggle" @click.stop="toggleReviewIssue(r)">{{isReviewIssueExpanded(r)?'收起原因':'查看原因'}}</button>
+              </div>
               <span v-else style="color:#c9cdd4">-</span>
             </td>
             <td style="color:#86909c">{{r.created_by}}</td>
@@ -617,7 +674,8 @@
               <button class="btn bd bsm" v-if="canEditKnowledge(r)" @click="openEdit(r)">编辑</button>
               <button class="btn bd bsm" v-if="r.status==='published' || r.status==='deprecated'" @click="openChangeLogs(r)">变更日志</button>
               <button class="btn bw bsm" v-if="can('knowledge:submit') && r.status==='draft'" @click="act(r,'submit-review')">提交发布审核</button>
-              <button class="btn bs bsm" v-if="can('knowledge:approve') && r.status==='review'" @click="openReview(r)">发布审核</button>
+              <button class="btn bs bsm" v-if="can('knowledge:approve') && r.status==='review'" @click="openReviewDesk(r)">快速审核</button>
+              <button class="btn bd bsm" v-if="can('knowledge:approve') && r.status==='review'" @click="openReview(r)">完整审核</button>
               <button class="btn bs bsm" v-if="can('knowledge:deprecate') && r.knowledge_origin!=='model_configuration' && r.status==='deprecated'" @click="act(r,'restore')">重新启用</button>
               <button class="btn br bsm" v-if="can('knowledge:deprecate') && r.knowledge_origin!=='model_configuration' && r.status!=='deprecated'" @click="act(r,'deprecate')">废弃</button>
             </td>
@@ -646,6 +704,20 @@
         <button class="btn bd" @click="selectAllPendingKnowledge" :disabled="batchApproving">全选所有待审核</button>
         <button class="btn bp" @click="batchApproveSelectedKnowledge" :disabled="batchApproving||!knowledgeReviewSelection.length">{{batchApproving?'审核中...':'一键审核通过'}}</button>
       </div>
+    </div>
+    <div class="knowledge-batch-result" v-if="knowledgeBatchResult.open">
+      <div class="knowledge-batch-result-head">
+        <div><span class="knowledge-batch-result-title">本次批量审核结果</span><span class="knowledge-batch-result-summary"> · 通过 <b>{{knowledgeBatchResult.approved}}</b> 条 · 跳过 <b>{{knowledgeBatchResult.reused}}</b> 条 · 需处理 <b>{{knowledgeBatchResult.failed}}</b> 条</span></div>
+        <button type="button" class="btn bd bsm" @click="closeKnowledgeBatchResult">收起结果</button>
+      </div>
+      <div class="knowledge-batch-failures" v-if="knowledgeBatchFailureResults().length">
+        <div class="knowledge-batch-failure" v-for="result in knowledgeBatchFailureResults()" :key="'batch-failure-'+result.knowledge_id">
+          <span class="knowledge-batch-failure-id">{{result.knowledge_id || '-'}}</span>
+          <span class="knowledge-batch-failure-reason">{{result.error_message || result.error_code || '审核未完成'}}</span>
+          <button type="button" class="btn bd bsm" v-if="result.knowledge_id" @click="openReviewDeskById(result.knowledge_id)">处理</button>
+        </div>
+      </div>
+      <div class="hint" v-else style="margin-top:8px">本次没有需要人工补处理的条目。</div>
     </div>
   </div>
   <div class="mn" v-if="view==='candidateReviews' && can('knowledge:submit')">
@@ -1318,6 +1390,85 @@
     </div>
   </div>
 
+  <!-- 快速审核工作台 -->
+  <div class="mask review-desk-mask" v-if="reviewDesk.open" @click.self="closeReviewDesk">
+    <aside class="review-desk" role="dialog" aria-modal="true" aria-labelledby="review-desk-title">
+      <div class="review-desk-h">
+        <div><h3 id="review-desk-title">审核工作台</h3><span class="review-desk-position">{{reviewDeskPositionLabel()}}</span></div>
+        <button type="button" class="dlg-x" aria-label="关闭审核工作台" @click="closeReviewDesk" :disabled="reviewDesk.saving">&times;</button>
+      </div>
+      <div class="review-desk-b">
+        <div class="review-desk-loading" v-if="reviewDesk.loading">正在加载待审核知识...</div>
+        <div class="review-desk-loading" v-else-if="!reviewDesk.detail">{{reviewDesk.detailError || '暂无可审核知识'}}</div>
+        <template v-else>
+          <section class="review-desk-overview">
+            <div class="review-desk-overview-top">
+              <div class="review-desk-meta"><span class="tg tg-r">{{sl(reviewDesk.detail.status)}}</span><span class="tg tg-l">{{knowledgeOriginLabel(reviewDesk.detail.knowledge_origin)}}</span></div>
+              <span class="review-desk-id">{{reviewDesk.detail.id}}</span>
+            </div>
+            <h4>{{reviewDesk.detail.title}}</h4>
+            <div class="review-desk-meta">创建人：{{reviewDesk.detail.created_by || '系统'}} · 最近变更：{{reviewDesk.detail.updated_by || '—'}}</div>
+            <div class="review-desk-scope" v-if="reviewDeskScopeText(reviewDesk.detail)"><span class="review-desk-scope-label">适用范围</span><span class="review-desk-scope-values">{{reviewDeskScopeText(reviewDesk.detail)}}</span></div>
+          </section>
+
+          <section class="review-desk-section review-desk-issue" :class="reviewIssueTone(reviewDesk.detail)==='tg-l'?'pending':(reviewIssueTone(reviewDesk.detail)==='tg-x'?'failed':'')" v-if="reviewIssueDetail(reviewDesk.detail)">
+            <div class="review-desk-section-title review-desk-issue-head"><span><span class="tg" :class="reviewIssueTone(reviewDesk.detail)">{{reviewIssueLabel(reviewDesk.detail)}}</span></span><button type="button" class="review-issue-toggle" @click="reviewDesk.issueExpanded=!reviewDesk.issueExpanded">{{reviewDesk.issueExpanded?'收起原因':'展开原因'}}</button></div>
+            <div class="review-desk-issue-text" :class="{expanded:reviewDesk.issueExpanded}">{{reviewIssueDetail(reviewDesk.detail)}}</div>
+          </section>
+
+          <section class="review-desk-section">
+            <div class="review-desk-section-title"><span>知识正文</span><button type="button" class="btn bd bsm" @click="openReviewFromDesk" :disabled="reviewDesk.detailFallback">进入完整审核</button></div>
+            <div class="review-desk-content">
+              <div v-if="!reviewDesk.contentBlocks.length" class="review-desk-content-empty">暂无正文</div>
+              <div v-else class="review-desk-content-flow">
+                <template v-for="(block,blockIndex) in reviewDesk.contentBlocks" :key="'review-desk-content-'+blockIndex">
+                  <div v-if="block.type==='text'" class="review-desk-content-text" v-html="linkifyText(block.value)"></div>
+                  <figure v-else-if="block.type==='image' || block.type==='video'" class="review-desk-content-media">
+                    <button v-if="block.url" type="button" class="review-desk-content-media-frame" :aria-label="block.type==='image'?'查看图片':'播放视频'" @click="showFull(block.url,block.type==='video')">
+                      <img v-if="block.type==='image' && !block.load_error" :src="block.url" :alt="block.alt || '图片预览'" loading="lazy" decoding="async" referrerpolicy="no-referrer" @load="block.load_error=false" @error="reviewDeskMediaError(block)">
+                      <video v-else-if="block.type==='video' && !block.load_error" :src="block.url" muted preload="metadata" playsinline controlsList="nodownload nofullscreen noremoteplayback" disablePictureInPicture @loadedmetadata="block.load_error=false" @error="reviewDeskMediaError(block)"></video>
+                      <span v-if="block.load_error" class="review-desk-content-media-error">{{block.type==='image'?'图片':'视频'}}加载失败</span>
+                      <span v-else class="review-desk-content-media-overlay">{{block.type==='image'?'查看图片':'播放视频'}}</span>
+                    </button>
+                    <div v-else class="review-desk-content-media-error review-desk-content-media-missing">未找到{{block.type==='image'?'图片':'视频'}}地址</div>
+                    <figcaption class="review-desk-content-media-caption">
+                      <strong v-if="block.alt">{{block.alt}}</strong>
+                      <span v-if="block.caption">{{block.caption}}</span>
+                      <span v-if="!block.alt && !block.caption">{{block.type==='image'?'图片内容':'视频内容'}}</span>
+                      <a v-if="block.external_url" class="content-media-link" :href="block.external_url" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">打开外链</a>
+                    </figcaption>
+                  </figure>
+                </template>
+              </div>
+            </div>
+          </section>
+
+          <section class="review-desk-section review-desk-issue" v-if="reviewDeskVisibleDedupMatches().length">
+            <div class="review-desk-section-title"><span>查重命中</span><span class="hint">需对比确认后才能发布</span></div>
+            <div class="review-desk-dedup-list">
+              <div class="review-desk-dedup-item" v-for="match in reviewDeskVisibleDedupMatches()" :key="'desk-dedup-'+match.knowledge_id"><strong>{{match.knowledge_id}} · {{match.title}}</strong><small>{{dedupMatchDescription(match)}} · 综合 {{formatSimilarity(match.similarity)}}</small></div>
+            </div>
+          </section>
+          <div class="review-desk-action-message" v-if="reviewDesk.detailFallback">详情加载失败，当前仅展示列表摘要，暂不能修改或发布。请刷新后重试。{{reviewDesk.detailError ? '（' + reviewDesk.detailError + '）' : ''}}</div>
+          <div class="review-desk-action-message" v-else-if="reviewDesk.actionMessage">{{reviewDesk.actionMessage}}</div>
+        </template>
+      </div>
+      <div class="review-desk-f">
+        <div class="review-desk-nav">
+          <button type="button" class="btn bd bsm" @click="navigateReviewDesk(-1)" :disabled="reviewDesk.saving || reviewDesk.loading || !canNavigateReviewDesk(-1)">上一条</button>
+          <button type="button" class="btn bd bsm" @click="navigateReviewDesk(1)" :disabled="reviewDesk.saving || reviewDesk.loading || !canNavigateReviewDesk(1)">下一条</button>
+        </div>
+        <div class="review-desk-actions">
+          <button type="button" class="btn bd bsm" @click="reviewDeskSkip" :disabled="reviewDesk.saving || reviewDesk.loading">跳过</button>
+          <button type="button" class="btn bd bsm" @click="reviewDeskEdit" :disabled="reviewDesk.saving || reviewDesk.loading || !reviewDesk.detail || reviewDesk.detailFallback">需要修改</button>
+          <button type="button" class="btn br bsm" v-if="can('knowledge:deprecate') && reviewDesk.detail && reviewDesk.detail.knowledge_origin!=='model_configuration'" @click="deprecateQuickReview(true)" :disabled="reviewDesk.saving || reviewDesk.loading || !reviewDesk.detail || reviewDesk.detailFallback">废弃并下一条</button>
+          <button type="button" class="btn bd bsm" @click="approveQuickReview(false)" :disabled="reviewDesk.saving || reviewDesk.loading || !reviewDesk.detail || reviewDesk.detailFallback || reviewDeskPublishBlocked()">通过并关闭</button>
+          <button type="button" class="btn bp bsm" @click="approveQuickReview(true)" :disabled="reviewDesk.saving || reviewDesk.loading || !reviewDesk.detail || reviewDesk.detailFallback || reviewDeskPublishBlocked()">{{reviewDesk.saving?'处理中...':'通过并下一条'}}</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
   <!-- 编辑弹窗 -->
   <div class="mask" v-if="dlg" @click.self="closeDlg">
     <div class="dlg" :class="{'view-only':viewOnly}">
@@ -1856,7 +2007,10 @@ Vue.createApp({
       legacyAnswerHubPaths: {overview:'/answer-hub/overview',control:'/answer-hub/control',runs:'/answer-hub/runs'},
       changeLogs: {item:null, entries:[]},
       knowledgeReviewSelection: [],
+      reviewIssueExpandedIds: [],
       batchApproving: false,
+      knowledgeBatchResult: {open:false, approved:0, reused:0, failed:0, results:[], completedAt:''},
+      reviewDesk: {open:false, loading:false, saving:false, requestId:0, items:[], currentIndex:-1, detail:null, contentBlocks:[], detailError:'', detailFallback:false, issueExpanded:false, actionMessage:''},
       f: {status:'', knowledge_origin:'', business_type:'', category_id:'', applicableCategoryIds:[], brandIds:[], modelIds:[], kw:''},
       appliedKeyword: '',
       filterDrop: '',
@@ -2185,6 +2339,316 @@ Vue.createApp({
       this.knowledgePagination.page = 1;
       this.load();
     },
+    reviewIssueDetail: function(item) {
+      if (!item || item.status !== 'review') return '';
+      var parts = [];
+      var validation = this.validationRemark(item);
+      if (validation) parts.push(validation);
+      var metadata = item.deduplication_metadata || {};
+      var vectorStatus = String(item.vector_status || metadata.vector_status || '');
+      if (vectorStatus === 'queued' || vectorStatus === 'running') {
+        parts.push('向量与查重正在后台处理，完成后才可发布。');
+      } else if (vectorStatus === 'failed') {
+        parts.push('向量与查重后台处理失败：' + String(metadata.vector_error || '请重新保存知识后重试。'));
+      }
+      var matches = this.visibleDedupMatches(metadata);
+      if (metadata.action === 'block_duplicate') {
+        parts.push('检测到重复知识' + (matches.length ? '：命中 ' + matches.slice(0, 3).map(function(match) { return match.knowledge_id; }).join('、') : '。'));
+      } else if (metadata.action === 'review_duplicate') {
+        parts.push('检测到疑似重复知识' + (matches.length ? '：命中 ' + matches.slice(0, 3).map(function(match) { return match.knowledge_id; }).join('、') : '，需对比确认。'));
+      }
+      return parts.join('\n');
+    },
+    reviewIssueLabel: function(item) {
+      var metadata = item && item.deduplication_metadata || {};
+      var vectorStatus = String(item && item.vector_status || metadata.vector_status || '');
+      if (vectorStatus === 'queued' || vectorStatus === 'running') return '向量处理中';
+      if (vectorStatus === 'failed') return '向量处理失败';
+      if (metadata.action === 'block_duplicate') return '重复风险';
+      if (metadata.action === 'review_duplicate') return '疑似重复';
+      if (this.validationRemark(item)) return this.validationRemarkCategory(item);
+      return '待处理';
+    },
+    reviewIssueTone: function(item) {
+      var metadata = item && item.deduplication_metadata || {};
+      var vectorStatus = String(item && item.vector_status || metadata.vector_status || '');
+      if (vectorStatus === 'queued' || vectorStatus === 'running') return 'tg-l';
+      if (vectorStatus === 'failed') return 'tg-x';
+      return 'tg-r';
+    },
+    reviewIssueSummary: function(item) {
+      return this.reviewIssueDetail(item);
+    },
+    isReviewIssueExpanded: function(item) {
+      return !!item && this.reviewIssueExpandedIds.indexOf(item.id) !== -1;
+    },
+    toggleReviewIssue: function(item) {
+      if (!item || !item.id) return;
+      var index = this.reviewIssueExpandedIds.indexOf(item.id);
+      if (index === -1) this.reviewIssueExpandedIds.push(item.id);
+      else this.reviewIssueExpandedIds.splice(index, 1);
+    },
+    reviewDeskScopeText: function(item) {
+      if (!item) return '';
+      function valueText(value) {
+        if (value && typeof value === 'object') {
+          return String(value.name || value.label || value.title || value.value || value.id || '').trim();
+        }
+        return String(value || '').trim();
+      }
+      function groupText(values) {
+        return (Array.isArray(values) ? values : []).map(valueText).filter(Boolean).join('、');
+      }
+      var parts = [];
+      var categories = groupText(item.applicable_categories);
+      var brands = groupText(item.applicable_brands);
+      var models = groupText(item.applicable_models);
+      if (categories) parts.push('类目：' + categories);
+      if (brands) parts.push('品牌：' + brands);
+      if (models) parts.push('机型：' + models);
+      return parts.join(' · ');
+    },
+    reviewDeskVisibleDedupMatches: function() {
+      var detail = this.reviewDesk && this.reviewDesk.detail;
+      return detail ? this.visibleDedupMatches(detail.deduplication_metadata || {}) : [];
+    },
+    reviewDeskPositionLabel: function() {
+      var total = this.reviewDesk && this.reviewDesk.items ? this.reviewDesk.items.length : 0;
+      var index = this.reviewDesk ? Number(this.reviewDesk.currentIndex) : -1;
+      if (!isFinite(index)) index = -1;
+      return total && index >= 0 ? '第 ' + (index + 1) + ' / ' + total + ' 条' : '暂无待审核条目';
+    },
+    canNavigateReviewDesk: function(direction) {
+      var items = this.reviewDesk && this.reviewDesk.items || [];
+      var currentIndex = Number(this.reviewDesk && this.reviewDesk.currentIndex);
+      if (!isFinite(currentIndex)) currentIndex = -1;
+      var target = currentIndex + Number(direction || 0);
+      return target >= 0 && target < items.length;
+    },
+    reviewDeskPublishBlocked: function() {
+      var detail = this.reviewDesk && this.reviewDesk.detail;
+      if (!detail || this.reviewDesk.detailFallback) return true;
+      var metadata = detail.deduplication_metadata || {};
+      var vectorStatus = String(detail.vector_status || metadata.vector_status || '');
+      if (['pending','queued','running','failed'].indexOf(vectorStatus) !== -1) return true;
+      if (metadata.action === 'block_duplicate') return true;
+      if (metadata.action !== 'review_duplicate') return false;
+      var matches = this.visibleDedupMatches(metadata);
+      if (!matches.length) return true;
+      var feedback = Array.isArray(metadata.feedback) ? metadata.feedback : [];
+      return matches.some(function(match) {
+        return !feedback.some(function(entry) {
+          return entry && entry.matched_knowledge_id === match.knowledge_id
+            && entry.verdict === 'different'
+            && String(entry.reason || '').trim();
+        });
+      });
+    },
+    closeReviewDesk: function(force) {
+      if (this.reviewDesk.saving && !force) return;
+      this.reviewDesk.requestId += 1;
+      this.reviewDesk.open = false;
+      this.reviewDesk.loading = false;
+      this.reviewDesk.saving = false;
+      this.reviewDesk.items = [];
+      this.reviewDesk.currentIndex = -1;
+      this.reviewDesk.detail = null;
+      this.reviewDesk.contentBlocks = [];
+      this.reviewDesk.detailError = '';
+      this.reviewDesk.detailFallback = false;
+      this.reviewDesk.issueExpanded = false;
+      this.reviewDesk.actionMessage = '';
+    },
+    openReviewDeskById: function(knowledgeId) {
+      var id = String(knowledgeId || '').trim();
+      if (!id) return;
+      var item = this.list.find(function(row) { return row && row.id === id; });
+      this.openReviewDesk(item || {id:id, status:'review', title:'待加载知识'});
+    },
+    openReviewDesk: function(item) {
+      var self = this;
+      if (!this.can('knowledge:approve')) { alert('没有审核权限'); return; }
+      var seed = item || this.list.find(function(row) { return row && row.status === 'review'; });
+      if (!seed || !seed.id) { alert('当前筛选下没有待审核知识'); return; }
+      var requestId = Number(this.reviewDesk.requestId || 0) + 1;
+      this.reviewDesk = {open:true, loading:true, saving:false, requestId:requestId, items:[], currentIndex:-1, detail:null, contentBlocks:[], detailError:'', detailFallback:false, issueExpanded:false, actionMessage:''};
+      var params = this.knowledgeFilterParams();
+      params.delete('status');
+      var suffix = params.toString();
+      return fetch(API + '/knowledge/review:selection' + (suffix ? '?' + suffix : ''), {headers:self.authHeaders()})
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(typeof data.detail === 'object' ? (data.detail.message || '加载待审核队列失败') : (data.detail || '加载待审核队列失败'));
+            return data;
+          });
+        })
+        .then(function(data) {
+          if (requestId !== self.reviewDesk.requestId) return null;
+          var ids = Array.isArray(data.knowledge_ids) ? data.knowledge_ids.filter(Boolean) : [];
+          if (ids.indexOf(seed.id) === -1) ids.unshift(seed.id);
+          var rowsById = {};
+          self.list.forEach(function(row) { if (row && row.id) rowsById[row.id] = row; });
+          self.reviewDesk.items = ids.map(function(id) { return rowsById[id] || {id:id, status:'review', title:'待加载知识'}; });
+          self.reviewDesk.currentIndex = Math.max(0, ids.indexOf(seed.id));
+          return self.loadReviewDeskDetail(self.reviewDesk.items[self.reviewDesk.currentIndex], requestId);
+        })
+        .catch(function(error) {
+          if (requestId !== self.reviewDesk.requestId) return;
+          self.reviewDesk.items = [seed];
+          self.reviewDesk.currentIndex = 0;
+          self.reviewDesk.actionMessage = '待审核队列加载失败，当前仅打开所选条目。';
+          return self.loadReviewDeskDetail(seed, requestId).then(function() {
+            if (requestId === self.reviewDesk.requestId && !self.reviewDesk.detail) {
+              self.reviewDesk.detailError = error.message || '加载审核队列失败';
+            }
+          });
+        });
+    },
+    loadReviewDeskDetail: function(row, requestId) {
+      var self = this;
+      if (!row || !row.id || requestId !== this.reviewDesk.requestId) return Promise.resolve();
+      this.reviewDesk.loading = true;
+      this.reviewDesk.detail = null;
+      this.reviewDesk.contentBlocks = [];
+      this.reviewDesk.detailError = '';
+      this.reviewDesk.issueExpanded = false;
+      return fetch(API + '/knowledge/' + encodeURIComponent(row.id), {headers:self.authHeaders()})
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(typeof data.detail === 'object' ? (data.detail.message || '加载知识详情失败') : (data.detail || '加载知识详情失败'));
+            return data;
+          });
+        })
+        .then(function(data) {
+          if (requestId !== self.reviewDesk.requestId) return;
+          self.reviewDesk.detail = data;
+          self.reviewDesk.contentBlocks = self.reviewDeskContentBlocks(data.content, data.media);
+          self.reviewDesk.loading = false;
+          self.reviewDesk.detailFallback = false;
+        })
+        .catch(function(error) {
+          if (requestId !== self.reviewDesk.requestId) return;
+          self.reviewDesk.loading = false;
+          self.reviewDesk.detail = row;
+          self.reviewDesk.contentBlocks = self.reviewDeskContentBlocks(row && row.content, row && row.media);
+          self.reviewDesk.detailError = error.message || '加载知识详情失败';
+          self.reviewDesk.detailFallback = true;
+        });
+    },
+    navigateReviewDesk: function(direction) {
+      if (!this.canNavigateReviewDesk(direction) || this.reviewDesk.saving) return;
+      var target = this.reviewDesk.currentIndex + Number(direction || 0);
+      this.reviewDesk.currentIndex = target;
+      this.loadReviewDeskDetail(this.reviewDesk.items[target], this.reviewDesk.requestId);
+    },
+    reviewDeskSkip: function() {
+      if (this.canNavigateReviewDesk(1)) this.navigateReviewDesk(1);
+      else this.closeReviewDesk();
+    },
+    reviewDeskEdit: function() {
+      var detail = this.reviewDesk.detail;
+      if (!detail || this.reviewDesk.detailFallback) return;
+      this.closeReviewDesk();
+      this.openEdit(detail, false);
+    },
+    openReviewFromDesk: function() {
+      var detail = this.reviewDesk.detail;
+      if (!detail || this.reviewDesk.detailFallback) return;
+      this.closeReviewDesk();
+      this.openReview(detail);
+    },
+    removeCurrentReviewDeskItem: function() {
+      var index = this.reviewDesk.currentIndex;
+      if (index < 0 || index >= this.reviewDesk.items.length) return false;
+      this.reviewDesk.items.splice(index, 1);
+      if (!this.reviewDesk.items.length) {
+        this.reviewDesk.currentIndex = -1;
+        return false;
+      }
+      this.reviewDesk.currentIndex = Math.min(index, this.reviewDesk.items.length - 1);
+      return true;
+    },
+    approveQuickReview: function(moveNext) {
+      var self = this;
+      var detail = this.reviewDesk.detail;
+      if (!detail || this.reviewDesk.saving) return;
+      if (this.reviewDeskPublishBlocked()) {
+        this.reviewDesk.actionMessage = '当前知识还有待处理的校验、查重或向量状态，暂不能发布。请展开原因或进入完整审核。';
+        return;
+      }
+      var requestId = this.reviewDesk.requestId;
+      this.reviewDesk.saving = true;
+      this.reviewDesk.actionMessage = '';
+      fetch(API + '/knowledge/' + encodeURIComponent(detail.id) + '/approve', {method:'POST', headers:self.authHeaders()})
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) {
+              var errorDetail = data.detail || '发布失败';
+              var message = typeof errorDetail === 'object' ? (errorDetail.message || '发布失败') : errorDetail;
+              var error = new Error(message);
+              error.detail = errorDetail;
+              throw error;
+            }
+            return data;
+          });
+        })
+        .then(function() {
+          if (requestId !== self.reviewDesk.requestId) return;
+          var hasNext = self.removeCurrentReviewDeskItem();
+          self.load();
+          self.loadStats();
+          if (moveNext && hasNext) {
+            self.reviewDesk.actionMessage = '已发布，继续处理下一条。';
+            return self.loadReviewDeskDetail(self.reviewDesk.items[self.reviewDesk.currentIndex], requestId);
+          }
+          self.closeReviewDesk(true);
+        })
+        .catch(function(error) {
+          if (requestId !== self.reviewDesk.requestId) return;
+          var detailMessage = error.detail && typeof error.detail === 'object' ? error.detail.message : '';
+          self.reviewDesk.actionMessage = detailMessage || error.message || '发布失败，请进入完整审核查看原因。';
+        })
+        .finally(function() {
+          if (requestId === self.reviewDesk.requestId) self.reviewDesk.saving = false;
+        });
+    },
+    deprecateQuickReview: function(moveNext) {
+      var self = this;
+      var detail = this.reviewDesk.detail;
+      if (!detail || this.reviewDesk.detailFallback || this.reviewDesk.saving) return;
+      if (!this.can('knowledge:deprecate') || detail.knowledge_origin === 'model_configuration') {
+        this.reviewDesk.actionMessage = '当前账号或知识来源不支持废弃操作。';
+        return;
+      }
+      if (!confirm('确认废弃知识“' + (detail.title || detail.id) + '”？')) return;
+      var requestId = this.reviewDesk.requestId;
+      this.reviewDesk.saving = true;
+      this.reviewDesk.actionMessage = '';
+      fetch(API + '/knowledge/' + encodeURIComponent(detail.id) + '/deprecate', {method:'POST', headers:self.authHeaders()})
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(typeof data.detail === 'object' ? (data.detail.message || '废弃失败') : (data.detail || '废弃失败'));
+            return data;
+          });
+        })
+        .then(function() {
+          if (requestId !== self.reviewDesk.requestId) return;
+          var hasNext = self.removeCurrentReviewDeskItem();
+          self.load();
+          self.loadStats();
+          if (moveNext && hasNext) {
+            self.reviewDesk.actionMessage = '已废弃，继续处理下一条。';
+            return self.loadReviewDeskDetail(self.reviewDesk.items[self.reviewDesk.currentIndex], requestId);
+          }
+          self.closeReviewDesk(true);
+        })
+        .catch(function(error) {
+          if (requestId === self.reviewDesk.requestId) self.reviewDesk.actionMessage = error.message || '废弃失败';
+        })
+        .finally(function() {
+          if (requestId === self.reviewDesk.requestId) self.reviewDesk.saving = false;
+        });
+    },
     knowledgeReviewSelectable: function(item) {
       return !!item && item.status === 'review' && this.can('knowledge:approve');
     },
@@ -2251,6 +2715,7 @@ Vue.createApp({
       if (!ids.length || self.batchApproving) return;
       if (!confirm('确认一键审核通过选中的 ' + ids.length + ' 条待审核知识并立即发布？')) return;
       self.batchApproving = true;
+      self.knowledgeBatchResult.open = false;
       var summary = {approved:0, reused:0, failed:0, results:[]};
       function approveChunk(offset) {
         if (offset >= ids.length) return Promise.resolve(summary);
@@ -2276,20 +2741,29 @@ Vue.createApp({
       }
       approveChunk(0)
         .then(function(data) {
-          var message = '批量审核完成：通过 ' + data.approved + ' 条，已处理 ' + data.reused + ' 条，失败 ' + data.failed + ' 条。';
-          var failures = data.results.filter(function(item) { return item.status === 'failed'; });
-          if (failures.length) {
-            message += '\n\n失败明细：\n' + failures.slice(0, 8).map(function(item) {
-              return item.knowledge_id + '：' + (item.error_message || item.error_code || '审核失败');
-            }).join('\n');
-          }
-          alert(message);
+          self.knowledgeBatchResult = {
+            open:true,
+            approved:Number(data.approved || 0),
+            reused:Number(data.reused || 0),
+            failed:Number(data.failed || 0),
+            results:Array.isArray(data.results) ? data.results : [],
+            completedAt:self.formatDate(new Date())
+          };
           self.knowledgeReviewSelection = [];
           self.load();
           self.loadStats();
         })
         .catch(function(error) { alert(error.message); })
         .finally(function() { self.batchApproving = false; });
+    },
+    closeKnowledgeBatchResult: function() {
+      this.knowledgeBatchResult.open = false;
+    },
+    knowledgeBatchFailureResults: function() {
+      var results = this.knowledgeBatchResult && Array.isArray(this.knowledgeBatchResult.results)
+        ? this.knowledgeBatchResult.results
+        : [];
+      return results.filter(function(item) { return item && item.status === 'failed'; }).slice(0, 50);
     },
     normalizeImportType: function(value) {
       return ['knowledge','knowledge_update','model_configuration'].indexOf(value) !== -1
@@ -2399,6 +2873,26 @@ Vue.createApp({
       if (this.importing) return;
       this.$refs.knowledgeImportFile.click();
     },
+    formatImportUploadError: function(detail, fallback) {
+      if (!detail || typeof detail !== 'object') {
+        return detail || fallback;
+      }
+      var message = detail.message || fallback;
+      var errors = Array.isArray(detail.errors) ? detail.errors : [];
+      if (errors.length) {
+        var preview = errors.slice(0, 8).map(function(item) {
+          var row = item && item.row ? ('第' + item.row + '行') : '数据行';
+          var field = item && item.field ? item.field : '数据';
+          var reason = item && item.message ? item.message : '校验失败';
+          return row + ' · ' + field + '：' + reason;
+        }).join('\n');
+        message += '\n' + preview;
+        if (errors.length > 8) {
+          message += '\n其余 ' + (errors.length - 8) + ' 行请一并修正后重新上传。';
+        }
+      }
+      return message;
+    },
     importKnowledgeExcel: function(event) {
       var self = this;
       var input = event.target;
@@ -2431,7 +2925,9 @@ Vue.createApp({
       })
         .then(function(response) {
           return response.json().then(function(data) {
-            if (!response.ok) throw new Error(data.detail || 'Excel 批量处理失败');
+            if (!response.ok) {
+              throw new Error(self.formatImportUploadError(data.detail, 'Excel 批量处理失败'));
+            }
             return data;
           });
         })
@@ -4626,6 +5122,147 @@ Vue.createApp({
       }).filter(function(value) { return value; }).join('\n');
       return text || '暂无正文';
     },
+    reviewDeskContentTextBlocks: function(value) {
+      var self = this;
+      var source = String(value || '').replace(/\r\n?/g, '\n');
+      if (!source.trim()) return [];
+
+      // 兼容旧数据中的 HTML 图片、Markdown 图片和“单独一行 - 图片地址”格式，
+      // 统一转换为安全的媒体标记后再拆分文本与媒体块。
+      source = source
+        .replace(/<img\b[^>]*>/gi, function(tag) {
+          var match = tag.match(/\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i);
+          var url = match ? (match[1] || match[2] || match[3] || '') : '';
+          return url ? '[img:' + url.replace(/&amp;/gi, '&') + ']' : '';
+        })
+        .replace(/<video\b[^>]*>[\s\S]*?<\/video>/gi, function(tag) {
+          var match = tag.match(/\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i)
+            || tag.match(/<source\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i);
+          var url = match ? (match[1] || match[2] || match[3] || match[4] || match[5] || match[6] || '') : '';
+          return url ? '[video:' + url.replace(/&amp;/gi, '&') + ']' : '';
+        })
+        .replace(/!\[[^\]]*\]\(((?:https:\/\/|\/?uploads\/)[^\s)]+)\)/gi, '[img:$1]')
+        .replace(/\[image\s*:/gi, '[img:')
+        .replace(/(^|\n)\s*[-—–]\s*((?:https:\/\/|\/?uploads\/)[^\s<>"']+)\s*(?=\n|$)/gi, '$1[img:$2]');
+
+      var blocks = [];
+      var cursor = 0;
+      var foundMedia = false;
+      var appendText = function(segment, hasMediaBefore, hasMediaAfter) {
+        segment = self.trimMediaPlaceholderLines(
+          self.richTextToPlainText(segment),
+          hasMediaBefore,
+          hasMediaAfter
+        );
+        if (segment.trim()) blocks.push({type:'text', value:segment});
+      };
+      var tokenPattern = /\[(img|video):[ \t]*((?:https:\/\/|\/?uploads\/)[^\s\[\]<>"']+)\]/gi;
+      source.replace(tokenPattern, function(full, tokenType, externalUrl, offset) {
+        var mediaType = tokenType.toLowerCase() === 'video' ? 'video' : 'image';
+        var safeExternalUrl = self.normalizeExternalMediaUrl(externalUrl, mediaType);
+        var localMediaPath = /^\/?uploads\//i.test(externalUrl) ? externalUrl : '';
+        if (!safeExternalUrl && !localMediaPath) return full;
+        appendText(source.slice(cursor, offset), foundMedia, true);
+        blocks.push({type:mediaType, url:safeExternalUrl, external_url:safeExternalUrl, media_id:localMediaPath, alt:'', caption:'', load_error:false});
+        cursor = offset + full.length;
+        foundMedia = true;
+        return full;
+      });
+      appendText(source.slice(cursor), foundMedia, false);
+      return blocks;
+    },
+    reviewDeskContentBlocks: function(content, mediaList) {
+      var self = this;
+      var mediaByKey = {};
+      var addMediaKey = function(value, media) {
+        var key = String(value || '').trim();
+        if (!key) return;
+        mediaByKey[key] = media;
+        mediaByKey[key.replace(/^\/uploads\//i, '')] = media;
+        mediaByKey[key.replace(/^\/+/, '')] = media;
+      };
+      (Array.isArray(mediaList) ? mediaList : []).forEach(function(media) {
+        if (!media) return;
+        addMediaKey(media.id, media);
+        addMediaKey(media.filename, media);
+        addMediaKey(media.file_path, media);
+      });
+
+      var localMediaUrl = function(value) {
+        var raw = String(value || '').trim();
+        if (!raw || /^https?:\/\//i.test(raw) || /^blob:/i.test(raw)) return '';
+        var basePath = String(BASE || '').replace(/\/+$/, '');
+        if (basePath && raw.indexOf(basePath + '/uploads/') === 0) return raw;
+        var path = raw.replace(/^\/+/, '');
+        if (/^uploads\//i.test(path)) path = path.slice('uploads/'.length);
+        return path ? self.mediaUrl(path) : '';
+      };
+      var resolveMedia = function(source, type) {
+        source = source || {};
+        var external = self.normalizeExternalMediaUrl(
+          source.external_url || source.url || source.src || '',
+          type
+        );
+        if (external) return {url:external, external_url:external, media:null};
+
+        var mediaId = String(source.media_id || '').trim();
+        var media = mediaByKey[mediaId]
+          || mediaByKey[mediaId.replace(/^\/uploads\//i, '')]
+          || mediaByKey[mediaId.replace(/^\/+/, '')]
+          || null;
+        var mediaPath = media && (media.external_url || media.file_path || media.filename || media.url || '');
+        var mediaExternal = self.normalizeExternalMediaUrl(mediaPath, type);
+        if (mediaExternal) return {url:mediaExternal, external_url:mediaExternal, media:media};
+        var local = localMediaUrl(mediaPath || source.file_path || source.url || source.src || mediaId || source.preview);
+        if (local) return {url:local, external_url:'', media:media};
+
+        var preview = String(source.preview || '').trim();
+        var safePreview = self.normalizeExternalMediaUrl(preview, type);
+        if (safePreview) return {url:safePreview, external_url:safePreview, media:media};
+        return {url:'', external_url:'', media:media};
+      };
+      var normalizedMediaBlock = function(source, type) {
+        var resolved = resolveMedia(source, type);
+        var media = resolved.media || {};
+        return {
+          type:type,
+          url:resolved.url,
+          external_url:resolved.external_url,
+          media_id:String(source.media_id || media.filename || '').trim(),
+          alt:String(source.alt || media.alt || '').trim(),
+          caption:String(source.caption || media.caption || '').trim(),
+          load_error:false
+        };
+      };
+      var blocks = [];
+      var appendText = function(value) {
+        self.reviewDeskContentTextBlocks(value).forEach(function(block) {
+          if (block && (block.type === 'image' || block.type === 'video')) {
+            blocks.push(normalizedMediaBlock(block, block.type));
+          } else if (block) {
+            blocks.push(block);
+          }
+        });
+      };
+
+      if (typeof content === 'string') {
+        appendText(content);
+      } else if (content && Array.isArray(content.blocks)) {
+        content.blocks.forEach(function(source) {
+          if (!source || typeof source !== 'object') return;
+          var type = String(source.type || '').toLowerCase();
+          if (type === 'image' || type === 'video') {
+            blocks.push(normalizedMediaBlock(source, type));
+            return;
+          }
+          appendText(source.value || source.text || source.caption || source.alt || '');
+        });
+      }
+      return blocks;
+    },
+    reviewDeskMediaError: function(block) {
+      if (block) block.load_error = true;
+    },
     dedupMatchIds: function(item) {
       var metadata = item && item.deduplication_metadata;
       var matches = this.visibleDedupMatches(metadata);
@@ -5589,6 +6226,9 @@ Vue.createApp({
     },
     dedupPublishBlocked: function() {
       var metadata = this.fm.deduplicationMetadata || {};
+      if (['pending','queued','running'].indexOf(metadata.vector_status) !== -1) return true;
+      if (metadata.vector_status === 'failed') return true;
+      if (metadata.action === 'block_duplicate') return true;
       if (metadata.action !== 'review_duplicate') return false;
       var matches = this.visibleDedupMatches(metadata);
       if (!matches.length) return true;
@@ -5598,6 +6238,15 @@ Vue.createApp({
     },
     dedupPublishBlockReason: function() {
       var metadata = this.fm.deduplicationMetadata || {};
+      if (['pending','queued','running'].indexOf(metadata.vector_status) !== -1) {
+        return '知识已保存，向量与查重仍在后台处理中，请稍后再发布。';
+      }
+      if (metadata.vector_status === 'failed') {
+        return '向量与查重后台处理失败，请重新保存知识后再发布。';
+      }
+      if (metadata.action === 'block_duplicate') {
+        return '检测到重复或高度相似的已有知识，未发布。';
+      }
       var matches = this.visibleDedupMatches(metadata);
       if (!matches.length) return '查重命中信息不完整，暂不能发布。';
       var pending = matches.filter(function(match) {
@@ -6414,6 +7063,9 @@ Vue.createApp({
         self.load();
         self.loadStats();
         self.saving = false;
+        if (result && result.vector_status && result.vector_status !== 'ready' && result.vector_status !== 'completed') {
+          alert('知识已保存，向量与查重将在后台处理，完成后即可发布。');
+        }
       }
 
       function persistKnowledge() {
@@ -6530,6 +7182,24 @@ Vue.createApp({
         }
       });
       document.addEventListener('keydown', function(e) {
+        if (self.reviewDesk.open) {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            self.closeReviewDesk();
+            return;
+          }
+          if (e.altKey && !e.ctrlKey && !e.metaKey &&
+              (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+            e.preventDefault();
+            self.navigateReviewDesk(e.key === 'ArrowLeft' ? -1 : 1);
+            return;
+          }
+          if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            self.approveQuickReview(true);
+            return;
+          }
+        }
         if (self.embedding.review.open) {
           if (e.altKey && !e.ctrlKey && !e.metaKey &&
               (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
@@ -6607,3 +7277,4 @@ Vue.createApp({
 </script>
 </body>
 </html>
+

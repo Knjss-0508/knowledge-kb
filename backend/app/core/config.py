@@ -141,6 +141,13 @@ class Settings(BaseSettings):
     # CPU embedding can take much longer for large Excel rows. Keep this
     # separate from the short timeout used by interactive retrieval.
     KNOWLEDGE_IMPORT_EMBEDDING_TIMEOUT_SECONDS: float = 180.0
+    # Manual knowledge writes are persisted first; a separate worker performs
+    # deduplication and search-vector generation with a recoverable lease.
+    KNOWLEDGE_VECTOR_POLL_SECONDS: float = 1.0
+    KNOWLEDGE_VECTOR_LEASE_SECONDS: int = 300
+    KNOWLEDGE_VECTOR_MAX_ATTEMPTS: int = 5
+    KNOWLEDGE_VECTOR_RETRY_BASE_SECONDS: int = 5
+    KNOWLEDGE_VECTOR_RETRY_MAX_SECONDS: int = 300
     SESSION_TTL_HOURS: int = 24
 
     class Config:
