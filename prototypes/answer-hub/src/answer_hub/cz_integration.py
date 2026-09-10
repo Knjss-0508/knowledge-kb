@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Authenticated CZ knowledge-base integration with bounded retries."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
@@ -49,6 +49,58 @@ CZ_BUSINESS_TYPE_BY_ANSWER_HUB_CODE = {
     SELF_OPERATED_BUSINESS_LINE_CODE: "self_operated",
     AGGREGATE_BUSINESS_LINE_CODE: "aggregated",
 }
+
+
+@dataclass(frozen=True)
+class CzPublishedKnowledgeItem:
+    """CZ 已发布知识候选；业务沉淀不得进入总部标准目录。"""
+
+    knowledge_id: str
+    title: str
+    text: str
+    knowledge_origin: str
+    business_type: str
+    category_id: str
+    level1_label: str
+    product_type: str
+    models: tuple[str, ...]
+    keywords: tuple[str, ...]
+    source_ref: str
+    status: str
+    version: str
+    score: float
+    final_score: float
+    boundary_projection: dict[str, str] = field(default_factory=dict)
+
+    def audit_payload(self) -> dict[str, Any]:
+        return {
+            "knowledge_id": self.knowledge_id,
+            "title": self.title,
+            "knowledge_origin": self.knowledge_origin,
+            "business_type": self.business_type,
+            "category_id": self.category_id,
+            "level1_label": self.level1_label,
+            "product_type": self.product_type,
+            "models": list(self.models),
+            "keywords": list(self.keywords),
+            "source_ref": self.source_ref,
+            "status": self.status,
+            "version": self.version,
+            "score": self.score,
+            "final_score": self.final_score,
+            "boundary_projection": dict(self.boundary_projection),
+        }
+
+
+@dataclass(frozen=True)
+class CzPublishedKnowledgeSearchResult:
+    """按知识来源拆分后的 CZ 已发布知识检索结果。"""
+
+    headquarters_standards: tuple[tuple[StandardCatalogItem, float], ...]
+    business_knowledge: tuple[CzPublishedKnowledgeItem, ...]
+    audit: dict[str, Any]
+
+
 UNFINISHED_TRANSCRIPTION_MARKERS = (
     "未生成知识草稿",
     "未进入知识转写",
@@ -75,6 +127,35 @@ def _split_values(value: Any) -> list[str]:
     for separator in ("\n", "；", ";", "、", "|"):
         text = text.replace(separator, "\n")
     return list(dict.fromkeys(item.strip() for item in text.splitlines() if item.strip()))
+
+
+def _boundary_projection(candidate: dict[str, Any]) -> dict[str, str]:
+    """Keep optional CZ boundary metadata without inferring absent values."""
+    raw = candidate.get("boundaryProjection") or candidate.get("boundary_projection")
+    source = raw if isinstance(raw, dict) else candidate
+    aliases = {
+        "business_line": ("businessLine", "business_line"),
+        "standard_family": ("standardFamily", "standard_family"),
+        "merge_policy": ("mergePolicy", "merge_policy"),
+        "object_key": ("objectKey", "object_key"),
+        "phenomenon_value": ("phenomenonValue", "phenomenon_value"),
+        "query_target": ("queryTarget", "query_target"),
+        "detection_target": ("detectionTarget", "detection_target"),
+        "platform": ("platform",),
+        "brand": ("brand",),
+        "model_scope": ("modelScope", "model_scope"),
+        "threshold_values": ("thresholdValues", "threshold_values"),
+        "conclusion_state": ("conclusionState", "conclusion_state"),
+        "boundary_confidence": ("boundaryConfidence", "boundary_confidence"),
+    }
+    result: dict[str, str] = {}
+    for canonical, keys in aliases.items():
+        for key in keys:
+            value = source.get(key) if isinstance(source, dict) else None
+            if isinstance(value, (str, int, float)) and str(value).strip():
+                result[canonical] = str(value).strip()
+                break
+    return result
 
 
 def _candidate_raw_case_image_urls(
@@ -517,6 +598,25 @@ def _stable_hash(*values: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _review_candidate_exact_duplicate_key(
+    payload: dict[str, Any],
+) -> tuple[str, str, str]:
+    """Scope exact candidate de-duplication without crossing CZ taxonomies."""
+
+    knowledge = dict(payload.get("knowledge") or {})
+    return (
+        _text(knowledge.get("business_type")),
+        _text(knowledge.get("category_id")),
+        _stable_hash(
+            knowledge.get("title"),
+            knowledge.get("content"),
+            knowledge.get("applicable_categories"),
+            knowledge.get("applicable_brands"),
+            knowledge.get("applicable_models"),
+        ),
+    )
+
+
 def select_submittable_candidates(
     candidates: list[dict[str, Any]],
     policy: AutoReviewPolicy | None = None,
@@ -604,6 +704,9 @@ class CzIntegrationAdapter:
             "standard_retrieval_configured": bool(
                 self.config and self.config.retrieval_key
             ),
+            "published_knowledge_retrieval_configured": (
+                self.can_search_published_knowledge()
+            ),
             "dedup_endpoint": self.dedup_path,
             "candidate_endpoint": self.candidates_path,
             "review_candidate_endpoint": self.review_candidates_path,
@@ -672,9 +775,12 @@ class CzIntegrationAdapter:
         raise RuntimeError(f"CZ接口调用失败：{last_error or '未知错误'}")
 
     def can_search_headquarters_standards(self) -> bool:
+        return self.can_search_published_knowledge()
+
+    def can_search_published_knowledge(self) -> bool:
         return bool(self.config and self.config.retrieval_key)
 
-    def search_headquarters_standards(
+    def search_published_knowledge(
         self,
         *,
         conversation_id: str,
@@ -683,15 +789,15 @@ class CzIntegrationAdapter:
         product_type: str,
         model: str = "",
         limit: int = 5,
-    ) -> tuple[list[tuple[StandardCatalogItem, float]], dict[str, Any]]:
+    ) -> CzPublishedKnowledgeSearchResult:
         if not self.config or not self.config.retrieval_key:
-            raise RuntimeError("未配置 KB_RETRIEVAL_API_KEY，无法读取 CZ 已生效标准。")
+            raise RuntimeError("未配置 KB_RETRIEVAL_API_KEY，无法读取 CZ 已发布知识。")
         source_id = _text(conversation_id)
         if not re.fullmatch(r"[0-9]{1,64}", source_id):
-            raise ValueError("CZ 标准检索需要来源工单ID为 1 至 64 位数字。")
+            raise ValueError("CZ 知识检索需要来源工单ID为 1 至 64 位数字。")
         question = _text(normalized_question)
         if not question:
-            raise ValueError("CZ 标准检索缺少主题问题。")
+            raise ValueError("CZ 知识检索缺少主题问题。")
         request_id = "answer-hub-standard:" + _stable_hash(
             source_id,
             question,
@@ -703,6 +809,8 @@ class CzIntegrationAdapter:
             "conversationId": source_id,
             "requestId": request_id,
             "normalizedQuestion": question[:8000],
+            # 兼容仍要求旧字段的 CZ 版本。当前 CZ 会固定检索两个知识池，
+            # Answer Hub 必须按每条响应的 knowledgeOrigin 分流。
             "knowledgeOrigin": CZ_HEADQUARTERS_STANDARD_ORIGIN,
             "businessType": _text(business_type),
             "productType": _text(product_type),
@@ -725,62 +833,129 @@ class CzIntegrationAdapter:
         )
         candidates = response.get("candidates")
         if not isinstance(candidates, list):
-            raise RuntimeError("CZ 标准检索接口返回格式不正确。")
+            raise RuntimeError("CZ 知识检索接口返回格式不正确。")
         knowledge_version = _text(response.get("knowledgeVersion"))
-        matches: list[tuple[StandardCatalogItem, float]] = []
+        headquarters_matches: list[tuple[StandardCatalogItem, float]] = []
+        business_knowledge: list[CzPublishedKnowledgeItem] = []
         standard_ids: list[str] = []
-        ignored_business_accumulation_count = 0
+        business_knowledge_ids: list[str] = []
         for candidate in candidates:
             if not isinstance(candidate, dict):
-                raise RuntimeError("CZ 标准检索候选格式不正确。")
+                raise RuntimeError("CZ 知识检索候选格式不正确。")
             knowledge_origin = _text(candidate.get("knowledgeOrigin"))
-            if knowledge_origin == CZ_BUSINESS_ACCUMULATION_ORIGIN:
-                ignored_business_accumulation_count += 1
-                continue
-            if knowledge_origin != CZ_HEADQUARTERS_STANDARD_ORIGIN:
-                raise RuntimeError("CZ 标准检索返回了非总部标准知识，已拒绝使用。")
+            if knowledge_origin not in {
+                CZ_HEADQUARTERS_STANDARD_ORIGIN,
+                CZ_BUSINESS_ACCUMULATION_ORIGIN,
+            }:
+                raise RuntimeError("CZ 知识检索返回了未知知识来源，已拒绝使用。")
             if _text(candidate.get("status")) != "published":
-                raise RuntimeError("CZ 标准检索返回了未生效知识，已拒绝使用。")
-            standard_id = _text(candidate.get("id"))
-            if not standard_id:
-                raise RuntimeError("CZ 标准检索候选缺少知识ID。")
+                raise RuntimeError("CZ 知识检索返回了未发布知识，已拒绝使用。")
+            knowledge_id = _text(candidate.get("id"))
+            if not knowledge_id:
+                raise RuntimeError("CZ 知识检索候选缺少知识ID。")
             try:
-                score = max(0.0, min(float(candidate.get("finalScore", candidate.get("score", 0))), 1.0))
+                score = max(0.0, min(float(candidate.get("score", 0)), 1.0))
+                final_score = max(
+                    0.0,
+                    min(float(candidate.get("finalScore", score)), 1.0),
+                )
             except (TypeError, ValueError) as exc:
-                raise RuntimeError("CZ 标准检索候选分数不正确。") from exc
+                raise RuntimeError("CZ 知识检索候选分数不正确。") from exc
             keywords = candidate.get("keywords")
-            item = StandardCatalogItem(
-                standard_id=standard_id,
-                title=_text(candidate.get("title")),
-                category_l1=_text(candidate.get("level1Label")),
-                category_l2="",
-                knowledge_type="总部标准",
-                standard_path=f"CZ总部标准：{standard_id}",
-                keywords=[
-                    _text(value)
-                    for value in keywords
-                    if _text(value)
-                ] if isinstance(keywords, list) else [],
-                scope=_text(candidate.get("productType")),
-                response_snippet=_text(candidate.get("text")),
-                status="published",
-                version=knowledge_version or "unknown",
+            normalized_keywords = (
+                tuple(_text(value) for value in keywords if _text(value))
+                if isinstance(keywords, list)
+                else ()
             )
-            matches.append((item, score))
-            standard_ids.append(standard_id)
-        return matches, {
-            "source": CZ_HEADQUARTERS_STANDARD_ORIGIN,
+            models = candidate.get("models")
+            normalized_models = (
+                tuple(_text(value) for value in models if _text(value))
+                if isinstance(models, list)
+                else ()
+            )
+            if knowledge_origin == CZ_HEADQUARTERS_STANDARD_ORIGIN:
+                item = StandardCatalogItem(
+                    standard_id=knowledge_id,
+                    title=_text(candidate.get("title")),
+                    category_l1=_text(candidate.get("level1Label")),
+                    category_l2="",
+                    knowledge_type="总部标准",
+                    standard_path=f"CZ总部标准：{knowledge_id}",
+                    keywords=list(normalized_keywords),
+                    scope=_text(candidate.get("productType")),
+                    response_snippet=_text(candidate.get("text")),
+                    status="published",
+                    version=knowledge_version or "unknown",
+                )
+                headquarters_matches.append((item, final_score))
+                standard_ids.append(knowledge_id)
+                continue
+            business_knowledge.append(
+                CzPublishedKnowledgeItem(
+                    knowledge_id=knowledge_id,
+                    title=_text(candidate.get("title")),
+                    text=_text(candidate.get("text")),
+                    knowledge_origin=knowledge_origin,
+                    business_type=_text(candidate.get("businessType")),
+                    category_id=_text(candidate.get("categoryId")),
+                    level1_label=_text(candidate.get("level1Label")),
+                    product_type=_text(candidate.get("productType")),
+                    models=normalized_models,
+                    keywords=normalized_keywords,
+                    source_ref=_text(candidate.get("sourceRef")),
+                    status="published",
+                    version=knowledge_version or "unknown",
+                    score=score,
+                    final_score=final_score,
+                    boundary_projection=_boundary_projection(candidate),
+                )
+            )
+            business_knowledge_ids.append(knowledge_id)
+        audit = {
+            "source": "cz_published_knowledge",
             "status": _text(response.get("status")),
             "retrieval_mode": _text(response.get("retrievalMode")),
             "knowledge_version": knowledge_version,
             "score_threshold": response.get("scoreThreshold"),
-            "standard_ids": standard_ids,
-            "ignored_business_accumulation_count": (
-                ignored_business_accumulation_count
+            "headquarters_standard_ids": standard_ids,
+            "business_accumulation_ids": business_knowledge_ids,
+            "headquarters_standard_count": len(headquarters_matches),
+            "business_accumulation_count": len(business_knowledge),
+        }
+        return CzPublishedKnowledgeSearchResult(
+            headquarters_standards=tuple(headquarters_matches),
+            business_knowledge=tuple(business_knowledge),
+            audit=audit,
+        )
+
+    def search_headquarters_standards(
+        self,
+        *,
+        conversation_id: str,
+        normalized_question: str,
+        business_type: str,
+        product_type: str,
+        model: str = "",
+        limit: int = 5,
+    ) -> tuple[list[tuple[StandardCatalogItem, float]], dict[str, Any]]:
+        result = self.search_published_knowledge(
+            conversation_id=conversation_id,
+            normalized_question=normalized_question,
+            business_type=business_type,
+            product_type=product_type,
+            model=model,
+            limit=limit,
+        )
+        business_candidates = [item.audit_payload() for item in result.business_knowledge]
+        return list(result.headquarters_standards), {
+            **result.audit,
+            "source": CZ_HEADQUARTERS_STANDARD_ORIGIN,
+            "standard_ids": list(
+                result.audit.get("headquarters_standard_ids") or []
             ),
-            "ignored_nonstandard_candidate_count": (
-                ignored_business_accumulation_count
-            ),
+            "business_accumulation_candidates": business_candidates,
+            "ignored_business_accumulation_count": len(business_candidates),
+            "ignored_nonstandard_candidate_count": len(business_candidates),
         }
 
     def fetch_taxonomy(self) -> dict[str, Any]:
@@ -946,7 +1121,9 @@ class CzIntegrationAdapter:
             if errors:
                 raise ValueError("；".join(errors))
             subtitles = _split_values(candidate.get("副标题"))
-            source_record_ids = _split_values(candidate.get("主题来源记录ID"))
+            source_record_ids = _split_values(
+                candidate.get("主题来源记录ID")
+            ) or _split_values(candidate.get("主题工单ID"))
             scene_tags = list(
                 dict.fromkeys(
                     value
@@ -1246,6 +1423,7 @@ class CzIntegrationAdapter:
             "rejected": 0,
             "reused": 0,
             "failed": 0,
+            "deduplicated": 0,
             "results": [],
         }
         valid_items: list[dict[str, Any]] = []
@@ -1285,6 +1463,56 @@ class CzIntegrationAdapter:
                         "error_message": str(exc),
                     }
                 )
+
+        unique_items: list[dict[str, Any]] = []
+        canonical_items: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for item in valid_items:
+            duplicate_key = _review_candidate_exact_duplicate_key(item)
+            canonical = canonical_items.get(duplicate_key)
+            if canonical is None:
+                canonical_items[duplicate_key] = item
+                unique_items.append(item)
+                continue
+
+            canonical_source = dict(canonical.get("source") or {})
+            source_message_ids = [
+                *_split_values(canonical_source.get("message_ids")),
+                *_split_values(
+                    dict(item.get("source") or {}).get("message_ids")
+                ),
+            ]
+            canonical_source["message_ids"] = list(
+                dict.fromkeys(source_message_ids)
+            )
+            canonical["source"] = canonical_source
+
+            canonical_selection = dict(canonical.get("selection") or {})
+            canonical_reasons = list(canonical_selection.get("reasons") or [])
+            duplicate_event_id = _text(item.get("event_id"))
+            duplicate_note = (
+                "同批精确重复候选已折叠："
+                f"{duplicate_event_id}"
+            )
+            if duplicate_note not in canonical_reasons:
+                canonical_reasons.append(duplicate_note)
+            canonical_selection["reasons"] = canonical_reasons
+            canonical["selection"] = canonical_selection
+
+            totals["deduplicated"] += 1
+            totals["results"].append(
+                {
+                    "event_id": duplicate_event_id,
+                    "status": "deduplicated",
+                    "error_code": "EXACT_DUPLICATE_CANDIDATE",
+                    "error_message": (
+                        "与同批候选的标题、正文和适用范围完全一致，"
+                        "已折叠，不重复写入 CZ 候选价值复核。"
+                    ),
+                    "canonical_event_id": _text(canonical.get("event_id")),
+                }
+            )
+
+        valid_items = unique_items
 
         def sync_batch(batch: list[dict[str, Any]]) -> None:
             try:

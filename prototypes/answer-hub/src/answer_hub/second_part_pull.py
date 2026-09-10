@@ -705,6 +705,12 @@ def pull_second_part_to_queue(
                         f"{datetime.now():%Y%m%d-%H%M%S}-"
                         f"{batch_key.split(':', 1)[-1][:10]}.xlsx"
                     )
+                    settle_from_date = _text(
+                        os.getenv("SECOND_PART_QUERY_FROM_DATE")
+                    )
+                    settle_to_date = _text(
+                        os.getenv("SECOND_PART_QUERY_TO_DATE")
+                    )
                     options = {
                         **profile.workflow,
                         "submit_to_cz": profile.workflow[
@@ -714,6 +720,10 @@ def pull_second_part_to_queue(
                         "source_batch_key": batch_key,
                         "source_cursor": cursor,
                         "source_next_cursor": next_cursor,
+                        "second_part_query_from_date": settle_from_date,
+                        "second_part_query_to_date": settle_to_date,
+                        "knowledge_settle_from_date": settle_from_date,
+                        "knowledge_settle_to_date": settle_to_date,
                     }
                     metadata = job_store.create(
                         filename,

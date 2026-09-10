@@ -49,6 +49,7 @@ PRODUCT_TYPE_PLACEHOLDER_VALUES = frozenset(
         "n/a",
     }
 )
+_COMPOSITE_PRODUCT_PART_SEPARATOR = re.compile(r"\s*[|｜;,，；]\s*")
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,18 @@ def is_product_type_placeholder(value: Any) -> bool:
     if key in {_key(item) for item in PRODUCT_TYPE_PLACEHOLDER_VALUES}:
         return True
     return any(marker in text for marker in ("待确认", "待确定", "不确定", "未知"))
+
+
+def _product_category_candidate_values(value: Any) -> tuple[str, ...]:
+    text = _text(value)
+    if not text:
+        return ()
+    candidates = [text]
+    for part in _COMPOSITE_PRODUCT_PART_SEPARATOR.split(text):
+        part = re.sub(r"^(?:产品类型|品类|类别)\s*[:：]\s*", "", part).strip()
+        if part:
+            candidates.append(part)
+    return tuple(dict.fromkeys(candidates))
 
 
 def is_concrete_unconfigured_product(value: Any) -> bool:
@@ -255,13 +268,12 @@ def resolve_product_category(
     value: Any,
     path: str | Path | None = None,
 ) -> ProductCategory | None:
-    candidate = _key(value)
-    if not candidate:
-        return None
     for category in load_product_categories(path):
         values = (category.code, category.name, *category.aliases)
-        if candidate in {_key(item) for item in values}:
-            return category
+        normalized_values = {_key(item) for item in values}
+        for candidate_value in _product_category_candidate_values(value):
+            if _key(candidate_value) in normalized_values:
+                return category
     return None
 
 

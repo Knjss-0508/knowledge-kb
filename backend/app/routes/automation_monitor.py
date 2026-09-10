@@ -21,16 +21,10 @@ router = APIRouter(prefix="/automation-monitor", tags=["自动化运行监管"])
 
 
 def _gateway() -> AutomationMonitorGateway:
-    base_url = settings.ANSWER_HUB_API_BASE_URL or settings.ANSWER_HUB_BASE_URL
-    timeout_seconds = (
-        settings.ANSWER_HUB_API_TIMEOUT_SECONDS
-        if settings.ANSWER_HUB_API_BASE_URL
-        else settings.ANSWER_HUB_TIMEOUT_SECONDS
-    )
     return AutomationMonitorGateway(
-        base_url,
+        settings.ANSWER_HUB_API_BASE_URL,
         settings.ANSWER_HUB_API_KEY,
-        timeout_seconds,
+        settings.ANSWER_HUB_API_TIMEOUT_SECONDS,
     )
 
 
@@ -127,8 +121,10 @@ def save_feedback(
     body: dict[str, Any],
     current_user: User = Depends(require_permission("knowledge:submit")),
 ) -> dict[str, Any]:
-    allowed = {"status", "owner", "cause_type", "note"}
-    payload = {key: value for key, value in body.items() if key in allowed}
+    status_value = str(body.get("status") or "").strip()
+    if status_value not in {"unhandled", "acknowledged", "in_progress", "resolved", "ignored"}:
+        raise HTTPException(400, "请选择有效的任务处理状态。")
+    payload = {"status": status_value}
     payload["actor"] = current_user.username
     try:
         return _gateway().request(

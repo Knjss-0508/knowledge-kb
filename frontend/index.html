@@ -756,15 +756,19 @@
       <select class="inp" v-model="candidateReviews.filter.productCategory" @change="loadCandidateReviews(true)"><option value="">全部品类</option><option v-for="category in candidateReviews.productCategories" :key="category.value" :value="category.value">{{category.label}}</option></select>
       <select class="inp" v-model="candidateReviews.filter.annotationStatus" @change="loadCandidateReviews(true)"><option value="">全部标注状态</option><option value="annotated">已标注</option><option value="unannotated">未标注</option></select>
       <select class="inp" v-model="candidateReviews.filter.modelKnowledgeValue" @change="loadCandidateReviews(true)"><option value="">全部模型初标</option><option value="worthy">模型初标：值得沉淀</option><option value="unworthy">模型初标：不值得沉淀</option><option value="pending">模型初标：待确定</option></select>
+      <label class="review-date-field">更新起始 <input class="inp" type="date" v-model="candidateReviews.filter.updatedFrom" @change="loadCandidateReviews(true)"></label>
+      <label class="review-date-field">更新结束 <input class="inp" type="date" v-model="candidateReviews.filter.updatedTo" @change="loadCandidateReviews(true)"></label>
       <label class="review-check-label"><input type="checkbox" v-model="candidateReviews.filter.priorityOnly" @change="loadCandidateReviews"> 仅重点复核</label>
       <span class="review-selected-note">已选 <b>{{candidateReviews.selected.length}}</b> 条</span>
       <button class="btn bd" @click="loadCandidateReviews" :disabled="candidateReviews.loading">{{candidateReviews.loading?'加载中...':'刷新'}}</button>
+      <button class="btn bd" @click="batchAnnotateCandidateReviews('unworthy')" :disabled="candidateReviews.annotating||!candidateReviews.selected.length">批量标为不沉淀</button>
+      <button class="btn bd" @click="batchAnnotateCandidateReviews('worthy')" :disabled="candidateReviews.annotating||!candidateReviews.selected.length">批量标为值得沉淀</button>
       <button class="btn bp" @click="submitSelectedCandidateReviews" :disabled="candidateReviews.submitting||!candidateReviews.selected.length">{{candidateReviews.submitting?'送审中...':'批量送审'}}</button>
     </div>
     <div class="integration-hint">Answer Hub 同步到本页后，复核人可补充组员验证与修改意见。批量送审只创建“待发布审核”知识，不会直接发布。</div>
     <div class="tw" :class="{'review-loading':candidateReviews.loading}">
       <table class="review-table">
-        <thead><tr><th style="width:42px"><input class="review-checkbox" type="checkbox" :checked="allReviewSelected()" @change="toggleAllReviewSelection($event.target.checked)"></th><th>候选知识</th><th style="width:110px">知识来源</th><th style="width:110px">业务类型</th><th style="width:120px">审核状态</th><th style="width:160px">模型初标</th><th style="width:175px">组员验证</th><th style="width:90px">复核级别</th><th style="width:180px">上游来源</th><th style="width:135px">更新时间</th><th style="width:90px;text-align:right">操作</th></tr></thead>
+        <thead><tr><th style="width:42px"><input class="review-checkbox" type="checkbox" :checked="allReviewSelected()" @change="toggleAllReviewSelection($event.target.checked)"></th><th>候选知识</th><th style="width:110px">知识来源</th><th style="width:110px">业务类型</th><th style="width:120px">审核状态</th><th style="width:160px">模型初标</th><th style="width:175px">组员验证</th><th style="width:90px">复核级别</th><th style="width:180px">上游来源</th><th style="width:135px">更新时间</th><th style="width:150px">快速标注</th><th style="width:90px;text-align:right">操作</th></tr></thead>
         <tbody>
           <tr v-for="item in candidateReviews.items" :key="item.id">
             <td><input class="review-checkbox" type="checkbox" :disabled="!reviewSelectable(item)" :checked="isReviewSelected(item.id)" @change="toggleReviewSelection(item.id)"></td>
@@ -777,9 +781,10 @@
             <td><span class="priority-flag" v-if="item.priority_review">重点复核</span><span v-else style="color:#98a2b3">常规</span></td>
             <td><div class="review-source"><a v-if="item.source_conversation_url" :href="item.source_conversation_url" target="_blank" rel="noopener noreferrer">{{item.source_system}} · {{item.source_conversation_id}}</a><span v-else>{{item.source_system}} · {{item.source_conversation_id}}</span></div></td>
             <td>{{formatDate(item.updated_at)}}</td>
+            <td><div class="candidate-quick-actions" v-if="reviewAnnotatable(item)"><button class="btn reject" type="button" @click="quickAnnotateCandidateReview(item,'unworthy')">不沉淀</button><button class="btn accept" type="button" @click="quickAnnotateCandidateReview(item,'worthy')">值得沉淀</button></div><span v-else class="hint">已锁定</span></td>
             <td style="text-align:right"><button class="btn bd bsm" @click="openCandidateReview(item)">{{item.review_status==='submitted'?'查看':'审核'}}</button></td>
           </tr>
-          <tr v-if="!candidateReviews.items.length"><td colspan="11" class="review-empty">{{candidateReviews.loading?'正在加载候选审核队列...':'暂无符合条件的候选知识'}}</td></tr>
+          <tr v-if="!candidateReviews.items.length"><td colspan="12" class="review-empty">{{candidateReviews.loading?'正在加载候选审核队列...':'暂无符合条件的候选知识'}}</td></tr>
         </tbody>
       </table>
     </div>
@@ -1348,7 +1353,7 @@
             </section>
           </div>
           <section class="review-panel">
-            <div class="review-panel-title"><h4>组员验证与候选修订</h4><span class="hint">保存后实时重算送审门禁</span></div>
+            <div class="review-panel-title"><h4>人工复核与候选修订</h4><span class="hint">只需选择一次复核结论，兼容字段由系统自动填写</span></div>
             <div v-if="candidateReviews.current.deduplication && candidateReviews.current.deduplication.action==='review_duplicate'" style="margin:0 0 16px;padding:12px;border:1px solid #f7c97f;border-radius:8px;background:#fffaf0">
               <div style="font-size:13px;font-weight:600;color:#9a5b00">查重人工确认</div>
               <div style="margin-top:5px;font-size:12px;color:#7a5c25">以下知识与当前候选疑似重复。请逐条核对后，确认内容确实不同才可送审。</div>
@@ -1367,16 +1372,40 @@
               <div class="fg span-2"><label class="fl"><span class="req">*</span> 知识来源</label><select class="fi" v-model="candidateReviews.form.knowledge_origin" :disabled="reviewReadonly()"><option value="" disabled>请选择知识来源</option><option v-for="origin in assignableKnowledgeOrigins(candidateReviews.form.knowledge_origin)" :key="origin.value" :value="origin.value">{{origin.label}}</option></select></div>
               <div class="fg"><label class="fl"><span class="req">*</span> 业务类型</label><select class="fi" v-model="candidateReviews.form.business_type" :disabled="reviewReadonly()" @change="onCandidateBusinessTypeChange"><option value="" disabled>请选择业务类型</option><option v-for="businessType in businessTypes" :key="businessType.value" :value="businessType.value">{{businessType.label}}</option></select></div>
               <div class="fg"><label class="fl"><span class="req">*</span> 所属分类</label><select class="fi" v-model="candidateReviews.form.category_id" :disabled="reviewReadonly() || !candidateReviews.form.business_type"><option value="" disabled>{{candidateReviews.form.business_type?'请选择分类':'请先选择业务类型'}}</option><option v-for="cat in cats" :key="cat.id" :value="cat.id">{{cat.name}}</option></select></div>
-              <div class="fg"><label class="fl">进入训练集</label><select class="fi" v-model="candidateReviews.form.training_eligible" :disabled="reviewReadonly()"><option value="">未标注</option><option value="是">是</option><option value="否">否</option></select></div>
-              <div class="fg"><label class="fl">是否值得沉淀</label><select class="fi" v-model="candidateReviews.form.knowledge_value" :disabled="reviewReadonly()"><option value="pending">待确认</option><option value="worthy">值得沉淀</option><option value="unworthy">不值得沉淀</option></select></div>
-              <div class="fg"><label class="fl">是否可用</label><select class="fi" v-model="candidateReviews.form.usability" :disabled="reviewReadonly()"><option value="pending">待确认</option><option value="usable">可用</option><option value="unusable">不可用</option></select></div>
-              <div class="fg span-2"><label class="fl">人工审核结论</label><select class="fi" v-model="candidateReviews.form.decision" :disabled="reviewReadonly()"><option value="">未审核</option><option value="approved">通过</option><option value="approved_with_changes">修改后通过</option><option value="rejected">驳回</option><option value="bad_case">标记 Bad Case</option></select></div>
-              <div class="fg span-2"><label class="fl">知识正文</label><textarea class="fi" rows="8" v-model="candidateReviews.form.contentText" :disabled="reviewReadonly()" placeholder="候选知识正文"></textarea><div class="hint">修改正文会保存为纯文本块；未修改时保留上游原始内容结构。</div></div>
+              <div class="fg"><label class="fl">复核结论</label><select class="fi" v-model="candidateReviews.form.knowledge_value" :disabled="reviewReadonly()"><option value="pending">待确认</option><option value="worthy">值得沉淀</option><option value="unworthy">不沉淀</option></select></div>
+              <div class="fg"><label class="fl">训练用途</label><label class="candidate-training-toggle" style="min-height:40px"><input type="checkbox" v-model="candidateReviews.form.includeInTraining" :disabled="reviewReadonly()"> 作为人工标注样本</label></div>
+              <div class="fg span-2"><label class="fl">知识正文</label><textarea class="fi" rows="8" v-model="candidateReviews.form.contentText" :disabled="reviewReadonly()" placeholder="候选知识正文"></textarea><div class="hint">正文和案例媒体独立保存；修改正文不会再覆盖图片或视频。</div></div>
               <div class="fg span-2"><label class="fl">推荐回复</label><textarea class="fi" rows="3" v-model="candidateReviews.form.recommended_reply" :disabled="reviewReadonly()" placeholder="供答疑人员直接使用的推荐回复"></textarea></div>
-              <div class="fg span-2"><label class="fl">如何修改</label><textarea class="fi" rows="3" v-model="candidateReviews.form.modification_notes" :disabled="reviewReadonly()" placeholder="记录需要调整的步骤、措辞或适用范围"></textarea></div>
-              <div class="fg span-2"><label class="fl">问题反馈</label><textarea class="fi" rows="3" v-model="candidateReviews.form.feedback" :disabled="reviewReadonly()" placeholder="记录模型、证据或候选生成问题"></textarea></div>
-              <div class="fg"><label class="fl">错误类型</label><input class="fi" v-model="candidateReviews.form.error_type" :disabled="reviewReadonly()" placeholder="例如：证据不足"></div>
-              <div class="fg"><label class="fl">审核备注</label><input class="fi" v-model="candidateReviews.form.notes" :disabled="reviewReadonly()" placeholder="补充说明"></div>
+              <div class="fg span-2">
+                <label class="fl">案例图片和视频 <span class="hint">共 {{candidateReviews.form.mediaBlocks.length}} 个，可预览、修改说明或删除</span></label>
+                <div class="candidate-media-empty" v-if="!candidateReviews.form.mediaBlocks.length">当前候选没有案例图片或视频。</div>
+                <div class="candidate-media-list" v-else>
+                  <article class="candidate-media-card" v-for="(media,mediaIndex) in candidateReviews.form.mediaBlocks" :key="media._uid">
+                    <div class="content-block-head">
+                      <div class="content-block-head-main"><span class="content-kind" :class="media.type">{{media.type==='image'?'案例图片':'案例视频'}}</span><span class="content-source-badge" :class="{external:!!media.external_url}">{{mediaSourceLabel(media)}}</span></div>
+                      <div class="content-block-actions"><button v-if="candidateReviewMediaUrl(media)" type="button" class="content-action-button" @click="showFull(candidateReviewMediaUrl(media),media.type==='video')">{{media.type==='image'?'查看原图':'播放视频'}}</button><button v-if="!reviewReadonly()" type="button" class="content-action-button danger" @click="removeCandidateReviewMedia(mediaIndex)">删除</button></div>
+                    </div>
+                    <div class="content-media-body">
+                      <button v-if="candidateReviewMediaUrl(media)" type="button" class="content-media-preview" :aria-label="media.type==='image'?'查看案例原图':'播放案例视频'" @click="showFull(candidateReviewMediaUrl(media),media.type==='video')">
+                        <img v-if="media.type==='image' && !media.load_error" :src="candidateReviewMediaUrl(media)" :alt="media.alt || '案例图片预览'" loading="lazy" decoding="async" referrerpolicy="no-referrer" @load="media.load_error=false" @error="media.load_error=true">
+                        <video v-else-if="media.type==='video' && !media.load_error" :src="candidateReviewMediaUrl(media)" muted preload="metadata" playsinline controlsList="nodownload nofullscreen noremoteplayback" disablePictureInPicture @loadedmetadata="media.load_error=false" @error="media.load_error=true"></video>
+                        <span v-if="media.load_error" class="media-thumb-error">{{media.type==='image'?'图片':'视频'}}不可用，请核对地址或删除</span><span v-else class="content-media-preview-overlay">{{media.type==='image'?'查看原图':'播放视频'}}</span>
+                      </button>
+                      <div v-else class="candidate-media-empty">填写安全的 HTTPS 媒体地址后可预览。</div>
+                      <div class="content-media-meta">
+                        <div class="content-media-fields">
+                          <div class="content-media-field candidate-media-url" v-if="!media.media_id"><label>媒体地址</label><input class="fi" v-model.trim="media.external_url" :disabled="reviewReadonly()" placeholder="https://..." @input="media.load_error=false"></div>
+                          <div class="content-media-field candidate-media-url" v-else><label>已存储媒体</label><div class="candidate-media-source">{{media.media_id}}</div></div>
+                          <div class="content-media-field"><label>{{media.type==='image'?'图片':'视频'}}标题</label><input class="fi" v-model="media.alt" :disabled="reviewReadonly()" placeholder="选填"></div>
+                          <div class="content-media-field"><label>{{media.type==='image'?'图片':'视频'}}说明</label><input class="fi" v-model="media.caption" :disabled="reviewReadonly()" placeholder="选填"></div>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+                <div class="candidate-media-toolbar" v-if="!reviewReadonly()"><button class="btn bd bsm" type="button" @click="addCandidateReviewMedia('image')">添加图片链接</button><button class="btn bd bsm" type="button" @click="addCandidateReviewMedia('video')">添加视频链接</button><span class="hint">只接受 HTTPS 地址；删除或修改后会随候选一起保存。</span></div>
+              </div>
+              <div class="fg span-2"><label class="fl">复核说明（选填）</label><textarea class="fi" rows="3" v-model="candidateReviews.form.review_note" :disabled="reviewReadonly()" placeholder="仅在需要说明不沉淀原因或内容修改点时填写"></textarea></div>
             </div>
           </section>
         </div>
@@ -1384,8 +1413,8 @@
       <div class="dlg-f">
         <div class="review-gate" v-if="candidateReviews.current"><span class="review-badge" :class="reviewStatusClass(candidateReviews.current.review_status)">{{reviewStatusLabel(candidateReviews.current.review_status)}}</span><span>{{candidateReviewGateReason(candidateReviews.current)}}</span></div>
         <button class="btn bd" @click="closeCandidateReview">关闭</button>
-        <button class="btn bd" v-if="!reviewReadonly()" @click="saveCandidateReview(false)" :disabled="candidateReviews.saving || !candidateReviews.form.knowledge_origin">{{candidateReviews.saving?'保存中...':'保存审核'}}</button>
-        <button class="btn bp" v-if="!reviewReadonly()" @click="saveCandidateReview(true)" :disabled="candidateReviews.saving||candidateReviews.submitting || !candidateReviews.form.knowledge_origin">{{candidateReviews.submitting?'送审中...':'保存并送审'}}</button>
+        <button class="btn bd" v-if="!reviewReadonly()" @click="saveCandidateReview(false)" :disabled="candidateReviews.saving">{{candidateReviews.saving?'保存中...':'保存审核'}}</button>
+        <button class="btn bp" v-if="!reviewReadonly()" @click="saveCandidateReview(true)" :disabled="candidateReviews.saving||candidateReviews.submitting">{{candidateReviews.submitting?'送审中...':'保存并送审'}}</button>
       </div>
     </div>
   </div>
@@ -1987,7 +2016,7 @@ Vue.createApp({
         summary: {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
         page: 1,
         pageSize: 20,
-        filter: {keyword:'', status:'', priorityOnly:false, deduplicationRequired:false, productCategory:'', annotationStatus:'', modelKnowledgeValue:''},
+        filter: {keyword:'', status:'', priorityOnly:false, deduplicationRequired:false, productCategory:'', annotationStatus:'', modelKnowledgeValue:'', updatedFrom:'', updatedTo:''},
         productCategories: [],
         loading: false,
         selected: [],
@@ -4132,6 +4161,8 @@ Vue.createApp({
       if (filter.productCategory) params.set('product_category', filter.productCategory);
       if (filter.annotationStatus) params.set('annotation_status', filter.annotationStatus);
       if (filter.modelKnowledgeValue) params.set('model_knowledge_value', filter.modelKnowledgeValue);
+      if (filter.updatedFrom) params.set('updated_from', filter.updatedFrom);
+      if (filter.updatedTo) params.set('updated_to', filter.updatedTo);
       params.set('limit', String(self.candidateReviews.pageSize));
       params.set('offset', String((self.candidateReviews.page-1)*self.candidateReviews.pageSize));
       self.candidateReviews.loading = true;
@@ -4203,18 +4234,25 @@ Vue.createApp({
       var reviewPending = item && item.deduplication && item.deduplication.action === 'review_duplicate' && !item.deduplication_confirmed;
       return !!item && item.review_status === 'ready' && !item.knowledge_id && !reviewPending;
     },
+    reviewAnnotatable: function(item) {
+      return !!item && item.review_status !== 'submitted' && !item.knowledge_id;
+    },
     isReviewSelected: function(id) {
       return this.candidateReviews.selected.indexOf(id) !== -1;
     },
     toggleReviewSelection: function(id) {
       var item = this.candidateReviews.items.find(function(row) { return row.id === id; });
-      if (!this.reviewSelectable(item)) return;
+      if (!this.reviewAnnotatable(item)) return;
       var index = this.candidateReviews.selected.indexOf(id);
       if (index === -1) this.candidateReviews.selected.push(id);
       else this.candidateReviews.selected.splice(index, 1);
     },
     selectableReviewIds: function() {
-      return this.candidateReviews.items.filter(this.reviewSelectable).map(function(item) { return item.id; });
+      return this.candidateReviews.items.filter(this.reviewAnnotatable).map(function(item) { return item.id; });
+    },
+    selectedSubmittableReviewIds: function() {
+      var self=this, selected=this.candidateReviews.selected;
+      return this.candidateReviews.items.filter(function(item){return selected.indexOf(item.id)!==-1&&self.reviewSelectable(item);}).map(function(item){return item.id;});
     },
     allReviewSelected: function() {
       var ids = this.selectableReviewIds();
@@ -4238,29 +4276,58 @@ Vue.createApp({
       current.human_review = current.human_review || {};
       current.selection = current.selection || {};
       var contentText = this.contentPreview(current.content);
+      var self = this;
+      var mediaBlocks = this.contentMediaBlocks(current.content).map(function(block) {
+        var editorBlock = self.createMediaEditorBlock(block.type, block);
+        editorBlock._source = JSON.parse(JSON.stringify(block));
+        return editorBlock;
+      });
+      var normalizedContentText = contentText === '暂无正文' ? '' : contentText;
+      var originalContent = this.candidateReviewContent(
+        normalizedContentText,
+        current.content,
+        mediaBlocks
+      );
       this.candidateReviews.current = current;
       this.candidateReviews.form = {
         title: current.title || '',
         knowledge_origin: current.knowledge_origin || '',
         business_type: current.business_type || '',
         category_id: current.category_id || '',
-        contentText: contentText === '暂无正文' ? '' : contentText,
-        originalContentText: contentText === '暂无正文' ? '' : contentText,
+        contentText: normalizedContentText,
+        originalContent: JSON.parse(JSON.stringify(originalContent)),
+        mediaBlocks: mediaBlocks,
         recommended_reply: current.recommended_reply || '',
         applicableCategories: Array.isArray(current.applicable_categories) ? current.applicable_categories.slice() : [],
         brands: Array.isArray(current.applicable_brands) ? current.applicable_brands.slice() : [],
         models: Array.isArray(current.applicable_models) ? current.applicable_models.slice() : [],
         knowledge_value: current.human_review.knowledge_value || 'pending',
-        usability: current.human_review.usability || 'pending',
-        modification_notes: current.human_review.modification_notes || '',
-        feedback: current.human_review.feedback || '',
-        decision: current.human_review.decision || '',
-        error_type: current.human_review.error_type || '',
-        training_eligible: current.human_review.training_eligible || '',
-        notes: current.human_review.notes || '',
+        includeInTraining: current.human_review.training_eligible !== '否',
+        review_note: current.human_review.notes || current.human_review.feedback || current.human_review.modification_notes || '',
         confirmDedupReview: !!current.deduplication_confirmed
       };
       this.candidateReviews.dlg = true;
+    },
+    candidateReviewMediaUrl: function(media) {
+      if (!media) return '';
+      var externalUrl = this.normalizeExternalMediaUrl(
+        media.external_url || media.url || '',
+        media.type
+      );
+      return externalUrl || (media.media_id ? this.mediaUrl(media.media_id) : '');
+    },
+    addCandidateReviewMedia: function(type) {
+      if (this.reviewReadonly()) return;
+      this.candidateReviews.form.mediaBlocks.push(
+        this.createMediaEditorBlock(type, {_saved:false})
+      );
+    },
+    removeCandidateReviewMedia: function(index) {
+      if (this.reviewReadonly()) return;
+      var blocks = this.candidateReviews.form.mediaBlocks || [];
+      if (index < 0 || index >= blocks.length) return;
+      var removed = blocks.splice(index, 1)[0];
+      this.revokeContentBlockPreview(removed);
     },
     onCandidateBusinessTypeChange: function() {
       var form = this.candidateReviews.form;
@@ -4295,10 +4362,19 @@ Vue.createApp({
       var current = self.candidateReviews.current;
       var form = self.candidateReviews.form;
       if (!current || self.reviewReadonly()) return;
-      if (!form.title.trim()) { alert('请输入知识标题'); return; }
-      if (!form.knowledge_origin) { alert('请选择知识来源'); return; }
-      if (!form.business_type) { alert('请选择业务类型'); return; }
-      if (!form.category_id) { alert('请选择所属分类'); return; }
+      if (form.knowledge_value === 'worthy') {
+        if (!form.title.trim()) { alert('请输入知识标题'); return; }
+        if (!form.knowledge_origin) { alert('请选择知识来源'); return; }
+        if (!form.business_type) { alert('请选择业务类型'); return; }
+        if (!form.category_id) { alert('请选择所属分类'); return; }
+      }
+      var invalidMedia = (form.mediaBlocks || []).some(function(media) {
+        return !media.media_id && String(media.external_url || '').trim()
+          && !self.normalizeExternalMediaUrl(media.external_url, media.type);
+      });
+      if (invalidMedia) { alert('案例图片和视频只接受有效的 HTTPS 地址，请修改或删除无效媒体。'); return; }
+      var usability = form.knowledge_value === 'worthy' ? 'usable' : (form.knowledge_value === 'unworthy' ? 'unusable' : 'pending');
+      var decision = form.knowledge_value === 'worthy' ? 'approved' : (form.knowledge_value === 'unworthy' ? 'rejected' : '');
       var body = {
         title: form.title.trim(),
         knowledge_origin: form.knowledge_origin,
@@ -4309,18 +4385,18 @@ Vue.createApp({
         applicable_models: form.models,
         recommended_reply: form.recommended_reply,
         knowledge_value: form.knowledge_value,
-        usability: form.usability,
-        modification_notes: form.modification_notes,
-        feedback: form.feedback,
-        decision: form.decision,
-        error_type: form.error_type,
-        training_eligible: form.training_eligible,
-        notes: form.notes,
+        usability: usability,
+        decision: decision,
+        training_eligible: form.includeInTraining ? '是' : '否',
+        notes: form.review_note,
         confirm_dedup_review: !!form.confirmDedupReview
       };
-      if (form.contentText !== form.originalContentText) {
-        body.content = {blocks: form.contentText.trim() ? [{type:'text', value:form.contentText.trim()}] : []};
-      }
+      var candidateContent = self.candidateReviewContent(
+        form.contentText,
+        form.originalContent,
+        form.mediaBlocks
+      );
+      if (JSON.stringify(candidateContent) !== JSON.stringify(form.originalContent)) body.content = candidateContent;
       self.candidateReviews.saving = true;
       fetch(API + '/integration/candidate-reviews/' + current.id, {
         method:'PATCH',
@@ -4335,7 +4411,7 @@ Vue.createApp({
         })
         .then(function(data) {
           self.candidateReviews.current = data;
-          self.candidateReviews.form.originalContentText = self.candidateReviews.form.contentText;
+          self.candidateReviews.form.originalContent = JSON.parse(JSON.stringify(candidateContent));
           self.loadCandidateReviewDashboard();
           if (submitAfter) {
             if (data.review_status !== 'ready') {
@@ -4397,10 +4473,45 @@ Vue.createApp({
         .finally(function() { self.candidateReviews.submitting = false; });
     },
     submitSelectedCandidateReviews: function() {
-      var ids = this.candidateReviews.selected.slice();
+      var ids = this.selectedSubmittableReviewIds();
       if (!ids.length) return;
       if (!confirm('确认将选中的 ' + ids.length + ' 条候选送入知识待审核队列？')) return;
       this.submitCandidateReviewIds(ids, false);
+    },
+    quickAnnotateCandidateReview: function(item, knowledgeValue) {
+      if (!this.reviewAnnotatable(item)) return;
+      var label=knowledgeValue==='unworthy'?'不沉淀':'值得沉淀';
+      if (!confirm('确认将该候选标为“'+label+'”？')) return;
+      this.annotateCandidateReviewIds([item.id],knowledgeValue);
+    },
+    batchAnnotateCandidateReviews: function(knowledgeValue) {
+      var ids=this.candidateReviews.selected.slice();
+      if (!ids.length) return;
+      var label=knowledgeValue==='unworthy'?'不沉淀':'值得沉淀';
+      if (!confirm('确认将选中的 '+ids.length+' 条候选批量标为“'+label+'”？')) return;
+      this.annotateCandidateReviewIds(ids,knowledgeValue);
+    },
+    annotateCandidateReviewIds: function(ids, knowledgeValue) {
+      var self=this;
+      self.candidateReviews.annotating=true;
+      return fetch(API+'/integration/candidate-reviews:batch-annotate',{
+        method:'POST',
+        headers:self.authHeaders({'Content-Type':'application/json'}),
+        body:JSON.stringify({ingestion_ids:ids,knowledge_value:knowledgeValue,include_in_training:!!self.candidateReviews.includeInTraining})
+      })
+        .then(function(response){return response.json().then(function(data){if(!response.ok)throw new Error(data.detail||'批量标注失败');return data;});})
+        .then(function(data){
+          var message='标注完成：成功 '+Number(data.updated||0)+' 条，失败 '+Number(data.failed||0)+' 条。';
+          var failures=(data.results||[]).filter(function(item){return item.status==='failed';});
+          if(failures.length)message+='\n\n失败明细：\n'+failures.slice(0,8).map(function(item){return item.ingestion_id+'：'+(item.error_message||item.error_code||'标注失败');}).join('\n');
+          alert(message);
+          self.candidateReviews.selected=[];
+          self.loadCandidateReviews();
+          self.loadCandidateReviewDashboard();
+          return data;
+        })
+        .catch(function(error){alert(error.message);return null;})
+        .finally(function(){self.candidateReviews.annotating=false;});
     },
     loadRoles: function() {
       var self = this;
@@ -5118,9 +5229,60 @@ Vue.createApp({
       var self = this;
       var blocks = Array.isArray(content.blocks) ? content.blocks : [];
       var text = blocks.map(function(block) {
-        return self.richTextToPlainText(block.value || block.text || block.caption || block.alt || '');
+        if (!block || (block.type && block.type !== 'text')) return '';
+        return self.richTextToPlainText(block.value || block.text || '');
       }).filter(function(value) { return value; }).join('\n');
       return text || '暂无正文';
+    },
+    contentMediaBlocks: function(content) {
+      var blocks = content && Array.isArray(content.blocks) ? content.blocks : [];
+      return blocks.filter(function(block) {
+        return !!block && (block.type === 'image' || block.type === 'video');
+      }).map(function(block) {
+        return JSON.parse(JSON.stringify(block));
+      });
+    },
+    candidateReviewContent: function(contentText, originalContent, mediaBlocks) {
+      var blocks = [];
+      var textValue = this.richTextToPlainText(contentText || '');
+      if (textValue.trim()) blocks.push({type:'text', value:textValue});
+      var sourceMedia = Array.isArray(mediaBlocks)
+        ? mediaBlocks
+        : this.contentMediaBlocks(originalContent);
+      var self = this;
+      sourceMedia.forEach(function(media) {
+        if (!media || (media.type !== 'image' && media.type !== 'video')) return;
+        var source = media._source && typeof media._source === 'object'
+          ? JSON.parse(JSON.stringify(media._source))
+          : {};
+        Object.keys(source).forEach(function(key) {
+          if (key.charAt(0) === '_') delete source[key];
+        });
+        delete source.preview;
+        delete source.file;
+        delete source.uploading;
+        delete source.load_error;
+        source.type = media.type;
+        source.alt = String(media.alt || '');
+        source.caption = String(media.caption || '');
+        var mediaId = String(media.media_id || '').replace(/^\/uploads\//i, '');
+        var externalUrl = self.normalizeExternalMediaUrl(
+          media.external_url || media.url || '',
+          media.type
+        );
+        delete source.url;
+        if (mediaId) {
+          source.media_id = mediaId;
+          delete source.external_url;
+        } else if (externalUrl) {
+          source.external_url = externalUrl;
+          delete source.media_id;
+        } else {
+          return;
+        }
+        blocks.push(source);
+      });
+      return {blocks:blocks};
     },
     reviewDeskContentTextBlocks: function(value) {
       var self = this;

@@ -12,6 +12,7 @@ from .automation import (
     run_automation_pipeline,
 )
 from .automation_queue import process_automation_queue, retry_cz_candidate_sync
+from .cz_topic_snapshot import CZTopicSnapshot
 from .operations import apply_retention_cleanup, write_operations_report
 from .second_part_pull import (
     SecondPartPullError,
@@ -89,6 +90,32 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate = subparsers.add_parser("evaluate", help="Create a quality report from a cz-reviewed workbook")
     evaluate.add_argument("--review-file", required=True, help="Annotated review workbook path")
     evaluate.add_argument("--output-dir", required=True, help="Output directory")
+
+    snapshot_import = subparsers.add_parser(
+        "cz-topic-snapshot-import",
+        help="Import a local CZ topic snapshot JSON into an isolated SQLite cache",
+    )
+    snapshot_import.add_argument(
+        "--source",
+        required=True,
+        help="Local CZ topic snapshot JSON path",
+    )
+    snapshot_import.add_argument(
+        "--database",
+        default="data/cz-topic-snapshot.db",
+        help="SQLite snapshot database path",
+    )
+    snapshot_import.add_argument(
+        "--ttl-seconds",
+        type=int,
+        default=86400,
+        help="Snapshot freshness window in seconds",
+    )
+    snapshot_import.add_argument(
+        "--updated-since",
+        default="",
+        help="Optional ISO timestamp for incremental local snapshot import",
+    )
 
     automate = subparsers.add_parser(
         "automate",
@@ -413,6 +440,41 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=Path(args.output_dir),
         )
         print(summary)
+        return 0
+
+    if args.command == "cz-topic-snapshot-import":
+        try:
+            snapshot = CZTopicSnapshot(
+                Path(args.database),
+                ttl_seconds=args.ttl_seconds,
+            )
+            result = snapshot.sync_from_file(
+                Path(args.source),
+                updated_since=args.updated_since,
+            )
+        except ValueError as exc:
+            print(
+                json.dumps(
+                    {"status": "failed", "error": str(exc)},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 1
+        print(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "snapshot_version": result.snapshot_version,
+                    "upserted": result.upserted,
+                    "retired": result.retired,
+                    "skipped": result.skipped,
+                    "database": str(Path(args.database)),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
 
     if args.command == "automate":

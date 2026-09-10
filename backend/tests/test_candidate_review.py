@@ -4,12 +4,26 @@ from pydantic import ValidationError
 
 from app.schemas.integration import IntegrationProcessing
 from app.services.candidate_review import (
+    build_quick_human_review,
     evaluate_review_status,
     normalize_human_review,
 )
 
 
 class CandidateReviewServiceTests(unittest.TestCase):
+    def test_quick_review_populates_legacy_gate_fields_once(self):
+        review = build_quick_human_review(
+            "unworthy",
+            include_in_training=True,
+            notes="模型失败批次，无需沉淀",
+        )
+
+        self.assertEqual(review["knowledge_value"], "unworthy")
+        self.assertEqual(review["usability"], "unusable")
+        self.assertEqual(review["decision"], "rejected")
+        self.assertEqual(review["training_eligible"], "是")
+        self.assertEqual(review["notes"], "模型失败批次，无需沉淀")
+
     def test_pending_review_waits_for_human_confirmation(self):
         status, eligible, reason = evaluate_review_status(
             {"eligible": False},

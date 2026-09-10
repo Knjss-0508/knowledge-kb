@@ -367,6 +367,33 @@ def test_direct_reconcile_scope_level_is_not_a_hard_conflict() -> None:
     assert not _direct_reconcile_has_hard_conflict(generic, [apple])
 
 
+def test_all_topic_guards_reject_same_work_order_different_atomics() -> None:
+    first = {
+        "数据ID": "SOURCE-1",
+        "工单ID": "WO-SAME",
+        "原始工单ID": "WO-SAME",
+        "_原子知识ID": "WO-SAME-U1",
+        "产品类型": "手机",
+        "模型主题一级分类": "显示问题",
+        "模型主题二级分类": "屏幕色斑",
+        "问题意图": "标准判定",
+        "对象/部位": "屏幕",
+        "异常现象": "色斑",
+        "核心问题": "手机屏幕色斑如何判定",
+        "判定目标": "判断屏幕是否属于色斑",
+        "解题方式": "按屏幕显示口径核验",
+        "聊天内容": "手机屏幕色斑如何判定",
+    }
+    second = {**first, "数据ID": "SOURCE-2", "_原子知识ID": "WO-SAME-U2"}
+
+    assert _has_topic_merge_conflict(first, second)
+    assert _direct_reconcile_has_hard_conflict(first, [second])
+    assert (
+        _direct_cluster_hard_conflict_reason([first, second])
+        == "同一会话拆出的多个原子问题不能在自动聚类阶段重新合并"
+    )
+
+
 def test_direct_reconcile_never_merges_same_target_across_products() -> None:
     phone = {
         "产品类型": "手机",
@@ -411,7 +438,7 @@ def test_direct_reconcile_rejects_two_explicit_platforms() -> None:
     assert _direct_reconcile_has_hard_conflict(ios, [android])
 
 
-def test_phone_housing_damage_values_share_direct_mimo_candidate_bucket() -> None:
+def test_phone_housing_damage_values_with_different_objects_use_separate_buckets() -> None:
     cracked = {
         "unit_id": "CRACKED-U1",
         "product_category": "手机",
@@ -429,12 +456,12 @@ def test_phone_housing_damage_values_share_direct_mimo_candidate_bucket() -> Non
         "source_conversation": "手机后壳掉漆怎么判",
     }
 
-    assert _direct_atomic_bucket_key(cracked) == _direct_atomic_bucket_key(
+    assert _direct_atomic_bucket_key(cracked) != _direct_atomic_bucket_key(
         paint_loss
     )
 
 
-def test_phone_housing_damage_values_are_not_blocked_by_direct_post_guard() -> None:
+def test_phone_housing_damage_values_with_different_objects_are_blocked_by_direct_post_guard() -> None:
     cracked = {
         "_原子知识ID": "CRACKED-U1",
         "数据ID": "CRACKED",
@@ -458,8 +485,8 @@ def test_phone_housing_damage_values_are_not_blocked_by_direct_post_guard() -> N
         "主标准路径": "手机后壳掉漆判定",
     }
 
-    assert _direct_cluster_hard_conflict_reason([cracked, paint_loss]) == ""
-    assert not _direct_reconcile_has_hard_conflict(paint_loss, [cracked])
+    assert "对象" in _direct_cluster_hard_conflict_reason([cracked, paint_loss])
+    assert _direct_reconcile_has_hard_conflict(paint_loss, [cracked])
 
 
 def test_stored_same_family_rule_bypasses_text_only_field_differences() -> None:
@@ -488,8 +515,8 @@ def test_stored_same_family_rule_bypasses_text_only_field_differences() -> None:
         "主标准路径": "上盖外观磨损判定",
     }
 
-    assert _direct_cluster_hard_conflict_reason([first, second]) == ""
-    assert not _direct_reconcile_has_hard_conflict(second, [first])
+    assert "对象" in _direct_cluster_hard_conflict_reason([first, second])
+    assert _direct_reconcile_has_hard_conflict(second, [first])
 
 
 def test_phone_screen_display_values_are_forced_apart_by_direct_guards() -> None:

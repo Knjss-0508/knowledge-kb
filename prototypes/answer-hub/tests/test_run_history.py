@@ -28,7 +28,11 @@ def test_run_monitor_lists_pending_online_job_before_run_exists(
             "updated_at": "2026-08-07T10:00:00+08:00",
             "original_filename": "sample.xlsx",
             "run_id": "",
-            "options": {"sync_to_cz_review": True},
+            "options": {
+                "sync_to_cz_review": True,
+                "knowledge_settle_from_date": "2026-08-01",
+                "knowledge_settle_to_date": "2026-08-07",
+            },
             "summary": {},
             "artifacts": {},
             "error": "",
@@ -49,6 +53,9 @@ def test_run_monitor_lists_pending_online_job_before_run_exists(
     assert records[0]["status_label"] == "排队中"
     assert records[0]["source_name"] == "sample.xlsx"
     assert records[0]["sync_to_cz_review"] is True
+    assert records[0]["batch_name"] == "沉淀 2026-08-01 至 2026-08-07"
+    assert records[0]["settle_from_date"] == "2026-08-01"
+    assert records[0]["settle_to_date"] == "2026-08-07"
 
 
 def test_run_monitor_marks_running_job_stalled_after_heartbeat_timeout(

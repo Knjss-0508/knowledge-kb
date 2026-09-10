@@ -294,6 +294,26 @@ class CandidateReviewBatchSubmit(BaseModel):
     ingestion_ids: list[str] = Field(..., min_length=1, max_length=100)
 
 
+class CandidateReviewBatchAnnotate(BaseModel):
+    ingestion_ids: list[str] = Field(..., min_length=1, max_length=500)
+    knowledge_value: Literal["worthy", "unworthy", "pending"]
+    include_in_training: bool = True
+
+
+class CandidateReviewAnnotateResult(BaseModel):
+    ingestion_id: str
+    status: Literal["updated", "failed"]
+    review_status: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class CandidateReviewBatchAnnotateResponse(BaseModel):
+    updated: int
+    failed: int
+    results: list[CandidateReviewAnnotateResult]
+
+
 class CandidateReviewSubmitResult(BaseModel):
     ingestion_id: str
     status: Literal["submitted", "failed", "reused"]

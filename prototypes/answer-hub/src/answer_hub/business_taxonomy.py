@@ -9,7 +9,10 @@ import json
 import os
 import re
 
-from .product_taxonomy import is_concrete_unconfigured_product
+from .product_taxonomy import (
+    is_concrete_unconfigured_product,
+    resolve_product_category,
+)
 
 
 SELF_OPERATED_BUSINESS_LINE_CODE = "self_operated"
@@ -174,6 +177,10 @@ def business_line_from_record(
     product_marker = resolve_business_line(record.get("产品类型"), path)
     if product_marker:
         return product_marker
+    if resolve_product_category(
+        record.get("产品类型编码") or record.get("产品类型")
+    ):
+        return default_business_line(path)
     if is_concrete_unconfigured_product(record.get("产品类型")):
         return next(
             line
