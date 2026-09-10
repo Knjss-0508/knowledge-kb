@@ -1771,13 +1771,13 @@
         <div v-if="dedupCompare.feedbackEnabled" style="margin-top:16px;padding:14px;border:1px solid #f7c97f;border-radius:7px;background:#fffaf0">
           <div v-if="dedupCompare.feedbackRecorded" style="font-size:12px;color:#008a3f;font-weight:600">已确认当前知识与命中知识确实不同，可返回发布审核继续操作。</div>
           <template v-else>
-            <label class="fl"><span class="req">*</span> 判定不同的原因</label>
+            <label class="fl">判定不同的原因（选填）</label>
             <textarea class="fi" rows="3" v-model="dedupCompare.reason" placeholder="例如：适用产品、业务规则或处理条件不同"></textarea>
             <div class="hint">确认后会记录本次人工结论；全部命中知识均确认不同后，发布按钮才会解锁。</div>
           </template>
         </div>
       </div>
-      <div class="dlg-f"><button class="btn bd" @click="dedupCompare.open=false">返回修改</button><button v-if="dedupCompare.feedbackEnabled && !dedupCompare.feedbackRecorded" class="btn bp" @click="confirmDedupDifferent" :disabled="dedupCompare.loading || dedupCompare.submitting || !dedupCompare.reason.trim()">{{dedupCompare.submitting?'保存中...':'确认确实不同'}}</button><button v-else-if="dedupCompare.allowSubmit" class="btn bp" @click="confirmDedupSubmit" :disabled="dedupCompare.loading">内容确实不同，仍要送审</button></div>
+      <div class="dlg-f"><button class="btn bd" @click="dedupCompare.open=false">返回修改</button><button v-if="dedupCompare.feedbackEnabled && !dedupCompare.feedbackRecorded" class="btn bp" @click="confirmDedupDifferent" :disabled="dedupCompare.loading || dedupCompare.submitting">{{dedupCompare.submitting?'保存中...':'确认确实不同'}}</button><button v-else-if="dedupCompare.allowSubmit" class="btn bp" @click="confirmDedupSubmit" :disabled="dedupCompare.loading">内容确实不同，仍要送审</button></div>
     </div>
   </div>
   <div class="mask" v-if="embedding.runnerAccess.open" role="dialog" aria-modal="true" aria-labelledby="embedding-runner-access-title">
@@ -6500,7 +6500,7 @@ Vue.createApp({
     confirmDedupDifferent: function() {
       var self = this;
       var sourceKnowledgeId = self.dedupCompare.sourceKnowledgeId || self.eid;
-      if (!sourceKnowledgeId || !self.dedupCompare.match.knowledge_id || !self.dedupCompare.reason.trim()) return;
+      if (!sourceKnowledgeId || !self.dedupCompare.match.knowledge_id) return;
       self.dedupCompare.submitting = true;
       fetch(API + '/knowledge/' + sourceKnowledgeId + '/deduplication-feedback', {
         method: 'POST',
