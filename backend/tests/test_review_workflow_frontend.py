@@ -148,6 +148,8 @@ def test_quick_review_desk_uses_large_centered_canvas() -> None:
 
 def test_quick_review_can_compare_and_confirm_deduplication_matches() -> None:
     assert "对比并确认" in FRONTEND
+    assert "判定不同的原因（选填）" in FRONTEND
+    assert "dedupCompare.loading || dedupCompare.submitting || !dedupCompare.reason.trim()" not in FRONTEND
     assert "openReviewDeskDedupCompare: function(match)" in FRONTEND
     assert "this.dedupCompare.sourceKnowledgeId = detail.id;" in FRONTEND
     assert "feedbackEnabled = !!(this.can('knowledge:approve') && detail.id)" in FRONTEND

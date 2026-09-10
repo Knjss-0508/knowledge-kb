@@ -378,7 +378,7 @@ class FeedbackSubmit(BaseModel):
 class DeduplicationFeedbackSubmit(BaseModel):
     matched_knowledge_id: str = Field(..., min_length=1, max_length=64, description="命中的已有知识ID")
     verdict: Literal["different"] = Field("different", description="人工复核结论")
-    reason: str = Field(..., min_length=1, max_length=1000, description="判定不同的原因")
+    reason: str = Field("", max_length=1000, description="判定不同的原因（选填）")
 
 
 class ExcelImportRowResult(BaseModel):
