@@ -401,6 +401,12 @@
     .review-desk-f .btn{min-height:36px;padding:6px 14px;font-size:13px}
     @media(min-width:761px) and (max-width:1040px){.review-desk{width:calc(100% - 32px)}.review-desk-b{padding:20px}.review-desk-overview,.review-desk-section{padding:18px}.review-desk-content-media{grid-template-columns:1fr}.review-desk-content-media-frame{min-height:240px}}
     @media(max-width:760px){.review-desk{width:100%;height:100%;max-height:100vh;border-radius:0}.review-desk-h{min-height:62px;padding:0 14px}.review-desk-h h3{font-size:17px}.review-desk-position{font-size:12px}.review-desk-b{flex:1;max-height:none;padding:14px}.review-desk-overview,.review-desk-section{padding:14px}.review-desk-overview h4{font-size:17px}.review-desk-meta,.review-desk-scope{font-size:11px}.review-desk-section-title{margin-bottom:9px;font-size:13px}.review-desk-issue-text{max-height:78px;font-size:12px;line-height:1.65}.review-desk-content{max-height:300px;padding:12px;font-size:12px;line-height:1.75}.review-desk-content-media{grid-template-columns:1fr;gap:12px;padding:10px}.review-desk-content-media-frame{min-height:132px}.review-desk-content-media-caption{font-size:12px;line-height:1.6}.review-desk-content-media-caption strong{font-size:13px}.review-desk-dedup-item{padding:9px 10px;font-size:12px;line-height:1.55}.review-desk-action-message{font-size:12px}.review-desk-f{min-height:78px;padding:10px 14px}.review-desk-f .btn{min-height:0;padding:3px 8px;font-size:11px}.review-desk-actions{width:100%;margin-left:0}.review-desk-actions .btn{flex:1 1 auto}}
+    /* 快速审核：查重命中可在当前工作台内对比并确认。 */
+    .review-desk-dedup-item{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .review-desk-dedup-copy{min-width:0}
+    .review-desk-dedup-item strong{overflow-wrap:anywhere}
+    .review-desk-dedup-action{flex:0 0 auto}
+    @media(max-width:760px){.review-desk-dedup-item{align-items:flex-start;flex-direction:column}.review-desk-dedup-action{width:100%}}
   </style>
 </head>
 <body>
@@ -1475,7 +1481,7 @@
           <section class="review-desk-section review-desk-issue" v-if="reviewDeskVisibleDedupMatches().length">
             <div class="review-desk-section-title"><span>查重命中</span><span class="hint">需对比确认后才能发布</span></div>
             <div class="review-desk-dedup-list">
-              <div class="review-desk-dedup-item" v-for="match in reviewDeskVisibleDedupMatches()" :key="'desk-dedup-'+match.knowledge_id"><strong>{{match.knowledge_id}} · {{match.title}}</strong><small>{{dedupMatchDescription(match)}} · 综合 {{formatSimilarity(match.similarity)}}</small></div>
+              <div class="review-desk-dedup-item" v-for="match in reviewDeskVisibleDedupMatches()" :key="'desk-dedup-'+match.knowledge_id"><div class="review-desk-dedup-copy"><strong>{{match.knowledge_id}} · {{match.title}}</strong><small>{{dedupMatchDescription(match)}} · 综合 {{formatSimilarity(match.similarity)}}</small></div><button type="button" class="btn bd bsm review-desk-dedup-action" @click.stop="openReviewDeskDedupCompare(match)" :disabled="!match.knowledge_id" :aria-label="'对比并确认相似知识：' + (match.title || match.knowledge_id)">对比并确认</button></div>
             </div>
           </section>
           <div class="review-desk-action-message" v-if="reviewDesk.detailFallback">详情加载失败，当前仅展示列表摘要，暂不能修改或发布。请刷新后重试。{{reviewDesk.detailError ? '（' + reviewDesk.detailError + '）' : ''}}</div>
@@ -1740,13 +1746,13 @@
   </div>
   <div class="mask" v-if="dedupCompare.open" @click.self="dedupCompare.open=false">
     <div class="dlg" style="width:min(980px,94vw)">
-      <div class="dlg-h"><h3>发现疑似重复知识</h3><button class="dlg-x" @click="dedupCompare.open=false">&times;</button></div>
+      <div class="dlg-h"><h3>{{dedupCompare.quickReview?'快速审核查重对比':'发现疑似重复知识'}}</h3><button class="dlg-x" @click="dedupCompare.open=false">&times;</button></div>
       <div class="dlg-b">
         <div class="hint">命中知识：<b>{{dedupCompare.match.knowledge_id}}</b> · {{dedupCompare.match.title}}，语义相似度 {{formatSimilarity(dedupCompare.match.similarity)}}。请完成对比后决定是否仍要送审。</div>
         <div v-if="dedupCompare.loading" style="padding:24px 0;text-align:center;color:#86909c">正在加载命中知识详情...</div>
         <div v-else style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px">
           <div style="border:1px solid #e5e6eb;border-radius:6px;padding:12px;min-width:0">
-            <div style="font-size:12px;font-weight:600;margin-bottom:8px">新建知识</div>
+            <div style="font-size:12px;font-weight:600;margin-bottom:8px">{{dedupCompare.quickReview?'当前审核知识':'新建知识'}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>标题：</b>{{dedupCompare.candidate.title}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>知识来源：</b>{{knowledgeOriginLabel(dedupCompare.candidate.knowledge_origin)}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>业务类型：</b>{{businessTypeLabel(dedupCompare.candidate.business_type)}}</div>
@@ -2088,7 +2094,7 @@ Vue.createApp({
       option: {applicableCategories:[], brands:[], models:[]},
       optErr: {applicableCategories:'', brands:'', models:''},
       fm: {title:'', subtitles:[], knowledgeOrigin:'', businessType:'', cat:'', by:'', scenes:[], relatedStandardItems:[], applicableCategories:[], brands:[], models:[], modelConfiguration:null, importReviewMetadata:{}, deduplicationMetadata:{}, blocks:[]},
-      dedupCompare: {open:false, loading:false, allowSubmit:false, feedbackEnabled:false, feedbackRecorded:false, reason:'', submitting:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', knowledge_origin:'', business_type:'', category_id:'', content:{blocks:[]}}, target:{}},
+      dedupCompare: {open:false, loading:false, quickReview:false, sourceKnowledgeId:'', allowSubmit:false, feedbackEnabled:false, feedbackRecorded:false, reason:'', submitting:false, match:{knowledge_id:'', title:'', similarity:0}, candidate:{title:'', knowledge_origin:'', business_type:'', category_id:'', content:{blocks:[]}}, target:{}},
       full:{show:false, src:'', isVideo:false, error:false}
     }
   },
@@ -2440,6 +2446,31 @@ Vue.createApp({
     reviewDeskVisibleDedupMatches: function() {
       var detail = this.reviewDesk && this.reviewDesk.detail;
       return detail ? this.visibleDedupMatches(detail.deduplication_metadata || {}) : [];
+    },
+    openReviewDeskDedupCompare: function(match) {
+      var detail = this.reviewDesk && this.reviewDesk.detail;
+      if (!detail || this.reviewDesk.detailFallback || !match || !match.knowledge_id) return;
+      this.openDedupCompare(
+        {matches:[match]},
+        {
+          title: detail.title || '',
+          knowledge_origin: detail.knowledge_origin || '',
+          business_type: detail.business_type || '',
+          category_id: detail.category_id || '',
+          content: detail.content || ''
+        },
+        false
+      );
+      if (this.dedupCompare) {
+        this.dedupCompare.quickReview = true;
+        this.dedupCompare.sourceKnowledgeId = detail.id;
+        this.dedupCompare.feedbackEnabled = !!(this.can('knowledge:approve') && detail.id);
+        this.dedupCompare.feedbackRecorded = this.hasDedupFeedback(
+          match.knowledge_id,
+          detail.deduplication_metadata || {}
+        );
+        this.dedupCompare.allowSubmit = false;
+      }
     },
     reviewDeskPositionLabel: function() {
       var total = this.reviewDesk && this.reviewDesk.items ? this.reviewDesk.items.length : 0;
@@ -6435,6 +6466,8 @@ Vue.createApp({
       self.dedupCompare = {
         open: true,
         loading: true,
+        quickReview: false,
+        sourceKnowledgeId: '',
         allowSubmit: !!allowSubmit,
         feedbackEnabled: !!(self.auditMode && self.eid && !allowSubmit),
         feedbackRecorded: self.hasDedupFeedback(matches[0].knowledge_id),
@@ -6466,9 +6499,10 @@ Vue.createApp({
     },
     confirmDedupDifferent: function() {
       var self = this;
-      if (!self.eid || !self.dedupCompare.match.knowledge_id || !self.dedupCompare.reason.trim()) return;
+      var sourceKnowledgeId = self.dedupCompare.sourceKnowledgeId || self.eid;
+      if (!sourceKnowledgeId || !self.dedupCompare.match.knowledge_id || !self.dedupCompare.reason.trim()) return;
       self.dedupCompare.submitting = true;
-      fetch(API + '/knowledge/' + self.eid + '/deduplication-feedback', {
+      fetch(API + '/knowledge/' + sourceKnowledgeId + '/deduplication-feedback', {
         method: 'POST',
         headers: self.authHeaders({'Content-Type':'application/json'}),
         body: JSON.stringify({
@@ -6484,7 +6518,12 @@ Vue.createApp({
           });
         })
         .then(function(data) {
-          self.fm.deduplicationMetadata = data.deduplication_metadata || self.fm.deduplicationMetadata;
+          if (sourceKnowledgeId === self.eid) {
+            self.fm.deduplicationMetadata = data.deduplication_metadata || self.fm.deduplicationMetadata;
+          }
+          if (self.reviewDesk && self.reviewDesk.detail && self.reviewDesk.detail.id === sourceKnowledgeId) {
+            self.reviewDesk.detail.deduplication_metadata = data.deduplication_metadata || self.reviewDesk.detail.deduplication_metadata;
+          }
           self.dedupCompare.feedbackRecorded = true;
           self.dedupCompare.reason = '';
           self.load();
