@@ -5,6 +5,7 @@ from dataclasses import dataclass, asdict, replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from difflib import SequenceMatcher
+from functools import lru_cache
 from heapq import heappop, heappush
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -44,11 +45,16 @@ from .classification_catalog import (
 from .clustering_rules import (
     ClusteringFingerprint,
     ClusteringRuleMatch,
+    build_clustering_boundary_key,
     build_clustering_fingerprint,
+    clustering_threshold_values,
     clustering_rules_metadata,
     match_clustering_judgment_rule,
 )
-from .cz_integration import CzIntegrationAdapter
+from .cz_integration import (
+    CzIntegrationAdapter,
+    CzPublishedKnowledgeItem,
+)
 from .draft_quality import (
     assess_case_only_draft,
     has_source_specific_case_content,
@@ -73,6 +79,7 @@ from .mimo import (
     TOPIC_STAGE_PROMPT_VERSION,
     candidate_title_structure_issue,
     candidate_title_style_issue,
+    _conversation_intent_evidence,
 )
 from .operations import partition_redaction_rows
 from .product_taxonomy import (
@@ -120,9 +127,9 @@ DEFAULT_DIRECT_MIMO_MAX_WORKERS = 4
 DEFAULT_DIRECT_ATOMIC_BATCH_SIZE = 4
 DEFAULT_DIRECT_ATOMIC_BATCH_MAX_CHARS = 16000
 DIRECT_MIMO_PROGRESS_VERSION = 3
-DIRECT_RECONCILE_ALGORITHM_VERSION = "direct-reconcile-v6-quality-boundaries"
+DIRECT_RECONCILE_ALGORITHM_VERSION = "direct-reconcile-v8-brand-waterproof-and-duplicate-boundaries"
 DIRECT_LOCAL_RESCUE_ALGORITHM_VERSION = (
-    "direct-local-rescue-v2-explicit-dual-topics"
+    "direct-local-rescue-v6-atomic-completeness-protection"
 )
 DIRECT_RECONCILE_QUERY_RULE_FLOOR = 0.25
 DIRECT_RECONCILE_FAMILY_RULE_FLOOR = 0.40
@@ -194,8 +201,6 @@ _DIRECT_RECONCILE_ALIAS_REPLACEMENTS = (
     ("存储/硬盘", "内存硬盘"),
     ("硬盘容量", "内存硬盘容量"),
     ("内存容量", "内存硬盘容量"),
-    ("硬盘品牌", "内存硬盘品牌"),
-    ("内存品牌", "内存硬盘品牌"),
     ("白光灯检测", "白光检测"),
     ("白光检查", "白光检测"),
     ("检测方法咨询", "检测方法"),
@@ -204,14 +209,30 @@ _DIRECT_RECONCILE_ALIAS_REPLACEMENTS = (
     ("一根线", "工具读取"),
 )
 
+_DIRECT_RECONCILE_OBJECT_ALIAS_REPLACEMENTS = (
+    ("后置摄像头镜头", "摄像头镜头"),
+    ("后置摄像头镜片", "摄像头镜头"),
+    ("后摄像头镜头", "摄像头镜头"),
+    ("后摄镜头", "摄像头镜头"),
+    ("后置摄像头", "摄像头"),
+    ("后摄像头", "摄像头"),
+    ("后摄", "摄像头"),
+)
+
 _DIRECT_RECONCILE_TRUSTED_TARGETS = frozenset(
     {
         "model_query",
-        "memory_storage_brand",
+        "memory_brand",
+        "storage_brand",
+        "memory_storage_third_party",
+        "waterproof_indicator_discoloration",
         "new_device_eligibility",
         "camera_lens_surface_condition",
         "screen_color_spot",
         "screen_color_aging",
+        "true_tone_support",
+        "ultraviolet_detection_requirement",
+        "ultraviolet_detection_result",
     }
 )
 
@@ -222,27 +243,50 @@ _DIRECT_RECONCILE_SCOPE_AGNOSTIC_TARGETS = (
 _DIRECT_RECONCILE_THRESHOLD_AGNOSTIC_TARGETS = frozenset(
     {
         "model_query",
-        "memory_storage_brand",
+        "memory_brand",
+        "storage_brand",
+        "memory_storage_third_party",
+    }
+)
+
+_DIRECT_RECONCILE_OBJECT_AGNOSTIC_TARGETS = frozenset(
+    {
+        "model_query",
+        "memory_brand",
+        "storage_brand",
+        "memory_storage_third_party",
+        "waterproof_indicator_discoloration",
     }
 )
 
 _DIRECT_RECONCILE_MULTI_CLUSTER_TARGETS = frozenset(
     {
         "model_query",
-        "memory_storage_brand",
+        "memory_brand",
+        "storage_brand",
+        "memory_storage_third_party",
+        "waterproof_indicator_discoloration",
         "new_device_eligibility",
         "screen_color_spot",
         "screen_color_aging",
+        "ultraviolet_detection_requirement",
+        "ultraviolet_detection_result",
     }
 )
 
 _DIRECT_RECONCILE_TRUSTED_TARGET_FLOORS = {
     "model_query": 0.18,
-    "memory_storage_brand": 0.18,
+    "memory_brand": 0.18,
+    "storage_brand": 0.18,
+    "memory_storage_third_party": 0.18,
+    "waterproof_indicator_discoloration": 0.18,
     "new_device_eligibility": 0.22,
     "camera_lens_surface_condition": 0.24,
     "screen_color_spot": 0.24,
     "screen_color_aging": 0.24,
+    "true_tone_support": 0.24,
+    "ultraviolet_detection_requirement": 0.24,
+    "ultraviolet_detection_result": 0.24,
 }
 
 
@@ -641,6 +685,13 @@ TOPIC_CANDIDATE_COLUMNS = [
     "历史主题匹配ID",
     "历史主题匹配置信度",
     "历史主题匹配原因",
+    "线上已有知识匹配结果",
+    "线上已有知识匹配ID",
+    "线上已有知识匹配置信度",
+    "线上已有知识匹配原因",
+    "线上已有知识来源",
+    "线上已有知识边界状态",
+    "线上已有知识边界标记",
     "主题证据版本",
     "本次新增证据数",
     "本次重复证据数",
@@ -692,6 +743,23 @@ CLUSTER_ONLY_COLUMNS = [
     "主题解题方式",
     "主题来源记录ID",
     "主题工单ID",
+    "历史主题处理结果",
+    "历史主题匹配ID",
+    "历史主题匹配置信度",
+    "历史主题匹配原因",
+    "线上已有知识匹配结果",
+    "线上已有知识匹配ID",
+    "线上已有知识匹配置信度",
+    "线上已有知识匹配原因",
+    "线上已有知识来源",
+    "线上已有知识边界状态",
+    "线上已有知识边界标记",
+    "主题证据版本",
+    "本次新增证据数",
+    "本次重复证据数",
+    "增量补充状态",
+    "增量补充叠加层ID",
+    "需要重新审核",
     "成员核心问题",
     "主题聚类键",
     "聚类决策",
@@ -1419,18 +1487,139 @@ def _structured_topic_question_title(
         if len(parts) >= 3:
             text = "、".join(parts[:2]) + "等"
         elif len(parts) == 2:
-            text = "和".join(parts)
+            connector = (
+                "且"
+                if any(
+                    parts[1].startswith(marker)
+                    for marker in ("无法", "不能", "未能", "不可")
+                )
+                or "无反应" in parts[1]
+                else "和"
+            )
+            text = connector.join(parts)
         else:
             text = parts[0] if parts else text
         return text.strip("：:；;，,、 ")
 
+    def compact_business_text(value: Any) -> str:
+        return re.sub(
+            r"[\s，,。；;：:、（）()【】\[\]“”‘’\"'|｜/\\-]+",
+            "",
+            _clean_text(value),
+        )
+
+    def explicit_model_scope() -> str:
+        ignored = {"", "通用", "不限", "全部", "所有", "待确认", "未知"}
+        values = list(
+            dict.fromkeys(
+                _clean_text(row.get(field))
+                for row in rows
+                for field in ("_原子机型范围", "适用机型", "机型")
+                if _clean_text(row.get(field)) not in ignored
+            )
+        )
+        return values[0] if len(values) == 1 else ""
+
     subject_term = business_term(query.get("对象/部位"))
-    phenomenon_term = business_term(query.get("异常现象"))
+    raw_phenomenon = _clean_text(query.get("异常现象"))
+    phenomenon_term = business_term(raw_phenomenon)
+    state_match = re.search(r"[（(]([^（）()]{1,80})[）)]", raw_phenomenon)
+    if state_match and any(
+        marker in state_match.group(1)
+        for marker in ("正常", "维修", "进液", "拆修", "异常")
+    ):
+        state_options = [
+            _clean_text(option).removeprefix("是否")
+            for option in re.split(r"[/／、，,或]", state_match.group(1))
+            if _clean_text(option).removeprefix("是否")
+        ]
+        if state_options:
+            phenomenon_term = f"状态（{'、'.join(dict.fromkeys(state_options))}）"
+    if product_term := business_term(_topic_product_type(query, rows)):
+        if subject_term.startswith(product_term) and len(subject_term) > len(product_term):
+            subject_term = subject_term[len(product_term) :]
+    if _title_is_case_narrative(raw_phenomenon):
+        source_title = _natural_topic_title_from_source(query, rows)
+        if source_title and not _title_requires_structured_rebuild(source_title):
+            scoped_title = source_title
+            if product_term and not scoped_title.startswith(product_term):
+                scoped_title = f"{product_term}{scoped_title}"
+            return _as_natural_question_title(scoped_title)
     if subject_term.endswith("镜头") and phenomenon_term.startswith("镜头"):
         phenomenon_term = phenomenon_term[len("镜头") :].lstrip("表面")
+    subject_stem = subject_term
+    for prefix in ("后置", "前置"):
+        if subject_stem.startswith(prefix) and len(subject_stem) > len(prefix):
+            subject_stem = subject_stem[len(prefix) :]
+    compact_subject = compact_business_text(subject_stem)
+    compact_phenomenon = compact_business_text(phenomenon_term)
+    if (
+        compact_subject
+        and compact_phenomenon.startswith(compact_subject)
+    ):
+        subject_term = ""
+    elif subject_stem and phenomenon_term.startswith(subject_stem):
+        phenomenon_term = phenomenon_term[len(subject_stem) :].lstrip("表面")
+    else:
+        raw_subject_parts = [
+            _clean_text(part)
+            for part in re.split(r"[/／|｜、,，]+", _clean_text(query.get("对象/部位")))
+            if _clean_text(part)
+        ]
+        leading_subject_part = next(
+            (
+                part
+                for part in sorted(raw_subject_parts, key=len, reverse=True)
+                if compact_phenomenon.startswith(compact_business_text(part))
+            ),
+            "",
+        )
+        if leading_subject_part and len(raw_subject_parts) >= 2:
+            subject_term = ""
+        elif subject_stem:
+            overlap = next(
+                (
+                    subject_stem[-size:]
+                    for size in range(len(subject_stem) - 1, 1, -1)
+                    if phenomenon_term.startswith(subject_stem[-size:])
+                ),
+                "",
+            )
+            if overlap:
+                phenomenon_term = phenomenon_term[len(overlap) :].lstrip("表面")
+                if phenomenon_term == "扩容":
+                    phenomenon_term = "是否扩容"
+            else:
+                common_prefix = next(
+                    (
+                        subject_stem[:size]
+                        for size in range(
+                            min(len(subject_stem), len(phenomenon_term)),
+                            1,
+                            -1,
+                        )
+                        if phenomenon_term.startswith(subject_stem[:size])
+                    ),
+                    "",
+                )
+                if common_prefix:
+                    phenomenon_term = phenomenon_term[len(common_prefix) :].lstrip(
+                        "表面"
+                    )
+    model_scope = explicit_model_scope()
+    if (
+        model_scope
+        and "查找" in _clean_text(query.get("对象/部位"))
+        and "是否已退出" in raw_phenomenon
+    ):
+        feature = re.sub(r"是否已退出.*$", "", raw_phenomenon).strip()
+        feature = feature or "“查找”功能"
+        return _as_natural_question_title(
+            f"{model_scope} 是否已退出{feature}"
+        )
     structured_title = _safe_join(
         [
-            _topic_product_type(query, rows),
+            product_term,
             subject_term,
             phenomenon_term,
         ],
@@ -1439,6 +1628,227 @@ def _structured_topic_question_title(
     if not structured_title:
         return ""
     return _as_natural_question_title(structured_title)
+
+
+def _cluster_title_state_options(query: dict[str, Any]) -> tuple[str, ...]:
+    phenomenon = _clean_text(query.get("异常现象"))
+    state_match = re.search(r"[（(]([^（）()]{1,80})[）)]", phenomenon)
+    if state_match:
+        options = [
+            _clean_text(option).removeprefix("是否")
+            for option in re.split(r"[/／、，,或]", state_match.group(1))
+        ]
+    else:
+        subject = _clean_text(query.get("对象/部位"))
+        # 仅主板“状态确认”缺少结构化括号时，才允许从人工结论补齐
+        # 正常/维修/进液。屏幕、配件等文本常会同时提到“正常”与“拆修”，
+        # 不能据此擅自生成泛化状态标题。
+        if "主板" not in subject:
+            return ()
+        source_text = "\n".join(
+            _clean_text(query.get(field))
+            for field in (
+                "核心问题",
+                "人工核心问题",
+                "人工判定结论",
+                "意图证据",
+                "聊天内容",
+                "判定依据",
+                "异常现象",
+            )
+        )
+        options = [
+            state
+            for state in ("正常", "维修", "进液", "拆修", "异常")
+            if state in source_text
+        ]
+        # “异常”只是兜底描述；已经识别到具体状态时，不应把它与维修、
+        # 进液等并列成一个实际待选状态。
+        if len(options) >= 2 and "异常" in options:
+            options.remove("异常")
+    return tuple(
+        dict.fromkeys(
+            option
+            for option in options
+            if option and option not in {"待确认", "未知", "通用", "不限"}
+        )
+    )
+
+
+def _cluster_only_title_review_reason(
+    title: str,
+    query: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> str:
+    compact_title = re.sub(r"[\s，,。；;：:、（）()【】\[\]|｜/\\-]+", "", title)
+    product = _clean_text(_topic_product_type(query, rows))
+    compact_product = re.sub(r"\s+", "", product)
+    generic_suffix = r"(?:问题)?(?:如何)?(?:判定|确认|核验|处理)"
+    if compact_title and re.fullmatch(
+        rf"{re.escape(compact_product)}{generic_suffix}",
+        compact_title,
+    ):
+        return "主题缺少可执行的对象、现象或判定目标，已转人工补充"
+
+    source_context = "\n".join(
+        _clean_text(query.get(field))
+        for field in (
+            "核心问题",
+            "人工核心问题",
+            "人工判定结论",
+            "异常现象",
+            "聊天内容",
+        )
+        if _clean_text(query.get(field))
+    )
+    if any(
+        marker in source_context
+        for marker in (
+            "未描述具体问题",
+            "未提出具体问题",
+            "未提出具体质检争议",
+            "没有描述具体问题",
+            "未明确具体问题",
+        )
+    ):
+        return "主题缺少可执行的对象、现象或判定目标，已转人工补充"
+    if (
+        "少一个底下的" in source_context
+        or (
+            "物品缺失" in source_context
+            and "需补充" in _clean_text(query.get("解题方式"))
+        )
+    ):
+        return "主题缺少可执行的对象、现象或判定目标，已转人工补充"
+
+    state_options = _cluster_title_state_options(query)
+    if len(state_options) >= 2:
+        return "主题同时包含多个互斥状态，需人工确认实际判定边界"
+    if state_options and not any(option in title for option in state_options):
+        return "主题标题未覆盖已识别的状态边界，已转人工复核"
+    return ""
+
+
+def _cluster_only_manual_review_title(
+    query: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> str:
+    product = _clean_text(_topic_product_type(query, rows)) or "当前品类"
+    subject = _clean_text(query.get("对象/部位"))
+    if subject in {"", "待确认", "未知", "通用", "不限"}:
+        source_text = "\n".join(
+            _clean_text(query.get(field))
+            for field in (
+                "核心问题",
+                "人工核心问题",
+                "人工判定结论",
+                "聊天内容",
+                "判定依据",
+            )
+        )
+        if any(marker in source_text for marker in ("钢化膜", "屏幕膜")):
+            return f"{product}屏幕钢化膜处理待人工确认"
+        if (
+            any(marker in source_text for marker in ("磁盘", "硬盘"))
+            and "容量" in source_text
+        ):
+            return f"{product}磁盘容量录入待人工确认"
+        return f"{product}信息不足待人工确认"
+    if subject == "设备配置信息":
+        return f"{product}设备配置信息待人工确认"
+    if subject == "物品完整性" and any(marker in product for marker in ("耳机", "耳麦")):
+        return "耳机缺失物品待人工确认"
+    return f"{product}{subject}信息不足待人工确认"
+
+
+def _cluster_only_clear_business_title(
+    title: str,
+    query: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> str:
+    """Shorten source-backed operational titles without changing topic boundaries."""
+    product = _clean_text(_topic_product_type(query, rows))
+    subject = _clean_text(query.get("对象/部位"))
+    phenomenon = _clean_text(query.get("异常现象"))
+    resolution = _clean_text(query.get("解题方式"))
+    source_values = [
+        _clean_text(query.get(field))
+        for field in (
+            "核心问题",
+            "人工核心问题",
+            "人工判定结论",
+            "聊天内容",
+        )
+    ]
+    source_values.extend(
+        _clean_text(row.get(field))
+        for row in rows
+        for field in (
+            "核心问题",
+            "原始核心问题",
+            "人工核心问题",
+            "判定结论",
+            "原始判定结论",
+            "聊天内容",
+            "机型",
+            "_原子机型范围",
+        )
+    )
+    source_context = "\n".join(value for value in source_values if value)
+
+    if "手机" in product and "展示机" in source_context and "官网" in source_context:
+        return "手机展示机身份如何通过官网信息确认"
+
+    if (
+        "手机" in product
+        and "指南针" in subject
+        and "指南针" in phenomenon
+        and "校正无反应" in phenomenon
+    ):
+        return "手机指南针传感器功能异常且校正无反应如何判定"
+
+    if (
+        any(marker in product for marker in ("单电", "微单"))
+        and "快门次数" in source_context
+        and "查询" in source_context
+    ):
+        models = _source_specific_model_values(source_values)
+        model = models[0] if len(models) == 1 else ""
+        if model:
+            model = re.sub(r"(?i)^canon\s*", "Canon ", model).strip()
+            model = re.sub(r"(?i)^eos\s*", "EOS ", model).strip()
+            if "佳能" in source_context and model.casefold().startswith("eos"):
+                model = f"佳能 {model}"
+            return f"{model} 是否支持查询快门次数"
+        return f"{product}快门次数如何查询"
+
+    if (
+        "笔记本" in product
+        and subject == "存储容量"
+        and "不一致" in phenomenon
+        and any(marker in source_context for marker in ("硬盘", "存储"))
+    ):
+        return "笔记本硬盘容量检测结果不一致如何判定"
+
+    if (
+        "笔记本" in product
+        and "屏幕" in subject
+        and "边框" in subject
+        and any(marker in source_context for marker in ("脱胶", "缝隙", "塞规"))
+    ):
+        return "笔记本屏幕与边框间隙如何判定是否脱胶"
+
+    if (
+        any(marker in product for marker in ("耳机", "耳麦"))
+        and subject == "物品完整性"
+        and (
+            "少一个底下的" in source_context
+            or ("物品缺失" in source_context and "需补充" in resolution)
+        )
+    ):
+        return "耳机缺失物品待人工确认"
+
+    return title
 
 
 def _record_id_for_row(row: dict[str, Any], index: int) -> str:
@@ -1646,6 +2056,8 @@ def _natural_title_from_structured_atomic_question(value: Any) -> str:
     issue = issue.replace("是否在回收范围内", "是否可回收")
     issue = issue.replace("包装盒缺失是否影响回收判定", "包装盒缺失如何处理")
     issue = issue.replace("及", "，").strip("，、 ")
+    if issue in {"原装性判断标准", "原装判断标准"}:
+        return f"{subject}是否需要鉴定原装"[:120]
     if resolution.startswith("根据"):
         match = re.match(r"根据(.+?)判定", resolution)
         if match:
@@ -1661,7 +2073,7 @@ def _title_is_case_narrative(value: Any) -> bool:
     return bool(
         re.match(
             r"^(?:回收师|用户|客服|答疑人员)"
-            r"(?:询问|描述|反馈|咨询|遇到|发现|在)",
+            r"(?:询问|描述|反馈|咨询|遇到|发现|在|对|提供|提交|上传)",
             title,
         )
         or re.match(r"^(?:回收师)?\s*询问(?:[:：])?", title)
@@ -4346,7 +4758,121 @@ def _topic_evidence(row: dict[str, Any]) -> tuple[str, bool, str]:
     return "结构化摘要", False, "缺少原始聊天内容和可用图片，仅用于覆盖分析与主题线索"
 
 
+def _clustering_source_context(row: dict[str, Any]) -> str:
+    """Keep source-only scope evidence available to every clustering boundary."""
+    return _safe_join(
+        [
+            _clean_text(row.get("机型")),
+            _clean_text(row.get("产品型号")),
+            _clean_text(row.get("source_model")),
+            _clean_text(row.get("品牌")),
+            _clean_text(row.get("适用品牌")),
+            _clean_text(row.get("source_brand")),
+            _clean_text(row.get("聊天内容")),
+            _clean_text(row.get("source_conversation")),
+            _clean_text(row.get("原始核心问题")),
+            _clean_text(row.get("source_core_problem")),
+            _clean_text(row.get("原始判定结论")),
+            _clean_text(row.get("source_judgment_conclusion")),
+            _clean_text(row.get("判定依据")),
+            _clean_text(row.get("source_judgment_basis")),
+            _clean_text(row.get("参考话术")),
+            _clean_text(row.get("source_reference_reply")),
+        ],
+        "\n",
+    )
+
+
+def _topic_boundary_key(
+    row: dict[str, Any],
+    *,
+    boundary_cache: dict[
+        int,
+        tuple[str, tuple[str, ...] | None],
+    ]
+    | None = None,
+) -> tuple[str, ...] | None:
+    """Build a rule-backed key before any semantic or fallback clustering."""
+
+    cache_key = id(row)
+    rule_state = _clean_text(row.get("_聚类规则状态"))
+    if boundary_cache is not None:
+        cached = boundary_cache.get(cache_key)
+        if cached is not None and cached[0] == rule_state:
+            return cached[1]
+    if rule_state == "rule_model_conflict":
+        boundary_key = None
+        if boundary_cache is not None:
+            boundary_cache[cache_key] = (rule_state, boundary_key)
+        return boundary_key
+    product_category = _resolved_product_type_for_row(row) or _clean_text(
+        row.get("产品类型") or row.get("product_category")
+    )
+    if not product_category:
+        boundary_key = None
+        if boundary_cache is not None:
+            boundary_cache[cache_key] = (rule_state, boundary_key)
+        return boundary_key
+    source_context = _clustering_source_context(row)
+    boundary = build_clustering_boundary_key(
+        business_line=_business_line_for_row(row),
+        product_category=product_category,
+        category_l1=_clean_text(
+            row.get("模型主题一级分类")
+            or row.get("一级分类")
+            or row.get("category_l1")
+        ),
+        intent=_clean_text(row.get("问题意图") or row.get("intent")),
+        subject=_clean_text(row.get("对象/部位") or row.get("subject")),
+        phenomenon=_clean_text(
+            row.get("异常现象") or row.get("phenomenon")
+        ),
+        normalized_issue=_clean_text(
+            row.get("核心问题") or row.get("normalized_issue")
+        ),
+        judgment_target=_clean_text(
+            row.get("判定目标") or row.get("judgment_target")
+        ),
+        resolution_mode=_clean_text(
+            row.get("解题方式") or row.get("resolution_mode")
+        ),
+        standard_path=_clean_text(
+            row.get("主标准路径") or row.get("standard_path")
+        ),
+        conversation=_safe_join(
+            [
+                _clean_text(
+                    row.get("语义标注依据")
+                    or row.get("source_conversation")
+                    or row.get("evidence_summary")
+                ),
+                source_context,
+            ],
+            "\n",
+        ),
+        platform=_clean_text(row.get("_原子平台") or row.get("platform")),
+        brand=_clean_text(row.get("_原子品牌") or row.get("brand")),
+        model_scope=_clean_text(
+            row.get("_原子机型范围") or row.get("model_scope")
+        ),
+        threshold_or_exception=_clean_text(
+            row.get("_原子阈值例外")
+            or row.get("阈值/例外")
+            or row.get("threshold_or_exception")
+        ),
+    )
+    boundary_key = (
+        ("boundary", *boundary.as_tuple()) if boundary.complete else None
+    )
+    if boundary_cache is not None:
+        boundary_cache[cache_key] = (rule_state, boundary_key)
+    return boundary_key
+
+
 def _topic_group_key(row: dict[str, Any]) -> tuple[str, ...]:
+    boundary_key = _topic_boundary_key(row)
+    if boundary_key is not None:
+        return boundary_key
     return (
         _business_line_for_row(row),
         _clean_text(row.get("产品类型")),
@@ -4483,6 +5009,11 @@ def _semantic_topic_groups_from_vectors(
 
     grouped: list[dict[str, Any]] = []
     assignments: dict[int, int] = {}
+    boundary_cache: dict[
+        int,
+        tuple[str, tuple[str, ...] | None],
+    ] = {}
+    fingerprint_cache: dict[int, ClusteringFingerprint] = {}
     for row, vector in zip(rows, vector_matrix):
         business_line = _business_line_for_row(row)
         product_type = _clean_text(row.get("产品类型"))
@@ -4493,7 +5024,12 @@ def _semantic_topic_groups_from_vectors(
             for index, cluster in enumerate(grouped)
             if cluster["business_line"] == business_line
             and cluster["product_type"] == product_type
-            and not _cluster_has_topic_merge_conflict(row, cluster["rows"])
+            and not _cluster_has_topic_merge_conflict(
+                row,
+                cluster["rows"],
+                boundary_cache=boundary_cache,
+                fingerprint_cache=fingerprint_cache,
+            )
         ]
         if matching_indices:
             centroids = np.stack([grouped[index]["centroid"] for index in matching_indices])
@@ -4692,20 +5228,13 @@ def _direct_local_notebook_query_targets(
             "第几款",
             "哪一款",
         ),
-        "memory_storage_brand": (
-            "品牌硬盘",
-            "品牌内存",
-            "内存和硬盘都是品牌",
-            "内存硬盘都是品牌",
-            "硬盘内存品牌",
-            "硬盘是不是品牌",
-            "内存是不是品牌",
-            "硬盘是品牌",
-            "内存是品牌",
-            "品牌认证",
-            "非品牌",
-            "第三方硬盘",
-            "第三方内存",
+        "device_version": (
+            "国行",
+            "零售机",
+            "零售版本",
+            "版本是否",
+            "销售版本",
+            "地区版本",
         ),
         "fingerprint_support": (
             "支持指纹",
@@ -4721,6 +5250,30 @@ def _direct_local_notebook_query_targets(
         ),
     }
     detected: list[tuple[int, int, str]] = []
+    brand_query_markers = (
+        "品牌硬盘",
+        "品牌内存",
+        "内存和硬盘都是品牌",
+        "内存硬盘都是品牌",
+        "硬盘内存品牌",
+        "硬盘是不是品牌",
+        "内存是不是品牌",
+        "硬盘是品牌",
+        "内存是品牌",
+        "品牌认证",
+        "非品牌",
+        "品牌件",
+    )
+    if any(marker in text for marker in brand_query_markers):
+        if any(marker in text for marker in ("内存", "运行内存")):
+            detected.append((text.find("内存"), -2, "memory_brand"))
+        if any(marker in text for marker in ("硬盘", "固态硬盘", "ssd", "存储盘")):
+            storage_positions = [
+                text.find(marker)
+                for marker in ("硬盘", "固态硬盘", "ssd", "存储盘")
+                if marker in text
+            ]
+            detected.append((min(storage_positions), -1, "storage_brand"))
     for order, (target, markers) in enumerate(target_markers.items()):
         positions = [
             text.find(marker)
@@ -4773,19 +5326,47 @@ def _direct_local_notebook_query_topics(
             "resolution_mode": "通过系统信息、官网或机身标签核对型号",
             "standard_path": "型号查询",
         },
-        "memory_storage_brand": {
+        "device_version": {
             "normalized_issue": (
-                f"{product_type}｜内存和硬盘｜品牌属性查询｜"
-                "确认是否为品牌认证配件"
+                f"{product_type}｜设备版本/销售区域｜国行零售机确认｜"
+                "确认设备版本属性"
             ),
             "category_l1": "信息查询",
-            "category_l2": "内存/硬盘品牌属性",
+            "category_l2": "版本/销售区域查询",
             "intent": "信息查询",
-            "subject": "内存和硬盘",
+            "subject": "设备版本/销售区域",
+            "phenomenon": "是否为国行零售机",
+            "judgment_target": "确认设备是否为国行零售机版本",
+            "resolution_mode": "通过型号后缀、系统信息或官方渠道核对版本属性",
+            "standard_path": "版本/销售区域查询",
+        },
+        "memory_brand": {
+            "normalized_issue": (
+                f"{product_type}｜内存｜品牌属性查询｜"
+                "确认内存是否为品牌件"
+            ),
+            "category_l1": "信息查询",
+            "category_l2": "内存品牌属性",
+            "intent": "信息查询",
+            "subject": "内存",
             "phenomenon": "品牌属性待确认",
-            "judgment_target": "确认内存和硬盘品牌属性",
+            "judgment_target": "确认内存是否为品牌件",
             "resolution_mode": "通过系统信息或验机工具核对品牌信息",
-            "standard_path": "内存/硬盘品牌属性查询",
+            "standard_path": "内存品牌属性查询",
+        },
+        "storage_brand": {
+            "normalized_issue": (
+                f"{product_type}｜硬盘｜品牌属性查询｜"
+                "确认硬盘是否为品牌件"
+            ),
+            "category_l1": "信息查询",
+            "category_l2": "硬盘品牌属性",
+            "intent": "信息查询",
+            "subject": "硬盘",
+            "phenomenon": "品牌属性待确认",
+            "judgment_target": "确认硬盘是否为品牌件",
+            "resolution_mode": "通过系统信息或验机工具核对品牌信息",
+            "standard_path": "硬盘品牌属性查询",
         },
         "fingerprint_support": {
             "normalized_issue": (
@@ -4849,6 +5430,138 @@ def _direct_local_notebook_query_topics(
     return rescued
 
 
+def _direct_local_split_notebook_brand_topics(
+    source_row: dict[str, Any],
+    topics: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], bool]:
+    """Split one source's combined notebook brand query by component.
+
+    A question about both memory and storage is two independently reusable
+    judgments.  This guard runs even when MiMo already emitted another valid
+    sibling topic (for example, missing internal screws), so a multi-topic
+    response cannot leave an ``内存和硬盘`` brand atom behind.
+    """
+    if canonical_product_name(source_row.get("产品类型"), unknown="") != "笔记本":
+        return topics, False
+    source_text = _normalized_direct_reconcile_value(
+        "\n".join(
+            _clean_text(source_row.get(field))
+            for field in ("核心问题", "聊天内容", "判定结论")
+        )
+    )
+    has_memory = any(marker in source_text for marker in ("内存", "运行内存"))
+    has_storage = any(
+        marker in source_text
+        for marker in ("硬盘", "固态硬盘", "ssd", "存储盘")
+    )
+    templates = {
+        "memory": {
+            "normalized_issue": "笔记本｜内存｜品牌属性查询｜确认内存是否为品牌件",
+            "category_l1": "信息查询",
+            "category_l2": "内存品牌属性",
+            "intent": "信息查询",
+            "subject": "内存",
+            "phenomenon": "品牌属性待确认",
+            "judgment_target": "确认内存是否为品牌件",
+            "resolution_mode": "通过系统信息或验机工具核对品牌信息",
+            "standard_path": "内存品牌属性查询",
+        },
+        "storage": {
+            "normalized_issue": "笔记本｜硬盘｜品牌属性查询｜确认硬盘是否为品牌件",
+            "category_l1": "信息查询",
+            "category_l2": "硬盘品牌属性",
+            "intent": "信息查询",
+            "subject": "硬盘",
+            "phenomenon": "品牌属性待确认",
+            "judgment_target": "确认硬盘是否为品牌件",
+            "resolution_mode": "通过系统信息或验机工具核对品牌信息",
+            "standard_path": "硬盘品牌属性查询",
+        },
+    }
+    has_combined_brand_topic = any(
+        all(
+            marker in _normalized_direct_reconcile_value(
+                "\n".join(
+                    _clean_text(topic.get(field))
+                    for field in (
+                        "normalized_issue",
+                        "subject",
+                        "phenomenon",
+                        "judgment_target",
+                    )
+                )
+            )
+            for marker in ("内存", "硬盘", "品牌")
+        )
+        for topic in topics
+    )
+    if not ((has_memory and has_storage) or has_combined_brand_topic):
+        return topics, False
+
+    split_topics: list[dict[str, Any]] = []
+    split_applied = False
+    for topic in topics:
+        topic_text = _normalized_direct_reconcile_value(
+            "\n".join(
+                _clean_text(topic.get(field))
+                for field in (
+                    "normalized_issue",
+                    "subject",
+                    "phenomenon",
+                    "judgment_target",
+                )
+            )
+        )
+        topic_has_memory = any(
+            marker in topic_text for marker in ("内存", "运行内存")
+        )
+        topic_has_storage = any(
+            marker in topic_text
+            for marker in ("硬盘", "固态硬盘", "ssd", "存储盘")
+        )
+        topic_has_brand = any(
+            marker in topic_text
+            for marker in ("品牌", "原厂", "认证", "非品牌")
+        )
+        if not (topic_has_memory and topic_has_storage and topic_has_brand):
+            split_topics.append(topic)
+            continue
+        split_applied = True
+        for template in templates.values():
+            split_topics.append(
+                {
+                    **topic,
+                    **template,
+                    "confidence": min(
+                        _float_or_default(topic.get("confidence"), 0.0),
+                        0.78,
+                    ),
+                    "requires_review": True,
+                    "_local_multi_topic_rescue_reason": (
+                        "local_notebook_brand_component_split"
+                    ),
+                }
+            )
+
+    deduplicated: list[dict[str, Any]] = []
+    seen_component_targets: set[str] = set()
+    for topic in split_topics:
+        subject = _normalized_direct_reconcile_value(topic.get("subject"))
+        component = (
+            "memory"
+            if "内存" in subject
+            else "storage"
+            if any(marker in subject for marker in ("硬盘", "固态硬盘", "ssd"))
+            else ""
+        )
+        if component and component in seen_component_targets:
+            continue
+        if component:
+            seen_component_targets.add(component)
+        deduplicated.append(topic)
+    return deduplicated, split_applied
+
+
 def _direct_local_explicit_dual_topic_specs(
     row: dict[str, Any],
 ) -> tuple[str, tuple[dict[str, str], ...]]:
@@ -4858,6 +5571,71 @@ def _direct_local_explicit_dual_topic_specs(
         or "待确认"
     )
     text = f"{row.get('核心问题', '')}\n{row.get('聊天内容', '')}"
+
+    if (
+        product_type == "笔记本"
+        and any(marker in text for marker in ("内存", "硬盘", "固态硬盘"))
+        and any(
+            marker in text
+            for marker in (
+                "品牌件",
+                "是不是品牌",
+                "是否为品牌",
+                "内存和硬盘是不是品牌",
+            )
+        )
+        and any(
+            marker in text
+            for marker in ("螺丝缺失", "没有螺丝", "内部螺丝")
+        )
+    ):
+        return (
+            "local_notebook_storage_brand_plus_missing_screw_rescue",
+            (
+                {
+                    "normalized_issue": (
+                        "笔记本｜内存｜品牌属性查询｜"
+                        "确认内存是否为品牌件"
+                    ),
+                    "category_l1": "信息查询",
+                    "category_l2": "内存品牌属性",
+                    "intent": "信息查询",
+                    "subject": "内存",
+                    "phenomenon": "品牌属性待确认",
+                    "judgment_target": "确认内存是否为品牌件",
+                    "resolution_mode": "通过系统信息或验机工具核对品牌信息",
+                    "standard_path": "内存品牌属性查询",
+                },
+                {
+                    "normalized_issue": (
+                        "笔记本｜硬盘｜品牌属性查询｜"
+                        "确认硬盘是否为品牌件"
+                    ),
+                    "category_l1": "信息查询",
+                    "category_l2": "硬盘品牌属性",
+                    "intent": "信息查询",
+                    "subject": "硬盘",
+                    "phenomenon": "品牌属性待确认",
+                    "judgment_target": "确认硬盘是否为品牌件",
+                    "resolution_mode": "通过系统信息或验机工具核对品牌信息",
+                    "standard_path": "硬盘品牌属性查询",
+                },
+                {
+                    "normalized_issue": (
+                        "笔记本｜内部螺丝｜螺丝缺失｜"
+                        "确认是否存在拆修痕迹"
+                    ),
+                    "category_l1": "拆修问题",
+                    "category_l2": "内部螺丝缺失",
+                    "intent": "标准判定",
+                    "subject": "内部螺丝",
+                    "phenomenon": "螺丝缺失",
+                    "judgment_target": "确认内部螺丝缺失是否属于拆修痕迹",
+                    "resolution_mode": "按内部螺丝缺失标准判定",
+                    "standard_path": "内部螺丝缺失判定",
+                },
+            ),
+        )
 
     if (
         "序列号" in text
@@ -5237,6 +6015,192 @@ def _direct_local_multi_topic_rescue_topics(
     return rescued, reason
 
 
+def _atomic_completeness_source_text(source_row: dict[str, Any]) -> str:
+    """Return only source fields that can establish an explicit atomic claim.
+
+    The protection is intentionally conservative: it verifies a small set of
+    independently reusable, high-risk claims that are explicitly present in
+    human-corrected fields or retained dialogue evidence.  It never creates a
+    missing atomic topic; it only prevents an incomplete model output from
+    being silently treated as complete.
+    """
+    conversation = _conversation_intent_evidence(
+        source_row.get("聊天内容"),
+        9000,
+    )["conversation"]
+    return "\n".join(
+        _clean_text(source_row.get(field))
+        for field in (
+            "核心问题",
+            "原始核心问题",
+            "判定结论",
+            "原始判定结论",
+            "历史实际回复",
+            "参考话术",
+        )
+        if _clean_text(source_row.get(field))
+    ) + (f"\n{conversation}" if conversation else "")
+
+
+def _atomic_completeness_claims(
+    source_row: dict[str, Any],
+) -> list[tuple[str, tuple[tuple[str, ...], ...]]]:
+    """Extract only explicit source claims that must retain atomic coverage.
+
+    Each inner tuple is an OR group; all groups must match one atomic topic.
+    These are deliberately narrow rules for known independent decisions.  A
+    broad keyword alone must not manufacture a required topic.
+    """
+    source_text = _atomic_completeness_source_text(source_row)
+    normalized = _normalized_direct_reconcile_value(source_text)
+    product = canonical_product_name(source_row.get("产品类型"), unknown="")
+    claims: list[tuple[str, tuple[tuple[str, ...], ...]]] = []
+
+    has_screen_tool_result = (
+        "屏幕" in normalized
+        and any(marker in normalized for marker in ("工具", "验机", "一根线"))
+        and any(marker in normalized for marker in ("读出", "异常", "正常"))
+    )
+    if has_screen_tool_result:
+        claims.append(
+            (
+                "屏幕验机工具结果",
+                (("屏幕",), ("工具", "验机", "一根线")),
+            )
+        )
+
+    if "重启记录" in normalized and any(
+        marker in normalized for marker in ("ios", "苹果")
+    ):
+        claims.append(("有重启记录iOS", (("重启记录",), ("ios", "苹果"))))
+
+    if "转转" in normalized and any(
+        marker in normalized for marker in ("贴纸", "标签")
+    ):
+        claims.append(("转转贴纸处理", (("转转",), ("贴纸", "标签"))))
+
+    has_brand_claim = any(
+        marker in normalized for marker in ("品牌", "原厂", "第三方")
+    )
+    if product == "笔记本" and has_brand_claim:
+        if any(marker in normalized for marker in ("内存", "运行内存")):
+            claims.append(
+                (
+                    "内存品牌属性",
+                    (("内存", "运行内存"), ("品牌", "原厂", "第三方")),
+                )
+            )
+        if any(
+            marker in normalized
+            for marker in ("硬盘", "固态硬盘", "ssd", "存储盘")
+        ):
+            claims.append(
+                (
+                    "硬盘品牌属性",
+                    (
+                        ("硬盘", "固态硬盘", "ssd", "存储盘"),
+                        ("品牌", "原厂", "第三方"),
+                    ),
+                )
+            )
+    return claims
+
+
+def _atomic_topic_matches_completeness_claim(
+    topic: dict[str, Any],
+    required_token_groups: tuple[tuple[str, ...], ...],
+) -> bool:
+    topic_text = _normalized_direct_reconcile_value(
+        "\n".join(
+            _clean_text(topic.get(field))
+            for field in (
+                "normalized_issue",
+                "subject",
+                "phenomenon",
+                "judgment_target",
+                "resolution_mode",
+                "evidence_summary",
+            )
+        )
+    )
+    return bool(topic_text) and all(
+        any(token in topic_text for token in token_group)
+        for token_group in required_token_groups
+    )
+
+
+def _can_assign_distinct_atomic_topics(
+    claim_matches: list[set[int]],
+) -> bool:
+    """Return whether all explicit claims can map to different atomics."""
+    ordered_matches = sorted(claim_matches, key=lambda matches: len(matches))
+
+    def assign(index: int, used_topics: set[int]) -> bool:
+        if index == len(ordered_matches):
+            return True
+        return any(
+            topic_index not in used_topics
+            and assign(index + 1, used_topics | {topic_index})
+            for topic_index in ordered_matches[index]
+        )
+
+    return bool(ordered_matches) and assign(0, set())
+
+
+def _apply_atomic_topic_completeness_protection(
+    source_row: dict[str, Any],
+    topics: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str]:
+    """Mark incomplete multi-claim extraction for human review without adding topics."""
+    protected = [dict(topic) for topic in topics]
+    claims = _atomic_completeness_claims(source_row)
+    if not claims or not protected:
+        return protected, ""
+
+    claim_matches = [
+        {
+            index
+            for index, topic in enumerate(protected)
+            if _atomic_topic_matches_completeness_claim(topic, token_groups)
+        }
+        for _label, token_groups in claims
+    ]
+    uncovered_labels = [
+        label
+        for (label, _token_groups), matches in zip(claims, claim_matches)
+        if not matches
+    ]
+    split_required_labels = [label for label, _token_groups in claims]
+    reasons: list[str] = []
+    if uncovered_labels:
+        reasons.append(
+            "结构化事实包含未被原子问题覆盖的独立结论："
+            + "、".join(uncovered_labels)
+        )
+    elif len(claim_matches) > 1 and not _can_assign_distinct_atomic_topics(
+        claim_matches
+    ):
+        reasons.append(
+            "结构化事实包含多个独立结论，但原子输出未保持一项一原子问题拆分："
+            + "、".join(split_required_labels)
+        )
+    if not reasons:
+        return protected, ""
+
+    reason = "；".join(reasons)
+    for topic in protected:
+        topic["requires_review"] = True
+        topic["_atomic_completeness_review_reason"] = reason
+        topic["evidence_summary"] = _safe_join(
+            [
+                _clean_text(topic.get("evidence_summary")),
+                "原子问题完整性保护：" + reason,
+            ],
+            "；",
+        )
+    return protected, reason
+
+
 def _float_or_default(value: Any, default: float) -> float:
     try:
         return float(value)
@@ -5258,6 +6222,34 @@ def _direct_clustering_rule_match(
         row.get("_聚类合并策略") or row.get("clustering_merge_policy")
     )
     if stored_family and stored_policy:
+        runtime_match = _runtime_clustering_rule_match(row)
+        if runtime_match is None:
+            row.update(
+                {
+                    "_聚类规则状态": "rule_model_conflict",
+                    "_聚类规则冲突原因": (
+                        "历史或模型缓存的聚类边界无法由当前边界库重新确认，"
+                        "已转人工复核"
+                    ),
+                }
+            )
+            return None
+        if (
+            _normalized_direct_reconcile_value(runtime_match.standard_family)
+            != _normalized_direct_reconcile_value(stored_family)
+            or _normalized_direct_reconcile_value(runtime_match.merge_policy)
+            != _normalized_direct_reconcile_value(stored_policy)
+        ):
+            row.update(
+                {
+                    "_聚类规则状态": "rule_model_conflict",
+                    "_聚类规则冲突原因": (
+                        "缓存聚类边界与当前边界库不一致，"
+                        "已按当前边界转人工复核"
+                    ),
+                }
+            )
+            return runtime_match
         return ClusteringRuleMatch(
             rule_id=_clean_text(
                 row.get("_聚类判定规则ID") or row.get("clustering_rule_id")
@@ -5546,7 +6538,14 @@ def _direct_clustering_rule_conflict_reason(rows: list[dict[str, Any]]) -> str:
         )
     if (
         merge_policies == {"separate_by_query_target"}
-        and len(phenomenon_values) > 1
+        and len(
+            {
+                target
+                for row in rows
+                for target in _direct_reconcile_targets(row)
+                if target
+            }
+        ) > 1
     ):
         standard_family = next(iter(standard_families), "当前标准族")
         return (
@@ -5618,6 +6617,9 @@ def _direct_atomic_bucket_key(unit: dict[str, Any]) -> tuple[str, ...]:
         # Prefer the model's structured match for normal batching.  The
         # source pre-match remains available in the prompt and as a fallback
         # only when the model did not provide enough structured fields.
+        boundary_key = _topic_boundary_key(unit)
+        if boundary_key is not None:
+            return boundary_key
         rule_match = _model_clustering_rule_match(unit)
         if rule_match is None and not any(
             _clean_text(unit.get(field))
@@ -5630,8 +6632,6 @@ def _direct_atomic_bucket_key(unit: dict[str, Any]) -> tuple[str, ...]:
         ):
             rule_match = _direct_clustering_rule_match(unit)
         if rule_match is not None:
-            merge_policy = _clean_text(rule_match.merge_policy)
-            phenomenon_value = _clean_text(rule_match.phenomenon_value)
             boundary_parts = [
                 business_line,
                 product_category,
@@ -6102,6 +7102,17 @@ def _normalized_direct_reconcile_value(value: Any) -> str:
     return re.sub(r"[\W_]+", "", normalized, flags=re.UNICODE)
 
 
+@lru_cache(maxsize=256)
+def _direct_reconcile_object_key(value: str) -> str:
+    normalized = _normalized_direct_reconcile_value(value)
+    for source, target in _DIRECT_RECONCILE_OBJECT_ALIAS_REPLACEMENTS:
+        normalized = normalized.replace(
+            _normalized_direct_reconcile_value(source),
+            _normalized_direct_reconcile_value(target),
+        )
+    return normalized
+
+
 def _direct_reconcile_rule_match(row: dict[str, Any]) -> ClusteringRuleMatch | None:
     return _direct_clustering_rule_match(row)
 
@@ -6117,6 +7128,7 @@ def _direct_reconcile_fingerprint(
         if cached is not None:
             return cached
 
+    source_context = _clustering_source_context(row)
     fingerprint = build_clustering_fingerprint(
         product_category=_clean_text(
             row.get("产品类型") or row.get("product_category")
@@ -6139,8 +7151,14 @@ def _direct_reconcile_fingerprint(
         standard_path=_clean_text(
             row.get("主标准路径") or row.get("standard_path")
         ),
-        conversation=_clean_text(
-            row.get("语义标注依据") or row.get("evidence_summary")
+        conversation=_safe_join(
+            [
+                _clean_text(
+                    row.get("语义标注依据") or row.get("evidence_summary")
+                ),
+                source_context,
+            ],
+            "\n",
         ),
     )
     if fingerprint_cache is not None:
@@ -6261,6 +7279,34 @@ def _direct_reconcile_shared_trusted_target(
         fingerprint_cache=fingerprint_cache,
     )
     return target if target in _DIRECT_RECONCILE_TRUSTED_TARGETS else ""
+
+
+def _direct_reconcile_object_conflict(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    *,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
+) -> bool:
+    left_signature = _direct_reconcile_topic_signature(
+        left,
+        fingerprint_cache=fingerprint_cache,
+    )
+    right_signature = _direct_reconcile_topic_signature(
+        right,
+        fingerprint_cache=fingerprint_cache,
+    )
+    shared_target = (
+        left_signature[5]
+        if left_signature[5] and left_signature[5] == right_signature[5]
+        else left_signature[6]
+        if left_signature[6] and left_signature[6] == right_signature[6]
+        else ""
+    )
+    if shared_target in _DIRECT_RECONCILE_OBJECT_AGNOSTIC_TARGETS:
+        return False
+    left_object = _direct_reconcile_object_key(left_signature[3])
+    right_object = _direct_reconcile_object_key(right_signature[3])
+    return bool(left_object and right_object and left_object != right_object)
 
 
 def _direct_reconcile_trusted_target_floor(target: str) -> float:
@@ -6529,20 +7575,12 @@ def _direct_reconcile_rule_merge_reason(
                 return ""
     if trusted_target not in _DIRECT_RECONCILE_THRESHOLD_AGNOSTIC_TARGETS:
         candidate_thresholds = set(
-            re.findall(
-                r"\d+(?:\.\d+)?",
-                _clean_text(candidate_row.get("主标准路径"))
-                + _clean_text(candidate_row.get("阈值/例外")),
-            )
-        )
+            clustering_threshold_values(candidate_row.get("阈值/例外")).split("|")
+        ) - {""}
         for target_row in cluster_rows:
             target_thresholds = set(
-                re.findall(
-                    r"\d+(?:\.\d+)?",
-                    _clean_text(target_row.get("主标准路径"))
-                    + _clean_text(target_row.get("阈值/例外")),
-                )
-            )
+                clustering_threshold_values(target_row.get("阈值/例外")).split("|")
+            ) - {""}
             if (
                 candidate_thresholds
                 and target_thresholds
@@ -6561,16 +7599,470 @@ def _direct_reconcile_rule_merge_reason(
     return ""
 
 
+def _is_headphone_find_atomic_topic(row: dict[str, Any]) -> bool:
+    product_type = _clean_text(
+        row.get("产品类型") or row.get("product_category")
+    )
+    if "耳机" not in product_type and "耳麦" not in product_type:
+        return False
+    atomic_text = "\n".join(
+        _clean_text(row.get(field))
+        for field in (
+            "对象/部位",
+            "subject",
+            "异常现象",
+            "phenomenon",
+            "核心问题",
+            "normalized_issue",
+            "判定目标",
+            "judgment_target",
+            "解题方式",
+            "resolution_mode",
+            "主标准路径",
+            "standard_path",
+        )
+    )
+    compact_text = re.sub(r"\s+", "", atomic_text.casefold())
+    return any(
+        marker in compact_text
+        for marker in (
+            "查找",
+            "定位",
+            "findmy",
+            "激活锁",
+            "apple账户",
+            "appleid",
+        )
+    )
+
+
+def _same_source_different_atomic_conflict(
+    rows: list[dict[str, Any]],
+) -> bool:
+    """Keep independently extracted atomic questions from one work order apart."""
+    rows_by_work_order: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        work_order_id = _original_work_order_id_for_row(row)
+        atomic_id = _clean_text(
+            row.get("_原子知识ID") or row.get("原子知识ID")
+        )
+        if not work_order_id or not atomic_id:
+            continue
+        rows_by_work_order.setdefault(work_order_id, []).append(row)
+    for same_source_rows in rows_by_work_order.values():
+        atomic_ids = {
+            _clean_text(row.get("_原子知识ID") or row.get("原子知识ID"))
+            for row in same_source_rows
+        } - {""}
+        if len(atomic_ids) <= 1:
+            continue
+        # MiMo can occasionally state the same earphone Find My abnormality
+        # twice, once as a generic accessory and once as Find My.  Those are
+        # duplicate atoms, not independently asked questions.  Keep different
+        # formal statuses (normal, account-bound, unsupported, etc.) separate.
+        statuses = {
+            _headphone_find_standard_status(row)
+            for row in same_source_rows
+        } - {""}
+        if (
+            len(statuses) == 1
+            and all(_is_headphone_find_atomic_topic(row) for row in same_source_rows)
+            and all(
+                _headphone_find_standard_status(row) in statuses
+                for row in same_source_rows
+            )
+        ):
+            continue
+        return True
+    return False
+
+
+def _headphone_find_standard_statuses(row: dict[str, Any]) -> set[str]:
+    """Return the formal Find My status signals present in one source row.
+
+    Recovery wording is intentionally excluded from this classifier.  The
+    business standard distinguishes a device's Find My state from the final
+    recovery decision, and an abnormal state may still have a separate
+    recovery treatment.
+    """
+
+    product_type = _clean_text(row.get("产品类型") or row.get("product_category"))
+    if "耳机" not in product_type and "耳麦" not in product_type:
+        return set()
+    text = "\n".join(
+        _clean_text(row.get(field))
+        for field in (
+            "原始判定结论",
+            "判定结论",
+            "人工判定结论",
+            "历史实际回复",
+            "核心问题",
+            "异常现象",
+            "聊天内容",
+            "语义标注依据",
+            "对象/部位",
+        )
+    )
+    compact_text = re.sub(r"\s+", "", text.casefold())
+    if not any(
+        marker in compact_text
+        for marker in ("查找", "定位", "findmy", "激活锁", "apple账户", "appleid")
+    ):
+        return set()
+
+    brand_context = "".join(
+        _clean_text(row.get(field))
+        for field in (
+            "品牌",
+            "适用品牌",
+            "原始品牌",
+            "_原子品牌",
+            "产品型号",
+            "机型",
+            "核心问题",
+            "聊天内容",
+        )
+    ).casefold()
+    compact_brand_context = re.sub(r"\s+", "", brand_context)
+    is_huawei = "华为" in brand_context or "huawei" in brand_context
+    statuses: set[str] = set()
+
+    has_external_huawei_find = (
+        is_huawei
+        and any(
+            marker in compact_text
+            for marker in ("外版有定位功能", "外版华为耳机", "外版")
+        )
+        and any(
+            marker in compact_text
+            for marker in (
+                "在国内不支持使用查找功能",
+                "国内不支持使用查找功能",
+                "国内不支持",
+            )
+        )
+    )
+    if "其他版本查找功能不支持" in compact_text or has_external_huawei_find:
+        statuses.add("unsupported_version")
+
+    if any(
+        marker in compact_text
+        for marker in (
+            "查找功能已绑定账户",
+            "激活锁",
+            "账号未解绑",
+            "账户未解绑",
+            "他人apple账户",
+            "他人的apple账户",
+            "其他人apple账户",
+            "其他人的apple账户",
+            "非本人apple账户",
+            "此物品的物主将可查看其位置",
+            "此airpods的位置对所有者可见",
+            "账户关联绑定",
+            "账号关联绑定",
+            "仅有播放声音和路线",
+            "仅有播放声音和路线两个功能",
+        )
+    ):
+        statuses.add("bound_account")
+
+    # Huawei's supported Find My models treat a missing or greyed-out entry
+    # as the bound-account/non-recoverable standard.  For vivo/Xiaomi and
+    # other brands, the corresponding missing sub-feature is an abnormality.
+    huawei_supported_model = any(
+        marker in compact_brand_context
+        for marker in (
+            "freebudspro4",
+            "freebudspro3",
+            "freebuds6",
+            "freeclip",
+        )
+    )
+    huawei_entry_still_missing_after_remediation = (
+        any(
+            marker in compact_text
+            for marker in ("安装音频管家插件", "系统固件", "更新系统", "更新固件")
+        )
+        and any(
+            marker in compact_text
+            for marker in ("仍缺失", "仍呈灰色", "仍为灰色", "依旧缺失", "依旧灰色")
+        )
+    )
+    if (
+        is_huawei
+        and huawei_supported_model
+        and huawei_entry_still_missing_after_remediation
+        and any(
+        marker in compact_text
+        for marker in (
+            "华为耳机查找功能入口缺失",
+            "华为查找功能入口缺失",
+            "查找功能入口缺失",
+            "查找功能入口呈现为灰色",
+            "查找入口呈现为灰色",
+        )
+        )
+    ):
+        statuses.add("bound_account")
+
+    abnormal_markers = (
+        "airpods不匹配",
+        "查找功能异常",
+        "查找网络功能缺失",
+        "查找网络入口缺失",
+        "仅剩查找耳机",
+        "路线为灰色",
+        "缺少远程查找功能开关",
+        "缺少远程查找",
+        "显示为路线而非查找",
+    )
+    if any(marker in compact_text for marker in abnormal_markers):
+        statuses.add("abnormal")
+    has_explicit_normal_status = any(
+        marker in compact_text
+        for marker in ("查找功能正常", "查找功能能正常使用")
+    )
+    has_apple_normal_evidence = (
+        ("查找app内有查找功能" in compact_text or "查找app中有查找功能" in compact_text)
+        and ("功能正常" in compact_text or "正常使用" in compact_text)
+    )
+    has_vivo_normal_evidence = (
+        ("查找网络可切换打开关闭" in compact_text or "查找网络可切换打开和关闭" in compact_text)
+        and "无任何账号绑定提示" in compact_text
+    )
+    has_xiaomi_normal_evidence = (
+        "远程查找功能开关可正常切换" in compact_text
+        and "在查找中显示" in compact_text
+        and ("查找功能可正常使用" in compact_text or "功能正常" in compact_text)
+    )
+    if (
+        has_explicit_normal_status
+        or has_apple_normal_evidence
+        or has_vivo_normal_evidence
+        or has_xiaomi_normal_evidence
+    ):
+        statuses.add("normal")
+
+    if any(
+        marker in compact_text
+        for marker in (
+            "查找功能不检测",
+            "不要求检查查找功能",
+            "无需检查查找功能",
+        )
+    ):
+        statuses.add("not_detected")
+    return statuses
+
+
+def _headphone_find_has_bound_account_evidence(row: dict[str, Any]) -> bool:
+    """Return whether source evidence explicitly proves a bound-account state."""
+
+    product_type = _clean_text(row.get("产品类型") or row.get("product_category"))
+    if "耳机" not in product_type and "耳麦" not in product_type:
+        return False
+    text = "\n".join(
+        _clean_text(row.get(field))
+        for field in (
+            "原始判定结论",
+            "判定结论",
+            "人工判定结论",
+            "历史实际回复",
+            "核心问题",
+            "异常现象",
+            "聊天内容",
+            "语义标注依据",
+            "对象/部位",
+        )
+    )
+    compact_text = re.sub(r"\s+", "", text.casefold())
+    return any(
+        marker in compact_text
+        for marker in (
+            "查找功能已绑定账户",
+            "激活锁",
+            "账号未解绑",
+            "账户未解绑",
+            "他人apple账户",
+            "他人的apple账户",
+            "其他人apple账户",
+            "其他人的apple账户",
+            "非本人apple账户",
+            "此物品的物主将可查看其位置",
+            "此airpods的位置对所有者可见",
+            "账户关联绑定",
+            "账号关联绑定",
+            "仅有播放声音和路线",
+            "仅有播放声音和路线两个功能",
+        )
+    )
+
+
+def _headphone_find_standard_status(row: dict[str, Any]) -> str:
+    """Return one formal Find My status, or empty for ambiguous/no signal."""
+
+    if _headphone_find_has_bound_account_evidence(row):
+        return "bound_account"
+    statuses = _headphone_find_standard_statuses(row)
+    return next(iter(statuses)) if len(statuses) == 1 else ""
+
+
+def _headphone_find_standard_status_conflict(
+    rows: list[dict[str, Any]],
+) -> bool:
+    statuses = {
+        status
+        for row in rows
+        for status in _headphone_find_standard_statuses(row)
+    }
+    statuses.discard("")
+    return len(statuses) > 1
+
+
+_HEADPHONE_FIND_STANDARD_STATUS_LABELS = {
+    "normal": "查找功能正常",
+    "bound_account": "查找功能已绑定账户",
+    "abnormal": "查找功能异常",
+    "unsupported_version": "其他版本查找功能不支持",
+    "not_detected": "查找功能不检测",
+}
+
+
+def _headphone_find_standard_rule_match(
+    row: dict[str, Any],
+) -> ClusteringRuleMatch | None:
+    """Build the explicit clustering boundary for a proven Find My status."""
+
+    status = _headphone_find_standard_status(row)
+    if not status:
+        return None
+    product_type = _resolved_product_type_for_row(row) or _clean_text(
+        row.get("产品类型") or row.get("product_category")
+    )
+    if "耳机" not in product_type and "耳麦" not in product_type:
+        return None
+    return ClusteringRuleMatch(
+        rule_id="headphones-use-and-connection",
+        standard_family="耳机使用与账号标准",
+        merge_policy="separate_by_phenomenon",
+        phenomenon_value=_HEADPHONE_FIND_STANDARD_STATUS_LABELS[status],
+        usage="耳机定位查找功能正式状态不同，必须拆分。",
+        category_l1="成色与回收标准" if status in {
+            "bound_account",
+            "unsupported_version",
+        } else "功能问题",
+    )
+
+
+def _normalize_headphone_find_atomic_topic(
+    source_row: dict[str, Any],
+    topic: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply a source-proven Find My status before clustering an atomic topic.
+
+    MiMo may describe one Apple bound-account case as both an activation lock
+    and a generic "Find My abnormality".  The formal status is a clustering
+    boundary, so a unique status proven by the source takes precedence over
+    that mixed model wording.  The original model phenomenon stays attached
+    for audit and human review.
+    """
+
+    normalized = dict(topic)
+    if not _is_headphone_find_atomic_topic(normalized):
+        return normalized
+    status = _headphone_find_standard_status(source_row)
+    if not status:
+        return normalized
+    label = _HEADPHONE_FIND_STANDARD_STATUS_LABELS[status]
+    model_phenomenon = _clean_text(normalized.get("phenomenon"))
+    normalized["_耳机查找功能标准状态"] = status
+    normalized["_耳机查找功能模型现象"] = model_phenomenon
+    normalized["phenomenon"] = label
+
+    normalized_issue = _clean_text(normalized.get("normalized_issue"))
+    if status == "bound_account" and normalized_issue:
+        normalized["normalized_issue"] = re.sub(
+            r"(?:定位)?查找功能异常",
+            label,
+            normalized_issue,
+        )
+    return normalized
+
+
+def _headphone_find_recovery_outcome(row: dict[str, Any]) -> str:
+    """Classify the explicit recovery outcome for an earphone Find My case."""
+
+    product_type = _clean_text(row.get("产品类型") or row.get("product_category"))
+    if "耳机" not in product_type and "耳麦" not in product_type:
+        return ""
+    text = "\n".join(
+        _clean_text(row.get(field))
+        for field in (
+            "原始判定结论",
+            "判定结论",
+            "人工判定结论",
+            "历史实际回复",
+            "核心问题",
+            "异常现象",
+            "聊天内容",
+            "语义标注依据",
+        )
+    )
+    compact_text = re.sub(r"\s+", "", text.lower())
+    if not any(
+        marker in compact_text
+        for marker in ("查找", "定位", "findmy", "激活锁", "apple账户", "appleid")
+    ):
+        return ""
+    standard_status = _headphone_find_standard_status(row)
+    if any(
+        marker in compact_text
+        for marker in (
+            "不回收",
+            "不可回收",
+            "激活锁",
+            "账号未解绑",
+            "账户未解绑",
+            "他人apple账户",
+            "他人的apple账户",
+            "其他人apple账户",
+            "其他人的apple账户",
+            "非本人apple账户",
+        )
+    ) and standard_status in {"bound_account", ""}:
+        return "blocked"
+    if any(
+        marker in compact_text
+        for marker in ("可以回收", "可以正常回收", "可回收", "可正常回收", "正常下单")
+    ) and standard_status in {"normal", ""}:
+        return "recoverable"
+    return ""
+
+
+def _headphone_find_recovery_outcome_conflict(rows: list[dict[str, Any]]) -> bool:
+    outcomes = {_headphone_find_recovery_outcome(row) for row in rows}
+    return {"recoverable", "blocked"}.issubset(outcomes)
+
+
 def _direct_reconcile_has_hard_conflict(
     candidate: dict[str, Any],
     cluster_rows: list[dict[str, Any]],
 ) -> bool:
     all_rows = [candidate, *cluster_rows]
+    if _same_source_different_atomic_conflict(all_rows):
+        return True
+    if _headphone_find_standard_status_conflict(all_rows):
+        return True
     if len({_business_line_for_row(row) for row in all_rows}) > 1:
         return True
     if any(not _resolved_product_type_for_row(row) for row in all_rows):
         return True
+    candidate_boundary = _topic_boundary_key(candidate)
     trusted_target = _direct_reconcile_shared_trusted_target(all_rows)
+    waterproof_indicator_discoloration_cluster = (
+        trusted_target == "waterproof_indicator_discoloration"
+    )
     if (
         not trusted_target
         and _direct_clustering_rule_conflict_reason(all_rows)
@@ -6587,7 +8079,29 @@ def _direct_reconcile_has_hard_conflict(
     )
     candidate_atomic_id = _clean_text(candidate.get("_原子知识ID"))
     for member in cluster_rows:
+        member_boundary = _topic_boundary_key(member)
+        if (
+            candidate_boundary is not None
+            and member_boundary is not None
+            and candidate_boundary != member_boundary
+        ):
+            shared_target = _direct_reconcile_shared_target(
+                [candidate, member]
+            )
+            if (
+                shared_target not in _DIRECT_RECONCILE_TRUSTED_TARGETS
+                or (
+                    not waterproof_indicator_discoloration_cluster
+                    and _direct_reconcile_object_conflict(candidate, member)
+                )
+            ):
+                return True
         member_signature = _direct_reconcile_topic_signature(member)
+        if (
+            not waterproof_indicator_discoloration_cluster
+            and _direct_reconcile_object_conflict(candidate, member)
+        ):
+            return True
         if candidate_signature[0] != member_signature[0]:
             return True
         member_source_id = (
@@ -6637,17 +8151,15 @@ def _direct_reconcile_has_hard_conflict(
                     return True
         if trusted_target not in _DIRECT_RECONCILE_THRESHOLD_AGNOSTIC_TARGETS:
             candidate_thresholds = set(
-                re.findall(
-                    r"\d+(?:\.\d+)?",
-                    _clean_text(candidate.get("_原子阈值例外")),
-                )
-            )
+                clustering_threshold_values(
+                    candidate.get("_原子阈值例外")
+                ).split("|")
+            ) - {""}
             member_thresholds = set(
-                re.findall(
-                    r"\d+(?:\.\d+)?",
-                    _clean_text(member.get("_原子阈值例外")),
-                )
-            )
+                clustering_threshold_values(
+                    member.get("_原子阈值例外")
+                ).split("|")
+            ) - {""}
             if (
                 candidate_thresholds
                 and member_thresholds
@@ -6661,17 +8173,11 @@ def _direct_cluster_hard_conflict_reason(rows: list[dict[str, Any]]) -> str:
     if len(rows) <= 1:
         return ""
 
-    atomic_ids = {
-        _clean_text(row.get("_原子知识ID"))
-        for row in rows
-        if _clean_text(row.get("_原子知识ID"))
-    }
-    source_ids = [
-        _clean_text(row.get("数据ID")) or _clean_text(row.get("工单ID"))
-        for row in rows
-    ]
-    if len(atomic_ids) > 1 and len(set(source_ids)) == 1:
+    if _same_source_different_atomic_conflict(rows):
         return "同一会话拆出的多个原子问题不能在自动聚类阶段重新合并"
+
+    if _headphone_find_standard_status_conflict(rows):
+        return "耳机查找功能标准状态不同，不能自动聚类合并"
 
     business_lines = {_business_line_for_row(row) for row in rows}
     if len(business_lines) > 1:
@@ -6710,14 +8216,29 @@ def _direct_cluster_hard_conflict_reason(rows: list[dict[str, Any]]) -> str:
     ):
         return "可信业务目标不同，不能保留在同一主题簇"
 
+    waterproof_indicator_discoloration_cluster = (
+        explicit_trusted_targets == {"waterproof_indicator_discoloration"}
+    )
+
     judgment_rule_conflict = _direct_clustering_rule_conflict_reason(rows)
-    if judgment_rule_conflict:
+    if judgment_rule_conflict and not waterproof_indicator_discoloration_cluster:
         return judgment_rule_conflict
+
+    if not waterproof_indicator_discoloration_cluster:
+        for left_index, left in enumerate(rows):
+            if any(
+                _direct_reconcile_object_conflict(left, right)
+                for right in rows[left_index + 1 :]
+            ):
+                return "判定对象不同，绝对不能自动聚类合并"
 
     uncertain_values = {"", "待确认", "未知", "其他待确认", "通用", "不限"}
     guarded_fields = (
         ()
-        if _direct_clustering_rule_allows_comparison(rows)
+        if (
+            _direct_clustering_rule_allows_comparison(rows)
+            or waterproof_indicator_discoloration_cluster
+        )
         else (
             ("模型主题二级分类", "二级分类不同"),
             ("对象/部位", "判定对象不同"),
@@ -6811,7 +8332,14 @@ def _reconcile_direct_topic_groups(
                 _clean_text(row.get("_聚类裁决提供方"))
                 in DIRECT_RECONCILABLE_PROVIDERS
                 for row in rows
-            ),
+            )
+            # A post-guard split can mark an otherwise valid camera-lens
+            # atomic topic as non-reconcilable because a sibling atomic
+            # question conflicted. Let a complete shared trusted target
+            # re-enter the conservative reconciliation path; the hard conflict
+            # checks below still protect source atoms, products, objects,
+            # scopes and thresholds.
+            or bool(_direct_reconcile_shared_trusted_target(rows)),
         }
         for key, rows in topic_groups
     ]
@@ -6849,8 +8377,29 @@ def _reconcile_direct_topic_groups(
                 review_floor,
                 fingerprint_cache=fingerprint_cache,
             )
-            if similarity >= candidate_floor:
-                candidates.append((similarity, left_index, right_index))
+            shared_target = _direct_reconcile_shared_trusted_target(
+                [*left["rows"], *right["rows"]],
+                fingerprint_cache=fingerprint_cache,
+            )
+            # Waterproof-indicator color is one rule topic with a
+            # location/evidence branch.  Bring all such clusters into the
+            # hard-gated reconciliation pass even when their text overlap is
+            # weak.  The title path below marks the merged topic manual-review
+            # only; it never converts conflicting branch conclusions into an
+            # automatic acceptance.
+            if (
+                similarity >= candidate_floor
+                or shared_target == "waterproof_indicator_discoloration"
+            ):
+                candidates.append(
+                    (
+                        max(similarity, candidate_floor)
+                        if shared_target == "waterproof_indicator_discoloration"
+                        else similarity,
+                        left_index,
+                        right_index,
+                    )
+                )
     candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
     meta["direct_reconcile_candidates"] = len(candidates)
     if progress_callback and candidates:
@@ -7196,6 +8745,168 @@ def _reconcile_direct_topic_groups(
     return reconciled
 
 
+def _consolidate_direct_special_topic_groups(
+    topic_groups: list[tuple[tuple[str, ...], list[dict[str, Any]]]],
+    meta: dict[str, Any],
+) -> list[tuple[tuple[str, ...], list[dict[str, Any]]]]:
+    """Apply narrow post-cluster consolidation rules with explicit review.
+
+    The ordinary reconciliation pass remains conservative.  These two rules
+    cover known exceptions where model partitions are not reusable business
+    topics: a phone waterproof-indicator color rule has location/evidence
+    branches, and one earphone Find My status may be duplicated inside the
+    same work order.  Neither rule merges different Find My standard states.
+    """
+    groups = list(topic_groups)
+
+    waterproof_indices = [
+        index
+        for index, (_key, rows) in enumerate(groups)
+        if rows
+        and all(
+            _direct_reconcile_topic_kind(row)
+            == "waterproof_indicator_discoloration"
+            for row in rows
+        )
+        and _resolved_product_type_for_row(rows[0]) == "手机"
+    ]
+    if len(waterproof_indices) > 1:
+        first_index = waterproof_indices[0]
+        merged_rows = [
+            row
+            for index in waterproof_indices
+            for row in groups[index][1]
+        ]
+        for row in merged_rows:
+            row.update(
+                {
+                    "_聚类需要复核": True,
+                    "_聚类主题标题": "手机防水标变色如何判定（卡槽位置与证据分支）",
+                    "_聚类决策": "规则分支归并",
+                    "_聚类裁决提供方": "mimo-direct-reconcile-rule",
+                    "_聚类裁决原因": (
+                        "防水标变色属于同一判定规则主题，"
+                        "位置和证据差异作为人工复核分支保留"
+                    ),
+                    "人工优先复核原因": _safe_join(
+                        [
+                            _clean_text(row.get("人工优先复核原因")),
+                            "防水标位置或证据状态不同，需人工确认分支结论",
+                        ],
+                        "；",
+                    ),
+                }
+            )
+        merged_ids = sorted(
+            {
+                _clean_text(row.get("_原子知识ID"))
+                for row in merged_rows
+                if _clean_text(row.get("_原子知识ID"))
+            }
+        )
+        groups[first_index] = (
+            (
+                "direct_mimo",
+                "手机",
+                "waterproof_indicator_discoloration",
+                "branch-review",
+                *merged_ids,
+            ),
+            merged_rows,
+        )
+        groups = [
+            group
+            for index, group in enumerate(groups)
+            if index == first_index or index not in waterproof_indices
+        ]
+        approved = len(waterproof_indices) - 1
+        meta["direct_reconcile_approved"] += approved
+        meta["direct_reconcile_rule_approved"] += approved
+
+    earphone_groups: dict[
+        tuple[str, str], list[int]
+    ] = {}
+    for index, (_key, rows) in enumerate(groups):
+        if not rows or not all(
+            _is_headphone_find_atomic_topic(row) for row in rows
+        ):
+            continue
+        work_orders = {
+            _original_work_order_id_for_row(row)
+            for row in rows
+            if _original_work_order_id_for_row(row)
+        }
+        statuses = {
+            _headphone_find_standard_status(row)
+            for row in rows
+        } - {""}
+        if len(work_orders) != 1 or len(statuses) != 1:
+            continue
+        earphone_groups.setdefault(
+            (next(iter(work_orders)), next(iter(statuses))),
+            [],
+        ).append(index)
+    merged_indices: set[int] = set()
+    for (work_order, status), indices in earphone_groups.items():
+        if len(indices) <= 1:
+            continue
+        first_index = indices[0]
+        merged_rows = [
+            row
+            for index in indices
+            for row in groups[index][1]
+        ]
+        for row in merged_rows:
+            row.update(
+                {
+                    "_聚类需要复核": True,
+                    "_聚类主题标题": "耳机查找功能异常是否影响回收"
+                    if status == "abnormal"
+                    else _clean_text(row.get("_聚类主题标题")),
+                    "_聚类决策": "同工单重复原子去重",
+                    "_聚类裁决提供方": "mimo-direct-reconcile-rule",
+                    "_聚类裁决原因": (
+                        "同一工单同一耳机查找功能标准状态的重复原子已合并，"
+                        "不同标准状态仍保持隔离"
+                    ),
+                    "人工优先复核原因": _safe_join(
+                        [
+                            _clean_text(row.get("人工优先复核原因")),
+                            "同工单同一耳机查找功能状态出现重复原子，已合并后待人工复核",
+                        ],
+                        "；",
+                    ),
+                }
+            )
+        merged_ids = sorted(
+            {
+                _clean_text(row.get("_原子知识ID"))
+                for row in merged_rows
+                if _clean_text(row.get("_原子知识ID"))
+            }
+        )
+        groups[first_index] = (
+            (
+                "direct_mimo",
+                "耳机",
+                "find-status-deduplicated",
+                work_order,
+                status,
+                *merged_ids,
+            ),
+            merged_rows,
+        )
+        merged_indices.update(indices[1:])
+        approved = len(indices) - 1
+        meta["direct_reconcile_approved"] += approved
+        meta["direct_reconcile_rule_approved"] += approved
+    return [
+        group
+        for index, group in enumerate(groups)
+        if index not in merged_indices
+    ]
+
+
 def _direct_mimo_topic_groups(
     rows: list[dict[str, Any]],
     reviewer: MimoClient,
@@ -7254,6 +8965,7 @@ def _direct_mimo_topic_groups(
         "direct_cluster_cache_hits": 0,
         "direct_cluster_failed": 0,
         "direct_cluster_failure_reasons": [],
+        "direct_cluster_failure_category_counts": {},
         "direct_cluster_circuit_open": False,
         "direct_cluster_retry_splits": 0,
         "direct_cluster_retry_succeeded": 0,
@@ -7274,6 +8986,10 @@ def _direct_mimo_topic_groups(
         "atomic_product_conflict_samples": [],
         "atomic_human_evidence_conflicts": 0,
         "atomic_human_evidence_conflict_samples": [],
+        "atomic_completeness_review": 0,
+        "atomic_completeness_review_samples": [],
+        "atomic_exploratory_first_turn_unconfirmed": 0,
+        "atomic_exploratory_first_turn_samples": [],
         "local_multi_topic_rescue": 0,
         "local_multi_topic_rescue_samples": [],
         "clustering_judgment_rule_match_count": 0,
@@ -7462,6 +9178,12 @@ def _direct_mimo_topic_groups(
             source_row,
             topics,
         )
+        topics, brand_component_split = _direct_local_split_notebook_brand_topics(
+            source_row,
+            topics,
+        )
+        if brand_component_split:
+            rescue_reason = rescue_reason or "local_notebook_brand_component_split"
         return source_index, source_row, topics, failed, rescue_reason
 
     indexed_rows = list(enumerate(deduped_rows, start=1))
@@ -7697,6 +9419,17 @@ def _direct_mimo_topic_groups(
                     source_row,
                     topics,
                 )
+                topics, brand_component_split = (
+                    _direct_local_split_notebook_brand_topics(
+                        source_row,
+                        topics,
+                    )
+                )
+                if brand_component_split:
+                    rescue_reason = (
+                        rescue_reason
+                        or "local_notebook_brand_component_split"
+                    )
                 extracted_results.append(
                     (
                         source_key,
@@ -7805,11 +9538,23 @@ def _direct_mimo_topic_groups(
     ]
 
     for source_index, source_row, topics, failed, rescue_reason in extracted_rows:
+        topics, completeness_review_reason = (
+            _apply_atomic_topic_completeness_protection(source_row, topics)
+        )
         base_id = (
             _clean_text(source_row.get("数据ID"))
             or _clean_text(source_row.get("工单ID"))
             or f"ROW-{source_index:05d}"
         )
+        if completeness_review_reason:
+            meta["atomic_completeness_review"] += 1
+            if len(meta["atomic_completeness_review_samples"]) < 20:
+                meta["atomic_completeness_review_samples"].append(
+                    {
+                        "sample_id": base_id,
+                        "reason": completeness_review_reason,
+                    }
+                )
         if rescue_reason:
             meta["local_multi_topic_rescue"] += 1
             meta["local_multi_topic_rescue_samples"].append(base_id)
@@ -7851,6 +9596,35 @@ def _direct_mimo_topic_groups(
             human_evidence_conflict_reason = _human_evidence_conflict_reason(
                 source_row
             )
+            conversation_intent = _conversation_intent_evidence(
+                source_row.get("聊天内容"),
+                9000,
+            )
+            exploratory_first_turn_unconfirmed = (
+                conversation_intent["first_turn_role"]
+                == "exploratory_unconfirmed"
+                and not any(
+                    _clean_text(source_row.get(field))
+                    for field in (
+                        "核心问题",
+                        "原始核心问题",
+                        "判定结论",
+                        "原始判定结论",
+                        "历史实际回复",
+                    )
+                )
+            )
+            if exploratory_first_turn_unconfirmed:
+                meta["atomic_exploratory_first_turn_unconfirmed"] += 1
+                if len(meta["atomic_exploratory_first_turn_samples"]) < 20:
+                    meta["atomic_exploratory_first_turn_samples"].append(
+                        {
+                            "sample_id": base_id,
+                            "first_turn_candidate": conversation_intent[
+                                "first_turn_candidate"
+                            ],
+                        }
+                    )
             if product_conflict:
                 meta["atomic_product_conflicts"] += 1
                 if len(meta["atomic_product_conflict_samples"]) < 20:
@@ -7870,8 +9644,12 @@ def _direct_mimo_topic_groups(
                             "reason": human_evidence_conflict_reason,
                         }
                     )
+            topic = _normalize_headphone_find_atomic_topic(source_row, topic)
             effective_product = source_product or UNKNOWN_PRODUCT_NAME
             topic["product_category"] = effective_product
+            atomic_completeness_review_reason = _clean_text(
+                topic.get("_atomic_completeness_review_reason")
+            )
             try:
                 topic_confidence = float(topic.get("confidence"))
             except (TypeError, ValueError):
@@ -7895,6 +9673,8 @@ def _direct_mimo_topic_groups(
                 or classification_catalog_ambiguous
                 or source_product_unknown
                 or business_line_requires_review
+                or exploratory_first_turn_unconfirmed
+                or bool(atomic_completeness_review_reason)
                 or topic_confidence < 0.75
                 or model_requires_review
             )
@@ -7947,6 +9727,13 @@ def _direct_mimo_topic_groups(
                         if topic_confidence < 0.75
                         else ""
                     ),
+                    (
+                        "首轮会话仅为试探性提问，缺少后续确认、澄清或最终答疑，"
+                        "不得作为已确认工程师意图自动归并"
+                        if exploratory_first_turn_unconfirmed
+                        else ""
+                    ),
+                    atomic_completeness_review_reason,
                     "模型要求人工复核" if model_requires_review else "",
                     _clean_text(topic.get("_local_multi_topic_rescue_reason")),
                 ],
@@ -7957,6 +9744,14 @@ def _direct_mimo_topic_groups(
                 "unit_id": atomic_id,
                 "sample_id": base_id,
                 "source_conversation": _clean_text(source_row.get("聊天内容")),
+                "source_intent_evidence": conversation_intent["intent_evidence"],
+                "source_first_turn_candidate": conversation_intent[
+                    "first_turn_candidate"
+                ],
+                "source_first_turn_role": conversation_intent["first_turn_role"],
+                "source_first_turn_speaker": conversation_intent.get(
+                    "first_turn_speaker", "unknown"
+                ),
                 "source_core_problem": _clean_text(
                     source_row.get("核心问题")
                     or source_row.get("原始核心问题")
@@ -7970,6 +9765,12 @@ def _direct_mimo_topic_groups(
                 ),
                 "source_reference_reply": _clean_text(
                     source_row.get("参考话术")
+                ),
+                "source_model": _clean_text(
+                    source_row.get("机型") or source_row.get("产品型号")
+                ),
+                "source_brand": _clean_text(
+                    source_row.get("品牌") or source_row.get("适用品牌")
                 ),
                 "ai_result_conflict_fields": _clean_text(
                     source_row.get("AI结果冲突字段")
@@ -8014,8 +9815,19 @@ def _direct_mimo_topic_groups(
                     source_row.get("_分类库候选问题分类")
                 ),
             }
-            source_rule_match = _source_clustering_rule_match(source_row)
-            model_rule_match = _model_clustering_rule_match(unit)
+            find_status_rule_match = (
+                _headphone_find_standard_rule_match(source_row)
+                if _is_headphone_find_atomic_topic(unit)
+                else None
+            )
+            source_rule_match = (
+                find_status_rule_match
+                or _source_clustering_rule_match(source_row)
+            )
+            model_rule_match = (
+                find_status_rule_match
+                or _model_clustering_rule_match(unit)
+            )
             if source_rule_match is not None:
                 source_boundary = _clustering_rule_boundary(source_rule_match)
                 model_boundary = _clustering_rule_boundary(model_rule_match)
@@ -8080,6 +9892,15 @@ def _direct_mimo_topic_groups(
             atomic_row.update(
                 {
                     "_原子知识ID": atomic_id,
+                    "_原子首轮意图状态": _clean_text(
+                        unit.get("source_first_turn_role")
+                    ),
+                    "_原子首轮试探问题": _clean_text(
+                        unit.get("source_first_turn_candidate")
+                    ),
+                    "_原子意图证据": _clean_text(
+                        unit.get("source_intent_evidence")
+                    ),
                     "_原子需要复核": atomic_requires_review,
                     "_原子品类冲突": product_conflict,
                     "_原子品类冲突说明": (
@@ -8097,6 +9918,12 @@ def _direct_mimo_topic_groups(
                     "_原子品牌": _clean_text(topic.get("brand")),
                     "_原子机型范围": _clean_text(topic.get("model_scope")),
                     "_原子阈值例外": _clean_text(topic.get("threshold_or_exception")),
+                    "_原子耳机查找功能标准状态": _clean_text(
+                        topic.get("_耳机查找功能标准状态")
+                    ),
+                    "_原子耳机查找功能模型现象": _clean_text(
+                        topic.get("_耳机查找功能模型现象")
+                    ),
                     "_聚类判定规则ID": _clean_text(
                         unit.get("_聚类判定规则ID")
                     ),
@@ -8179,13 +10006,50 @@ def _direct_mimo_topic_groups(
     def empty_cluster_stats() -> dict[str, Any]:
         return {
             **{field: 0 for field in cluster_stat_fields},
+            "direct_cluster_failure_category_counts": {},
             "direct_cluster_circuit_open": False,
             "direct_cluster_last_error": "",
         }
 
+    def cluster_failure_category(failure_reason: str) -> str:
+        normalized_reason = failure_reason.lower()
+        if "已熔断" in failure_reason or "circuit" in normalized_reason:
+            return "circuit_open"
+        if (
+            "响应总超时" in failure_reason
+            or "读取超时" in failure_reason
+            or "timeout" in normalized_reason
+        ):
+            return "timeout"
+        if (
+            "json" in normalized_reason
+            or "格式" in failure_reason
+            or "validation" in normalized_reason
+        ):
+            return "response_format_or_validation"
+        if (
+            "网络" in failure_reason
+            or "urlerror" in normalized_reason
+            or "http" in normalized_reason
+        ):
+            return "network_or_http"
+        return "other"
+
     def merge_cluster_stats(values: dict[str, Any]) -> None:
         for field in cluster_stat_fields:
             meta[field] += int(values.get(field, 0))
+        for category, count in dict(
+            values.get("direct_cluster_failure_category_counts") or {}
+        ).items():
+            meta["direct_cluster_failure_category_counts"][category] = (
+                int(
+                    meta["direct_cluster_failure_category_counts"].get(
+                        category,
+                        0,
+                    )
+                )
+                + int(count)
+            )
         meta["direct_cluster_circuit_open"] = bool(
             meta["direct_cluster_circuit_open"]
             or values.get("direct_cluster_circuit_open")
@@ -8201,6 +10065,18 @@ def _direct_mimo_topic_groups(
     ) -> None:
         for field in cluster_stat_fields:
             target[field] += int(source.get(field, 0))
+        for category, count in dict(
+            source.get("direct_cluster_failure_category_counts") or {}
+        ).items():
+            target["direct_cluster_failure_category_counts"][category] = (
+                int(
+                    target["direct_cluster_failure_category_counts"].get(
+                        category,
+                        0,
+                    )
+                )
+                + int(count)
+            )
         target["direct_cluster_circuit_open"] = bool(
             target["direct_cluster_circuit_open"]
             or source.get("direct_cluster_circuit_open")
@@ -8246,7 +10122,9 @@ def _direct_mimo_topic_groups(
             stats["direct_cluster_failed"] += 1
             failure_reason = f"{type(exc).__name__}: {_clean_text(str(exc))[:240]}"
             stats["direct_cluster_last_error"] = failure_reason
-            if "已熔断" in failure_reason or "响应总超时" in failure_reason:
+            category = cluster_failure_category(failure_reason)
+            stats["direct_cluster_failure_category_counts"][category] = 1
+            if "已熔断" in failure_reason:
                 stats["direct_cluster_circuit_open"] = True
                 return (
                     [
@@ -8863,6 +10741,10 @@ def _direct_mimo_topic_groups(
         cache_update_callback=persist_reconcile_results,
         progress_callback=progress_callback,
     )
+    topic_groups = _consolidate_direct_special_topic_groups(
+        topic_groups,
+        meta,
+    )
     _write_direct_mimo_progress(
         progress_path,
         source_keys,
@@ -8909,13 +10791,73 @@ def _rank_semantic_cluster_candidates(
     )
 
 
-def _has_topic_merge_conflict(left: dict[str, Any], right: dict[str, Any]) -> bool:
+def _same_standard_family_boundary_compatible(
+    left_boundary: tuple[str, ...] | None,
+    right_boundary: tuple[str, ...] | None,
+) -> bool:
+    """Allow semantic recall across object aliases only within one rule family."""
+
+    if left_boundary is None or right_boundary is None:
+        return False
+    if len(left_boundary) != len(right_boundary) or len(left_boundary) < 7:
+        return False
+    # The tuple starts with a marker, business line, product, family, policy,
+    # object, phenomenon, query target, detection target, and scope fields.
+    if left_boundary[1:5] != right_boundary[1:5]:
+        return False
+    if left_boundary[4] != "samestandardfamily":
+        return left_boundary == right_boundary
+    # ``same_standard_family`` already wildcarded phenomenon.  Keep every
+    # remaining boundary (query/detection/scope/threshold) exact and ignore
+    # only the object slot for semantic candidate recall.
+    return left_boundary[6:] == right_boundary[6:]
+
+
+def _has_topic_merge_conflict(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    *,
+    boundary_cache: dict[
+        int,
+        tuple[str, tuple[str, ...] | None],
+    ]
+    | None = None,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
+) -> bool:
+    if _same_source_different_atomic_conflict([left, right]):
+        return True
+    if _headphone_find_standard_status_conflict([left, right]):
+        return True
     if _business_line_for_row(left) != _business_line_for_row(right):
+        return True
+    left_boundary = _topic_boundary_key(
+        left,
+        boundary_cache=boundary_cache,
+    )
+    right_boundary = _topic_boundary_key(
+        right,
+        boundary_cache=boundary_cache,
+    )
+    if (
+        left_boundary is not None
+        and right_boundary is not None
+        and left_boundary != right_boundary
+        and not _same_standard_family_boundary_compatible(
+            left_boundary,
+            right_boundary,
+        )
+    ):
         return True
     if _direct_clustering_rule_conflict_reason([left, right]):
         return True
     if _direct_clustering_rule_allows_comparison([left, right]):
         return False
+    if _direct_reconcile_object_conflict(
+        left,
+        right,
+        fingerprint_cache=fingerprint_cache,
+    ):
+        return True
 
     unknown_values = {"", "待确认", "未知", "通用", "不限"}
     for field in (
@@ -8945,9 +10887,21 @@ def _has_topic_merge_conflict(left: dict[str, Any], right: dict[str, Any]) -> bo
 def _cluster_has_topic_merge_conflict(
     candidate: dict[str, Any],
     cluster_rows: list[dict[str, Any]],
+    *,
+    boundary_cache: dict[
+        int,
+        tuple[str, tuple[str, ...] | None],
+    ]
+    | None = None,
+    fingerprint_cache: dict[int, ClusteringFingerprint] | None = None,
 ) -> bool:
     return any(
-        _has_topic_merge_conflict(candidate, member)
+        _has_topic_merge_conflict(
+            candidate,
+            member,
+            boundary_cache=boundary_cache,
+            fingerprint_cache=fingerprint_cache,
+        )
         for member in cluster_rows
     )
 
@@ -9003,6 +10957,11 @@ def _semantic_mimo_topic_groups(
     auto_threshold = max(floor, min(float(auto_merge_threshold), 1.0))
     limit = max(0, int(review_limit))
     grouped: list[dict[str, Any]] = []
+    boundary_cache: dict[
+        int,
+        tuple[str, tuple[str, ...] | None],
+    ] = {}
+    fingerprint_cache: dict[int, ClusteringFingerprint] = {}
     meta: dict[str, Any] = {
         "threshold": threshold,
         "review_floor": floor,
@@ -9041,7 +11000,12 @@ def _semantic_mimo_topic_groups(
         ]
         for cluster in tag_candidates:
             representative = cluster["representative_row"]
-            if _cluster_has_topic_merge_conflict(row, cluster["rows"]):
+            if _cluster_has_topic_merge_conflict(
+                row,
+                cluster["rows"],
+                boundary_cache=boundary_cache,
+                fingerprint_cache=fingerprint_cache,
+            ):
                 continue
             if not (_has_high_confidence_topic_signal(row) and _has_high_confidence_topic_signal(representative)):
                 continue
@@ -9077,7 +11041,12 @@ def _semantic_mimo_topic_groups(
             final_similarity = similarity
             cluster = grouped[cluster_index]
             representative = cluster["representative_row"]
-            conflict = _cluster_has_topic_merge_conflict(row, cluster["rows"])
+            conflict = _cluster_has_topic_merge_conflict(
+                row,
+                cluster["rows"],
+                boundary_cache=boundary_cache,
+                fingerprint_cache=fingerprint_cache,
+            )
             if conflict:
                 meta["mimo_hard_rule_rejected"] += 1
                 final_decision = "业务硬规则冲突后新建主题"
@@ -9802,6 +11771,10 @@ def _atomic_scoped_source_excerpt(
     text = _normalize_lines(value)
     if not text:
         return ""
+    if not _clean_text(row.get("_原子知识ID") or row.get("原子知识ID")):
+        # Before atomic extraction there is no reliable owner for a clause;
+        # preserve the original source evidence instead of dropping it.
+        return _semantic_excerpt(text, limit)
     sections = [
         section.strip()
         for section in re.split(r"(?=^\s*\d+[.、])", text, flags=re.MULTILINE)
@@ -9833,13 +11806,15 @@ def _atomic_scoped_source_excerpt(
         has_multi_topic_marker = bool(
             re.search(r"(?:同时|分别|两个问题|两项问题)", text)
         )
-        if not has_multi_topic_marker:
-            return _semantic_excerpt(text, limit)
-        topical_sections = [
+        clause_sections = [
             section.strip()
             for section in re.split(r"[；;\n]+", text)
             if section.strip()
         ]
+        if has_multi_topic_marker or len(clause_sections) >= 2:
+            topical_sections = clause_sections
+        else:
+            return _semantic_excerpt(text, limit)
         if len(topical_sections) < 2:
             return ""
 
@@ -9911,11 +11886,37 @@ def _topic_source_fact(
             )
         ) >= 2
     )
-    conversation = (
-        ""
-        if has_multi_topic_human_fields
-        else _semantic_excerpt(row.get("聊天内容"), 800)
+    raw_conversation = _normalize_lines(row.get("聊天内容"))
+    scoped_conversation = _atomic_scoped_source_excerpt(
+        row,
+        raw_conversation,
+        800,
     )
+    conversation_layers = _conversation_intent_evidence(
+        scoped_conversation or raw_conversation,
+        800,
+    )
+    conversation = (
+        conversation_layers["intent_evidence"]
+        or conversation_layers["conversation"]
+    )
+    if (
+        not conversation
+        and conversation_layers["first_turn_role"] != "exploratory_unconfirmed"
+        and not has_multi_topic_human_fields
+    ):
+        has_multiple_clauses = len(
+            [
+                part
+                for part in re.split(r"[；;\n]+", raw_conversation)
+                if part.strip()
+            ]
+        ) >= 2
+        conversation = (
+            ""
+            if _clean_text(row.get("_原子知识ID")) and has_multiple_clauses
+            else _semantic_excerpt(raw_conversation, 800)
+        )
     historical_reply = _atomic_scoped_source_excerpt(
         row,
         _historical_actual_reply(row),
@@ -9999,6 +12000,13 @@ def _topic_source_fact(
         "semantic_basis": semantic_basis,
         "historical_actual_reply": historical_reply,
         "conversation_excerpt": conversation,
+        "conversation_full_excerpt": conversation_layers["conversation"],
+        "intent_evidence_excerpt": conversation_layers["intent_evidence"],
+        "first_turn_candidate": conversation_layers["first_turn_candidate"],
+        "first_turn_role": conversation_layers["first_turn_role"],
+        "first_turn_speaker": conversation_layers.get(
+            "first_turn_speaker", "unknown"
+        ),
         "threshold_or_exception": threshold_or_exception,
         "source_supported_threshold_or_exception": (
             source_supported_threshold
@@ -10160,6 +12168,11 @@ def _topic_evidence_package_json(
         "semantic_basis": 400,
         "historical_actual_reply": 500,
         "conversation_excerpt": 600,
+        "conversation_full_excerpt": 600,
+        "intent_evidence_excerpt": 600,
+        "first_turn_candidate": 300,
+        "first_turn_role": 80,
+        "first_turn_speaker": 40,
         "threshold_or_exception": 300,
         "source_supported_threshold_or_exception": 300,
         "evidence_reason": 300,
@@ -10177,6 +12190,11 @@ def _topic_evidence_package_json(
         "semantic_basis",
         "historical_actual_reply",
         "conversation_excerpt",
+        "conversation_full_excerpt",
+        "intent_evidence_excerpt",
+        "first_turn_candidate",
+        "first_turn_role",
+        "first_turn_speaker",
         "threshold_or_exception",
         "source_supported_threshold_or_exception",
         "threshold_source_supported",
@@ -10626,6 +12644,7 @@ def _topic_query(
     base = rows[0]
     evidence_package = evidence_package or _topic_evidence_package(rows)
     representative_facts = evidence_package.get("representative_facts") or []
+    scoped_facts = representative_facts or evidence_package.get("facts") or []
     questions = [
         _clean_text(fact.get("atomic_question"))
         or _clean_text(fact.get("human_core_problem"))
@@ -10646,6 +12665,24 @@ def _topic_query(
                 fact.get("human_judgment_conclusion")
                 for fact in representative_facts
             ],
+            separator="；",
+        ),
+        "意图证据": _merge_unique_text(
+            [
+                fact.get("intent_evidence_excerpt")
+                for fact in representative_facts
+            ],
+            separator="\n",
+        ),
+        "首轮试探问题": _merge_unique_text(
+            [
+                fact.get("first_turn_candidate")
+                for fact in representative_facts
+            ],
+            separator="\n",
+        ),
+        "首轮意图状态": _merge_unique_text(
+            [fact.get("first_turn_role") for fact in representative_facts],
             separator="；",
         ),
         "平台": _merge_unique_text(
@@ -10679,21 +12716,29 @@ def _topic_query(
         "历史实际回复": _merge_unique_text(
             [
                 fact.get("historical_actual_reply")
-                for fact in representative_facts
+                for fact in scoped_facts
             ],
             separator="\n",
         ),
         "聊天内容": _merge_unique_text(
-            [row.get("聊天内容") for row in rows],
+            [fact.get("conversation_excerpt") for fact in scoped_facts],
             separator="\n",
         ),
         "参考话术": _merge_unique_text(
-            [row.get("参考话术") for row in rows],
+            [
+                _atomic_scoped_source_excerpt(
+                    row,
+                    row.get("参考话术"),
+                    400,
+                )
+                or _clean_text(row.get("参考话术"))
+                for row in rows
+            ],
             separator="\n",
         ),
         "判定依据": _merge_unique_text(
             [
-                fact.get("judgment_basis") or fact.get("semantic_basis")
+                fact.get("judgment_basis")
                 for fact in representative_facts
             ],
             separator="；",
@@ -11369,8 +13414,21 @@ def _topic_rule_draft(
             _clean_text(query.get("产品类型")),
         )
     )
-    if not title:
-        title = _rebuild_title_from_structured_fields(query, standard)
+    structured_title = (
+        _structured_topic_question_title(query, rows)
+        or _rebuild_title_from_structured_fields(query, standard)
+    )
+    # Rule fallback is common for low-confidence topics. Do not let the broad
+    # fallback "疑似拆修" process title become the visible candidate title when
+    # the current atomic topic already has a concrete product/object/phenomenon.
+    if structured_title and (
+        not title
+        or "疑似拆修或维修痕迹" in title
+        or "疑似拆修痕迹" in title
+        or "｜" in title
+        or "|" in title
+    ):
+        title = structured_title
     if use_standard_references and standard:
         # A model failure with an authoritative standard falls back to the
         # standard rules themselves, never to a generic process template.
@@ -12589,6 +14647,7 @@ def _topic_stage_payload(
     representative_facts = evidence_package.get(
         "representative_facts"
     ) or []
+    scoped_facts = representative_facts or evidence_package.get("facts") or []
     return {
         "theme_id": topic_id,
         "member_count": len(rows),
@@ -12629,16 +14688,17 @@ def _topic_stage_payload(
         "historical_replies": list(
             dict.fromkeys(
                 reply
-                for row in rows
-                if (reply := _historical_actual_reply(row))
+                for fact in scoped_facts
+                if (reply := _clean_text(fact.get("historical_actual_reply")))
             )
         )[:6],
-        "conversation_evidence": _unique_topic_values(
-            rows,
-            "聊天内容",
-            limit=6,
-            max_chars=1800,
-        ),
+        "conversation_evidence": list(
+            dict.fromkeys(
+                _clean_text(fact.get("conversation_excerpt"))
+                for fact in scoped_facts
+                if _clean_text(fact.get("conversation_excerpt"))
+            )
+        )[:6],
         "evidence_package": evidence_package,
         "representative_source_ids": evidence_package.get(
             "representative_source_ids",
@@ -12692,9 +14752,88 @@ def _topic_has_draftable_source_rule(topic_payload: dict[str, Any]) -> bool:
     )
 
 
+def _topic_is_headphone_account_lock_case(topic_payload: dict[str, Any]) -> bool:
+    product_categories = "\n".join(
+        _clean_text(value) for value in topic_payload.get("product_categories", [])
+    )
+    if "耳机" not in product_categories and "耳麦" not in product_categories:
+        return False
+    text = "\n".join(
+        _clean_text(value)
+        for field in (
+            "normalized_issues",
+            "upstream_core_problems",
+            "upstream_judgment_conclusions",
+            "phenomena",
+            "historical_replies",
+            "conversation_evidence",
+            "representative_human_judgments",
+        )
+        for value in topic_payload.get(field, [])
+    )
+    synthetic_row = {
+        "产品类型": product_categories,
+        "核心问题": "\n".join(
+            _clean_text(value)
+            for value in topic_payload.get("normalized_issues", [])
+        ),
+        "原始核心问题": "\n".join(
+            _clean_text(value)
+            for value in topic_payload.get("upstream_core_problems", [])
+        ),
+        "原始判定结论": "\n".join(
+            _clean_text(value)
+            for value in topic_payload.get("upstream_judgment_conclusions", [])
+        ),
+        "历史实际回复": "\n".join(
+            _clean_text(value)
+            for value in topic_payload.get("historical_replies", [])
+        ),
+        "异常现象": "\n".join(
+            _clean_text(value)
+            for value in topic_payload.get("phenomena", [])
+        ),
+        "聊天内容": "\n".join(
+            _clean_text(value)
+            for value in topic_payload.get("conversation_evidence", [])
+        ),
+        "语义标注依据": "\n".join(
+            _clean_text(value)
+            for value in topic_payload.get("evidence_summaries", [])
+        ),
+    }
+    if "bound_account" not in _headphone_find_standard_statuses(synthetic_row):
+        return False
+    compact_text = re.sub(r"\s+", "", text.casefold())
+    return any(
+        marker in compact_text
+        for marker in ("可以回收", "可以正常回收", "可回收", "可正常回收", "正常下单")
+    )
+
+
+def _headphone_account_lock_case_stage() -> dict[str, Any]:
+    return {
+        "topic_stage": "案例解析",
+        "knowledge_value": "不值得沉淀",
+        "stage_reason": (
+            "该耳机案例明确涉及他人 Apple 账户、激活锁或账号未解绑，"
+            "只能说明当前设备的个案状态。"
+        ),
+        "value_reason": (
+            "来源未提供可复用的标准条款、适用边界或统一处理规则；"
+            "不得把单个激活锁案例改写为通用知识。"
+        ),
+        "reusable_knowledge": "该案例仅供人工复核来源事实，不生成通用知识草稿。",
+        "confidence": 0.9,
+        "needs_human_review": True,
+    }
+
+
 def _rule_topic_stage_classification(
     topic_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    if _topic_is_headphone_account_lock_case(topic_payload):
+        return _headphone_account_lock_case_stage()
     text = "\n".join(
         _clean_text(value)
         for field in (
@@ -12937,6 +15076,16 @@ def _untranscribed_topic_candidate_row(
             "该主题在知识转写前被标注为不值得沉淀，因此未生成知识草稿。"
             "请在候选价值复核中确认主题价值；如改判为值得沉淀，需要补充完整知识内容后再送审。"
         )
+    reusable_reply_source = _build_topic_source_fact_content(
+        query,
+        use_standard_references=False,
+        conservative=True,
+    )
+    recommended_reply = _recommended_reply(
+        title,
+        reusable_reply_source,
+        use_standard_references=False,
+    )
     return {
         "主题ID": topic_id,
         "知识ID": topic_id,
@@ -13015,7 +15164,7 @@ def _untranscribed_topic_candidate_row(
         "副标题": "",
         "知识内容": note,
         "图例": "\n".join(image_links),
-        "推荐回复": "",
+        "推荐回复": recommended_reply,
         "知识分类": knowledge_category_from_topic_stage(
             classification.get("topic_stage"),
         ),
@@ -14017,6 +16166,11 @@ def _topic_candidate_row(
     confidence = float(candidate.get("confidence", 0.0))
     needs_review = (
         candidate.get("needs_human_review", False)
+        or any(
+            _clean_text(row.get("增量补充状态")) == "待人工复核"
+            or _clean_text(row.get("需要重新审核")) == "是"
+            for row in rows
+        )
         or any(bool(row.get("_原子需要复核")) for row in rows)
         or any(bool(row.get("_聚类需要复核")) for row in rows)
         or (use_standard_references and not matches)
@@ -14190,20 +16344,41 @@ def _topic_candidate_row(
         ]
     )
     visible_models = list(dict.fromkeys([*applicable_models, *source_model_values]))
-    stripped_title = _strip_specific_models_from_text(title, visible_models)
-    if stripped_title != title:
-        title = stripped_title
+
+    def title_mentions_visible_model(value: Any) -> bool:
+        normalized_title_value = _normalized_topic_claim(value)
+        return bool(
+            normalized_title_value
+            and any(
+                _normalized_topic_claim(model) in normalized_title_value
+                for model in visible_models
+                if _normalized_topic_claim(model)
+            )
+        )
+
+    if (
+        visible_models
+        and not title_mentions_visible_model(title)
+        and title_mentions_visible_model(source_title)
+    ):
+        title = source_title
         needs_review = True
         title_rebuild_note = _safe_join(
-            [title_rebuild_note, "主标题已去除具体机型，机型保留在适用机型字段。"],
+            [
+                title_rebuild_note,
+                "来源明确限制具体机型，已按来源问题恢复机型级标题。",
+            ],
             "；",
         )
     product_title_aliases = {
         product_type,
         re.sub(r"电脑$", "", product_type),
     }
-    if title and product_type and not any(
-        alias and alias in title for alias in product_title_aliases
+    if (
+        title
+        and product_type
+        and not title_mentions_visible_model(title)
+        and not any(alias and alias in title for alias in product_title_aliases)
     ):
         title = f"{product_type}{title}"[:120]
     specific_model = (
@@ -14218,12 +16393,11 @@ def _topic_candidate_row(
     )
     specific_model_note = ""
     if specific_model:
-        # 机型只保留在“适用机型”，主标题保持品类级，避免把单案例
-        # 误包装成机型标题或让标题无法检索同类问题。
-        title = _strip_specific_models_from_text(title, applicable_models)
+        # 单机型来源不能泛化为整个品类。标题和适用机型共同保留范围，
+        # 正文与推荐回复在下方继续校验同一个机型结论。
         needs_review = True
         specific_model_note = (
-            "来源明确限制单一机型，具体机型已保留在适用机型字段，标题保持品类级。"
+            "来源明确限制单一机型，具体机型已保留在标题和适用机型字段。"
         )
     if (
         specific_model_conclusion
@@ -14316,14 +16490,6 @@ def _topic_candidate_row(
             evidence_status=image_measurement_gate["status"],
         )
 
-    cleaned_reply = _strip_specific_models_from_text(recommended_reply, visible_models)
-    if cleaned_reply != recommended_reply:
-        recommended_reply = cleaned_reply
-        needs_review = True
-        reply_rebuild_note = _safe_join(
-            [reply_rebuild_note, "推荐回复已去除具体机型，避免单案例口径外溢。"],
-            "；",
-        )
     final_reply_quality_issues = _recommended_reply_quality_issues(
         recommended_reply,
         title=title,
@@ -14749,6 +16915,7 @@ def _topic_claim_is_evidence_gap(value: Any) -> bool:
             "补充来源",
             "补充对应来源",
             "补充事实",
+            "补充对应事实",
             "补充证据",
             "补充信息",
             "人工复核",
@@ -15158,10 +17325,38 @@ def _topic_unsupported_source_claims(
             for marker in (
                 "补充证据后再判定",
                 "补充信息后再处理",
+                "仅覆盖上述来源事实明确记录的对象条件和结论",
                 "证据完整后由人工按适用口径判断",
                 "标准未提供可复用的处理步骤",
                 "标准未提供可复用的例外与边界",
                 "需人工补充后再审核",
+            )
+        ):
+            continue
+        if _topic_source_segment_is_question(claim):
+            continue
+        descriptive_scope_pattern = (
+            r"^\s*(?:\d+\s*[.、)）]\s*)?"
+            r"(?:适用情形|核验要点)[：:]\s*"
+        )
+        descriptive_scope = bool(
+            re.match(descriptive_scope_pattern, claim)
+        )
+        descriptive_scope_body = re.sub(
+            descriptive_scope_pattern,
+            "",
+            claim,
+            count=1,
+        )
+        if descriptive_scope and not any(
+            (
+                _topic_numeric_claim_tokens(descriptive_scope_body),
+                _topic_membership_polarities(descriptive_scope_body),
+                _topic_obligation_polarities(descriptive_scope_body),
+                _topic_absolute_scope_markers(descriptive_scope_body),
+                _topic_causality_markers(descriptive_scope_body),
+                _topic_severity_markers(descriptive_scope_body),
+                _topic_action_claim_groups(descriptive_scope_body),
             )
         ):
             continue
@@ -15891,10 +18086,32 @@ def _provisional_singleton_key(
     row: dict[str, Any],
     index: int,
 ) -> tuple[str, ...]:
+    return (*key, f"暂定单主题:{_provisional_source_identity(row, index)}")
+
+
+def _provisional_topic_boundary_key(
+    row: dict[str, Any],
+) -> tuple[str, ...] | None:
+    """Return a safe batch-local key for a provisional candidate.
+
+    Provisional candidates are never written to the trusted history registry.
+    They may still be coalesced inside the current batch when the curated
+    boundary library can produce a complete, identical boundary.  Missing
+    core boundary data deliberately falls back to a singleton.
+    """
+
+    return _topic_boundary_key(row)
+
+
+def _provisional_source_identity(
+    row: dict[str, Any],
+    index: int,
+) -> str:
     source_id = _clean_text(row.get("数据ID")) or _clean_text(
         row.get("工单ID")
     )
-    return (*key, f"暂定单主题:{source_id or index}")
+    atomic_id = _clean_text(row.get("_原子知识ID") or row.get("原子知识ID"))
+    return "|".join((source_id, atomic_id, str(index)))
 
 
 def _attach_provisional_singleton_candidate(
@@ -15902,9 +18119,14 @@ def _attach_provisional_singleton_candidate(
     admission: dict[str, Any],
 ) -> None:
     note = _clean_text(admission.get("reason"))
+    member_count = int(topic.get("主题样本数") or 0)
     topic.update(
         {
-            "主题状态": "provisional_singleton_review_pending",
+            "主题状态": (
+                "provisional_multi_member_review_pending"
+                if member_count > 1
+                else "provisional_singleton_review_pending"
+            ),
             "是否重点复核": "是",
             "校验备注": _safe_join(
                 [topic.get("校验备注"), note],
@@ -15929,6 +18151,253 @@ def _attach_incremental_topic(
             "主题证据版本": resolution.evidence_version,
             "本次新增证据数": resolution.added_member_count,
             "本次重复证据数": resolution.duplicate_member_count,
+            "增量补充状态": (
+                "待人工复核"
+                if resolution.incremental_supplement_pending
+                else ""
+            ),
+            "增量补充叠加层ID": resolution.pending_overlay_id,
+            "需要重新审核": "是" if resolution.requires_re_review else "否",
+        }
+    )
+
+
+def _online_business_boundary_text(rows: list[dict[str, Any]]) -> str:
+    return _normalize_lines(
+        "\n".join(
+            _clean_text(row.get(field))
+            for row in rows
+            for field in (
+                "核心问题",
+                "对象/部位",
+                "异常现象",
+                "判定目标",
+                "解题方式",
+                "原始判定结论",
+                "判定结论",
+                "_原子阈值例外",
+            )
+            if _clean_text(row.get(field))
+        )
+    )
+
+
+def _online_business_boundary_markers(value: Any) -> set[str]:
+    text = _clean_text(value).casefold()
+    markers: set[str] = set()
+    groups = {
+        "storage_brand": ("硬盘品牌", "硬盘是否为品牌", "硬盘品牌是否", "品牌硬盘"),
+        "memory_brand": ("内存品牌", "内存是否为品牌", "品牌内存"),
+        "third_party_replacement": ("第三方更换", "第三方替换", "后换部件", "更换部件"),
+        "find_abnormal_recoverable": ("查找功能异常", "定位查找异常", "异常是否影响回收", "可以回收"),
+        "find_capability": ("是否支持定位查找", "是否具备定位查找", "支持查找功能", "具备定位查找"),
+        "account_bound": ("绑定账户", "他人账户", "激活锁", "物主可查看位置"),
+        "waterproof_marker": ("防水标签", "防水标", "卡槽防水标", "防水标签变红", "防水标变红"),
+        "model_query": ("型号", "机型", "版本", "国行", "零售机"),
+    }
+    for marker, values in groups.items():
+        if any(value in text for value in values):
+            markers.add(marker)
+    if any(value in text for value in ("是否支持", "是否具备", "能否定位", "有没有定位")):
+        markers.add("capability_question")
+    if any(value in text for value in ("异常", "故障", "失效")):
+        markers.add("abnormal_state")
+    if any(value in text for value in ("可回收", "能回收", "影响回收", "不回收")):
+        markers.add("recovery_conclusion")
+    if any(value in text for value in ("变红", "变色", "发红", "红色")):
+        markers.add("red_color_state")
+    return markers
+
+
+def _online_business_knowledge_match(
+    rows: list[dict[str, Any]],
+    query: dict[str, Any],
+    item: CzPublishedKnowledgeItem,
+) -> tuple[float, str, str]:
+    """Apply a complete-boundary gate before reusing online business knowledge."""
+    product_type = _clean_text(query.get("产品类型"))
+    if item.product_type and product_type and item.product_type != product_type:
+        return 0.0, "rejected", "线上知识产品类型与当前主题不一致"
+    current_text = _online_business_boundary_text(rows)
+    candidate_text = "\n".join(
+        [
+            item.title,
+            item.text,
+            item.product_type,
+            *item.models,
+            *item.keywords,
+            *item.boundary_projection.values(),
+        ]
+    )
+    current_markers = _online_business_boundary_markers(current_text)
+    candidate_markers = _online_business_boundary_markers(candidate_text)
+    conflict_pairs = (
+        ("storage_brand", "third_party_replacement"),
+        ("memory_brand", "third_party_replacement"),
+        ("find_abnormal_recoverable", "find_capability"),
+        ("find_abnormal_recoverable", "account_bound"),
+    )
+    for left, right in conflict_pairs:
+        if (left in current_markers and right in candidate_markers) or (
+            right in current_markers and left in candidate_markers
+        ):
+            return 0.0, "rejected", "线上知识与当前主题存在结论或查询目标冲突"
+    required = {
+        marker
+        for marker in current_markers
+        if marker
+        in {
+            "storage_brand",
+            "memory_brand",
+            "third_party_replacement",
+            "find_abnormal_recoverable",
+            "find_capability",
+            "account_bound",
+            "waterproof_marker",
+            "capability_question",
+            "abnormal_state",
+            "recovery_conclusion",
+            "red_color_state",
+        }
+    }
+    if "model_query" in current_markers and any(
+        marker in current_text for marker in ("国行", "零售机", "销售地区")
+    ):
+        required.add("model_query")
+    if not required:
+        return 0.0, "manual_review", "当前主题缺少可用于线上知识复用的结构化边界"
+    missing = sorted(required - candidate_markers)
+    if missing:
+        return 0.0, "manual_review", "线上知识缺少当前主题边界：" + ",".join(missing)
+    if item.final_score < 0.90:
+        return item.final_score, "manual_review", "线上知识相似度未达到自动复用阈值 0.900"
+    return item.final_score, "auto_reuse", "线上已发布业务知识边界一致且相似度达到自动复用阈值"
+
+
+def _online_business_boundary_projection(
+    rows: list[dict[str, Any]],
+    item: CzPublishedKnowledgeItem | None,
+) -> tuple[str, str]:
+    """Return an auditable boundary state without inventing missing values."""
+    current_text = _online_business_boundary_text(rows)
+    current_markers = _online_business_boundary_markers(current_text)
+    candidate_text = ""
+    if item is not None:
+        candidate_text = "\n".join(
+            [
+                item.title,
+                item.text,
+                item.product_type,
+                *item.models,
+                *item.keywords,
+                *item.boundary_projection.values(),
+            ]
+        )
+    candidate_markers = _online_business_boundary_markers(candidate_text)
+    required = {
+        marker
+        for marker in current_markers
+        if marker
+        in {
+            "storage_brand",
+            "memory_brand",
+            "third_party_replacement",
+            "find_abnormal_recoverable",
+            "find_capability",
+            "account_bound",
+            "waterproof_marker",
+            "capability_question",
+            "abnormal_state",
+            "recovery_conclusion",
+            "red_color_state",
+            "model_query",
+        }
+    }
+    missing = sorted(required - candidate_markers)
+    if not required:
+        return "boundary_unknown", "当前主题没有可投影的业务边界"
+    if missing:
+        return "boundary_unknown", "缺少候选边界：" + ",".join(missing)
+    structured = "、".join(
+        f"{key}={value}"
+        for key, value in sorted((item.boundary_projection if item else {}).items())
+        if value
+    )
+    return "boundary_complete", _safe_join(
+        ["、".join(sorted(required)), structured],
+        "；",
+    )
+
+
+def _select_online_business_match(
+    rows: list[dict[str, Any]],
+    query: dict[str, Any],
+    items: list[CzPublishedKnowledgeItem],
+) -> tuple[str, str, float, str, str, str, str] | None:
+    matches: list[tuple[float, str, str, CzPublishedKnowledgeItem, str, str]] = []
+    for item in items:
+        confidence, status, reason = _online_business_knowledge_match(
+            rows,
+            query,
+            item,
+        )
+        if status == "rejected":
+            continue
+        boundary_state, boundary_markers = _online_business_boundary_projection(
+            rows, item
+        )
+        matches.append(
+            (confidence, status, reason, item, boundary_state, boundary_markers)
+        )
+    if not matches:
+        return None
+    matches.sort(key=lambda value: value[0], reverse=True)
+    best = matches[0]
+    if len(matches) > 1 and best[0] - matches[1][0] < 0.05:
+        return (
+            "manual_review",
+            best[3].knowledge_id,
+            round(best[0], 4),
+            "多个线上知识候选边界接近，不能自动选择",
+            best[3].knowledge_origin,
+            "boundary_unknown",
+            "多个候选边界接近",
+        )
+    return (
+        best[1],
+        best[3].knowledge_id,
+        round(best[0], 4),
+        best[2],
+        best[3].knowledge_origin,
+        best[4],
+        best[5],
+    )
+
+
+def _attach_online_business_match(
+    topic: dict[str, Any],
+    result: tuple[str, str, float, str, str, str, str] | None,
+) -> None:
+    if result is None:
+        return
+    (
+        status,
+        knowledge_id,
+        confidence,
+        reason,
+        origin,
+        boundary_state,
+        boundary_markers,
+    ) = result
+    topic.update(
+        {
+            "线上已有知识匹配结果": status,
+            "线上已有知识匹配ID": knowledge_id,
+            "线上已有知识匹配置信度": confidence,
+            "线上已有知识匹配原因": reason,
+            "线上已有知识来源": origin,
+            "线上已有知识边界状态": boundary_state,
+            "线上已有知识边界标记": boundary_markers,
         }
     )
 
@@ -16007,6 +18476,151 @@ def _cluster_only_topic_row(
         and _cluster_title_matches_topic(raw_title, query)
         else _untranscribed_topic_title(query, rows)
     )
+    device_version_context = "\n".join(
+        _clean_text(query.get(field))
+        for field in (
+            "核心问题",
+            "人工核心问题",
+            "人工判定结论",
+            "对象/部位",
+            "异常现象",
+            "判定目标",
+            "解题方式",
+        )
+    )
+    if (
+        _direct_reconcile_topic_kind(rows[0]) == "device_version"
+        and any(
+            marker in device_version_context
+            for marker in (
+                "版本",
+                "零售机",
+                "销售地区",
+                "设备来源",
+                "销售渠道",
+                "地区属性",
+            )
+        )
+    ):
+        title = f"{_clean_text(_topic_product_type(query, rows)) or '设备'}国行零售机版本如何确认"
+    topic_kind = _direct_reconcile_topic_kind(rows[0])
+    waterproof_review_reason = ""
+    if topic_kind == "waterproof_indicator_discoloration":
+        title = "手机防水标变色如何判定（卡槽位置与证据分支）"
+        waterproof_review_reason = (
+            "防水标位置或证据状态不同，需人工确认分支结论"
+        )
+    elif topic_kind == "memory_brand":
+        title = "笔记本内存是否为品牌件"
+    elif topic_kind == "storage_brand":
+        title = "笔记本硬盘是否为品牌件"
+    elif topic_kind in {
+        "memory_storage_brand_huawei_special",
+        "memory_storage_third_party",
+    }:
+        source_context = "\n".join(
+            _clean_text(value)
+            for row in rows
+            for value in (
+                row.get("核心问题"),
+                row.get("原始核心问题"),
+                row.get("人工核心问题"),
+                row.get("判定结论"),
+                row.get("聊天内容"),
+                row.get("品牌"),
+                row.get("机型"),
+                row.get("_原子品牌"),
+                row.get("_原子机型范围"),
+            )
+            if _clean_text(value)
+        ).casefold()
+        if (
+            any(marker in source_context for marker in ("华为", "huawei", "matebook"))
+            and "内存" in source_context
+            and "硬盘" in source_context
+        ):
+            title = "华为 MateBook 内存和硬盘是否为第三方更换部件"
+    else:
+        product = _safe_join(
+            [
+                _clean_text(_topic_product_type(query, rows)),
+                *(_clean_text(row.get("产品类型")) for row in rows),
+            ],
+            "\n",
+        )
+        headphone_context = "\n".join(
+            _clean_text(query.get(field))
+            for field in (
+                "对象/部位",
+                "异常现象",
+                "核心问题",
+                "人工核心问题",
+                "判定目标",
+                "解题方式",
+            )
+        )
+        if (
+            any(marker in product for marker in ("耳机", "耳麦"))
+            and any(marker in headphone_context for marker in ("查找功能", "定位查找"))
+        ):
+            if "查找功能异常" in headphone_context:
+                title = "耳机查找功能异常是否影响回收"
+            elif any(
+                marker in headphone_context
+                for marker in ("是否具备", "是否支持", "具备定位", "支持定位")
+            ):
+                title = "耳机是否支持定位查找功能"
+    title = _cluster_only_clear_business_title(title, query, rows)
+    title_review_reason = _cluster_only_title_review_reason(title, query, rows)
+    title_review_reason = _safe_join(
+        [title_review_reason, waterproof_review_reason],
+        "；",
+    )
+    effective_admission = dict(admission or {})
+    if title_review_reason:
+        if title_review_reason.startswith("主题缺少"):
+            title = _cluster_only_manual_review_title(query, rows)
+        elif (
+            title_review_reason.startswith("主题同时包含多个互斥状态")
+            or title_review_reason.startswith("主题标题未覆盖")
+        ) and not waterproof_review_reason:
+            product = _clean_text(_topic_product_type(query, rows))
+            subject = _clean_text(query.get("对象/部位"))
+            state_options = _cluster_title_state_options(query)
+            if product and subject and state_options:
+                title = (
+                    f"{product}{subject}状态（{'、'.join(state_options)}）"
+                    "如何判定"
+                )
+            elif structured_title:
+                title = structured_title
+        elif structured_title and not waterproof_review_reason:
+            title = structured_title
+        for row in rows:
+            row["_聚类需要复核"] = True
+            row["人工优先复核原因"] = _safe_join(
+                [
+                    _clean_text(row.get("人工优先复核原因")),
+                    title_review_reason,
+                ],
+                "；",
+            )
+        effective_admission.update(
+            {
+                "status": "待人工聚类复核",
+                "confidence": min(
+                    _float_or_default(effective_admission.get("confidence"), 0.45),
+                    0.45,
+                ),
+                "reason": _safe_join(
+                    [
+                        _clean_text(effective_admission.get("reason")),
+                        title_review_reason,
+                    ],
+                    "；",
+                ),
+            }
+        )
     return {
         "聚类主题ID": topic_id,
         "聚类主题": title,
@@ -16023,9 +18637,16 @@ def _cluster_only_topic_row(
         "聚类决策": "；".join(decisions),
         "聚类提供方": "；".join(providers),
         "聚类原因": "；".join(reasons),
-        "聚类准入状态": _clean_text((admission or {}).get("status")),
-        "聚类准入置信度": (admission or {}).get("confidence", ""),
-        "聚类准入原因": _clean_text((admission or {}).get("reason")),
+        "聚类准入状态": _clean_text(effective_admission.get("status")),
+        "聚类准入置信度": effective_admission.get("confidence", ""),
+        "聚类准入原因": _clean_text(effective_admission.get("reason")),
+        "线上已有知识匹配结果": "",
+        "线上已有知识匹配ID": "",
+        "线上已有知识匹配置信度": "",
+        "线上已有知识匹配原因": "",
+        "线上已有知识来源": "",
+        "线上已有知识边界状态": "",
+        "线上已有知识边界标记": "",
         "是否重点复核": (
             "是"
             if len(rows) == 1
@@ -16067,6 +18688,10 @@ def build_topic_review_rows(
     topic_standard_retriever: Callable[
         [str, list[dict[str, Any]], dict[str, Any]],
         tuple[list[tuple[StandardCatalogItem, float]], dict[str, Any]],
+    ] | None = None,
+    topic_business_knowledge_retriever: Callable[
+        [str, list[dict[str, Any]], dict[str, Any]],
+        tuple[list[CzPublishedKnowledgeItem], dict[str, Any]],
     ] | None = None,
     require_standard_match: bool = False,
     transcribe_all_admitted_topics: bool = False,
@@ -16221,7 +18846,23 @@ def build_topic_review_rows(
         clustering_meta.update(meta)
 
     if cluster_only:
-        cluster_rows = []
+        cluster_rows: list[dict[str, Any]] = []
+        incremental_registry = (
+            TopicRegistry(audit_store)
+            if audit_store and enforce_cluster_admission
+            else None
+        )
+        incremental_created_topics = 0
+        incremental_merged_topics = 0
+        incremental_pending_topics = 0
+        incremental_re_review_topics = 0
+        incremental_added_members = 0
+        incremental_duplicate_members = 0
+        online_business_auto_reused = 0
+        online_business_manual_review = 0
+        online_business_search_errors = 0
+        same_run_resolved_topic_coalesced = 0
+        resolved_cluster_indexes: dict[str, int] = {}
         for key, rows in topic_groups:
             admission = _cluster_topic_admission(
                 rows,
@@ -16229,14 +18870,169 @@ def build_topic_review_rows(
                 enabled=True,
                 min_confidence=cluster_admission_min_confidence,
             )
-            cluster_rows.append(
-                _cluster_only_topic_row(
-                    _topic_id(key),
-                    key,
-                    rows,
-                    admission,
-                )
+            topic_id = _topic_id(key)
+            cluster_row = _cluster_only_topic_row(
+                topic_id,
+                key,
+                rows,
+                admission,
             )
+            online_result: tuple[str, str, float, str, str, str, str] | None = None
+            if topic_business_knowledge_retriever is not None:
+                try:
+                    online_items, online_audit = topic_business_knowledge_retriever(
+                        topic_id, rows, _topic_query(rows)
+                    )
+                    online_result = _select_online_business_match(
+                        rows, _topic_query(rows), online_items
+                    )
+                    _attach_online_business_match(cluster_row, online_result)
+                    cluster_row["线上已有知识匹配原因"] = _safe_join(
+                        [
+                            cluster_row.get("线上已有知识匹配原因"),
+                            _clean_text(online_audit.get("error")),
+                        ],
+                        "；",
+                    )
+                except Exception as exc:
+                    online_business_search_errors += 1
+                    cluster_row.update(
+                        {
+                            "线上已有知识匹配结果": "manual_review",
+                            "线上已有知识匹配原因": f"线上知识检索失败：{type(exc).__name__}: {exc}",
+                            "线上已有知识来源": "business_accumulation",
+                            "是否重点复核": "是",
+                        }
+                    )
+            online_match_status = _clean_text(
+                cluster_row.get("线上已有知识匹配结果")
+            )
+            if online_match_status == "manual_review":
+                online_business_manual_review += 1
+                incremental_pending_topics += 1
+                cluster_row.update(
+                    {
+                        "聚类准入状态": "待人工线上知识复核",
+                        "聚类准入原因": _safe_join(
+                            [
+                                cluster_row.get("聚类准入原因"),
+                                cluster_row.get("线上已有知识匹配原因"),
+                            ],
+                            "；",
+                        ),
+                        "是否重点复核": "是",
+                    }
+                )
+            elif online_match_status == "auto_reuse":
+                online_business_auto_reused += 1
+                cluster_row.update(
+                    {
+                        "历史主题处理结果": "reused_published_business_knowledge",
+                        "历史主题匹配ID": _clean_text(
+                            cluster_row.get("线上已有知识匹配ID")
+                        ),
+                        "历史主题匹配置信度": cluster_row.get(
+                            "线上已有知识匹配置信度"
+                        ),
+                        "历史主题匹配原因": _clean_text(
+                            cluster_row.get("线上已有知识匹配原因")
+                        ),
+                        "增量补充状态": "线上已发布知识复用",
+                    }
+                )
+            incremental_resolution: TopicResolution | None = None
+            if (
+                incremental_registry is not None
+                and _clean_text(cluster_row.get("聚类准入状态")) == "已自动放行"
+                and online_match_status != "auto_reuse"
+            ):
+                try:
+                    incremental_resolution = incremental_registry.integrate(
+                        proposed_topic_id=topic_id,
+                        topic_key=key,
+                        rows=rows,
+                        run_id=run_id or "",
+                    )
+                except ValueError as exc:
+                    incremental_pending_topics += 1
+                    cluster_row.update(
+                        {
+                            "历史主题处理结果": "historical_topic_integration_failed",
+                            "历史主题匹配原因": f"历史主题归并失败：{exc}",
+                            "聚类准入状态": "待人工历史主题复核",
+                            "聚类准入原因": _safe_join(
+                                [
+                                    cluster_row.get("聚类准入原因"),
+                                    f"历史主题归并失败：{exc}",
+                                ],
+                                "；",
+                            ),
+                            "是否重点复核": "是",
+                        }
+                    )
+                else:
+                    _attach_incremental_topic(
+                        cluster_row,
+                        incremental_resolution,
+                    )
+                    if incremental_resolution.requires_review:
+                        incremental_pending_topics += 1
+                        cluster_row.update(
+                            {
+                                "聚类准入状态": "待人工历史主题复核",
+                                "聚类准入原因": _safe_join(
+                                    [
+                                        cluster_row.get("聚类准入原因"),
+                                        incremental_resolution.reason,
+                                    ],
+                                    "；",
+                                ),
+                                "是否重点复核": "是",
+                            }
+                        )
+                    else:
+                        topic_id = incremental_resolution.topic_id
+                        key = incremental_resolution.topic_key
+                        rows = incremental_resolution.rows
+                        cluster_row = _cluster_only_topic_row(
+                            topic_id,
+                            key,
+                            rows,
+                            admission,
+                        )
+                        _attach_incremental_topic(
+                            cluster_row,
+                            incremental_resolution,
+                        )
+                        incremental_added_members += (
+                            incremental_resolution.added_member_count
+                        )
+                        incremental_duplicate_members += (
+                            incremental_resolution.duplicate_member_count
+                        )
+                        if incremental_resolution.matched_existing:
+                            incremental_merged_topics += 1
+                        else:
+                            incremental_created_topics += 1
+                        if incremental_resolution.requires_re_review:
+                            incremental_re_review_topics += 1
+                            cluster_row["是否重点复核"] = "是"
+
+            existing_index = resolved_cluster_indexes.get(topic_id)
+            if (
+                existing_index is not None
+                and incremental_resolution is not None
+                and not incremental_resolution.requires_review
+            ):
+                cluster_rows[existing_index] = cluster_row
+                same_run_resolved_topic_coalesced += 1
+                continue
+            if (
+                incremental_resolution is not None
+                and not incremental_resolution.requires_review
+            ):
+                resolved_cluster_indexes[topic_id] = len(cluster_rows)
+            cluster_rows.append(cluster_row)
         if clustering_meta is not None:
             clustering_meta.update(
                 {
@@ -16244,12 +19040,35 @@ def build_topic_review_rows(
                     "topic_model_call_limit": 0,
                     "topic_model_calls": 0,
                     "topic_model_budget_skipped": 0,
-                    "cluster_admission_enforced": False,
+                    "cluster_admission_enforced": enforce_cluster_admission,
                     "cluster_admission_policy_version": (
                         CLUSTER_ADMISSION_POLICY_VERSION
                     ),
                     "cluster_admission_min_confidence": (
                         cluster_admission_min_confidence
+                    ),
+                    "incremental_topic_registry_enabled": bool(
+                        incremental_registry
+                    ),
+                    "incremental_created_topics": incremental_created_topics,
+                    "incremental_merged_topics": incremental_merged_topics,
+                    "incremental_pending_topics": incremental_pending_topics,
+                    "incremental_re_review_topics": incremental_re_review_topics,
+                    "incremental_added_members": incremental_added_members,
+                    "incremental_duplicate_members": (
+                        incremental_duplicate_members
+                    ),
+                    "same_run_resolved_topic_coalesced": (
+                        same_run_resolved_topic_coalesced
+                    ),
+                    "online_business_knowledge_auto_reused": (
+                        online_business_auto_reused
+                    ),
+                    "online_business_knowledge_manual_review": (
+                        online_business_manual_review
+                    ),
+                    "online_business_knowledge_search_errors": (
+                        online_business_search_errors
                     ),
                 }
             )
@@ -16429,16 +19248,54 @@ def build_topic_review_rows(
     incremental_created_topics = 0
     incremental_merged_topics = 0
     incremental_pending_topics = 0
+    incremental_re_review_topics = 0
     incremental_added_members = 0
     incremental_duplicate_members = 0
     topic_groups_before_known_equivalence_merge = len(topic_groups)
     topic_groups = _merge_known_equivalent_topic_groups(topic_groups)
+    provisional_groups: list[
+        tuple[tuple[str, ...], list[dict[str, Any]], dict[str, Any]]
+    ] = []
     meta["known_equivalent_topic_merges"] = (
         topic_groups_before_known_equivalence_merge - len(topic_groups)
     )
     execution_groups: list[
-        tuple[tuple[str, ...], list[dict[str, Any]], dict[str, Any], bool]
+        tuple[
+            tuple[str, ...],
+            list[dict[str, Any]],
+            dict[str, Any],
+            bool,
+            TopicResolution | None,
+        ]
     ] = []
+    resolved_group_indexes: dict[str, int] = {}
+
+    def merge_admission_metadata(
+        left: dict[str, Any],
+        right: dict[str, Any],
+    ) -> dict[str, Any]:
+        merged = dict(left)
+        confidences = [
+            _confidence_01(left.get("confidence")),
+            _confidence_01(right.get("confidence")),
+        ]
+        valid_confidences = [value for value in confidences if value is not None]
+        if valid_confidences:
+            merged["confidence"] = round(min(valid_confidences), 4)
+        reasons = list(
+            dict.fromkeys(
+                _clean_text(value)
+                for value in (
+                    left.get("reason"),
+                    right.get("reason"),
+                )
+                if _clean_text(value)
+            )
+        )
+        if reasons:
+            merged["reason"] = "；".join(reasons)
+        return merged
+
     for key, rows in topic_groups:
         admission = _cluster_topic_admission(
             rows,
@@ -16450,69 +19307,63 @@ def build_topic_review_rows(
             cluster_admission_provisional_topics += 1
             provisional_admission = _provisional_singleton_admission(admission)
             for row_index, row in enumerate(rows, start=1):
-                execution_groups.append(
-                    (
-                        _provisional_singleton_key(key, row, row_index),
-                        [row],
-                        provisional_admission,
-                        True,
+                cluster_admission_provisional_candidates += 1
+                boundary_key = _provisional_topic_boundary_key(row)
+                if boundary_key is None:
+                    provisional_groups.append(
+                        (
+                            _provisional_singleton_key(key, row, row_index),
+                            [row],
+                            provisional_admission,
+                        )
                     )
-                )
-            continue
-        execution_groups.append((key, rows, admission, False))
-    topic_group_count = len(execution_groups)
-    transcription_topics_started = 0
-
-    if topic_progress_callback:
-        topic_progress_callback(
-            "主题聚类完成，正在执行聚类准入、历史主题归并与价值分类。",
-            {
-                "pipeline_phase": "topic_enrichment",
-                "topic_groups_completed": 0,
-                "topic_groups_total": topic_group_count,
-            },
-        )
-
-    for topic_group_index, (
-        key,
-        rows,
-        cluster_admission,
-        provisional_singleton,
-    ) in enumerate(execution_groups, start=1):
-        if topic_progress_callback:
-            topic_progress_callback(
-                "正在执行聚类准入、历史主题归并与价值分类。",
-                {
-                    "pipeline_phase": "topic_enrichment",
-                    "topic_groups_completed": topic_group_index - 1,
-                    "topic_groups_total": topic_group_count,
-                    "transcription_topics_started": (
-                        transcription_topics_started
+                    continue
+                matching_index = next(
+                    (
+                        index
+                        for index, (existing_key, existing_rows, _existing_admission)
+                        in enumerate(provisional_groups)
+                        if existing_key == boundary_key
+                        and not _same_source_different_atomic_conflict(
+                            [*existing_rows, row]
+                        )
                     ),
-                },
-            )
-        topic_id = _topic_id(key)
-        if not cluster_admission["admitted"] and not provisional_singleton:
-            cluster_admission_pending_topics += 1
-            cluster_admission_pending_source_rows += len(rows)
-            pending_cluster_rows.extend(
-                _pending_cluster_source_rows(
-                    topic_id,
-                    key,
-                    rows,
-                    _clean_text(cluster_admission.get("reason")),
-                    status="pending_cluster_review",
-                    admission=cluster_admission,
+                    None,
                 )
-            )
+                if matching_index is None:
+                    provisional_groups.append(
+                        (
+                            boundary_key,
+                            [row],
+                            provisional_admission,
+                        )
+                    )
+                    continue
+                existing_key, existing_rows, existing_admission = provisional_groups[
+                    matching_index
+                ]
+                existing_rows.append(row)
+                provisional_groups[matching_index] = (
+                    existing_key,
+                    existing_rows,
+                    merge_admission_metadata(
+                        existing_admission,
+                        provisional_admission,
+                    ),
+                )
+                meta["provisional_same_boundary_coalesced"] = int(
+                    meta.get("provisional_same_boundary_coalesced", 0)
+                ) + 1
             continue
-        if provisional_singleton:
-            cluster_admission_provisional_candidates += 1
-        else:
-            cluster_admission_admitted_topics += 1
-            cluster_admission_admitted_source_rows += len(rows)
+        if not admission["admitted"]:
+            execution_groups.append((key, rows, admission, False, None))
+            continue
+
+        cluster_admission_admitted_topics += 1
+        cluster_admission_admitted_source_rows += len(rows)
+        topic_id = _topic_id(key)
         incremental_resolution: TopicResolution | None = None
-        if incremental_registry is not None and not provisional_singleton:
+        if incremental_registry is not None:
             try:
                 incremental_resolution = incremental_registry.integrate(
                     proposed_topic_id=topic_id,
@@ -16529,7 +19380,7 @@ def build_topic_review_rows(
                         rows,
                         f"历史主题归并失败：{exc}",
                         status="pending_historical_topic_review",
-                        admission=cluster_admission,
+                        admission=admission,
                     )
                 )
                 continue
@@ -16541,7 +19392,7 @@ def build_topic_review_rows(
                     rows,
                     incremental_resolution.reason,
                     status="pending_historical_topic_review",
-                    admission=cluster_admission,
+                    admission=admission,
                 )
                 for pending_row in historical_pending_rows:
                     pending_row.update(
@@ -16570,8 +19421,134 @@ def build_topic_review_rows(
             )
             if incremental_resolution.matched_existing:
                 incremental_merged_topics += 1
+            if incremental_resolution.requires_re_review:
+                incremental_re_review_topics += 1
             else:
                 incremental_created_topics += 1
+
+            existing_index = resolved_group_indexes.get(topic_id)
+            if existing_index is not None:
+                (
+                    existing_key,
+                    _existing_rows,
+                    existing_admission,
+                    existing_provisional,
+                    _existing_resolution,
+                ) = execution_groups[existing_index]
+                execution_groups[existing_index] = (
+                    key,
+                    rows,
+                    merge_admission_metadata(
+                        existing_admission,
+                        admission,
+                    ),
+                    existing_provisional,
+                    incremental_resolution,
+                )
+                meta["same_run_resolved_topic_coalesced"] = int(
+                    meta.get("same_run_resolved_topic_coalesced", 0)
+                ) + 1
+                continue
+            resolved_group_indexes[topic_id] = len(execution_groups)
+        execution_groups.append((key, rows, admission, False, incremental_resolution))
+    for provisional_key, provisional_rows, provisional_admission in provisional_groups:
+        group_admission = dict(provisional_admission)
+        if len(provisional_rows) > 1:
+            group_admission.update(
+                {
+                    "status": "暂定多成员主题候选",
+                    "reason": _safe_join(
+                        [
+                            provisional_admission.get("reason"),
+                            (
+                                "同一批次内已按完整且相同的聚类边界"
+                                f"归并 {len(provisional_rows)} 个成员；"
+                                "因风险门禁未作为可信主题自动放行，"
+                                "仍需重点人工价值复核。"
+                            ),
+                        ],
+                        "；",
+                    ),
+                }
+            )
+        execution_groups.append(
+            (
+                provisional_key,
+                provisional_rows,
+                group_admission,
+                True,
+                None,
+            )
+        )
+    topic_group_count = len(execution_groups)
+    transcription_topics_started = 0
+
+    if topic_progress_callback:
+        topic_progress_callback(
+            "主题聚类完成，正在执行聚类准入、历史主题归并与价值分类。",
+            {
+                "pipeline_phase": "topic_enrichment",
+                "topic_groups_completed": 0,
+                "topic_groups_total": topic_group_count,
+            },
+        )
+
+    for topic_group_index, (
+        key,
+        rows,
+        cluster_admission,
+        provisional_singleton,
+        incremental_resolution,
+    ) in enumerate(execution_groups, start=1):
+        if topic_progress_callback:
+            topic_progress_callback(
+                "正在执行聚类准入、历史主题归并与价值分类。",
+                {
+                    "pipeline_phase": "topic_enrichment",
+                    "topic_groups_completed": topic_group_index - 1,
+                    "topic_groups_total": topic_group_count,
+                    "transcription_topics_started": (
+                        transcription_topics_started
+                    ),
+                },
+            )
+        topic_id = (
+            incremental_resolution.topic_id
+            if incremental_resolution is not None
+            else _topic_id(key)
+        )
+        if topic_business_knowledge_retriever is not None:
+            pending_query = _topic_query(rows)
+            try:
+                pending_items, _pending_audit = topic_business_knowledge_retriever(
+                    topic_id,
+                    rows,
+                    pending_query,
+                )
+                pending_online_match = _select_online_business_match(
+                    rows,
+                    pending_query,
+                    pending_items,
+                )
+            except Exception:
+                pending_online_match = None
+        else:
+            pending_online_match = None
+        if not cluster_admission["admitted"] and not provisional_singleton:
+            cluster_admission_pending_topics += 1
+            cluster_admission_pending_source_rows += len(rows)
+            pending_rows = _pending_cluster_source_rows(
+                    topic_id,
+                    key,
+                    rows,
+                    _clean_text(cluster_admission.get("reason")),
+                    status="pending_cluster_review",
+                    admission=cluster_admission,
+                )
+            for pending_row in pending_rows:
+                _attach_online_business_match(pending_row, pending_online_match)
+            pending_cluster_rows.extend(pending_rows)
+            continue
         evidence_package = _topic_evidence_package(rows)
         model_evidence_package = _topic_model_evidence_package(
             evidence_package
@@ -16587,6 +19564,35 @@ def build_topic_review_rows(
             rows,
             use_standard_references=use_standard_references,
         )
+        headphone_account_lock_case = _topic_is_headphone_account_lock_case(
+            topic_stage_input
+        )
+        online_business_match: tuple[str, str, float, str, str, str, str] | None = None
+        online_business_audit: dict[str, Any] = {}
+        if (
+            topic_business_knowledge_retriever is not None
+            and not headphone_account_lock_case
+        ):
+            try:
+                online_items, online_business_audit = (
+                    # Use the same raw topic query as the standard channel so
+                    # both channels share the one cached CZ response.  The
+                    # retargeted query remains the boundary-matching input.
+                    topic_business_knowledge_retriever(
+                        topic_id,
+                        rows,
+                        _topic_query(rows),
+                    )
+                )
+                online_business_match = _select_online_business_match(
+                    rows, query, online_items
+                )
+            except Exception as exc:
+                online_business_audit = {
+                    "source": "business_accumulation",
+                    "status": "error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
         topic_stage = _rule_topic_stage_classification(topic_stage_input)
         topic_stage_provider = "stage-rule"
         topic_stage_model = "topic-stage-rule-v1"
@@ -16599,8 +19605,19 @@ def build_topic_review_rows(
             "topic": topic_stage_input,
         }
         topic_stage_response_audit: dict[str, Any] = {}
-        apply_stage_guard = True
-        if client and hasattr(client, "classify_topic_stage"):
+        apply_stage_guard = not headphone_account_lock_case
+        if headphone_account_lock_case:
+            topic_stage = _headphone_account_lock_case_stage()
+            topic_stage_provider = "business-rule"
+            topic_stage_model = "headphone-account-lock-case-guard-v1"
+            topic_stage_status = "topic_stage_forced_account_lock_case"
+            topic_stage_error = (
+                "耳机他人账户或激活锁案例只进入人工价值复核，"
+                "不调用主题模型或标准检索。"
+            )
+        elif client and not provisional_singleton and hasattr(
+            client, "classify_topic_stage"
+        ):
             topic_stage_provider = "mimo"
             topic_stage_model = client.config.model
             topic_stage_prompt = TOPIC_STAGE_PROMPT_VERSION
@@ -16626,7 +19643,7 @@ def build_topic_review_rows(
                     f"主题模型调用达到上限 {topic_model_call_limit}，"
                     "已转人工优先审核。"
                 )
-        elif client:
+        elif client and not provisional_singleton:
             apply_stage_guard = False
             topic_stage.update(
                 {
@@ -16638,10 +19655,15 @@ def build_topic_review_rows(
             topic_stage_provider = "legacy-compatible"
             topic_stage_model = _clean_text(getattr(client.config, "model", ""))
             topic_stage_status = "topic_stage_legacy_compatible"
+        elif provisional_singleton:
+            topic_stage_error = (
+                "聚类准入未自动放行，已跳过主题级模型调用，"
+                "使用规则分类并强制人工价值复核。"
+            )
         matches: list[tuple[StandardCatalogItem, float]] = []
         standard_retrieval_audit: dict[str, Any] = {}
         standard_retrieval_attempted = False
-        if use_standard_references:
+        if use_standard_references and not headphone_account_lock_case:
             standard_retrieval_attempted = True
             matches, standard_retrieval_audit = resolve_topic_standard_matches(
                 topic_id,
@@ -16680,6 +19702,75 @@ def build_topic_review_rows(
                 ),
                 "needs_human_review": True,
             }
+        if headphone_account_lock_case:
+            topic = _untranscribed_topic_candidate_row(
+                topic_id,
+                key,
+                rows,
+                topic_stage,
+            )
+            topic["主题状态"] = "case_review_pending"
+            case_only_note = (
+                "耳机他人账户或激活锁案例禁止转写为通用知识，"
+                "仅保留来源事实供人工价值复核。"
+            )
+            topic["推荐回复"] = (
+                "该记录为单一激活锁案例，需人工核对来源事实与对应口径后处理，"
+                "不自动生成推荐回复。"
+            )
+            topic["模型初标原因"] = _safe_join(
+                [_clean_text(topic.get("模型初标原因")), case_only_note],
+                "；",
+            )
+            topic["校验备注"] = _safe_join(
+                [_clean_text(topic.get("校验备注")), case_only_note],
+                "；",
+            )
+            _attach_incremental_topic(topic, incremental_resolution)
+            if online_business_match is not None:
+                _attach_online_business_match(topic, online_business_match)
+            if online_business_audit.get("error"):
+                topic["线上已有知识匹配原因"] = _clean_text(
+                    online_business_audit.get("error")
+                )
+            _attach_cluster_admission(topic, cluster_admission)
+            _attach_topic_stage_classification(
+                topic,
+                topic_stage,
+                provider=topic_stage_provider,
+                model_name=topic_stage_model,
+                prompt_version=topic_stage_prompt,
+                model_run_id=topic_stage_run_id,
+                status=topic_stage_status,
+                error=topic_stage_error,
+                transcription_status="skipped_account_lock_case",
+            )
+            apply_auto_review_annotation(topic, auto_review_policy)
+            topic_rows.append(topic)
+            source_mapping_rows.extend(
+                _topic_source_mapping_rows(topic_id, rows, topic, "")
+            )
+            if audit_store:
+                audit_store.record_model_run(
+                    model_run_id=topic_stage_run_id,
+                    run_id=run_id or "",
+                    record_id=topic_id,
+                    provider=topic_stage_provider,
+                    model_name=topic_stage_model,
+                    prompt_version=topic_stage_prompt,
+                    status=topic_stage_status,
+                    retrieved_standards=[],
+                    request_audit=topic_stage_request_audit,
+                    response_audit=topic_stage_response_audit,
+                    error=topic_stage_error,
+                )
+                audit_store.save_candidate(
+                    topic_stage_run_id,
+                    run_id or "",
+                    topic_id,
+                    topic,
+                )
+            continue
         if (
             (transcribe_all_admitted_topics or provisional_singleton)
             and _clean_text(topic_stage.get("knowledge_value")) != "值得沉淀"
@@ -16846,7 +19937,7 @@ def build_topic_review_rows(
             "standard_retrieval": standard_retrieval_audit,
         }
         response_audit: dict[str, Any] = {}
-        if client and hasattr(client, "label_topic"):
+        if client and not provisional_singleton and hasattr(client, "label_topic"):
             provider = "mimo"
             model_name = client.config.model
             prompt_version = PROMPT_VERSION
@@ -17005,6 +20096,11 @@ def build_topic_review_rows(
                     f"主题模型调用达到上限 {topic_model_call_limit}，"
                     "已使用规则草稿并转人工优先审核。"
                 )
+        elif provisional_singleton:
+            model_error = (
+                "聚类准入未自动放行，已跳过知识转写模型调用，"
+                "使用规则草稿并强制人工价值复核。"
+            )
         else:
             model_error = "未配置 MiMo，使用主题级规则草稿。"
 
@@ -17182,6 +20278,15 @@ def build_topic_review_rows(
             stage_status = "topic_model_quality_failed"
             topic["模型阶段状态"] = stage_status
         _attach_incremental_topic(topic, incremental_resolution)
+        if online_business_match is not None:
+            _attach_online_business_match(topic, online_business_match)
+        if online_business_audit.get("error"):
+            topic["线上已有知识匹配结果"] = "manual_review"
+            topic["线上已有知识匹配原因"] = _clean_text(
+                online_business_audit.get("error")
+            )
+            topic["线上已有知识来源"] = "business_accumulation"
+            topic["是否重点复核"] = "是"
         _attach_cluster_admission(topic, cluster_admission)
         if provisional_singleton:
             _attach_provisional_singleton_candidate(
@@ -17259,7 +20364,7 @@ def build_topic_review_rows(
             "standard_retrieval": standard_retrieval_audit,
         }
         review_response_audit: dict[str, Any] = {}
-        if client and hasattr(client, "review_topic"):
+        if client and not provisional_singleton and hasattr(client, "review_topic"):
             initial_review_provider = "mimo"
             initial_review_model = client.config.model
             initial_review_prompt = TOPIC_REVIEW_PROMPT_VERSION
@@ -17331,6 +20436,11 @@ def build_topic_review_rows(
                     f"主题模型调用达到上限 {topic_model_call_limit}，"
                     "已使用规则初标并转人工优先审核。"
                 )
+        elif provisional_singleton:
+            initial_review_error = (
+                "聚类准入未自动放行，已跳过内容初审模型调用，"
+                "使用规则初标并强制人工价值复核。"
+            )
         else:
             initial_review_error = "未配置支持主题初标的 MiMo，使用规则模型初标。"
         initial_review = {
@@ -17435,6 +20545,10 @@ def build_topic_review_rows(
                 "cluster_admission_provisional_candidates": (
                     cluster_admission_provisional_candidates
                 ),
+                "provisional_same_boundary_coalesced": meta.get(
+                    "provisional_same_boundary_coalesced",
+                    0,
+                ),
                 "cluster_admission_admitted_source_rows": (
                     cluster_admission_admitted_source_rows
                 ),
@@ -17447,9 +20561,14 @@ def build_topic_review_rows(
                 "incremental_created_topics": incremental_created_topics,
                 "incremental_merged_topics": incremental_merged_topics,
                 "incremental_pending_topics": incremental_pending_topics,
+                "incremental_re_review_topics": incremental_re_review_topics,
                 "incremental_added_members": incremental_added_members,
                 "incremental_duplicate_members": (
                     incremental_duplicate_members
+                ),
+                "same_run_resolved_topic_coalesced": meta.get(
+                    "same_run_resolved_topic_coalesced",
+                    0,
                 ),
             }
         )
@@ -17499,6 +20618,10 @@ def write_topic_review_workbook(
         [str, list[dict[str, Any]], dict[str, Any]],
         tuple[list[tuple[StandardCatalogItem, float]], dict[str, Any]],
     ] | None = None,
+    topic_business_knowledge_retriever: Callable[
+        [str, list[dict[str, Any]], dict[str, Any]],
+        tuple[list[CzPublishedKnowledgeItem], dict[str, Any]],
+    ] | None = None,
     require_standard_match: bool = False,
     transcribe_all_admitted_topics: bool = False,
     enforce_cluster_admission: bool = False,
@@ -17524,6 +20647,7 @@ def write_topic_review_workbook(
         direct_mimo_progress_path=direct_mimo_progress_path,
         topic_progress_callback=topic_progress_callback,
         topic_standard_retriever=topic_standard_retriever,
+        topic_business_knowledge_retriever=topic_business_knowledge_retriever,
         require_standard_match=require_standard_match,
         transcribe_all_admitted_topics=transcribe_all_admitted_topics,
         enforce_cluster_admission=enforce_cluster_admission,
@@ -17651,6 +20775,18 @@ def write_topic_review_workbook(
             "cluster_admission_pending_topics",
             0,
         ),
+        "cluster_admission_provisional_topics": clustering_meta.get(
+            "cluster_admission_provisional_topics",
+            0,
+        ),
+        "cluster_admission_provisional_candidates": clustering_meta.get(
+            "cluster_admission_provisional_candidates",
+            0,
+        ),
+        "provisional_same_boundary_coalesced": clustering_meta.get(
+            "provisional_same_boundary_coalesced",
+            0,
+        ),
         "cluster_admission_admitted_source_rows": clustering_meta.get(
             "cluster_admission_admitted_source_rows",
             0,
@@ -17675,12 +20811,20 @@ def write_topic_review_workbook(
             "incremental_pending_topics",
             0,
         ),
+        "incremental_re_review_topics": clustering_meta.get(
+            "incremental_re_review_topics",
+            0,
+        ),
         "incremental_added_members": clustering_meta.get(
             "incremental_added_members",
             0,
         ),
         "incremental_duplicate_members": clustering_meta.get(
             "incremental_duplicate_members",
+            0,
+        ),
+        "same_run_resolved_topic_coalesced": clustering_meta.get(
+            "same_run_resolved_topic_coalesced",
             0,
         ),
         "topic_signal_labeled_rows": sum(
@@ -17785,6 +20929,10 @@ def write_topic_review_workbook(
             "direct_cluster_failure_reasons",
             [],
         ),
+        "direct_cluster_failure_category_counts": clustering_meta.get(
+            "direct_cluster_failure_category_counts",
+            {},
+        ),
         "atomic_extraction_failure_reasons": clustering_meta.get(
             "atomic_extraction_failure_reasons",
             [],
@@ -17843,6 +20991,14 @@ def write_cluster_only_workbook(
     embedding_client: EmbeddingClient | None = None,
     direct_mimo_progress_path: Path | None = None,
     topic_progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
+    audit_store: AuditStore | None = None,
+    run_id: str | None = None,
+    topic_business_knowledge_retriever: Callable[
+        [str, list[dict[str, Any]], dict[str, Any]],
+        tuple[list[CzPublishedKnowledgeItem], dict[str, Any]],
+    ] | None = None,
+    enforce_cluster_admission: bool = False,
+    cluster_admission_min_confidence: float = DEFAULT_CLUSTER_ADMISSION_MIN_CONFIDENCE,
 ) -> dict[str, Any]:
     """Export one clustering-only sheet without downstream knowledge generation."""
     clustering_meta: dict[str, Any] = {}
@@ -17862,6 +21018,11 @@ def write_cluster_only_workbook(
         direct_mimo_progress_path=direct_mimo_progress_path,
         topic_progress_callback=topic_progress_callback,
         cluster_only=True,
+        audit_store=audit_store,
+        run_id=run_id,
+        topic_business_knowledge_retriever=topic_business_knowledge_retriever,
+        enforce_cluster_admission=enforce_cluster_admission,
+        cluster_admission_min_confidence=cluster_admission_min_confidence,
     )
     write_rows_to_workbook(
         {"聚类结果": (CLUSTER_ONLY_COLUMNS, cluster_rows)},
@@ -18239,6 +21400,9 @@ def initial_label_from_workbook(
         use_standard_references is not False
         and cz_standard_adapter.can_search_headquarters_standards()
     )
+    cz_published_knowledge_retrieval_enabled = bool(
+        cz_standard_adapter.can_search_published_knowledge()
+    )
     # 默认保持“标准引用模式”开启，即使总部接口和本地目录都暂不可用；
     # 这样无标准主题仍会进入经验补充人工复核，而不会降级成可正式导出的案例知识。
     standards_enabled = (
@@ -18246,12 +21410,15 @@ def initial_label_from_workbook(
         if use_standard_references is None
         else bool(use_standard_references)
     )
+    published_knowledge_cache: dict[
+        tuple[str, str, str, str],
+    ] = {}
 
-    def topic_standard_retriever(
-        _topic_id: str,
+    def retrieve_published_knowledge_once(
         rows: list[dict[str, Any]],
         query: dict[str, Any],
-    ) -> tuple[list[tuple[StandardCatalogItem, float]], dict[str, Any]]:
+    ) -> tuple[Any, dict[str, Any]]:
+        """Share one CZ retrieval response between standard and business paths."""
         source_record_id = ""
         for row in rows:
             for field in ("工单ID", "原始工单ID", "数据ID"):
@@ -18262,22 +21429,19 @@ def initial_label_from_workbook(
             if source_record_id:
                 break
         if not source_record_id:
-            return [], {
-                "source": "headquarters_standard",
-                "status": "error",
-                "error": "主题没有可用于 CZ 标准检索的数字工单ID。",
-            }
+            raise ValueError("主题没有可用于 CZ 知识检索的数字工单ID。")
         business_line = business_line_from_record(rows[0]) if rows else None
         business_type = {
             SELF_OPERATED_BUSINESS_LINE_CODE: "self_operated",
             AGGREGATE_BUSINESS_LINE_CODE: "aggregated",
         }.get(business_line.code if business_line else "")
         if not business_type:
-            return [], {
-                "source": "headquarters_standard",
-                "status": "error",
-                "error": "主题缺少可映射的回收业务层级，无法检索 CZ 标准。",
-            }
+            raise ValueError("主题缺少可映射的回收业务层级，无法检索 CZ 已发布知识。")
+        product_type = _clean_text(query.get("产品类型"))
+        model = _merge_unique_text(
+            [row.get("适用机型") or row.get("机型") for row in rows],
+            separator="；",
+        )
         normalized_question = _safe_join(
             [
                 _clean_text(query.get("核心问题")),
@@ -18285,23 +21449,70 @@ def initial_label_from_workbook(
                 _clean_text(query.get("人工判定结论")),
                 _clean_text(query.get("对象/部位")),
                 _clean_text(query.get("异常现象")),
+                _clean_text(query.get("判定目标")),
             ],
             "；",
         )
-        model = _merge_unique_text(
-            [row.get("适用机型") or row.get("机型") for row in rows],
-            separator="；",
-        )
-        return cz_standard_adapter.search_headquarters_standards(
+        cache_key = (source_record_id, normalized_question, product_type, model)
+        cached = published_knowledge_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = cz_standard_adapter.search_published_knowledge(
             conversation_id=source_record_id,
             normalized_question=normalized_question,
             business_type=business_type,
-            product_type=_clean_text(query.get("产品类型")),
+            product_type=product_type,
             model=model,
         )
+        cached = (result, result.audit)
+        published_knowledge_cache[cache_key] = cached
+        return cached
+
+    def topic_standard_retriever(
+        _topic_id: str,
+        rows: list[dict[str, Any]],
+        query: dict[str, Any],
+    ) -> tuple[list[tuple[StandardCatalogItem, float]], dict[str, Any]]:
+        try:
+            result, audit = retrieve_published_knowledge_once(rows, query)
+        except ValueError as exc:
+            return [], {
+                "source": "headquarters_standard",
+                "status": "error",
+                "error": str(exc),
+            }
+        return list(result.headquarters_standards), {
+            **audit,
+            "source": "headquarters_standard",
+            "standard_ids": list(audit.get("headquarters_standard_ids") or []),
+            "business_accumulation_candidates": [
+                item.audit_payload() for item in result.business_knowledge
+            ],
+            "ignored_business_accumulation_count": len(result.business_knowledge),
+        }
+
+    def topic_business_knowledge_retriever(
+        _topic_id: str,
+        rows: list[dict[str, Any]],
+        query: dict[str, Any],
+    ) -> tuple[list[CzPublishedKnowledgeItem], dict[str, Any]]:
+        try:
+            result, audit = retrieve_published_knowledge_once(rows, query)
+        except ValueError as exc:
+            return [], {
+                "source": "business_accumulation",
+                "status": "error",
+                "error": str(exc),
+            }
+        return list(result.business_knowledge), result.audit
 
     active_topic_standard_retriever = (
         topic_standard_retriever if cz_standard_retrieval_enabled else None
+    )
+    active_topic_business_knowledge_retriever = (
+        topic_business_knowledge_retriever
+        if cz_published_knowledge_retrieval_enabled
+        else None
     )
     output_path = _ensure_output_dir(output_dir)
     checkpoint = _load_workflow_checkpoint(output_path) if resume else {}
@@ -18634,6 +21845,15 @@ def initial_label_from_workbook(
                 detail,
                 metrics,
             ),
+            audit_store=audit_store,
+            run_id=run_id,
+            topic_business_knowledge_retriever=(
+                active_topic_business_knowledge_retriever
+            ),
+            enforce_cluster_admission=effective_cluster_admission,
+            cluster_admission_min_confidence=(
+                effective_cluster_admission_min_confidence
+            ),
         )
         _write_workflow_checkpoint(
             output_path,
@@ -18702,6 +21922,9 @@ def initial_label_from_workbook(
                     )
                 ),
                 "standard_references_enabled": False,
+                "cz_published_knowledge_retrieval_enabled": (
+                    cz_published_knowledge_retrieval_enabled
+                ),
                 "redaction_audit": redaction_audit,
                 "resumed_from_checkpoint": bool(checkpoint),
                 "cluster_only": True,
@@ -18762,6 +21985,9 @@ def initial_label_from_workbook(
             embedding_client=embedding_client,
             use_standard_references=standards_enabled,
             topic_standard_retriever=active_topic_standard_retriever,
+            topic_business_knowledge_retriever=(
+                active_topic_business_knowledge_retriever
+            ),
             require_standard_match=cz_standard_retrieval_enabled,
             transcribe_all_admitted_topics=True,
             direct_mimo_progress_path=output_path / "direct_mimo_progress.json",
@@ -18856,6 +22082,9 @@ def initial_label_from_workbook(
             "standard_references_enabled": standards_enabled,
             "cz_headquarters_standard_retrieval_enabled": (
                 cz_standard_retrieval_enabled
+            ),
+            "cz_published_knowledge_retrieval_enabled": (
+                cz_published_knowledge_retrieval_enabled
             ),
             "redaction_audit": redaction_audit,
             "resumed_from_checkpoint": bool(checkpoint),

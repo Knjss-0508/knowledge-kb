@@ -134,6 +134,14 @@ def build_monitor_overview(gateway: AutomationMonitorGateway, limit: int = 100) 
     summary = {"pending": 0, "running": 0, "attention": 0, "completed": 0, "cz_sync_failed": 0}
     issues: list[dict[str, Any]] = []
     for job in jobs:
+        settle_from = str(job.get("settle_from_date") or "").strip()
+        settle_to = str(job.get("settle_to_date") or "").strip()
+        if not str(job.get("batch_name") or "").strip():
+            job["batch_name"] = (
+                f"{settle_from} 至 {settle_to}"
+                if settle_from and settle_to
+                else "历史批次（未记录沉淀范围）"
+            )
         state = str(job.get("effective_status") or "")
         health_state = str(job.get("health_status") or "")
         if state == "pending": summary["pending"] += 1
@@ -149,7 +157,11 @@ def build_monitor_overview(gateway: AutomationMonitorGateway, limit: int = 100) 
                     "record_id": str(job.get("record_id") or ""),
                     "stage": str((job.get("current_stage") or {}).get("label") or "运行阶段"),
                     "status": health_state or ("cz_sync_failed" if cz_failed else "attention"),
-                    "message": str(job.get("error") or ("CZ 候选同步失败。" if cz_failed else "任务需要人工处理。")),
+                    "message": str(
+                        job.get("error")
+                        or (job.get("current_stage") or {}).get("detail")
+                        or ("CZ 候选同步失败。" if cz_failed else "任务需要人工处理。")
+                    ),
                     "updated_at": str(job.get("updated_at") or ""),
                 })
     jobs.sort(key=lambda item: (0 if str(item.get("health_status")) in {"stalled", "failed"} else 1, str(item.get("updated_at") or "")), reverse=False)

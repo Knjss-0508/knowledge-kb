@@ -379,6 +379,34 @@ _TRANSFER_METADATA_LINE_RE = re.compile(
     r"(?:问题类型|问题描述|转人工原因)\s*[:：]"
 )
 
+_EXPLORATORY_FIRST_TURN_RE = re.compile(
+    r"(?:是不是|是否|算不算|属于什么|什么问题|怎么判|如何判|"
+    r"怎么判断|如何判断|怎么选|如何选|正常吗|异常吗|帮我看|看一下|"
+    r"看下|这个怎么|这个是|我猜|可能|疑似|不确定)"
+)
+_TIMESTAMP_TURN_SPLIT_RE = re.compile(
+    r"(?=(?:\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}(?::\d{2})?))"
+)
+_MIMO_TIMESTAMP_PREFIX_RE = re.compile(
+    r"^\s*\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}(?::\d{2}){1,4}\s*"
+)
+_MIMO_SYSTEM_PLACEHOLDER_RE = re.compile(
+    r"^(?:预览|发送|已加载全部|加载全部|\[(?:图片|视频)[^\]]*\])$"
+)
+_TURN_SPEAKER_RE = re.compile(
+    r"^(?:\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}(?::\d{2})?\s*)?"
+    r"(?P<speaker>工程师|验机师|质检员|客服|答疑|百晓生|系统|用户|客户)\s*[：:]"
+)
+_ENGINEER_SPEAKERS = {"工程师", "验机师", "质检员"}
+_NEW_FOLLOWUP_TOPIC_RE = re.compile(
+    r"^\s*(?:另外|还有|此外|顺便|同时|另一个|再问|再看看|以及)"
+)
+
+
+def _turn_speaker(line: str) -> str:
+    match = _TURN_SPEAKER_RE.match(line.strip())
+    return match.group("speaker") if match else ""
+
 
 def _primary_conversation_evidence(
     value: Any,
@@ -386,11 +414,12 @@ def _primary_conversation_evidence(
 ) -> str:
     """Return actual dialogue without the untrusted transfer-trigger header."""
     raw_text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-    dialogue_lines = [
-        line.strip()
-        for line in raw_text.splitlines()
-        if line.strip() and not _TRANSFER_METADATA_LINE_RE.match(line)
-    ]
+    dialogue_lines: list[str] = []
+    for raw_line in raw_text.splitlines():
+        for line in _TIMESTAMP_TURN_SPLIT_RE.split(raw_line):
+            line = line.strip()
+            if line and not _TRANSFER_METADATA_LINE_RE.match(line):
+                dialogue_lines.append(line)
     dialogue = "\n".join(dialogue_lines)
     if len(dialogue) <= limit:
         return dialogue
@@ -399,6 +428,110 @@ def _primary_conversation_evidence(
     head_length = int(available * 0.68)
     tail_length = available - head_length
     return f"{dialogue[:head_length]}{marker}{dialogue[-tail_length:]}"
+
+
+def _compact_conversation_for_mimo(value: Any, limit: int = 9000) -> str:
+    """Compact request-only dialogue while preserving the source conversation.
+
+    Transfer metadata remains filtered by ``_primary_conversation_evidence``.
+    The remaining lines retain their original order and business text; only a
+    timestamp prefix and explicit UI placeholders are omitted before sending a
+    MiMo request. Callers must keep the original source field for audit.
+    """
+    dialogue = _primary_conversation_evidence(value, max(60000, limit))
+    compact_lines: list[str] = []
+    for raw_line in dialogue.splitlines():
+        line = _MIMO_TIMESTAMP_PREFIX_RE.sub("", raw_line).strip()
+        if line and not _MIMO_SYSTEM_PLACEHOLDER_RE.fullmatch(line):
+            compact_lines.append(line)
+    return _primary_conversation_evidence("\n".join(compact_lines), limit)
+
+
+def _conversation_intent_evidence(
+    value: Any,
+    limit: int = 9000,
+) -> dict[str, str]:
+    """Separate a possibly speculative first turn from later intent evidence.
+
+    The first actual line is retained for audit, but an obviously exploratory
+    question is not allowed to become the sole clustering signal.  When later
+    dialogue exists, it becomes the preferred intent evidence; when it does
+    not, the caller must treat the intent as unverified.
+    """
+
+    conversation = _primary_conversation_evidence(value, limit)
+    lines = [line for line in conversation.splitlines() if line.strip()]
+    if not lines:
+        return {
+            "conversation": "",
+            "intent_evidence": "",
+            "first_turn_candidate": "",
+            "first_turn_role": "none",
+            "first_turn_speaker": "unknown",
+            "unrelated_followup_evidence": "",
+        }
+
+    # A transfer record can contain a customer/system message before the first
+    # engineer utterance.  The latter is the only message eligible to be the
+    # "first-turn" intent candidate; the leading context is retained solely
+    # in the full conversation for audit and model context.
+    engineer_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if _turn_speaker(line) in _ENGINEER_SPEAKERS
+        ),
+        None,
+    )
+    if engineer_index is None and any(_turn_speaker(line) for line in lines):
+        return {
+            "conversation": conversation,
+            "intent_evidence": "",
+            "first_turn_candidate": "",
+            "first_turn_role": "unknown_speaker",
+            "first_turn_speaker": "unknown",
+            "unrelated_followup_evidence": "",
+        }
+    first_turn_index = engineer_index if engineer_index is not None else 0
+    first_turn = lines[first_turn_index].strip()
+    first_speaker = _turn_speaker(first_turn)
+    exploratory = bool(_EXPLORATORY_FIRST_TURN_RE.search(first_turn))
+    if not exploratory:
+        return {
+            "conversation": conversation,
+            "intent_evidence": conversation,
+            "first_turn_candidate": "",
+            "first_turn_role": "not_flagged",
+            "first_turn_speaker": first_speaker or "unknown",
+            "unrelated_followup_evidence": "",
+        }
+
+    later_lines = lines[first_turn_index + 1 :]
+    unrelated_index = next(
+        (
+            index
+            for index, line in enumerate(later_lines)
+            if _NEW_FOLLOWUP_TOPIC_RE.search(line)
+        ),
+        None,
+    )
+    if unrelated_index is None:
+        intent_lines = later_lines
+        unrelated_lines: list[str] = []
+    else:
+        intent_lines = later_lines[:unrelated_index]
+        unrelated_lines = later_lines[unrelated_index:]
+    later_dialogue = "\n".join(intent_lines).strip()
+    return {
+        "conversation": conversation,
+        "intent_evidence": later_dialogue,
+        "first_turn_candidate": first_turn,
+        "first_turn_role": (
+            "exploratory_demoted" if later_dialogue else "exploratory_unconfirmed"
+        ),
+        "first_turn_speaker": first_speaker or "unknown",
+        "unrelated_followup_evidence": "\n".join(unrelated_lines).strip(),
+    }
 
 
 def _cluster_review_evidence_payload(value: Any) -> Any:
@@ -555,12 +688,23 @@ def _should_attach_cluster_media(
 
 def _topic_signal_source_payload(source_row: dict[str, Any]) -> dict[str, Any]:
     """Separate primary conversation evidence from legacy classifier metadata."""
+    conversation_evidence = _conversation_intent_evidence(
+        _compact_conversation_for_mimo(source_row.get("聊天内容")),
+        9000,
+    )
     return {
         "primary_evidence": {
             "work_order_id": _text(source_row.get("工单ID")),
             "business_line": _text(source_row.get("回收业务层级")),
             "product_type": _text(source_row.get("产品类型")),
-            "conversation": _text(source_row.get("聊天内容"), 9000),
+            "conversation": conversation_evidence["conversation"],
+            "intent_evidence": conversation_evidence["intent_evidence"],
+            "first_turn_candidate": conversation_evidence["first_turn_candidate"],
+            "first_turn_role": conversation_evidence["first_turn_role"],
+            "first_turn_speaker": conversation_evidence["first_turn_speaker"],
+            "unrelated_followup_evidence": conversation_evidence[
+                "unrelated_followup_evidence"
+            ],
             "historical_actual_reply": _text(
                 source_row.get("历史实际回复") or source_row.get("参考话术"),
                 4000,
@@ -641,7 +785,10 @@ def _build_topic_signal_prompt(
       例：问“是不是漏液”→答“选折痕”→分类跟“折痕”（外观问题）走，不跟“漏液”（显示问题）走。
    c. 理解检测项目的真实目的，不望文生义。
       例：“白光检测”的目的=检查屏幕是否被更换/拆修→分类为拆修问题，不是显示问题。
-   d. 无充分证据时填“待确认”。
+    d. 无充分证据时填“待确认”。
+额外证据规则：primary_evidence.intent_evidence 是判断工程师真实意图的优先文本；
+   primary_evidence.first_turn_candidate 只表示首轮试探性问题，不能单独决定 intent、subject、phenomenon 或分类。
+   若首轮与后续答疑、人工校正字段或最终回复冲突，以后续确认和最终结论为准，并在 reasoning_summary 中说明冲突。
 7. 需要通过外观、部位、颜色、裂纹、坏点、拆修痕迹等视觉差异才能判断时，requires_images=true；图片不可用或不足时在 image_evidence_summary 说明，并标记人工复核。
 8. 当前接口没有上传视频内容。若存在视频链接，只能把它视为“尚待人工查看的视频证据”，不得猜测视频画面、动作或声音；结论依赖视频时应标记人工复核。
 9. reasoning_summary 仅写给审核人的结论依据，不要输出思维过程，不超过 240 字。
@@ -951,6 +1098,7 @@ def _build_topic_stage_prompt(
 
 证据优先级：
 - conversation_evidence、historical_replies、evidence_summaries，以及从完整会话提取的 intents、subjects、phenomena、resolution_modes 是主要会话证据。
+- 若主题输入包含“意图证据”“首轮试探问题”“首轮意图状态”，优先使用意图证据判断可复用主题；首轮试探问题只用于解释冲突，不得单独决定主题标题或聚类边界。
 - 人工校正后的核心问题、产品类型和判定结论是重要结构化证据。产品类型是硬边界；核心问题和判定结论可补充本轮未读取图片时已由第二部分人工确认的对象、现象和结论。
 - normalized_issues 应是会话证据与人工校正字段的综合提炼。若两类证据冲突，必须标记 needs_human_review=true，不得静默选择一方。
 - 判定依据、旧分类和已有标准路径仍只作为弱参考，不得据此补写输入中没有的标准、阈值、边界或步骤。
@@ -1139,6 +1287,10 @@ def _cluster_unit_input_payload(
 ) -> dict[str, Any]:
     has_image_links = bool(_text(source_row.get("图片链接")))
     has_video_links = bool(_text(source_row.get("视频链接")))
+    conversation_evidence = _conversation_intent_evidence(
+        _compact_conversation_for_mimo(source_row.get("聊天内容")),
+        9000,
+    )
     normalized_policy = media_policy.strip().lower()
     return {
         "work_order_id": _text(source_row.get("工单ID")),
@@ -1164,10 +1316,14 @@ def _cluster_unit_input_payload(
             240,
         ),
         "device_model": _text(source_row.get("机型")),
-        "primary_conversation_evidence": _primary_conversation_evidence(
-            source_row.get("聊天内容"),
-            9000,
-        ),
+        "primary_conversation_evidence": conversation_evidence["conversation"],
+        "intent_evidence": conversation_evidence["intent_evidence"],
+        "first_turn_candidate": conversation_evidence["first_turn_candidate"],
+        "first_turn_role": conversation_evidence["first_turn_role"],
+        "first_turn_speaker": conversation_evidence["first_turn_speaker"],
+        "unrelated_followup_evidence": conversation_evidence[
+            "unrelated_followup_evidence"
+        ],
         "has_image_links": has_image_links,
         "has_video_links": has_video_links,
         "attached_image_count": attached_image_count,
@@ -1275,8 +1431,10 @@ def _build_cluster_unit_prompt(
 
 === 证据规则（8条红线）===
 
-1. primary_conversation_evidence、人工校正后的核心问题和判定结论需要合并使用；判定依据和参考话术作为辅助审计证据一并参考。必须综合阅读整段问答、追问、澄清和客服答复，不能只抓取最后一句或某个关键词。
-   聊天开头的“问题类型、问题描述、转人工原因”是系统转人工元数据，已从 primary_conversation_evidence 中排除。
+1. primary_conversation_evidence、intent_evidence、人工校正后的核心问题和判定结论需要合并使用；判定依据和参考话术作为辅助审计证据一并参考。必须综合阅读整段问答、追问、澄清和客服答复，不能只抓取最后一句或某个关键词。
+    聊天开头的“问题类型、问题描述、转人工原因”是系统转人工元数据，已从 primary_conversation_evidence 中排除。
+    如果 first_turn_role 为 exploratory_demoted，首轮问题只能作为待确认线索；不得因为首轮出现“是不是/是否/怎么判”等字样就直接把它当成最终工程师意图。
+    如果 first_turn_role 为 exploratory_unconfirmed 且 intent_evidence 为空，必须降低 confidence、设置 requires_review=true，并保留单成员主题，不得自动并入可信历史主题。
    product_type 是第二部分人工校正后的产品品类，属于不可跨越的聚类硬边界。
    human_corrected_core_problem 和 human_corrected_judgment_conclusion 是第二部分人工复核后的结构化证据；在本轮不读取图片时，它们可补充人工基于图片确认的对象、现象和结论。判定依据和参考话术是辅助审计证据，不能单独覆盖聊天事实。
    如果 ai_result_conflict_fields 非空，说明接口结构化字段与已有字段冲突，必须设置 requires_review=true，并在 reason 中指出冲突字段。
@@ -1560,12 +1718,20 @@ def _enforce_cluster_fusion_guardrails(
 
 
 def _atomic_unit_payload(unit: dict[str, Any]) -> dict[str, Any]:
+    conversation_evidence = _conversation_intent_evidence(
+        unit.get("source_conversation"),
+        1200,
+    )
     return {
         "atomic_id": _text(unit.get("unit_id") or unit.get("atomic_id"), 120),
-        "conversation_evidence_excerpt": _primary_conversation_evidence(
-            unit.get("source_conversation"),
-            1200,
-        ),
+        "conversation_evidence_excerpt": conversation_evidence["conversation"],
+        "intent_evidence_excerpt": conversation_evidence["intent_evidence"],
+        "first_turn_candidate": conversation_evidence["first_turn_candidate"],
+        "first_turn_role": conversation_evidence["first_turn_role"],
+        "first_turn_speaker": conversation_evidence["first_turn_speaker"],
+        "unrelated_followup_evidence": conversation_evidence[
+            "unrelated_followup_evidence"
+        ],
         "evidence_summary": _text(unit.get("evidence_summary"), 500),
         "normalized_issue": _text(unit.get("normalized_issue"), 160),
         "source_core_problem": _text(unit.get("source_core_problem"), 1200),
@@ -1689,10 +1855,10 @@ def _build_atomic_topic_cluster_prompt(
 
 执行规则：
 1. 允许单知识点独立成簇。
-2. conversation_evidence_excerpt、evidence_summary、source_core_problem 和 source_judgment_conclusion 共同用于核对真实问题。后两项来自第二部分人工校正，尤其用于补充本轮未读取图片时已由人工确认的对象、现象和结论。
+2. intent_evidence_excerpt、conversation_evidence_excerpt、evidence_summary、source_core_problem 和 source_judgment_conclusion 共同用于核对真实问题。intent_evidence_excerpt 优先承载首轮之后的确认、澄清和最终答疑；后两项来自第二部分人工校正，尤其用于补充本轮未读取图片时已由人工确认的对象、现象和结论。
 3. 不得按关键词或字面相似直接合并，优先依据真实聊天中的对象、判定目标、标准处理路径和阈值例外。
 4. 若人工校正字段、normalized_issue 与聊天证据明显冲突，不得按任一字段强行合并；应放入 review_requests。
-5. 聊天原文中的“问题类型、问题描述、转人工原因”是系统转人工元数据，可能为快速转人工而乱填，不得作为聚类依据。
+5. 聊天原文中的“问题类型、问题描述、转人工原因”是系统转人工元数据，可能为快速转人工而乱填，不得作为聚类依据；first_turn_candidate 也可能只是工程师试探，不能单独作为聚类依据。若 first_turn_role 为 exploratory_demoted，优先依据 intent_evidence_excerpt、人工校正字段和最终答疑。
 6. standard_path、resolution_mode 或 threshold_or_exception 的文字不同不代表一定不同；必须判断语义和最终答疑结论是否一致。
 7. 不得发明输入中没有的阈值、例外、适用范围或业务规则。
 8. 多成员簇的五个一致性字段必须全部为 true；任一项不一致时不得合并，应拆为单成员簇。

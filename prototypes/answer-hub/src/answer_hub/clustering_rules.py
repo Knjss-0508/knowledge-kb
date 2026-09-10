@@ -66,6 +66,80 @@ class ClusteringFingerprint:
     detection_target: str
 
 
+@dataclass(frozen=True)
+class ClusteringBoundaryKey:
+    """Machine-comparable boundary shared by every clustering stage.
+
+    The curated rule decides whether phenomenon is part of the identity.  A
+    ``same_standard_family`` rule intentionally uses a wildcard phenomenon so
+    that different manifestations in one standard family can share a topic;
+    ``separate_by_phenomenon`` keeps the normalized phenomenon value.
+    """
+
+    business_line: str
+    product_category: str
+    standard_family: str
+    merge_policy: str
+    object_key: str
+    phenomenon_value: str
+    query_target: str
+    detection_target: str
+    platform: str
+    brand: str
+    model_scope: str
+    threshold_values: str
+
+    @property
+    def complete(self) -> bool:
+        has_primary_boundary = bool(
+            self.standard_family
+            or self.query_target
+            or self.detection_target
+        )
+        phenomenon_complete = (
+            self.merge_policy != "separatebyphenomenon"
+            or bool(self.phenomenon_value)
+        )
+        return bool(
+            self.product_category
+            and self.object_key
+            and has_primary_boundary
+            and phenomenon_complete
+        )
+
+    def as_tuple(self) -> tuple[str, ...]:
+        return (
+            self.business_line,
+            self.product_category,
+            self.standard_family,
+            self.merge_policy,
+            self.object_key,
+            self.phenomenon_value,
+            self.query_target,
+            self.detection_target,
+            self.platform,
+            self.brand,
+            self.model_scope,
+            self.threshold_values,
+        )
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "business_line": self.business_line,
+            "product_category": self.product_category,
+            "standard_family": self.standard_family,
+            "merge_policy": self.merge_policy,
+            "object_key": self.object_key,
+            "phenomenon_value": self.phenomenon_value,
+            "query_target": self.query_target,
+            "detection_target": self.detection_target,
+            "platform": self.platform,
+            "brand": self.brand,
+            "model_scope": self.model_scope,
+            "threshold_values": self.threshold_values,
+        }
+
+
 _FINGERPRINT_REPLACEMENTS = (
     ("电池健康值", "电池健康度"),
     ("最大容量", "电池健康度"),
@@ -80,10 +154,6 @@ _FINGERPRINT_REPLACEMENTS = (
     ("小型号", "型号查询"),
     ("内存/硬盘", "内存硬盘"),
     ("存储/硬盘", "内存硬盘"),
-    ("硬盘品牌", "内存硬盘品牌"),
-    ("内存品牌", "内存硬盘品牌"),
-    ("品牌硬盘", "内存硬盘品牌"),
-    ("品牌内存", "内存硬盘品牌"),
     ("硬盘容量", "内存硬盘容量"),
     ("内存容量", "内存硬盘容量"),
     ("白光灯检测", "白光检测"),
@@ -100,6 +170,14 @@ def _fingerprint_text(*values: object) -> str:
     )
     for source, target in _FINGERPRINT_REPLACEMENTS:
         text = text.replace(source, target)
+    return re.sub(r"[\W_]+", "", text, flags=re.UNICODE)
+
+
+def _raw_fingerprint_text(*values: object) -> str:
+    text = unicodedata.normalize(
+        "NFKC",
+        " ".join(str(value or "") for value in values).casefold(),
+    )
     return re.sub(r"[\W_]+", "", text, flags=re.UNICODE)
 
 
@@ -185,6 +263,17 @@ def _fingerprint_query_target(
             )
         ):
             return "phone_housing_appearance"
+        if (
+            any(
+                marker in text
+                for marker in ("防水标", "防水标签", "卡槽防水标")
+            )
+            and any(
+                marker in text
+                for marker in ("变红", "变色", "局部变色", "发红")
+            )
+        ):
+            return "waterproof_indicator_discoloration"
     if "白光检测" in text and any(
         marker in text for marker in ("方法", "操作", "角度", "怎么做", "如何做")
     ):
@@ -193,10 +282,136 @@ def _fingerprint_query_target(
         marker in text for marker in ("结果", "颜色异常", "底色", "光束", "正常不正常")
     ):
         return "detection_result"
+    if "紫光灯" in text or "紫光" in text:
+        if any(
+            marker in text
+            for marker in (
+                "不强制",
+                "是否需要",
+                "需要检测",
+                "检测项",
+                "要求此检测",
+            )
+        ):
+            return "ultraviolet_detection_requirement"
+        if any(
+            marker in text
+            for marker in (
+                "检测结果",
+                "无以上问题",
+                "结果正常",
+                "方格质检",
+            )
+        ):
+            return "ultraviolet_detection_result"
     if "电池健康度" in text or "电池健康" in text:
         return "battery_health"
     if "国行" in text or "港澳台" in text or "版本查询" in text:
         return "device_version"
+    if (
+        product == _fingerprint_text("笔记本")
+        and any(
+            marker in text
+            for marker in ("原彩显示", "原彩", "truetone", "true tone")
+        )
+    ):
+        return "true_tone_support"
+    if (
+        product == _fingerprint_text("笔记本")
+        and any(
+            marker in text
+            for marker in (
+                "指纹功能",
+                "指纹识别",
+                "支持指纹",
+                "有指纹吗",
+                "具备指纹",
+            )
+        )
+    ):
+        return "fingerprint_support"
+    if (
+        product == _fingerprint_text("笔记本")
+        and any(
+            marker in text
+            for marker in (
+                "设备型号",
+                "型号确认",
+                "型号正确",
+                "型号待确认",
+                "型号查询",
+                "机型查询",
+            )
+        )
+    ):
+        return "model_query"
+    memory_markers = (
+        "内存",
+        "运行内存",
+    )
+    storage_markers = (
+        "硬盘",
+        "固态硬盘",
+        "ssd",
+        "存储盘",
+    )
+    hardware_markers = (*memory_markers, *storage_markers)
+    brand_markers = (
+        "是否为品牌",
+        "是不是品牌",
+        "内存品牌",
+        "硬盘品牌",
+        "品牌属性",
+        "品牌认证",
+        "品牌件",
+        "内存硬盘品牌",
+        "原厂品牌",
+        "非品牌",
+        "非品牌",
+        "牌子",
+    )
+    if (
+        any(marker in text for marker in hardware_markers)
+        and any(marker in text for marker in brand_markers)
+    ):
+        has_memory = any(marker in text for marker in memory_markers)
+        has_storage = any(marker in text for marker in storage_markers)
+        if (
+            "笔记本" in _fingerprint_text(product_category)
+            and any(marker in text for marker in ("华为", "huawei", "matebook"))
+            and has_memory
+            and has_storage
+        ):
+            return "memory_storage_brand_huawei_special"
+        if has_memory and not has_storage:
+            return "memory_brand"
+        if has_storage and not has_memory:
+            return "storage_brand"
+        # A source that explicitly asks about both components must be split
+        # into a memory-brand atomic question and a storage-brand atomic
+        # question before it can enter a reusable topic.  Keep the un-split
+        # fallback isolated rather than letting it become a third broad theme.
+        return "memory_storage_brand_combined"
+    if (
+        product == _fingerprint_text("笔记本")
+        and any(marker in text for marker in hardware_markers)
+        and any(
+            marker in text
+            for marker in (
+                "第三方硬盘",
+                "第三方内存",
+                "第三方更换",
+                "第三方部件",
+                "第三方配件",
+                "非原厂更换",
+                "后更换部件",
+                "是否为第三方",
+                "要判第三方",
+                "不判第三方",
+            )
+        )
+    ):
+        return "memory_storage_third_party"
     if "序列号" in text or "imei" in text:
         if any(marker in text for marker in ("不一致", "不匹配", "对不上")):
             return "serial_mismatch"
@@ -207,33 +422,6 @@ def _fingerprint_query_target(
         return "serial_query"
     if any(marker in text for marker in ("硬盘更换", "内存更换", "存储更换")):
         return "memory_storage_replacement"
-    hardware_markers = (
-        "内存",
-        "运行内存",
-        "硬盘",
-        "固态硬盘",
-        "ssd",
-        "存储盘",
-    )
-    brand_markers = (
-        "是否为品牌",
-        "是不是品牌",
-        "品牌属性",
-        "品牌认证",
-        "品牌件",
-        "内存硬盘品牌",
-        "原厂品牌",
-        "非品牌",
-        "第三方硬盘",
-        "第三方内存",
-        "非品牌",
-        "牌子",
-    )
-    if (
-        any(marker in text for marker in hardware_markers)
-        and any(marker in text for marker in brand_markers)
-    ):
-        return "memory_storage_brand"
     if any(
         marker in text
         for marker in ("内存硬盘容量", "存储容量", "扩容")
@@ -366,6 +554,7 @@ def _fingerprint_object_key(subject: object, rule: ClusteringRuleMatch | None) -
         "镜片",
         "镜头",
         "后壳",
+        "后盖",
         "中框",
         "边框",
         "外壳",
@@ -377,6 +566,7 @@ def _fingerprint_object_key(subject: object, rule: ClusteringRuleMatch | None) -
         "设备型号",
         "型号",
         "a面",
+        "上盖",
         "b面",
         "c面",
         "d面",
@@ -428,6 +618,44 @@ def build_clustering_fingerprint(
         primary,
         product_category=product_category,
     )
+    context_query_target = _fingerprint_query_target(
+        _fingerprint_text(primary, context),
+        product_category=product_category,
+    )
+    raw_context = _raw_fingerprint_text(conversation)
+    raw_context_has_memory = any(
+        marker in raw_context for marker in ("内存", "运行内存")
+    )
+    raw_context_has_storage = any(
+        marker in raw_context
+        for marker in ("硬盘", "固态硬盘", "ssd", "存储盘")
+    )
+    raw_subject = _raw_fingerprint_text(subject)
+    subject_is_memory_only = (
+        any(marker in raw_subject for marker in ("内存", "运行内存"))
+        and not any(
+            marker in raw_subject
+            for marker in ("硬盘", "固态硬盘", "ssd", "存储盘")
+        )
+    )
+    # Source context may carry a model-specific boundary that MiMo omits from
+    # the normalized atomic issue. Keep the Huawei combined memory-and-storage
+    # rule isolated only when both components really occur in the raw source.
+    # Normalized aliases such as "硬盘容量" -> "内存硬盘容量" must not invent
+    # a combined Huawei boundary for a storage-only query.
+    if (
+        query_target
+        in {
+            "memory_brand",
+            "storage_brand",
+            "memory_storage_brand_combined",
+        }
+        and context_query_target == "memory_storage_brand_huawei_special"
+        and raw_context_has_memory
+        and raw_context_has_storage
+        and not subject_is_memory_only
+    ):
+        query_target = context_query_target
     if not query_target:
         query_target = _phone_new_device_context_target(
             primary,
@@ -458,6 +686,86 @@ def build_clustering_fingerprint(
         ),
         query_target=query_target,
         detection_target=detection_target,
+    )
+
+
+def build_clustering_boundary_key(
+    *,
+    business_line: str = "",
+    product_category: str,
+    category_l1: str = "",
+    intent: str = "",
+    subject: str = "",
+    phenomenon: str = "",
+    normalized_issue: str = "",
+    judgment_target: str = "",
+    resolution_mode: str = "",
+    standard_path: str = "",
+    conversation: str = "",
+    platform: str = "",
+    brand: str = "",
+    model_scope: str = "",
+    threshold_or_exception: str = "",
+) -> ClusteringBoundaryKey:
+    """Build the single structured boundary used by clustering and history.
+
+    Scope and numeric exception values are normalized here instead of being
+    reimplemented in workflow and topic-registry code.  Empty values remain
+    empty, so a known scope cannot silently merge with a missing scope.
+    """
+
+    fingerprint = build_clustering_fingerprint(
+        product_category=product_category,
+        category_l1=category_l1,
+        intent=intent,
+        subject=subject,
+        phenomenon=phenomenon,
+        normalized_issue=normalized_issue,
+        judgment_target=judgment_target,
+        resolution_mode=resolution_mode,
+        standard_path=standard_path,
+        conversation=conversation,
+    )
+    merge_policy = _fingerprint_text(fingerprint.merge_policy)
+    phenomenon_value = (
+        "*"
+        if merge_policy == "samestandardfamily"
+        else _fingerprint_text(fingerprint.phenomenon_value)
+    )
+    threshold_values = clustering_threshold_values(threshold_or_exception)
+    return ClusteringBoundaryKey(
+        business_line=_fingerprint_text(business_line),
+        product_category=fingerprint.product_category,
+        standard_family=fingerprint.standard_family,
+        merge_policy=merge_policy,
+        object_key=fingerprint.object_key,
+        phenomenon_value=phenomenon_value,
+        query_target=fingerprint.query_target,
+        detection_target=fingerprint.detection_target,
+        platform=_fingerprint_text(platform),
+        brand=_fingerprint_text(brand),
+        model_scope=_fingerprint_text(model_scope),
+        threshold_values=threshold_values,
+    )
+
+
+def clustering_threshold_values(*values: object) -> str:
+    """Normalize threshold/exception clauses for boundary checks.
+
+    Standard paths can contain model numbers (for example, ``iPhone 11``),
+    so they are intentionally not treated as numeric thresholds.  Callers
+    should pass only explicit threshold or exception fields.
+    """
+
+    clauses: set[str] = set()
+    for value in values:
+        text = unicodedata.normalize("NFKC", str(value or "").casefold())
+        for clause in re.split(r"[；;\n]+", text):
+            normalized = re.sub(r"\s+", "", clause).strip("，,。.")
+            if normalized:
+                clauses.add(normalized)
+    return "|".join(
+        sorted(clauses)
     )
 
 
@@ -1114,11 +1422,65 @@ CLUSTERING_JUDGMENT_RULES: tuple[ClusteringJudgmentRule, ...] = (
         object_aliases=("耳机", "单耳", "充电盒", "查找功能", "定位"),
         phenomenon_values=(
             ("无法连接或配对", ("无法连接", "无法配对", "配对失败")),
-            ("查找账号绑定", ("查找功能已绑定账户", "定位功能异常", "账号未解绑")),
+            (
+                "查找功能正常",
+                (
+                    "查找功能正常",
+                    "查找功能能正常使用",
+                    "在查找中显示后查找功能可正常使用",
+                ),
+            ),
+            (
+                "查找功能已绑定账户",
+                (
+                    "查找功能已绑定账户",
+                    "激活锁",
+                    "账号未解绑",
+                    "账户未解绑",
+                    "他人apple账户",
+                    "他人的apple账户",
+                    "物主将可查看其位置",
+                    "位置对所有者可见",
+                    "账户关联绑定",
+                    "账号关联绑定",
+                    "仅有播放声音和路线",
+                    "华为查找功能入口缺失",
+                    "华为耳机查找功能入口缺失",
+                ),
+            ),
+            (
+                "查找功能异常",
+                (
+                    "查找功能异常",
+                    "airpods不匹配",
+                    "查找网络功能缺失",
+                    "查找网络入口缺失",
+                    "仅剩查找耳机",
+                    "路线为灰色",
+                    "缺少远程查找功能开关",
+                    "缺少远程查找",
+                    "显示为路线而非查找",
+                ),
+            ),
+            (
+                "其他版本查找功能不支持",
+                (
+                    "其他版本查找功能不支持",
+                    "外版华为耳机在国内不支持使用查找功能",
+                ),
+            ),
+            (
+                "查找功能不检测",
+                (
+                    "查找功能不检测",
+                    "不要求检查查找功能",
+                    "无需检查查找功能",
+                ),
+            ),
             ("缺失单耳", ("缺失单耳机", "单耳缺失")),
             ("仿冒或序列号异常", ("仿冒产品", "序列号异常", "字体重塑")),
         ),
-        usage="连接配对、查找账号、单耳缺失及仿冒序列号是不同使用状态，必须拆分。",
+        usage="连接配对、查找功能状态、单耳缺失及仿冒序列号是不同使用状态，查找功能正常、绑定账户、异常、版本不支持和不检测必须按正式口径拆分。",
     ),
     ClusteringJudgmentRule(
         rule_id="headphones-body-appearance",
@@ -1517,6 +1879,41 @@ def _normalize(value: object) -> str:
     return str(value or "").strip().casefold()
 
 
+def _index_standard_families_by_product(
+    entries: tuple[StandardFamilyIndexEntry, ...],
+) -> dict[str, tuple[StandardFamilyIndexEntry, ...]]:
+    indexed: dict[str, list[StandardFamilyIndexEntry]] = {}
+    for entry in entries:
+        for product_category in _runtime_rule_product_categories(
+            entry.product_category
+        ):
+            product = _normalize(product_category)
+            if product:
+                indexed.setdefault(product, []).append(entry)
+    return {
+        product: tuple(product_entries)
+        for product, product_entries in indexed.items()
+    }
+
+
+_STANDARD_FAMILY_INDEX_SOURCE = STANDARD_FAMILY_INDEX
+_STANDARD_FAMILY_INDEX_BY_PRODUCT = _index_standard_families_by_product(
+    _STANDARD_FAMILY_INDEX_SOURCE
+)
+
+
+def _standard_family_entries_for_product(
+    product: str,
+) -> tuple[StandardFamilyIndexEntry, ...]:
+    global _STANDARD_FAMILY_INDEX_BY_PRODUCT, _STANDARD_FAMILY_INDEX_SOURCE
+    if _STANDARD_FAMILY_INDEX_SOURCE is not STANDARD_FAMILY_INDEX:
+        _STANDARD_FAMILY_INDEX_SOURCE = STANDARD_FAMILY_INDEX
+        _STANDARD_FAMILY_INDEX_BY_PRODUCT = _index_standard_families_by_product(
+            _STANDARD_FAMILY_INDEX_SOURCE
+        )
+    return _STANDARD_FAMILY_INDEX_BY_PRODUCT.get(product, ())
+
+
 def _normalize_products(
     product_categories: str | Iterable[str] | None,
 ) -> tuple[str, ...]:
@@ -1563,12 +1960,7 @@ def _match_standard_family_index_rule(
     )
     conversation_text = _normalize(conversation)
     candidates: list[tuple[int, StandardFamilyIndexEntry, str]] = []
-    for entry in STANDARD_FAMILY_INDEX:
-        if product not in {
-            _normalize(item)
-            for item in _runtime_rule_product_categories(entry.product_category)
-        }:
-            continue
+    for entry in _standard_family_entries_for_product(product):
         core_subject_match = _contains_any(core_text, entry.subject_aliases)
         conversation_subject_match = _contains_any(
             conversation_text,

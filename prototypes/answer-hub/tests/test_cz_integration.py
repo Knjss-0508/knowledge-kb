@@ -11,23 +11,16 @@ from urllib.error import HTTPError
 from answer_hub.cz_integration import (
     CzIntegrationAdapter,
     CzIntegrationConfig,
+    CzPublishedKnowledgeItem,
     select_submittable_candidates,
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _cz_required_schema_fields(class_name: str) -> set[str]:
-    schema_path = (
-        PROJECT_ROOT
-        / "cz-knowledge-kb"
-        / "knowledge-kb-master"
-        / "backend"
-        / "app"
-        / "schemas"
-        / "integration.py"
-    )
+    schema_path = PROJECT_ROOT / "backend" / "app" / "schemas" / "integration.py"
     module = ast.parse(schema_path.read_text(encoding="utf-8"))
     schema_class = next(
         node
@@ -95,6 +88,196 @@ def _candidate(index: int = 1, product_type: str = "手机") -> dict:
 
 
 class CzIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def _published_search_candidate(
+        knowledge_id: str,
+        knowledge_origin: str,
+        *,
+        title: str,
+        score: float,
+        boundary_projection: dict[str, str] | None = None,
+    ) -> dict:
+        return {
+            "id": knowledge_id,
+            "title": title,
+            "text": f"{title}正文",
+            "score": score,
+            "finalScore": score,
+            "status": "published",
+            "knowledgeOrigin": knowledge_origin,
+            "businessType": "self_operated",
+            "categoryId": "cat-notebook",
+            "level1Label": "基本情况",
+            "productType": "笔记本",
+            "models": ["MateBook 14"],
+            "keywords": ["硬盘", "品牌件"],
+            "sourceRef": f"knowledge-kb://knowledge/{knowledge_id}",
+            "boundaryProjection": boundary_projection or {},
+        }
+
+    def test_published_search_splits_standard_and_business_knowledge(self) -> None:
+        adapter = CzIntegrationAdapter(
+            CzIntegrationConfig(
+                "https://kb.example",
+                "",
+                retrieval_key="retrieval-key",
+            )
+        )
+        adapter._request_json = Mock(
+            return_value={
+                "status": "success",
+                "retrievalMode": "semantic",
+                "knowledgeVersion": "knowledge-v7",
+                "scoreThreshold": 0.6,
+                "candidates": [
+                    self._published_search_candidate(
+                        "STD-001",
+                        "headquarters_standard",
+                        title="笔记本硬盘总部标准",
+                        score=0.94,
+                    ),
+                    self._published_search_candidate(
+                        "BIZ-001",
+                        "business_accumulation",
+                        title="笔记本硬盘是否为品牌件",
+                        score=0.91,
+                        boundary_projection={
+                            "objectKey": "硬盘品牌",
+                            "queryTarget": "硬盘品牌属性",
+                            "conclusionState": "硬盘是否为品牌件",
+                        },
+                    ),
+                ],
+            }
+        )
+
+        result = adapter.search_published_knowledge(
+            conversation_id="2085229024728059925",
+            normalized_question="笔记本硬盘品牌是否为第三方",
+            business_type="self_operated",
+            product_type="笔记本",
+            model="MateBook 14",
+        )
+
+        self.assertEqual(len(result.headquarters_standards), 1)
+        standard, standard_score = result.headquarters_standards[0]
+        self.assertEqual(standard.standard_id, "STD-001")
+        self.assertEqual(standard.knowledge_type, "总部标准")
+        self.assertEqual(standard_score, 0.94)
+        self.assertEqual(len(result.business_knowledge), 1)
+        business = result.business_knowledge[0]
+        self.assertIsInstance(business, CzPublishedKnowledgeItem)
+        self.assertEqual(business.knowledge_id, "BIZ-001")
+        self.assertEqual(business.knowledge_origin, "business_accumulation")
+        self.assertEqual(business.version, "knowledge-v7")
+        self.assertEqual(business.models, ("MateBook 14",))
+        self.assertEqual(business.text, "笔记本硬盘是否为品牌件正文")
+        self.assertEqual(
+            business.boundary_projection["object_key"],
+            "硬盘品牌",
+        )
+        self.assertEqual(result.audit["headquarters_standard_ids"], ["STD-001"])
+        self.assertEqual(result.audit["business_accumulation_ids"], ["BIZ-001"])
+        self.assertEqual(result.audit["business_accumulation_count"], 1)
+        adapter._request_json.assert_called_once()
+        request_args = adapter._request_json.call_args.args
+        request_kwargs = adapter._request_json.call_args.kwargs
+        self.assertEqual(request_args[:2], ("POST", adapter.standard_search_path))
+        self.assertEqual(
+            request_args[2]["knowledgeOrigin"],
+            "headquarters_standard",
+        )
+        self.assertEqual(request_kwargs["api_key"], "retrieval-key")
+        self.assertEqual(
+            request_kwargs["extra_headers"]["X-Conversation-Id"],
+            "2085229024728059925",
+        )
+
+    def test_headquarters_search_keeps_business_knowledge_out_of_standards(self) -> None:
+        adapter = CzIntegrationAdapter(
+            CzIntegrationConfig(
+                "https://kb.example",
+                "",
+                retrieval_key="retrieval-key",
+            )
+        )
+        adapter._request_json = Mock(
+            return_value={
+                "status": "success",
+                "retrievalMode": "semantic",
+                "knowledgeVersion": "knowledge-v8",
+                "scoreThreshold": 0.6,
+                "candidates": [
+                    self._published_search_candidate(
+                        "BIZ-002",
+                        "business_accumulation",
+                        title="线上已有硬盘品牌知识",
+                        score=0.9,
+                    ),
+                ],
+            }
+        )
+
+        standards, audit = adapter.search_headquarters_standards(
+            conversation_id="2085229024728059925",
+            normalized_question="笔记本硬盘是否为品牌件",
+            business_type="self_operated",
+            product_type="笔记本",
+        )
+
+        self.assertEqual(standards, [])
+        self.assertEqual(audit["standard_ids"], [])
+        self.assertEqual(audit["ignored_business_accumulation_count"], 1)
+        self.assertEqual(
+            audit["business_accumulation_candidates"][0]["knowledge_id"],
+            "BIZ-002",
+        )
+        self.assertNotIn("text", audit["business_accumulation_candidates"][0])
+
+    def test_published_search_rejects_review_or_unknown_origin_candidates(self) -> None:
+        adapter = CzIntegrationAdapter(
+            CzIntegrationConfig(
+                "https://kb.example",
+                "",
+                retrieval_key="retrieval-key",
+            )
+        )
+        review_candidate = self._published_search_candidate(
+            "BIZ-REVIEW",
+            "business_accumulation",
+            title="待复核知识",
+            score=0.9,
+        )
+        review_candidate["status"] = "review"
+        adapter._request_json = Mock(
+            return_value={"candidates": [review_candidate]}
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "未发布知识"):
+            adapter.search_published_knowledge(
+                conversation_id="2085229024728059925",
+                normalized_question="笔记本硬盘是否为品牌件",
+                business_type="self_operated",
+                product_type="笔记本",
+            )
+
+        unknown_candidate = self._published_search_candidate(
+            "UNKNOWN-001",
+            "unknown_origin",
+            title="未知来源知识",
+            score=0.9,
+        )
+        adapter._request_json = Mock(
+            return_value={"candidates": [unknown_candidate]}
+        )
+        with self.assertRaisesRegex(RuntimeError, "未知知识来源"):
+            adapter.search_published_knowledge(
+                conversation_id="2085229024728059925",
+                normalized_question="笔记本硬盘是否为品牌件",
+                business_type="self_operated",
+                product_type="笔记本",
+            )
+
     def test_readiness_exposes_real_api_state(self) -> None:
         adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
         readiness = adapter.readiness()
@@ -106,6 +289,7 @@ class CzIntegrationTests(unittest.TestCase):
             readiness["review_candidate_endpoint"],
             "/api/v1/integration/knowledge-review-candidates:batch",
         )
+        self.assertFalse(readiness["published_knowledge_retrieval_configured"])
 
     def test_endpoint_normalizes_api_prefix_and_trailing_slash(self) -> None:
         config = CzIntegrationConfig("https://kb.example/api/v1/", "test-key")
@@ -602,6 +786,23 @@ class CzIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["human_review"]["knowledge_value"], "pending")
         self.assertEqual(payload["human_review"]["usability"], "pending")
 
+    def test_payload_uses_work_orders_when_source_record_ids_are_empty(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+
+        payload = adapter.build_batch_payload(
+            [
+                {
+                    **_candidate(),
+                    "主题来源记录ID": "",
+                    "主题工单ID": "WO-001\nWO-002",
+                }
+            ],
+            {"质检流程": "cat-process"},
+            require_eligible=False,
+        )[0]
+
+        self.assertEqual(payload["source"]["message_ids"], ["WO-001", "WO-002"])
+
     def test_review_queue_sync_rejects_unfinished_transcription_without_remote_call(self) -> None:
         adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
         adapter._request_json = Mock()
@@ -626,6 +827,51 @@ class CzIntegrationTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "rejected")
         self.assertEqual(result["results"][0]["error_code"], "TRANSCRIPTION_NOT_READY")
         adapter._request_json.assert_not_called()
+
+    def test_review_queue_sync_collapses_exact_duplicate_payloads(self) -> None:
+        adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))
+        sent_event_ids: list[list[str]] = []
+
+        def fake_request(method, path, payload, **kwargs):
+            del method, path, kwargs
+            event_ids = [item["event_id"] for item in payload["items"]]
+            sent_event_ids.append(event_ids)
+            return {
+                "queued": len(event_ids),
+                "ready": 0,
+                "rejected": 0,
+                "reused": 0,
+                "results": [],
+            }
+
+        adapter._request_json = Mock(side_effect=fake_request)
+        duplicate = {
+            **_candidate(2),
+            "主标题": "屏幕显示异常如何通过图片核验",
+            "知识内容": "请补充异常部位、现象和清晰图片后再核验。",
+        }
+        canonical = {
+            **_candidate(1),
+            "主标题": "屏幕显示异常如何通过图片核验",
+            "知识内容": "请补充异常部位、现象和清晰图片后再核验。",
+        }
+
+        result = adapter.sync_review_candidates(
+            [canonical, duplicate],
+            {"质检流程": "cat-process"},
+        )
+
+        self.assertEqual(sent_event_ids, [["TOP-001"]])
+        self.assertEqual(result["queued"], 1)
+        self.assertEqual(result["deduplicated"], 1)
+        self.assertEqual(result["failed"], 0)
+        duplicate_result = next(
+            item
+            for item in result["results"]
+            if item["status"] == "deduplicated"
+        )
+        self.assertEqual(duplicate_result["event_id"], "TOP-002")
+        self.assertEqual(duplicate_result["canonical_event_id"], "TOP-001")
 
     def test_candidate_idempotency_is_stable_when_reviewers_edit_content(self) -> None:
         adapter = CzIntegrationAdapter(CzIntegrationConfig("https://kb.example", "test-key"))

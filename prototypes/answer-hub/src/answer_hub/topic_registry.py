@@ -6,13 +6,18 @@ from difflib import SequenceMatcher
 from hashlib import sha256
 from typing import Any
 import json
+import os
 import re
 import threading
 import unicodedata
 
 from .audit import AuditStore
 from .business_taxonomy import business_line_from_record
-from .clustering_rules import build_clustering_fingerprint
+from .clustering_rules import (
+    build_clustering_boundary_key,
+    clustering_threshold_values,
+)
+from .cz_topic_snapshot import CZTopicSnapshot
 from .product_taxonomy import canonical_product_name, product_from_scope
 
 
@@ -52,6 +57,9 @@ class TopicResolution:
     evidence_version: int
     added_member_count: int
     duplicate_member_count: int
+    requires_re_review: bool = False
+    incremental_supplement_pending: bool = False
+    pending_overlay_id: str = ""
 
 
 def _text(value: Any) -> str:
@@ -100,7 +108,8 @@ def _product_category(rows: list[dict[str, Any]]) -> str:
 
 
 def _row_fingerprint(row: dict[str, Any]) -> dict[str, str]:
-    fingerprint = build_clustering_fingerprint(
+    boundary = build_clustering_boundary_key(
+        business_line=_text(row.get("回收业务层级")),
         product_category=_text(
             row.get("产品类型") or row.get("product_category")
         ),
@@ -129,41 +138,36 @@ def _row_fingerprint(row: dict[str, Any]) -> dict[str, str]:
             or row.get("聊天内容")
             or row.get("evidence_summary")
         ),
-    )
-    return {
-        "standard_family": fingerprint.standard_family,
-        "merge_policy": fingerprint.merge_policy,
-        "object_key": fingerprint.object_key,
-        "phenomenon_value": fingerprint.phenomenon_value,
-        "query_target": fingerprint.query_target,
-        "detection_target": fingerprint.detection_target,
-        "platform": _normalized(
-            row.get("_原子平台") or row.get("platform")
-        ),
-        "brand": _normalized(
-            row.get("_原子品牌") or row.get("brand")
-        ),
-        "model_scope": _normalized(
+        platform=_text(row.get("_原子平台") or row.get("platform")),
+        brand=_text(row.get("_原子品牌") or row.get("brand")),
+        model_scope=_text(
             row.get("_原子机型范围") or row.get("model_scope")
         ),
-        "threshold_values": "|".join(
-            sorted(
-                set(
-                    re.findall(
-                        r"\d+(?:\.\d+)?",
-                        _text(
-                            row.get("_原子阈值例外")
-                            or row.get("阈值/例外")
-                            or row.get("threshold_or_exception")
-                        )
-                        + _text(
-                            row.get("主标准路径")
-                            or row.get("standard_path")
-                        ),
-                    )
-                )
-            )
+        threshold_or_exception=_text(
+            row.get("_原子阈值例外")
+            or row.get("阈值/例外")
+            or row.get("threshold_or_exception")
         ),
+    )
+    return {
+        "standard_family": boundary.standard_family,
+        "merge_policy": boundary.merge_policy,
+        "object_key": boundary.object_key,
+        # Keep the observed phenomenon values in the persisted signature for
+        # auditability.  The shared boundary key uses a wildcard for
+        # same-standard-family matching, but history must still show which
+        # concrete values supplied the evidence.
+        "phenomenon_value": _normalized(
+            row.get("_聚类现象值")
+            or row.get("异常现象")
+            or row.get("phenomenon")
+        ),
+        "query_target": boundary.query_target,
+        "detection_target": boundary.detection_target,
+        "platform": boundary.platform,
+        "brand": boundary.brand,
+        "model_scope": boundary.model_scope,
+        "threshold_values": boundary.threshold_values,
     }
 
 
@@ -223,6 +227,22 @@ def _sets(value: dict[str, Any], field: str) -> set[str]:
     }
 
 
+def _signature_boundary_complete(signature: dict[str, Any]) -> bool:
+    standard_families = _sets(signature, "standard_families")
+    query_targets = _sets(signature, "query_targets")
+    detection_targets = _sets(signature, "detection_targets")
+    object_keys = _sets(signature, "object_keys")
+    merge_policies = _sets(signature, "merge_policies")
+    phenomenon_values = _sets(signature, "phenomenon_values")
+    if not object_keys or not (
+        standard_families or query_targets or detection_targets
+    ):
+        return False
+    if merge_policies == {"separatebyphenomenon"} and not phenomenon_values:
+        return False
+    return True
+
+
 def _validate_internal_signature(signature: dict[str, Any]) -> None:
     standard_families = _sets(signature, "standard_families")
     merge_policies = _sets(signature, "merge_policies")
@@ -280,7 +300,7 @@ def _has_target_conflict(
     for field in ("query_targets", "detection_targets"):
         left_values = _sets(left, field)
         right_values = _sets(right, field)
-        if left_values and right_values and left_values != right_values:
+        if left_values != right_values and (left_values or right_values):
             return True
     return False
 
@@ -313,19 +333,13 @@ def _has_scope_or_threshold_conflict(
         ):
             left_values = _sets(left, field)
             right_values = _sets(right, field)
-            if (
-                left_values
-                and right_values
-                and left_values != right_values
-            ):
+            if left_values != right_values and (left_values or right_values):
                 return True, f"{label}不同"
     if target not in THRESHOLD_AGNOSTIC_TARGETS:
         left_thresholds = _sets(left, "threshold_values")
         right_thresholds = _sets(right, "threshold_values")
-        if (
-            left_thresholds
-            and right_thresholds
-            and left_thresholds != right_thresholds
+        if left_thresholds != right_thresholds and (
+            left_thresholds or right_thresholds
         ):
             return True, "阈值或例外边界不同"
     return False, ""
@@ -339,11 +353,7 @@ def _has_object_conflict(
         return False
     left_objects = _sets(left, "object_keys")
     right_objects = _sets(right, "object_keys")
-    return bool(
-        left_objects
-        and right_objects
-        and left_objects != right_objects
-    )
+    return left_objects != right_objects and bool(left_objects or right_objects)
 
 
 def _character_similarity(left: str, right: str) -> float:
@@ -377,6 +387,21 @@ def _signature_similarity(
     current: dict[str, Any],
     historical: dict[str, Any],
 ) -> tuple[float, str]:
+    incomplete_reason = ""
+    if not _signature_boundary_complete(current):
+        incomplete_reason = "当前主题边界不完整，需人工确认"
+    elif not _signature_boundary_complete(historical):
+        incomplete_reason = "历史主题边界不完整，需人工确认"
+    if incomplete_reason:
+        current_text = _text(current.get("topic_text"))
+        historical_text = _text(historical.get("topic_text"))
+        if not current_text or not historical_text:
+            return 0.0, incomplete_reason
+        similarity = max(
+            SequenceMatcher(None, current_text, historical_text).ratio(),
+            _character_similarity(current_text, historical_text),
+        )
+        return similarity, incomplete_reason
     if _has_target_conflict(current, historical):
         return 0.0, "查询或检测目标不同"
     scope_conflict, scope_reason = _has_scope_or_threshold_conflict(
@@ -479,6 +504,74 @@ def _membership(row: dict[str, Any]) -> dict[str, Any]:
         "atomic_id": atomic_id,
         "evidence": dict(row),
     }
+
+
+def _generic_scope_values(values: set[str]) -> bool:
+    return bool(values) and all(
+        _normalized(value) in {"通用", "generic", "all", "全部"}
+        for value in values
+    )
+
+
+def _same_atomic_reimport_boundary_compatible(
+    current: dict[str, Any],
+    historical: dict[str, Any],
+) -> bool:
+    matched_boundary = False
+    for field in (
+        "standard_families",
+        "merge_policies",
+        "object_keys",
+        "phenomenon_values",
+        "query_targets",
+        "detection_targets",
+        "threshold_values",
+    ):
+        current_values = _sets(current, field)
+        historical_values = _sets(historical, field)
+        if current_values and historical_values:
+            if current_values != historical_values:
+                return False
+            matched_boundary = True
+
+    for field in ("platforms", "brands", "model_scopes"):
+        current_values = _sets(current, field)
+        historical_values = _sets(historical, field)
+        if not current_values or not historical_values:
+            continue
+        if current_values == historical_values:
+            continue
+        if not (
+            _generic_scope_values(current_values)
+            or _generic_scope_values(historical_values)
+        ):
+            return False
+
+    if matched_boundary:
+        return True
+    current_text = _text(current.get("topic_text"))
+    historical_text = _text(historical.get("topic_text"))
+    if not current_text or not historical_text:
+        return False
+    return max(
+        SequenceMatcher(None, current_text, historical_text).ratio(),
+        _character_similarity(current_text, historical_text),
+    ) >= 0.90
+
+
+def _source_evidence_signature(row: dict[str, Any]) -> tuple[str, ...]:
+    return (
+        _first_value([row], "来源记录ID", "数据ID", "工单ID"),
+        _first_value([row], "原始工单ID", "工单ID", "回收单号"),
+        _first_value([row], "聊天内容", "原始聊天清洗"),
+        _first_value([row], "原始核心问题", "原始问题清洗"),
+        _first_value([row], "原始判定结论", "判定结论"),
+        _first_value([row], "历史实际回复", "参考话术"),
+        _first_value([row], "图片链接", "原始图片链接清洗"),
+        _first_value([row], "视频链接", "原始视频链接清洗"),
+        _first_value([row], "产品类型"),
+        _first_value([row], "回收业务层级"),
+    )
 
 
 def _collision_safe_topic_id(
@@ -640,14 +733,43 @@ def _legacy_candidate_merge_eligible(
     return confidence >= MANUAL_REVIEW_THRESHOLD
 
 
+def _single_snapshot_value(
+    topic: dict[str, Any],
+    field: str,
+) -> list[str]:
+    value = _text(topic.get(field))
+    if not value:
+        return []
+    if field == "threshold_values":
+        normalized = clustering_threshold_values(value)
+    elif field in {"query_target", "detection_target"}:
+        # Targets are stable machine keys such as ``phone_housing_appearance``.
+        # Removing their separators would make them differ from the keys emitted
+        # by the clustering boundary builder.
+        normalized = value
+    else:
+        normalized = _normalized(value)
+    return [normalized] if normalized else []
+
+
 class TopicRegistry:
-    def __init__(self, audit_store: AuditStore) -> None:
+    def __init__(
+        self,
+        audit_store: AuditStore,
+        *,
+        cz_snapshot: CZTopicSnapshot | None = None,
+    ) -> None:
         self.audit_store = audit_store
         self._topic_cache: dict[
             tuple[str, str],
             list[dict[str, Any]],
         ] = {}
+        self._review_topic_cache: dict[
+            tuple[str, str],
+            list[dict[str, Any]],
+        ] = {}
         self._bootstrap_existing_candidates()
+        self._bootstrap_published_cz_snapshot(cz_snapshot)
 
     def _topics_for_scope(
         self,
@@ -663,6 +785,16 @@ class TopicRegistry:
                 )
             )
         return self._topic_cache[scope]
+
+    def _review_topics_for_scope(
+        self,
+        business_line: str,
+        product_category: str,
+    ) -> list[dict[str, Any]]:
+        return self._review_topic_cache.get(
+            (business_line, product_category),
+            [],
+        )
 
     def _bootstrap_existing_candidates(self) -> None:
         for legacy in self.audit_store.list_unregistered_topic_candidates():
@@ -706,6 +838,100 @@ class TopicRegistry:
                 reason="从升级前审计候选的来源事实证据包建立历史主题索引",
             )
 
+    def _bootstrap_published_cz_snapshot(
+        self,
+        cz_snapshot: CZTopicSnapshot | None,
+    ) -> None:
+        snapshot = cz_snapshot
+        if snapshot is None:
+            configured_path = _text(
+                os.getenv("ANSWER_HUB_CZ_TOPIC_SNAPSHOT_DB")
+            )
+            if configured_path:
+                snapshot = CZTopicSnapshot(configured_path)
+        if snapshot is None or not snapshot.is_fresh():
+            return
+        for topic in snapshot.list_topics(statuses={"published", "review"}):
+            business_line = _text(topic.get("business_line"))
+            product_category = _text(topic.get("product_category"))
+            topic_id = _text(topic.get("cz_topic_id"))
+            if not (business_line and product_category and topic_id):
+                continue
+            signature = {
+                "standard_families": _single_snapshot_value(
+                    topic, "standard_family"
+                ),
+                "merge_policies": _single_snapshot_value(
+                    topic, "merge_policy"
+                ),
+                "object_keys": _single_snapshot_value(topic, "object_key"),
+                "phenomenon_values": _single_snapshot_value(
+                    topic, "phenomenon_value"
+                ),
+                "query_targets": _single_snapshot_value(
+                    topic, "query_target"
+                ),
+                "detection_targets": _single_snapshot_value(
+                    topic, "detection_target"
+                ),
+                "platforms": _single_snapshot_value(topic, "platform"),
+                "brands": _single_snapshot_value(topic, "brand"),
+                "model_scopes": _single_snapshot_value(topic, "model_scope"),
+                "threshold_values": _single_snapshot_value(
+                    topic, "threshold_values"
+                ),
+                "topic_text": _normalized(topic.get("title")),
+            }
+            if not _signature_boundary_complete(signature):
+                continue
+            representative = {
+                "回收业务层级": business_line,
+                "产品类型": product_category,
+                "核心问题": _text(topic.get("title")),
+                "对象/部位": _text(topic.get("object_key")),
+                "异常现象": _text(topic.get("phenomenon_value")),
+            }
+            snapshot_topic = {
+                "topic_id": topic_id,
+                "business_line": business_line,
+                "product_category": product_category,
+                "topic_key": [
+                    "cz_snapshot",
+                    business_line,
+                    product_category,
+                    _text(topic.get("source_topic_key")) or topic_id,
+                ],
+                "signature": signature,
+                "representative": representative,
+                "status": _text(topic.get("status")) or "published",
+                "evidence_version": 0,
+                "member_count": 0,
+            }
+            if snapshot_topic["status"] == "review":
+                self._review_topic_cache.setdefault(
+                    (business_line, product_category),
+                    [],
+                ).append(snapshot_topic)
+                continue
+            self.audit_store.integrate_registered_topic(
+                topic_id=topic_id,
+                proposed_topic_id=topic_id,
+                business_line=business_line,
+                product_category=product_category,
+                topic_key=(
+                    "cz_snapshot",
+                    business_line,
+                    product_category,
+                    _text(topic.get("source_topic_key")) or topic_id,
+                ),
+                signature=signature,
+                representative=representative,
+                members=[],
+                run_id="cz-snapshot-bootstrap",
+                decision="bootstrapped_published_cz_topic_snapshot",
+                confidence=1.0,
+                reason="从本地只读 CZ 已发布主题快照建立可信历史主题索引",
+            )
     def integrate(
         self,
         *,
@@ -741,6 +967,56 @@ class TopicRegistry:
             business_line,
             product_category,
         )
+        review_topics = self._review_topics_for_scope(
+            business_line,
+            product_category,
+        )
+
+        member_keys = {
+            _text(member.get("membership_key"))
+            for member in members
+            if _text(member.get("membership_key"))
+        }
+        exact_owner: dict[str, Any] | None = None
+        if member_keys:
+            owner_candidates: list[tuple[dict[str, Any], bool]] = []
+            current_members_by_key = {
+                _text(member.get("membership_key")): member
+                for member in members
+                if _text(member.get("membership_key"))
+            }
+            for historical in historical_topics:
+                historical_topic_id = _text(historical.get("topic_id"))
+                historical_members = (
+                    self.audit_store.list_registered_topic_members(
+                        historical_topic_id
+                    )
+                )
+                historical_members_by_key = {
+                    _text(member.get("membership_key")): member
+                    for member in historical_members
+                    if _text(member.get("membership_key"))
+                }
+                if member_keys <= historical_members_by_key.keys():
+                    unchanged_source_evidence = all(
+                        _source_evidence_signature(
+                            current_members_by_key[key]["evidence"]
+                        )
+                        == _source_evidence_signature(
+                            historical_members_by_key[key]["evidence"]
+                        )
+                        for key in member_keys
+                    )
+                    owner_candidates.append(
+                        (historical, unchanged_source_evidence)
+                    )
+            if len(owner_candidates) == 1:
+                owner, unchanged_source_evidence = owner_candidates[0]
+                if unchanged_source_evidence or _same_atomic_reimport_boundary_compatible(
+                    signature,
+                    owner["signature"],
+                ):
+                    exact_owner = owner
 
         scored = sorted(
             (
@@ -751,13 +1027,20 @@ class TopicRegistry:
                     ),
                     historical,
                 )
-                for historical in historical_topics
+                for historical in [*historical_topics, *review_topics]
             ),
             key=lambda item: item[0],
             reverse=True,
         )
         best = scored[0] if scored else None
         second_best = scored[1] if len(scored) > 1 else None
+        if exact_owner is not None:
+            best = (
+                1.0,
+                "相同原子证据重复导入且主题核心边界一致",
+                exact_owner,
+            )
+            second_best = None
         hard_conflict_reason = ""
         if best and float(best[0]) >= MANUAL_REVIEW_THRESHOLD:
             best_topic_id = _text(best[2].get("topic_id"))
@@ -770,10 +1053,16 @@ class TopicRegistry:
                 hard_conflict_reason = (
                     "同一原始工单拆出的不同原子问题不能重新合并"
                 )
+        review_only_match = bool(
+            best
+            and _text(best[2].get("status")) == "review"
+            and float(best[0]) >= MANUAL_REVIEW_THRESHOLD
+        )
         ambiguous_high_match = bool(
             best
             and second_best
             and not hard_conflict_reason
+            and not review_only_match
             and float(best[0]) >= AUTO_MERGE_THRESHOLD
             and float(second_best[0]) >= MANUAL_REVIEW_THRESHOLD
             and float(best[0]) - float(second_best[0])
@@ -783,6 +1072,7 @@ class TopicRegistry:
             best
             and float(best[0]) >= AUTO_MERGE_THRESHOLD
             and not hard_conflict_reason
+            and not review_only_match
             and not ambiguous_high_match
         )
         if matched_existing and best is not None:
@@ -797,6 +1087,7 @@ class TopicRegistry:
         elif best and not hard_conflict_reason and (
             float(best[0]) >= MANUAL_REVIEW_THRESHOLD
             or ambiguous_high_match
+            or review_only_match
         ):
             confidence, reason, historical = best
             topic_id = proposed_topic_id
@@ -808,6 +1099,8 @@ class TopicRegistry:
                     "命中多个接近的历史主题，不能自动选择；"
                     + reason
                 )
+            if review_only_match:
+                reason = "命中待发布审核主题，只能进入人工复核；" + reason
         else:
             confidence = (
                 0.0
@@ -863,6 +1156,127 @@ class TopicRegistry:
                 added_member_count=0,
                 duplicate_member_count=0,
             )
+
+        # Existing topics are never mutated by a new, non-duplicate batch
+        # before human review.  Keep the old trusted evidence intact and put
+        # the supplement in an isolated overlay that can be approved later.
+        if matched_existing and historical is not None:
+            historical_members = self.audit_store.list_registered_topic_members(
+                topic_id
+            )
+            historical_keys = {
+                _text(member.get("membership_key"))
+                for member in historical_members
+                if _text(member.get("membership_key"))
+            }
+            pending_overlays = self.audit_store.list_pending_topic_overlays(topic_id)
+            pending_keys = {
+                _text(member.get("membership_key"))
+                for overlay in pending_overlays
+                for member in overlay.get("members") or []
+                if _text(member.get("membership_key"))
+            }
+            added_members = [
+                member
+                for member in members
+                if _text(member.get("membership_key"))
+                not in historical_keys | pending_keys
+            ]
+            duplicate_member_count = len(members) - len(added_members)
+            if added_members:
+                overlay_seed = "|".join(
+                    (
+                        topic_id,
+                        run_id,
+                        *sorted(
+                            _text(member.get("membership_key"))
+                            for member in added_members
+                        ),
+                    )
+                )
+                overlay_id = "OVR-" + sha256(
+                    overlay_seed.encode("utf-8")
+                ).hexdigest()[:20].upper()
+                self.audit_store.stage_topic_overlay(
+                    overlay_id=overlay_id,
+                    base_topic_id=topic_id,
+                    run_id=run_id,
+                    proposed_topic_id=proposed_topic_id,
+                    business_line=business_line,
+                    product_category=product_category,
+                    topic_key=resolved_topic_key,
+                    signature=_merge_signatures(
+                        historical["signature"],
+                        signature,
+                    ),
+                    members=added_members,
+                    base_evidence_version=int(
+                        historical.get("evidence_version") or 0
+                    ),
+                    added_member_count=len(added_members),
+                    duplicate_member_count=duplicate_member_count,
+                )
+                combined_by_key = {
+                    _text(member.get("membership_key")): dict(
+                        member.get("evidence") or {}
+                    )
+                    for member in historical_members
+                }
+                for overlay in pending_overlays:
+                    for member in overlay.get("members") or []:
+                        combined_by_key.setdefault(
+                            _text(member.get("membership_key")),
+                            dict(member.get("evidence") or {}),
+                        )
+                for member, row in zip(members, rows):
+                    combined_by_key.setdefault(
+                        _text(member.get("membership_key")),
+                        dict(row),
+                    )
+                combined_rows = list(combined_by_key.values())
+                self.audit_store.record_topic_merge_event(
+                    run_id=run_id,
+                    proposed_topic_id=proposed_topic_id,
+                    resolved_topic_id=topic_id,
+                    decision="incremental_supplement_pending",
+                    confidence=float(confidence),
+                    reason="新增非重复证据已隔离，等待人工复核后更新可信历史主题",
+                )
+                return TopicResolution(
+                    topic_id=topic_id,
+                    topic_key=resolved_topic_key,
+                    rows=combined_rows,
+                    matched_existing=True,
+                    historical_topic_id=topic_id,
+                    requires_review=False,
+                    decision="incremental_supplement_pending",
+                    confidence=round(float(confidence), 4),
+                    reason="新增非重复证据已隔离，等待人工复核后更新可信历史主题",
+                    evidence_version=int(historical.get("evidence_version") or 0),
+                    added_member_count=len(added_members),
+                    duplicate_member_count=duplicate_member_count,
+                    requires_re_review=True,
+                    incremental_supplement_pending=True,
+                    pending_overlay_id=overlay_id,
+                )
+            if pending_overlays and duplicate_member_count == len(members):
+                return TopicResolution(
+                    topic_id=topic_id,
+                    topic_key=resolved_topic_key,
+                    rows=[
+                        dict(member.get("evidence") or {})
+                        for member in historical_members
+                    ],
+                    matched_existing=True,
+                    historical_topic_id=topic_id,
+                    requires_review=False,
+                    decision="incremental_supplement_pending_duplicate",
+                    confidence=round(float(confidence), 4),
+                    reason="新增证据已存在待审核叠加层，保持幂等",
+                    evidence_version=int(historical.get("evidence_version") or 0),
+                    added_member_count=0,
+                    duplicate_member_count=duplicate_member_count,
+                )
 
         stored_signature = (
             _merge_signatures(

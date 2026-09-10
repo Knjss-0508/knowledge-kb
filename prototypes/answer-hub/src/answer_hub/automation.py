@@ -460,20 +460,24 @@ def _cluster_failure_guard(summary: dict[str, Any]) -> dict[str, Any]:
     """Detect a systemic clustering failure before creating external candidates."""
     threshold = _cluster_failure_abort_ratio()
     direct_calls = int(summary.get("direct_cluster_calls") or 0)
+    direct_cache_hits = int(summary.get("direct_cluster_cache_hits") or 0)
     direct_failed = int(summary.get("direct_cluster_failed") or 0)
     atomic_calls = int(summary.get("atomic_extraction_calls") or 0)
+    atomic_cache_hits = int(summary.get("atomic_extraction_cache_hits") or 0)
     atomic_failed = int(summary.get("atomic_extraction_failed") or 0)
-    direct_ratio = direct_failed / direct_calls if direct_calls else 0.0
-    atomic_ratio = atomic_failed / atomic_calls if atomic_calls else 0.0
+    direct_total = direct_calls + direct_cache_hits
+    atomic_total = atomic_calls + atomic_cache_hits
+    direct_ratio = direct_failed / direct_total if direct_total else 0.0
+    atomic_ratio = atomic_failed / atomic_total if atomic_total else 0.0
     reasons: list[str] = []
-    if direct_calls and direct_ratio >= threshold:
+    if direct_total and direct_ratio >= threshold:
         reasons.append(
-            f"direct_mimo 聚类失败 {direct_failed}/{direct_calls} "
+            f"direct_mimo 聚类失败 {direct_failed}/{direct_total} "
             f"（{direct_ratio:.1%}）"
         )
-    if atomic_calls and atomic_ratio >= threshold:
+    if atomic_total and atomic_ratio >= threshold:
         reasons.append(
-            f"原子问题提取失败 {atomic_failed}/{atomic_calls} "
+            f"原子问题提取失败 {atomic_failed}/{atomic_total} "
             f"（{atomic_ratio:.1%}）"
         )
     return {
@@ -612,7 +616,13 @@ def run_automation_pipeline(
         "continue_on_mimo_unavailable": bool(continue_on_mimo_unavailable),
         "cluster_only": bool(cluster_only),
         "source_row_limit": source_row_limit or 0,
-        "enforce_cluster_admission": not bool(cluster_only),
+        "enforce_cluster_admission": bool(
+            not cluster_only
+            or (
+                use_mimo
+                and clustering_mode.strip().lower() == "direct_mimo"
+            )
+        ),
         "direct_mimo_progress_path": str(direct_mimo_progress_path or ""),
         "cluster_media_policy": effective_cluster_media_policy,
         "cluster_failure_abort_ratio": _cluster_failure_abort_ratio(),

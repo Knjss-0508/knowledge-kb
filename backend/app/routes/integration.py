@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -18,6 +18,9 @@ from app.routes.auth import get_current_user, require_permission
 from app.routes.knowledge import _generate_knowledge_id, _normalize_content
 from app.routes.manhattan import _read_cache as _read_manhattan_cache
 from app.schemas.integration import (
+    CandidateReviewAnnotateResult,
+    CandidateReviewBatchAnnotate,
+    CandidateReviewBatchAnnotateResponse,
     CandidateReviewBatchSubmit,
     CandidateReviewBatchSubmitResponse,
     CandidateReviewListItem,
@@ -53,6 +56,7 @@ from app.schemas.knowledge import (
 )
 from app.services.applicability import resolve_applicability_scope
 from app.services.candidate_review import (
+    build_quick_human_review,
     evaluate_review_status,
     normalize_human_review,
     normalize_knowledge_value,
@@ -1749,7 +1753,6 @@ def check_knowledge_deduplication(
             scene_tags=body.knowledge.scene_tags,
             knowledge_origin=body.knowledge.knowledge_origin,
             business_type=body.knowledge.business_type,
-            applicable_categories=body.knowledge.applicable_categories,
             exclude_knowledge_id=body.exclude_knowledge_id,
         )
         db.commit()
@@ -1839,7 +1842,6 @@ def submit_knowledge_candidates(
                 scene_tags=candidate.knowledge.scene_tags,
                 knowledge_origin=candidate.knowledge.knowledge_origin,
                 business_type=candidate.knowledge.business_type,
-                applicable_categories=candidate.knowledge.applicable_categories,
             )
         except EmbeddingServiceUnavailable as exc:
             rejected += 1
@@ -2114,11 +2116,15 @@ def list_candidate_reviews(
     product_category: str = Query("", max_length=128),
     annotation_status: str = Query("", pattern="^(|annotated|unannotated)$"),
     model_knowledge_value: str = Query("", pattern="^(|worthy|unworthy|pending)$"),
+    updated_from: date | None = Query(None),
+    updated_to: date | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("knowledge:submit")),
 ):
+    if updated_from and updated_to and updated_from > updated_to:
+        raise HTTPException(status_code=400, detail="更新时间开始日期不能晚于结束日期。")
     rows = (
         db.query(IntegrationIngestion)
         .filter(
@@ -2210,6 +2216,10 @@ def list_candidate_reviews(
             item for item in filtered
             if normalize_knowledge_value((item.model_review or {}).get("knowledge_value")) == model_knowledge_value
         ]
+    if updated_from:
+        filtered = [item for item in filtered if item.updated_at.date() >= updated_from]
+    if updated_to:
+        filtered = [item for item in filtered if item.updated_at.date() <= updated_to]
     if priority_only:
         filtered = [item for item in filtered if item.priority_review]
     if deduplication_required:
@@ -2228,6 +2238,115 @@ def list_candidate_reviews(
         summary=summary,
         product_categories=sorted(product_categories.values(), key=lambda category: category["label"]),
         items=filtered[offset : offset + limit],
+    )
+
+
+@router.post(
+    "/candidate-reviews:batch-annotate",
+    response_model=CandidateReviewBatchAnnotateResponse,
+)
+def annotate_candidate_reviews(
+    body: CandidateReviewBatchAnnotate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    updated = failed = 0
+    results: list[CandidateReviewAnnotateResult] = []
+    reviewed_at = datetime.utcnow()
+    unique_ids = list(dict.fromkeys(body.ingestion_ids))
+
+    for ingestion_id in unique_ids:
+        item = (
+            db.query(IntegrationIngestion)
+            .filter(
+                IntegrationIngestion.id == ingestion_id,
+                IntegrationIngestion.review_status.isnot(None),
+                IntegrationIngestion.source_system != "excel",
+            )
+            .first()
+        )
+        if not item:
+            failed += 1
+            results.append(
+                CandidateReviewAnnotateResult(
+                    ingestion_id=ingestion_id,
+                    status="failed",
+                    error_code="CANDIDATE_NOT_FOUND",
+                    error_message="候选复核记录不存在。",
+                )
+            )
+            continue
+        if item.review_status == "submitted" or item.knowledge_id:
+            failed += 1
+            results.append(
+                CandidateReviewAnnotateResult(
+                    ingestion_id=ingestion_id,
+                    status="failed",
+                    review_status=item.review_status,
+                    error_code="CANDIDATE_LOCKED",
+                    error_message="该候选已进入知识发布审核，不能再次标注。",
+                )
+            )
+            continue
+
+        payload, _knowledge = _candidate_payload_with_taxonomy_defaults(
+            item.candidate_payload
+        )
+        review_metadata = dict(item.review_metadata or {})
+        human_review = dict(
+            payload.get("human_review")
+            or review_metadata.get("human_review")
+            or {}
+        )
+        human_review.update(
+            build_quick_human_review(
+                body.knowledge_value,
+                include_in_training=body.include_in_training,
+                notes=human_review.get("notes"),
+            )
+        )
+        human_review["reviewer"] = current_user.username
+        human_review["reviewed_at"] = reviewed_at.isoformat()
+        human_review = normalize_human_review(human_review)
+
+        selection = dict(payload.get("selection") or item.selection_metadata or {})
+        review_status, eligible, reason = evaluate_review_status(selection, human_review)
+        selection["eligible"] = eligible
+        selection["review_reason"] = reason
+        payload["selection"] = selection
+        payload["human_review"] = human_review
+
+        item.candidate_payload = payload
+        item.selection_metadata = selection
+        item.review_metadata = {
+            **review_metadata,
+            "model_review": dict(
+                payload.get("model_review")
+                or review_metadata.get("model_review")
+                or {}
+            ),
+            "human_review": human_review,
+        }
+        item.review_status = review_status
+        item.status = f"candidate_{review_status}"
+        item.reviewed_by = current_user.username
+        item.reviewed_at = reviewed_at
+        item.error_code = None
+        item.error_message = None
+        updated += 1
+        results.append(
+            CandidateReviewAnnotateResult(
+                ingestion_id=ingestion_id,
+                status="updated",
+                review_status=review_status,
+            )
+        )
+
+    db.commit()
+    return CandidateReviewBatchAnnotateResponse(
+        updated=updated,
+        failed=failed,
+        results=results,
     )
 
 
@@ -2423,7 +2542,6 @@ def submit_candidate_reviews(
                 scene_tags=candidate.knowledge.scene_tags,
                 knowledge_origin=candidate.knowledge.knowledge_origin,
                 business_type=candidate.knowledge.business_type,
-                applicable_categories=candidate.knowledge.applicable_categories,
             )
             deduplication = _to_dedup_response(decision)
             if decision.action == "block_duplicate":

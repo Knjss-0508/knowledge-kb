@@ -7,8 +7,10 @@ from answer_hub.clustering_rules import (
     QUALITY_CLUSTERING_RULES_METADATA,
     STANDARD_FAMILY_INDEX,
     StandardFamilyIndexEntry,
+    build_clustering_boundary_key,
     build_clustering_fingerprint,
     build_clustering_rules_prompt_block,
+    clustering_threshold_values,
     clustering_rules_metadata,
     match_clustering_judgment_rule,
 )
@@ -36,6 +38,76 @@ def test_phone_housing_damage_values_share_one_cluster_standard_family() -> None
     assert paint_loss.phenomenon_value == "掉漆"
 
 
+def test_structured_boundary_key_allows_same_family_phenomena_on_same_object() -> None:
+    cracked = build_clustering_boundary_key(
+        business_line="自营回收",
+        product_category="手机",
+        subject="外壳",
+        phenomenon="碎裂",
+        normalized_issue="手机外壳碎裂如何判定",
+    )
+    paint_loss = build_clustering_boundary_key(
+        business_line="自营回收",
+        product_category="手机",
+        subject="外壳",
+        phenomenon="掉漆",
+        normalized_issue="手机外壳掉漆如何判定",
+    )
+
+    assert cracked.complete
+    assert paint_loss.complete
+    assert cracked.as_tuple() == paint_loss.as_tuple()
+    assert cracked.phenomenon_value == "*"
+
+
+def test_structured_boundary_key_keeps_object_and_scope_boundaries_separate() -> None:
+    housing = build_clustering_boundary_key(
+        business_line="自营回收",
+        product_category="手机",
+        subject="外壳",
+        phenomenon="碎裂",
+        normalized_issue="手机外壳碎裂如何判定",
+        platform="iOS",
+    )
+    frame = build_clustering_boundary_key(
+        business_line="自营回收",
+        product_category="手机",
+        subject="中框",
+        phenomenon="碎裂",
+        normalized_issue="手机中框碎裂如何判定",
+        platform="iOS",
+    )
+    android_housing = build_clustering_boundary_key(
+        business_line="自营回收",
+        product_category="手机",
+        subject="外壳",
+        phenomenon="碎裂",
+        normalized_issue="手机外壳碎裂如何判定",
+        platform="Android",
+    )
+
+    assert housing.complete
+    assert frame.complete
+    assert android_housing.complete
+    assert housing.as_tuple() != frame.as_tuple()
+    assert housing.as_tuple() != android_housing.as_tuple()
+
+
+def test_threshold_boundary_ignores_model_numbers_in_standard_path() -> None:
+    assert clustering_threshold_values("直径不超过0.5mm") == "直径不超过0.5mm"
+    assert clustering_threshold_values("直径大于1mm") != clustering_threshold_values(
+        "直径小于等于1mm"
+    )
+    boundary = build_clustering_boundary_key(
+        product_category="手机",
+        subject="屏幕",
+        phenomenon="色斑",
+        normalized_issue="iPhone 11 Pro屏幕色斑如何判定",
+        standard_path="iPhone 11 Pro屏幕判定",
+    )
+    assert boundary.threshold_values == ""
+
+
 def test_phone_screen_display_values_remain_separate_cluster_topics() -> None:
     leakage = match_clustering_judgment_rule(
         product_category="手机",
@@ -56,6 +128,68 @@ def test_phone_screen_display_values_remain_separate_cluster_topics() -> None:
     assert leakage.phenomenon_value != dead_pixel.phenomenon_value
 
 
+def test_notebook_query_fingerprints_keep_model_fingerprint_and_third_party_storage_separate() -> None:
+    model = build_clustering_fingerprint(
+        product_category="笔记本",
+        subject="设备型号",
+        phenomenon="型号待确认",
+        normalized_issue="笔记本型号确认查询",
+        judgment_target="根据序列号确认设备型号是否正确",
+        resolution_mode="通过序列号和官网核对型号",
+    )
+    fingerprint = build_clustering_fingerprint(
+        product_category="笔记本",
+        subject="指纹功能",
+        phenomenon="是否支持待确认",
+        normalized_issue="笔记本指纹功能支持查询",
+        judgment_target="确认该机型是否具备指纹功能",
+        resolution_mode="根据具体型号核对官方配置",
+    )
+    third_party_storage = build_clustering_fingerprint(
+        product_category="笔记本",
+        subject="硬盘",
+        phenomenon="是否为第三方硬盘的判定",
+        normalized_issue="笔记本硬盘是否为第三方硬盘",
+        judgment_target="依据证据确认是否为第三方更换部件",
+        resolution_mode="根据系统信息和现场证据判定",
+    )
+    true_tone = build_clustering_fingerprint(
+        product_category="笔记本",
+        subject="屏幕",
+        phenomenon="原彩显示功能支持情况",
+        normalized_issue="笔记本原彩显示功能支持情况",
+        judgment_target="确认该机型是否具备原彩显示",
+        resolution_mode="根据具体型号核对原彩显示功能",
+    )
+
+    assert model.query_target == "model_query"
+    assert fingerprint.query_target == "fingerprint_support"
+    assert third_party_storage.query_target == "memory_storage_third_party"
+    assert true_tone.query_target == "true_tone_support"
+
+
+def test_ultraviolet_detection_requirement_and_result_have_different_query_targets() -> None:
+    requirement = build_clustering_fingerprint(
+        product_category="手机",
+        subject="屏幕拆修检测方法",
+        phenomenon="紫光灯照射检测屏幕更换外玻璃印记",
+        normalized_issue="iPhone 12 紫光灯检测是否强制",
+        judgment_target="确认该机型是否需要使用紫光灯检测",
+        resolution_mode="iPhone 12 不强制要求此检测项",
+    )
+    result = build_clustering_fingerprint(
+        product_category="手机",
+        subject="屏幕",
+        phenomenon="紫光灯方格质检",
+        normalized_issue="紫光灯检测结果为无以上问题",
+        judgment_target="确认屏幕检测结果是否正常",
+        resolution_mode="检测结果正常，判定为无以上问题",
+    )
+
+    assert requirement.query_target == "ultraviolet_detection_requirement"
+    assert result.query_target == "ultraviolet_detection_result"
+
+
 def test_phone_screen_leakage_with_color_explanation_keeps_leakage_value() -> None:
     match = match_clustering_judgment_rule(
         product_category="手机",
@@ -66,6 +200,62 @@ def test_phone_screen_leakage_with_color_explanation_keeps_leakage_value() -> No
     assert match is not None
     assert match.standard_family == "手机屏幕显示标准"
     assert match.phenomenon_value == "漏液"
+
+
+def test_headphone_find_rules_only_match_explicit_complete_statuses() -> None:
+    normal = match_clustering_judgment_rule(
+        product_category="耳机",
+        subject="查找功能",
+        phenomenon="查找功能正常",
+    )
+    bound_account = match_clustering_judgment_rule(
+        product_category="耳机",
+        subject="查找功能",
+        phenomenon="查找功能已绑定账户",
+    )
+    abnormal = match_clustering_judgment_rule(
+        product_category="耳机",
+        subject="查找功能",
+        phenomenon="查找网络功能缺失",
+    )
+    unsupported = match_clustering_judgment_rule(
+        product_category="耳机",
+        subject="查找功能",
+        phenomenon="其他版本查找功能不支持",
+    )
+    not_detected = match_clustering_judgment_rule(
+        product_category="耳机",
+        subject="查找功能",
+        phenomenon="查找功能不检测",
+    )
+    incomplete_normal = match_clustering_judgment_rule(
+        product_category="耳机",
+        subject="查找功能",
+        phenomenon="查找功能检查",
+        normalized_issue="查找 App 内有查找功能",
+    )
+    incomplete_unsupported = match_clustering_judgment_rule(
+        product_category="耳机",
+        subject="查找功能",
+        phenomenon="查找功能检查",
+        normalized_issue="外版有定位功能",
+    )
+
+    assert [
+        normal.phenomenon_value if normal else "",
+        bound_account.phenomenon_value if bound_account else "",
+        abnormal.phenomenon_value if abnormal else "",
+        unsupported.phenomenon_value if unsupported else "",
+        not_detected.phenomenon_value if not_detected else "",
+    ] == [
+        "查找功能正常",
+        "查找功能已绑定账户",
+        "查找功能异常",
+        "其他版本查找功能不支持",
+        "查找功能不检测",
+    ]
+    assert incomplete_normal is None
+    assert incomplete_unsupported is None
 
 
 def test_ambiguous_threshold_topic_does_not_get_forced_into_one_screen_value() -> None:
@@ -303,7 +493,7 @@ def test_detection_fingerprint_separates_method_from_result() -> None:
     assert method.query_target != result.query_target
 
 
-def test_query_fingerprint_normalizes_notebook_model_and_hardware_brand_queries() -> None:
+def test_query_fingerprint_normalizes_notebook_model_and_separate_hardware_brand_queries() -> None:
     model = build_clustering_fingerprint(
         product_category="笔记本",
         category_l1="信息查询",
@@ -313,18 +503,129 @@ def test_query_fingerprint_normalizes_notebook_model_and_hardware_brand_queries(
         normalized_issue="笔记本具体型号怎么核对",
         judgment_target="确认设备具体机型",
     )
-    hardware_brand = build_clustering_fingerprint(
+    memory_brand = build_clustering_fingerprint(
         product_category="笔记本",
         category_l1="信息查询",
         intent="信息查询",
-        subject="内存和硬盘",
+        subject="内存",
         phenomenon="是否属于品牌认证配件",
-        normalized_issue="内存硬盘是不是品牌件",
-        judgment_target="确认内存和硬盘品牌属性",
+        normalized_issue="内存是不是品牌件",
+        judgment_target="确认内存品牌属性",
+    )
+    storage_brand = build_clustering_fingerprint(
+        product_category="笔记本",
+        category_l1="信息查询",
+        intent="信息查询",
+        subject="硬盘",
+        phenomenon="是否属于品牌认证配件",
+        normalized_issue="硬盘是不是品牌件",
+        judgment_target="确认硬盘品牌属性",
     )
 
     assert model.query_target == "model_query"
-    assert hardware_brand.query_target == "memory_storage_brand"
+    assert memory_brand.query_target == "memory_brand"
+    assert storage_brand.query_target == "storage_brand"
+    assert memory_brand.query_target != storage_brand.query_target
+
+
+def test_phone_waterproof_indicator_discoloration_uses_one_query_target() -> None:
+    targets = {
+        build_clustering_fingerprint(
+            product_category="手机",
+            subject=subject,
+            phenomenon=phenomenon,
+            normalized_issue=issue,
+            judgment_target="确认防水标变色的判定口径",
+        ).query_target
+        for subject, phenomenon, issue in (
+            ("防水标签", "变红", "手机防水标签变红如何判定"),
+            ("卡槽防水标", "防水标变红", "手机卡槽防水标变红如何判定"),
+            ("防水标", "局部变色", "手机防水标局部变色如何判定"),
+        )
+    }
+
+    assert targets == {"waterproof_indicator_discoloration"}
+
+
+def test_query_fingerprint_recognizes_named_memory_and_storage_brands() -> None:
+    cxmt_memory = build_clustering_fingerprint(
+        product_category="笔记本",
+        subject="内存",
+        phenomenon="内存品牌为CXMT（长鑫存储）",
+        normalized_issue="笔记本内存品牌为CXMT如何判定",
+        judgment_target="确认内存品牌是否正规",
+    )
+    named_storage = build_clustering_fingerprint(
+        product_category="笔记本",
+        subject="硬盘",
+        phenomenon="硬盘品牌查询",
+        normalized_issue="笔记本硬盘品牌如何查询",
+        judgment_target="确认硬盘品牌属性",
+    )
+
+    assert cxmt_memory.query_target == "memory_brand"
+    assert named_storage.query_target == "storage_brand"
+
+
+def test_storage_brand_third_party_wording_uses_storage_brand_target() -> None:
+    third_party_brand = build_clustering_fingerprint(
+        product_category="笔记本",
+        subject="硬盘",
+        phenomenon="品牌是否为第三方",
+        normalized_issue="笔记本硬盘品牌是否为第三方",
+        judgment_target="确认硬盘品牌属性",
+    )
+    brand_part = build_clustering_fingerprint(
+        product_category="笔记本",
+        subject="硬盘",
+        phenomenon="是否为品牌件",
+        normalized_issue="笔记本硬盘是否为品牌件",
+        judgment_target="确认硬盘品牌属性",
+    )
+    replacement = build_clustering_fingerprint(
+        product_category="笔记本",
+        subject="硬盘",
+        phenomenon="是否为第三方更换部件",
+        normalized_issue="笔记本硬盘是否为第三方更换部件",
+        judgment_target="确认硬盘是否为第三方更换部件",
+    )
+
+    assert third_party_brand.query_target == "storage_brand"
+    assert brand_part.query_target == "storage_brand"
+    assert replacement.query_target == "memory_storage_third_party"
+
+
+def test_huawei_storage_brand_ignores_memory_injected_by_capacity_alias() -> None:
+    fingerprint = build_clustering_fingerprint(
+        product_category="笔记本",
+        subject="硬盘",
+        phenomenon="第三方硬盘判定",
+        normalized_issue="笔记本硬盘第三方硬盘如何判定",
+        judgment_target="是否判定为第三方硬盘",
+        standard_path="需有明确证据证明其为非原厂品牌或后更换部件",
+        conversation=(
+            "华为擎云 S540 只咨询硬盘是否要判第三方；"
+            "图片仅显示硬盘容量信息，未显示品牌型号"
+        ),
+    )
+
+    assert fingerprint.query_target == "storage_brand"
+
+
+def test_huawei_memory_only_brand_stays_general_with_combined_source_context() -> None:
+    fingerprint = build_clustering_fingerprint(
+        product_category="笔记本",
+        subject="内存",
+        phenomenon="是否为品牌内存",
+        normalized_issue="笔记本内存是否为品牌内存",
+        judgment_target="确认内存是否为品牌件",
+        conversation=(
+            "华为 MateBook 14 当前原子问题只询问内存是否为品牌；"
+            "来源摘要同时提到了内存和硬盘配置标准"
+        ),
+    )
+
+    assert fingerprint.query_target == "memory_brand"
 
 
 def test_business_fingerprint_recognizes_reusable_quality_topics() -> None:

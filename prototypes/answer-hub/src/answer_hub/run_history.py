@@ -356,6 +356,21 @@ def _record(
         if queue_bucket and source_path is not None
         else ""
     )
+    settle_from_date = str(
+        options.get("knowledge_settle_from_date")
+        or options.get("second_part_query_from_date")
+        or ""
+    ).strip()
+    settle_to_date = str(
+        options.get("knowledge_settle_to_date")
+        or options.get("second_part_query_to_date")
+        or ""
+    ).strip()
+    batch_name = (
+        f"沉淀 {settle_from_date} 至 {settle_to_date}"
+        if settle_from_date and settle_to_date
+        else ""
+    )
     return {
         "record_id": (
             job_id
@@ -367,6 +382,9 @@ def _record(
         "source_type": source_type,
         "source_label": source_label,
         "source_name": source_name,
+        "batch_name": batch_name,
+        "settle_from_date": settle_from_date,
+        "settle_to_date": settle_to_date,
         "queue_status": queue_status,
         "run_status": run_status,
         "effective_status": effective_status,

@@ -35,6 +35,14 @@ def write_rows_to_workbook(
                 cell = worksheet.cell(row=row_index, column=col_index, value=value)
                 if column_name.endswith("工单ID"):
                     cell.number_format = "@"
+                if column_name == "聚类主题":
+                    cell.alignment = Alignment(vertical="center", wrap_text=True)
+                    title_lines = max(1, (len(str(value or "")) + 27) // 28)
+                    if title_lines > 1:
+                        worksheet.row_dimensions[row_index].height = min(
+                            60,
+                            15 * title_lines,
+                        )
 
         worksheet.freeze_panes = "A2"
         worksheet.auto_filter.ref = worksheet.dimensions
@@ -46,7 +54,10 @@ def write_rows_to_workbook(
                 if value is None:
                     continue
                 max_len = max(max_len, min(len(str(value)), 50))
-            worksheet.column_dimensions[get_column_letter(column_index)].width = min(max_len + 2, 42)
+            width = min(max_len + 2, 42)
+            if column_name == "聚类主题":
+                width = max(width, 60)
+            worksheet.column_dimensions[get_column_letter(column_index)].width = width
 
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     workbook.save(path)

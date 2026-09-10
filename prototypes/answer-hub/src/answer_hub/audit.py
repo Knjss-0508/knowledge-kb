@@ -141,6 +141,26 @@ class AuditStore:
                     added_member_count INTEGER NOT NULL,
                     duplicate_member_count INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS topic_pending_overlays (
+                    overlay_id TEXT PRIMARY KEY,
+                    base_topic_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    proposed_topic_id TEXT NOT NULL,
+                    business_line TEXT NOT NULL,
+                    product_category TEXT NOT NULL,
+                    topic_key_json TEXT NOT NULL,
+                    signature_json TEXT NOT NULL,
+                    members_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    base_evidence_version INTEGER NOT NULL DEFAULT 0,
+                    added_member_count INTEGER NOT NULL DEFAULT 0,
+                    duplicate_member_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    reviewed_at TEXT NOT NULL DEFAULT '',
+                    review_note TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS ix_topic_pending_overlays_topic
+                ON topic_pending_overlays (base_topic_id, status, created_at);
                 """
             )
 
@@ -352,6 +372,179 @@ class AuditStore:
                 }
                 for row in rows
             ]
+
+    def list_registered_topic_members(
+        self,
+        topic_id: str,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT membership_key, source_record_id,
+                original_work_order_id, atomic_id, evidence_json
+                FROM topic_members
+                WHERE topic_id = ?
+                ORDER BY created_at, membership_key""",
+                (topic_id,),
+            ).fetchall()
+            return [
+                {
+                    "membership_key": row["membership_key"],
+                    "source_record_id": row["source_record_id"],
+                    "original_work_order_id": row["original_work_order_id"],
+                    "atomic_id": row["atomic_id"],
+                    "evidence": json.loads(row["evidence_json"]),
+                }
+                for row in rows
+            ]
+
+    def stage_topic_overlay(
+        self,
+        *,
+        overlay_id: str,
+        base_topic_id: str,
+        run_id: str,
+        proposed_topic_id: str,
+        business_line: str,
+        product_category: str,
+        topic_key: tuple[str, ...],
+        signature: dict[str, Any],
+        members: list[dict[str, Any]],
+        base_evidence_version: int,
+        added_member_count: int,
+        duplicate_member_count: int,
+    ) -> dict[str, Any]:
+        now = datetime.now().isoformat(timespec="seconds")
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO topic_pending_overlays
+                (overlay_id, base_topic_id, run_id, proposed_topic_id,
+                business_line, product_category, topic_key_json, signature_json,
+                members_json, status, base_evidence_version,
+                added_member_count, duplicate_member_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+                (
+                    overlay_id,
+                    base_topic_id,
+                    run_id,
+                    proposed_topic_id,
+                    business_line,
+                    product_category,
+                    _json(topic_key),
+                    _json(signature),
+                    _json(members),
+                    int(base_evidence_version),
+                    int(added_member_count),
+                    int(duplicate_member_count),
+                    now,
+                ),
+            )
+        return {
+            "overlay_id": overlay_id,
+            "base_topic_id": base_topic_id,
+            "status": "pending",
+            "base_evidence_version": int(base_evidence_version),
+            "added_member_count": int(added_member_count),
+            "duplicate_member_count": int(duplicate_member_count),
+        }
+
+    def list_pending_topic_overlays(
+        self,
+        base_topic_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            if base_topic_id:
+                rows = connection.execute(
+                    """SELECT * FROM topic_pending_overlays
+                    WHERE base_topic_id = ? AND status = 'pending'
+                    ORDER BY created_at, overlay_id""",
+                    (base_topic_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT * FROM topic_pending_overlays
+                    WHERE status = 'pending'
+                    ORDER BY created_at, overlay_id"""
+                ).fetchall()
+            return [
+                {
+                    "overlay_id": row["overlay_id"],
+                    "base_topic_id": row["base_topic_id"],
+                    "run_id": row["run_id"],
+                    "proposed_topic_id": row["proposed_topic_id"],
+                    "business_line": row["business_line"],
+                    "product_category": row["product_category"],
+                    "topic_key": json.loads(row["topic_key_json"]),
+                    "signature": json.loads(row["signature_json"]),
+                    "members": json.loads(row["members_json"]),
+                    "status": row["status"],
+                    "base_evidence_version": int(row["base_evidence_version"]),
+                    "added_member_count": int(row["added_member_count"]),
+                    "duplicate_member_count": int(row["duplicate_member_count"]),
+                    "created_at": row["created_at"],
+                    "reviewed_at": row["reviewed_at"],
+                    "review_note": row["review_note"],
+                }
+                for row in rows
+            ]
+
+    def review_topic_overlay(
+        self,
+        overlay_id: str,
+        decision: str,
+        review_note: str = "",
+    ) -> dict[str, Any]:
+        if decision not in {"approved", "rejected"}:
+            raise ValueError("增量主题叠加层审核结论必须是 approved 或 rejected")
+        overlays = self.list_pending_topic_overlays()
+        overlay = next(
+            (item for item in overlays if item["overlay_id"] == overlay_id),
+            None,
+        )
+        if overlay is None:
+            raise ValueError("找不到待审核的增量主题叠加层")
+        if decision == "approved":
+            from .topic_registry import _merge_signatures, _membership
+
+            members = [
+                item if "membership_key" in item else _membership(item)
+                for item in overlay["members"]
+            ]
+            with self._connect() as connection:
+                topic_row = connection.execute(
+                    "SELECT signature_json FROM topic_registry WHERE topic_id = ?",
+                    (overlay["base_topic_id"],),
+                ).fetchone()
+            current_signature = (
+                json.loads(topic_row["signature_json"])
+                if topic_row
+                else {}
+            )
+            self.integrate_registered_topic(
+                topic_id=overlay["base_topic_id"],
+                proposed_topic_id=overlay["proposed_topic_id"],
+                business_line=overlay["business_line"],
+                product_category=overlay["product_category"],
+                topic_key=tuple(overlay["topic_key"]),
+                signature=_merge_signatures(
+                    current_signature,
+                    overlay["signature"],
+                ),
+                representative=(members[0].get("evidence") or {}),
+                members=members,
+                run_id=overlay["run_id"],
+                decision="incremental_supplement_approved",
+                confidence=1.0,
+                reason=review_note or "人工审核通过增量主题补充",
+            )
+        now = datetime.now().isoformat(timespec="seconds")
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE topic_pending_overlays
+                SET status = ?, reviewed_at = ?, review_note = ?
+                WHERE overlay_id = ? AND status = 'pending'""",
+                (decision, now, review_note, overlay_id),
+            )
+        return {**overlay, "status": decision, "reviewed_at": now, "review_note": review_note}
 
     def integrate_registered_topic(
         self,

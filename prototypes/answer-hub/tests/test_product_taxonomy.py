@@ -80,6 +80,23 @@ def test_source_preprocessing_maps_business_aliases_to_configured_products() -> 
     assert {row["回收业务层级编码"] for row in rows} == {"self_operated"}
 
 
+def test_composite_product_type_keeps_configured_category_and_self_operated_line() -> None:
+    row = preprocess_source_rows(
+        [
+            {
+                "工单ID": "COMPOSITE-PHONE-1",
+                "聊天内容": "手机外观问题如何判定",
+                "产品类型": "手机 | 机型: 测试机型",
+            }
+        ]
+    )[0]
+
+    assert row["产品类型"] == "手机"
+    assert row["产品类型编码"] == "phone"
+    assert row["回收业务层级"] == "自营回收"
+    assert row["回收业务层级编码"] == "self_operated"
+
+
 def test_source_preprocessing_prefers_category_over_legacy_product_type() -> None:
     rows = preprocess_source_rows(
         [

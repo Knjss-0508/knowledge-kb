@@ -57,6 +57,37 @@ def normalize_human_review(review: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def build_quick_human_review(
+    knowledge_value: Any,
+    *,
+    include_in_training: bool,
+    notes: Any = "",
+) -> dict[str, Any]:
+    """Map one human value decision to the legacy review fields.
+
+    The candidate review UI intentionally asks for one decision only.  The
+    older usability and decision fields remain populated for compatibility
+    with the existing review gate and historical exports.
+    """
+    normalized = normalize_knowledge_value(knowledge_value)
+    if normalized == "worthy":
+        usability = "usable"
+        decision = "approved"
+    elif normalized == "unworthy":
+        usability = "unusable"
+        decision = "rejected"
+    else:
+        usability = "pending"
+        decision = ""
+    return {
+        "knowledge_value": normalized,
+        "usability": usability,
+        "decision": decision,
+        "training_eligible": "是" if include_in_training else "否",
+        "notes": _text(notes),
+    }
+
+
 def evaluate_review_status(
     selection: dict[str, Any] | None,
     human_review: dict[str, Any] | None,

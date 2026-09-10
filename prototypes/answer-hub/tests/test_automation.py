@@ -170,6 +170,27 @@ def test_automation_pipeline_blocks_cz_delivery_when_clustering_fails(
     assert stages["topic_cluster"]["status"] == "failed"
 
 
+def test_cluster_failure_guard_counts_successful_cache_hits_in_denominator(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ANSWER_HUB_CLUSTER_FAILURE_ABORT_RATIO", "0.5")
+
+    guard = automation._cluster_failure_guard(
+        {
+            "atomic_extraction_calls": 2,
+            "atomic_extraction_cache_hits": 73,
+            "atomic_extraction_failed": 2,
+            "direct_cluster_calls": 0,
+            "direct_cluster_cache_hits": 74,
+            "direct_cluster_failed": 0,
+        }
+    )
+
+    assert guard["cluster_failure_guard_triggered"] is False
+    assert guard["cluster_failure_ratio"] == 0.0267
+    assert guard["cz_candidate_sync_blocked"] is False
+
+
 def test_cluster_failure_retry_reexecutes_clustering_from_checkpoint(
     tmp_path: Path,
     monkeypatch,
@@ -527,6 +548,56 @@ def test_automation_pipeline_passes_cluster_only_mode(
     assert captured["enforce_cluster_admission"] is False
     assert manifest["artifacts"]["cluster_result"].endswith("cluster_result.xlsx")
     assert "candidate_knowledge" not in manifest["artifacts"]
+
+
+def test_direct_mimo_cluster_only_enables_incremental_topic_admission(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.xlsx"
+    source.write_bytes(b"source")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        automation,
+        "run_mimo_preflight",
+        lambda: {"passed": True, "model": "test-mimo"},
+    )
+
+    def fake_initial_label_from_workbook(**kwargs):
+        captured.update(kwargs)
+        artifact_dir = Path(kwargs["output_dir"])
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        result = artifact_dir / "cluster_result.xlsx"
+        result.write_bytes(b"cluster-only")
+        return {
+            "output_file": str(result),
+            "topic_review_file": str(result),
+            "candidate_output_file": "",
+            "audit_db": str(tmp_path / "audit.db"),
+            "source_total_rows": 2,
+            "eligible_rows": 2,
+            "cluster_only": True,
+            "cluster_rows": 1,
+        }
+
+    monkeypatch.setattr(
+        automation,
+        "initial_label_from_workbook",
+        fake_initial_label_from_workbook,
+    )
+
+    manifest = automation.run_automation_pipeline(
+        source,
+        None,
+        tmp_path / "runs",
+        use_mimo=True,
+        clustering_mode="direct_mimo",
+        cluster_only=True,
+    )
+
+    assert manifest["options"]["enforce_cluster_admission"] is True
+    assert captured["enforce_cluster_admission"] is True
 
 
 def test_automation_cli_passes_cluster_only_mode(
