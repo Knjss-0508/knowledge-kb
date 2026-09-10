@@ -150,6 +150,10 @@ def test_quick_review_can_compare_and_confirm_deduplication_matches() -> None:
     assert "对比并确认" in FRONTEND
     assert "判定不同的原因（选填）" in FRONTEND
     assert "dedupCompare.loading || dedupCompare.submitting || !dedupCompare.reason.trim()" not in FRONTEND
+    assert "<b>适用品类：</b>{{applicableCategoryText(dedupCompare.candidate) || '未设置'}}" in FRONTEND
+    assert "<b>适用品类：</b>{{applicableCategoryText(dedupCompare.target) || '未设置'}}" in FRONTEND
+    assert "applicable_categories: detail.applicable_categories || []" in FRONTEND
+    assert "&& entry.verdict === 'different'\n            && String(entry.reason || '').trim();" not in FRONTEND
     assert "openReviewDeskDedupCompare: function(match)" in FRONTEND
     assert "this.dedupCompare.sourceKnowledgeId = detail.id;" in FRONTEND
     assert "feedbackEnabled = !!(this.can('knowledge:approve') && detail.id)" in FRONTEND

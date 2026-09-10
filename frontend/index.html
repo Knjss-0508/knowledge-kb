@@ -1757,6 +1757,7 @@
             <div style="font-size:12px;margin-bottom:5px"><b>知识来源：</b>{{knowledgeOriginLabel(dedupCompare.candidate.knowledge_origin)}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>业务类型：</b>{{businessTypeLabel(dedupCompare.candidate.business_type)}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{categoryLabel(dedupCompare.candidate.category_id)}}</div>
+            <div style="font-size:12px;margin-bottom:5px"><b>适用品类：</b>{{applicableCategoryText(dedupCompare.candidate) || '未设置'}}</div>
             <div class="linkified-text" style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word" v-html="linkifyText(contentPreview(dedupCompare.candidate.content))"></div>
           </div>
           <div style="border:1px solid #e5e6eb;border-radius:6px;padding:12px;min-width:0">
@@ -1765,6 +1766,7 @@
             <div style="font-size:12px;margin-bottom:5px"><b>知识来源：</b>{{knowledgeOriginLabel(dedupCompare.target.knowledge_origin || dedupCompare.match.knowledge_origin)}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>业务类型：</b>{{businessTypeLabel(dedupCompare.target.business_type || dedupCompare.match.business_type)}}</div>
             <div style="font-size:12px;margin-bottom:5px"><b>分类：</b>{{categoryLabel(dedupCompare.target.category_id || dedupCompare.match.category_id)}}</div>
+            <div style="font-size:12px;margin-bottom:5px"><b>适用品类：</b>{{applicableCategoryText(dedupCompare.target) || '未设置'}}</div>
             <div class="linkified-text" style="font-size:12px;color:#4e5969;white-space:pre-wrap;word-break:break-word" v-html="linkifyText(contentPreview(dedupCompare.target.content))"></div>
           </div>
         </div>
@@ -2443,6 +2445,16 @@ Vue.createApp({
       if (models) parts.push('机型：' + models);
       return parts.join(' · ');
     },
+    applicableCategoryText: function(item) {
+      var values = item && Array.isArray(item.applicable_categories)
+        ? item.applicable_categories : [];
+      return values.map(function(value) {
+        if (value && typeof value === 'object') {
+          return String(value.categoryName || value.category_name || value.name || value.label || value.title || value.categoryId || value.category_id || value.id || value.value || '').trim();
+        }
+        return String(value || '').trim();
+      }).filter(Boolean).join('、');
+    },
     reviewDeskVisibleDedupMatches: function() {
       var detail = this.reviewDesk && this.reviewDesk.detail;
       return detail ? this.visibleDedupMatches(detail.deduplication_metadata || {}) : [];
@@ -2457,6 +2469,7 @@ Vue.createApp({
           knowledge_origin: detail.knowledge_origin || '',
           business_type: detail.business_type || '',
           category_id: detail.category_id || '',
+          applicable_categories: detail.applicable_categories || [],
           content: detail.content || ''
         },
         false
@@ -2499,8 +2512,7 @@ Vue.createApp({
       return matches.some(function(match) {
         return !feedback.some(function(entry) {
           return entry && entry.matched_knowledge_id === match.knowledge_id
-            && entry.verdict === 'different'
-            && String(entry.reason || '').trim();
+            && entry.verdict === 'different';
         });
       });
     },
@@ -6410,8 +6422,7 @@ Vue.createApp({
       var feedback = Array.isArray(metadata.feedback) ? metadata.feedback : [];
       return feedback.find(function(item) {
         return item.matched_knowledge_id === matchedKnowledgeId
-          && item.verdict === 'different'
-          && String(item.reason || '').trim();
+          && item.verdict === 'different';
       }) || null;
     },
     hasDedupFeedback: function(matchedKnowledgeId, metadata) {
@@ -6445,7 +6456,7 @@ Vue.createApp({
       var pending = matches.filter(function(match) {
         return !this.hasDedupFeedback(match.knowledge_id, metadata);
       }, this);
-      return '还有 ' + pending.length + ' 条疑似重复知识未在对比详情中确认不同并填写原因。';
+      return '还有 ' + pending.length + ' 条疑似重复知识未在对比详情中确认不同。';
     },
     dedupCandidateFromForm: function() {
       return {
@@ -6453,6 +6464,7 @@ Vue.createApp({
         knowledge_origin: this.fm.knowledgeOrigin,
         business_type: this.fm.businessType,
         category_id: this.fm.cat,
+        applicable_categories: this.fm.applicableCategories,
         content: {blocks: this.buildContentBlocks()}
       };
     },
