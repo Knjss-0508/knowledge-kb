@@ -145,3 +145,12 @@ def test_quick_review_desk_uses_large_centered_canvas() -> None:
     assert "@media(min-width:761px) and (max-width:1040px){.review-desk{width:calc(100% - 32px)}" in FRONTEND
     assert ".review-desk-f .btn{min-height:36px;padding:6px 14px;font-size:13px}" in FRONTEND
 
+
+def test_quick_review_can_compare_and_confirm_deduplication_matches() -> None:
+    assert "对比并确认" in FRONTEND
+    assert "openReviewDeskDedupCompare: function(match)" in FRONTEND
+    assert "this.dedupCompare.sourceKnowledgeId = detail.id;" in FRONTEND
+    assert "feedbackEnabled = !!(this.can('knowledge:approve') && detail.id)" in FRONTEND
+    assert "var sourceKnowledgeId = self.dedupCompare.sourceKnowledgeId || self.eid;" in FRONTEND
+    assert "self.reviewDesk.detail.deduplication_metadata = data.deduplication_metadata" in FRONTEND
+
