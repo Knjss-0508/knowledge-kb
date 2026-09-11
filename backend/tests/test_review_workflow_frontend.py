@@ -163,3 +163,26 @@ def test_quick_review_can_compare_and_confirm_deduplication_matches() -> None:
     assert "var sourceKnowledgeId = self.dedupCompare.sourceKnowledgeId || self.eid;" in FRONTEND
     assert "self.reviewDesk.detail.deduplication_metadata = data.deduplication_metadata" in FRONTEND
 
+
+def test_full_image_preview_supports_zoom_controls() -> None:
+    assert 'aria-label="缩小图片"' in FRONTEND
+    assert 'aria-label="放大图片"' in FRONTEND
+    assert '@wheel.prevent="zoomFullPreview($event.deltaY < 0 ? 1 : -1)"' in FRONTEND
+    assert "setFullPreviewZoom: function(zoom)" in FRONTEND
+    _run_frontend_behavior(
+        r"""
+vm.normalizePreviewUrl = function(value) { return value; };
+vm.full = {show: false, src: '', isVideo: false, error: false, zoom: 1};
+vm.showFull('https://cdn.example.com/original.png', false);
+assert(vm.full.show && vm.full.zoom === 1, 'opening an image should reset zoom');
+vm.zoomFullPreview(1);
+assert(vm.full.zoom === 1.25, 'zoom in should add one step');
+vm.zoomFullPreview(-10);
+assert(vm.full.zoom === 0.5, 'zoom should have a lower bound');
+vm.setFullPreviewZoom(9);
+assert(vm.full.zoom === 4, 'zoom should have an upper bound');
+vm.resetFullPreviewZoom();
+assert(vm.full.zoom === 1, 'reset should restore default zoom');
+""",
+    )
+
