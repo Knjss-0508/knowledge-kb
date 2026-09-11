@@ -12,6 +12,7 @@ from app.routes.knowledge import (
     _check_manual_deduplication,
     _deduplication_metadata,
     _find_source_knowledge,
+    _pending_deduplication_matches,
     approve_knowledge,
     batch_approve_knowledge,
     deprecate_knowledge,
@@ -582,7 +583,7 @@ class DeduplicationWorkflowTests(unittest.TestCase):
         self.assertEqual(change_log.before_data, {"status": "published"})
         self.assertEqual(change_log.after_data, {"status": "deprecated"})
 
-    def test_approve_requires_reasoned_deduplication_confirmation(self):
+    def test_approve_requires_deduplication_confirmation(self):
         item = SimpleNamespace(
             id="A-00022",
             status=KnowledgeStatus.REVIEW,
@@ -602,6 +603,20 @@ class DeduplicationWorkflowTests(unittest.TestCase):
             "DUPLICATE_CONFIRMATION_REQUIRED",
         )
         self.assertEqual(item.status, KnowledgeStatus.REVIEW)
+
+    def test_empty_reason_still_confirms_deduplication_match(self):
+        metadata = _deduplication_metadata(_review_decision())
+        metadata["feedback"] = [
+            {
+                "matched_knowledge_id": "A-00001",
+                "verdict": "different",
+                "reason": "",
+                "submitted_by": "approver",
+            }
+        ]
+        item = SimpleNamespace(deduplication_metadata=metadata)
+
+        self.assertEqual(_pending_deduplication_matches(item), [])
 
     def test_batch_approve_skips_unconfirmed_deduplication_items(self):
         item = SimpleNamespace(

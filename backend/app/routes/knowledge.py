@@ -1529,7 +1529,7 @@ def process_next_knowledge_vector_task(
 
 
 def _pending_deduplication_matches(item: Knowledge) -> list[dict]:
-    """返回尚未填写“确实不同”原因的疑似重复命中。"""
+    """返回尚未确认“确实不同”的疑似重复命中。"""
     metadata = getattr(item, "deduplication_metadata", None) or {}
     if (
         not isinstance(metadata, dict)
@@ -1545,7 +1545,6 @@ def _pending_deduplication_matches(item: Knowledge) -> list[dict]:
         for entry in metadata.get("feedback", [])
         if isinstance(entry, dict)
         and entry.get("verdict") == "different"
-        and str(entry.get("reason") or "").strip()
     }
     return [
         match
@@ -1563,7 +1562,7 @@ def _deduplication_confirmation_message(pending_matches: list[dict]) -> str:
         if isinstance(match, dict) and match.get("knowledge_id")
     ]
     suffix = f"（{'、'.join(knowledge_ids[:3])}）" if knowledge_ids else ""
-    return f"请先在“对比详情”中确认疑似重复知识确实不同并填写原因，再发布{suffix}。"
+    return f"请先在“对比详情”中确认疑似重复知识确实不同，再发布{suffix}。"
 
 
 def _check_manual_deduplication(
