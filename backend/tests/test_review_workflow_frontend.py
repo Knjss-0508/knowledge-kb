@@ -152,6 +152,9 @@ def test_quick_review_can_compare_and_confirm_deduplication_matches() -> None:
     assert "dedupCompare.loading || dedupCompare.submitting || !dedupCompare.reason.trim()" not in FRONTEND
     assert "<b>适用品类：</b>{{applicableCategoryText(dedupCompare.candidate) || '未设置'}}" in FRONTEND
     assert "<b>适用品类：</b>{{applicableCategoryText(dedupCompare.target) || '未设置'}}" in FRONTEND
+    assert "var cache = this.manhattanCacheFor(item && item.business_type);" in FRONTEND
+    assert "if (String(options[index].value) === categoryId) return String(options[index].label || categoryId).trim();" in FRONTEND
+    assert "this.loadManhattanOptions(detail.business_type);" in FRONTEND
     assert "applicable_categories: detail.applicable_categories || []" in FRONTEND
     assert "&& entry.verdict === 'different'\n            && String(entry.reason || '').trim();" not in FRONTEND
     assert "openReviewDeskDedupCompare: function(match)" in FRONTEND

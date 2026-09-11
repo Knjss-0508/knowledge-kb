@@ -2448,11 +2448,17 @@ Vue.createApp({
     applicableCategoryText: function(item) {
       var values = item && Array.isArray(item.applicable_categories)
         ? item.applicable_categories : [];
+      var cache = this.manhattanCacheFor(item && item.business_type);
+      var options = this.flattenOptions(cache.applicable_categories || []);
       return values.map(function(value) {
         if (value && typeof value === 'object') {
           return String(value.categoryName || value.category_name || value.name || value.label || value.title || value.categoryId || value.category_id || value.id || value.value || '').trim();
         }
-        return String(value || '').trim();
+        var categoryId = String(value || '').trim();
+        for (var index = 0; index < options.length; index++) {
+          if (String(options[index].value) === categoryId) return String(options[index].label || categoryId).trim();
+        }
+        return categoryId;
       }).filter(Boolean).join('、');
     },
     reviewDeskVisibleDedupMatches: function() {
@@ -2462,6 +2468,7 @@ Vue.createApp({
     openReviewDeskDedupCompare: function(match) {
       var detail = this.reviewDesk && this.reviewDesk.detail;
       if (!detail || this.reviewDesk.detailFallback || !match || !match.knowledge_id) return;
+      this.loadManhattanOptions(detail.business_type);
       this.openDedupCompare(
         {matches:[match]},
         {
