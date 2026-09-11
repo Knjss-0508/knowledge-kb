@@ -374,6 +374,43 @@
     .candidate-quick-actions{display:flex;align-items:center;gap:5px;white-space:nowrap}.candidate-quick-actions .btn{padding:4px 7px}.candidate-quick-actions .reject{border-color:#efc2bb;color:#c83827;background:#fff7f5}.candidate-quick-actions .accept{border-color:#b8ddd4;color:#087e6c;background:#f4fbf9}.candidate-training-toggle{display:inline-flex;align-items:center;gap:6px;color:#475467;font-size:12px;white-space:nowrap}.candidate-training-toggle input{accent-color:var(--teal)}.automation-batch-name{min-width:190px}.automation-batch-name b{display:block;color:#344054;font-size:13px}.automation-batch-name small{display:block;margin-top:4px;color:#98a2b3}.automation-task-feedback{max-width:420px;white-space:normal;line-height:1.55;color:#475467}.automation-task-feedback.error{color:#b42318}.automation-feedback-select{min-width:105px}
     .candidate-media-list{display:flex;flex-direction:column;gap:10px}.candidate-media-card{padding:10px;border:1px solid #e3e8ec;border-radius:8px;background:#fafbfc}.candidate-media-card .content-media-body{grid-template-columns:190px minmax(0,1fr)}.candidate-media-card .content-media-preview{width:190px;height:112px}.candidate-media-empty{padding:16px;border:1px dashed #d0d5dd;border-radius:8px;background:#fafbfc;color:#98a2b3;font-size:12px;text-align:center}.candidate-media-toolbar{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}.candidate-media-url{grid-column:1/-1}.candidate-media-source{font-size:11px;color:#667085;overflow-wrap:anywhere}
     @media(max-width:1120px){.automation-control-row{flex-wrap:wrap}.automation-action-group{margin-left:0}}
+    /* 候选价值复核：按知识库管理最终效果统一卡片、筛选区与表格留白。 */
+    .candidate-review-page{max-width:1680px;padding:30px 48px 48px}
+    .candidate-review-page .overview{margin-bottom:20px}
+    .candidate-review-page .overview h2{font-size:28px;font-weight:750;letter-spacing:-.02em;color:#172b4d}
+    .candidate-review-page .overview p{margin-top:6px;color:#7b8794;font-size:13px}
+    .candidate-review-page .overview-status{font-size:12px;color:#7b8794}.candidate-review-page .overview-status b{color:#0b9f88;font-weight:750}
+    .candidate-review-page .review-metric-cards{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:12px;margin-bottom:18px}
+    .candidate-review-page .review-metric-cards .card{min-width:0;min-height:116px;padding:16px 15px;border:1px solid #e1e7ed;border-radius:8px;background:#fff;box-shadow:0 2px 8px rgba(16,24,40,.035)}
+    .candidate-review-page .review-metric-cards .card.active{border-color:#16a58d;box-shadow:0 0 0 2px rgba(22,165,141,.1)}
+    .candidate-review-page .review-metric-cards .card .lb{font-size:12px;color:#667085;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .candidate-review-page .review-metric-cards .card .vl{margin-top:7px;font-size:29px;line-height:1.1;color:#172b4d;font-weight:750}
+    .candidate-review-page .review-metric-cards .card .metric-note{margin-top:7px;color:#98a2b3;font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .candidate-review-page .review-toolbar{margin:0 0 12px;width:100%;padding:15px 16px;border:1px solid #e1e7ed;border-radius:8px;background:#fff;box-shadow:0 2px 8px rgba(16,24,40,.035);align-items:center;gap:9px}
+    .candidate-review-page .review-toolbar .review-search{width:min(320px,28vw);height:34px;margin-right:auto;border-radius:6px}
+    .candidate-review-page .review-toolbar .inp{height:34px;min-width:118px;border:1px solid #d7dee6;border-radius:6px;background:#fff;color:#344054;font-size:12px}
+    .candidate-review-page .review-toolbar .review-date-field,.candidate-review-page .review-toolbar .automation-date-field{display:inline-flex;align-items:center;gap:6px;color:#667085;font-size:12px;white-space:nowrap}
+    .candidate-review-page .review-toolbar .review-date-field .inp,.candidate-review-page .review-toolbar .automation-date-field .inp{min-width:140px}
+    .candidate-review-page .review-toolbar .candidate-training-toggle{height:34px;padding:0 8px;border:1px solid #d7dee6;border-radius:6px;background:#fafbfc;color:#667085}
+    .candidate-review-page .review-toolbar .btn{height:34px;border-radius:6px;font-size:12px;font-weight:700;white-space:nowrap}
+    .candidate-review-page .review-toolbar .btn.bp{background:#0b9f88;border-color:#0b9f88}
+    .candidate-review-page .review-toolbar .btn.bp:hover:not(:disabled){background:#087f6b;border-color:#087f6b}
+    .candidate-review-page>.tw{margin:0;width:100%;border:1px solid #e1e7ed;border-radius:8px;background:#fff;box-shadow:0 2px 8px rgba(16,24,40,.035);overflow:auto}
+    .candidate-review-page>.tw .review-table{min-width:1480px;width:100%;border-collapse:separate;border-spacing:0}
+    .candidate-review-page>.tw .review-table th{height:46px;padding:0 13px;background:#f8fafb;border-bottom:1px solid #e8edf1;color:#667085;font-size:12px;font-weight:700;white-space:nowrap}
+    .candidate-review-page>.tw .review-table td{height:64px;padding:10px 13px;border-bottom:1px solid #edf0f2;color:#344054;font-size:12px;line-height:1.5;vertical-align:middle}
+    .candidate-review-page>.tw .review-table tbody tr:last-child td{border-bottom:0}
+    .candidate-review-page>.tw .review-table tbody tr:hover{background:#f8fcfb}
+    .candidate-review-page>.tw .review-table .review-title strong{color:#172b4d;font-size:13px;font-weight:750}
+    .candidate-review-page>.tw .review-table .review-title small{color:#98a2b3;font-size:11px}
+    .candidate-review-page .candidate-quick-actions{display:flex;align-items:center;gap:7px;min-width:132px}
+    .candidate-review-page .candidate-quick-actions .btn{min-width:60px;height:32px;padding:0 10px;border-radius:6px;font-size:12px;font-weight:700;white-space:nowrap}
+    .candidate-review-page .candidate-quick-actions .btn.reject{border:1px solid #f1c8c2;background:#fff7f5;color:#c83827}
+    .candidate-review-page .candidate-quick-actions .btn.accept{border:1px solid #a9dfd2;background:#effbf8;color:#087f6b}
+    .candidate-review-page>.bar:not(.review-toolbar){margin-top:12px;padding:11px 14px;border:1px solid #e1e7ed;border-radius:8px;background:#fff;box-shadow:0 2px 8px rgba(16,24,40,.035);color:#667085}
+    .candidate-review-page>.bar:not(.review-toolbar) .btn,.candidate-review-page>.bar:not(.review-toolbar) .inp{height:30px;border-radius:6px;font-size:12px}
+    @media(max-width:1280px){.candidate-review-page{padding-left:30px;padding-right:30px}.candidate-review-page .review-metric-cards{grid-template-columns:repeat(4,minmax(0,1fr))}.candidate-review-page .review-toolbar .review-search{width:100%;margin-right:0}.candidate-review-page .review-toolbar .inp{min-width:128px}}
+    @media(max-width:760px){.candidate-review-page{padding:22px 16px 32px}.candidate-review-page .review-metric-cards{grid-template-columns:1fr 1fr;gap:10px}.candidate-review-page .review-toolbar{padding:13px 14px}.candidate-review-page .review-toolbar .review-search,.candidate-review-page .review-toolbar .inp,.candidate-review-page .review-toolbar .review-date-field,.candidate-review-page .review-toolbar .automation-date-field,.candidate-review-page .review-toolbar .candidate-training-toggle,.candidate-review-page .review-toolbar .btn{width:100%;min-width:0;margin-right:0}.candidate-review-page .review-toolbar .review-date-field,.candidate-review-page .review-toolbar .automation-date-field{align-items:stretch;flex-direction:column;gap:5px}.candidate-review-page .review-toolbar .review-date-field .inp,.candidate-review-page .review-toolbar .automation-date-field .inp{width:100%}.candidate-review-page>.bar:not(.review-toolbar){align-items:center}}
   </style>
 </head>
 <body>
@@ -681,7 +718,7 @@
       </div>
     </div>
   </div>
-  <div class="mn" v-if="view==='candidateReviews' && can('knowledge:submit')">
+  <div class="mn candidate-review-page" v-if="view==='candidateReviews' && can('knowledge:submit')">
     <section class="overview">
       <div>
         <h2>候选知识价值复核</h2>
