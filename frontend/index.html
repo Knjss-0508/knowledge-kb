@@ -5,16 +5,14 @@
   <title>答疑中台 - 知识库管理</title>
   <link rel="icon" type="image/png" href="assets/knowledge-kb-favicon.png">
   <style>
-    :root{--sidebar-width:236px;--sidebar-collapsed-width:72px}
+    :root{--sidebar-width:236px}
     *{margin:0;padding:0;box-sizing:border-box}
     html,body{min-height:100%}
     body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",Arial,sans-serif;background:#f0f2f5;color:#1d2129;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
     .layout{display:block;min-height:100vh}
-    .side{position:fixed;top:0;left:0;z-index:300;width:var(--sidebar-width);min-width:var(--sidebar-width);max-width:var(--sidebar-width);height:100vh;height:100dvh;min-height:0;max-height:100vh;max-height:100dvh;background:#061b2d;color:#b8c6d8;display:flex;flex-direction:column;overflow:hidden;transition:width .18s ease,min-width .18s ease,max-width .18s ease}
+    .side{position:fixed;top:0;left:0;z-index:300;width:var(--sidebar-width);min-width:var(--sidebar-width);max-width:var(--sidebar-width);height:100vh;height:100dvh;min-height:0;max-height:100vh;max-height:100dvh;background:#061b2d;color:#b8c6d8;display:flex;flex-direction:column;overflow:hidden}
     .brand{height:52px;display:flex;align-items:center;padding:0 18px;color:#fff;font-size:16px;font-weight:700;border-bottom:1px solid rgba(255,255,255,.08);gap:8px;white-space:nowrap}
     .brand-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
-    .sidebar-toggle{margin-left:auto;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.16);border-radius:6px;background:rgba(255,255,255,.06);color:#c5d2df;cursor:pointer;font-size:15px;line-height:1}
-    .sidebar-toggle:hover{background:rgba(255,255,255,.12);color:#fff}
     .nav{padding:12px 0;flex:1}
     .nav-item{height:38px;display:flex;align-items:center;padding:0 20px;font-size:13px;cursor:pointer;border-left:3px solid transparent}
     .nav-item:hover{background:rgba(255,255,255,.06);color:#fff}
@@ -31,20 +29,7 @@
     .nav-subitem .nav-subdot{width:6px;height:6px;margin-right:9px;border-radius:50%;background:currentColor;opacity:.75}
     .side-foot{padding:14px 18px;border-top:1px solid rgba(255,255,255,.08);font-size:12px}
     .logout{margin-top:8px;color:#8bbcff;cursor:pointer}
-    .main{width:calc(100% - var(--sidebar-width));min-width:0;margin-left:var(--sidebar-width);transition:width .18s ease,margin-left .18s ease}
-    .layout.sidebar-collapsed .side{width:var(--sidebar-collapsed-width);min-width:var(--sidebar-collapsed-width);max-width:var(--sidebar-collapsed-width)}
-    .layout.sidebar-collapsed .main{width:calc(100% - var(--sidebar-collapsed-width));margin-left:var(--sidebar-collapsed-width)}
-    .layout.sidebar-collapsed .brand{justify-content:center;padding:0 10px}
-    .layout.sidebar-collapsed .brand-label,.layout.sidebar-collapsed .sidebar-toggle{display:none}
-    .layout.sidebar-collapsed .nav-item{justify-content:center;padding-left:0;padding-right:0}
-    .layout.sidebar-collapsed .nav-item>span.nav-icon{margin-right:0}
-    .layout.sidebar-collapsed .nav-group-head .nav-group-chevron,.layout.sidebar-collapsed .nav-group-head .nav-group-label{display:none}
-    .layout.sidebar-collapsed .nav-subitems{display:none}
-    .layout.sidebar-collapsed .nav-group-head{border-left-color:transparent}
-    .layout.sidebar-collapsed .side-foot{padding-left:0;padding-right:0;text-align:center}
-    .layout.sidebar-collapsed .side-foot div:not(.logout){display:none}
-    .layout.sidebar-collapsed .side-foot .logout{font-size:0}
-    .layout.sidebar-collapsed .side-foot .logout:after{content:'⋯';font-size:18px;color:#a9bac8}
+    .main{width:calc(100% - var(--sidebar-width));min-width:0;margin-left:var(--sidebar-width)}
     .hd{background:#fff;height:52px;display:flex;align-items:center;padding:0 28px;border-bottom:1px solid #e5e6eb;position:sticky;top:0;z-index:100}
     .hd h1{font-size:17px;font-weight:600}.hd .sub{font-size:12px;color:#86909c;margin-left:8px;background:#f2f3f5;padding:2px 8px;border-radius:4px}
     .mn{padding:20px 28px;max-width:1400px;margin:0 auto}
@@ -367,62 +352,66 @@
     @media(max-width:760px){.embedding-topk-item{grid-template-columns:1fr}.embedding-topk-control{justify-content:flex-start}.embedding-candidate-pools,.retrieval-judgement-options{grid-template-columns:1fr}.embedding-candidate-pool.unclassified{grid-column:auto}.retrieval-period-filter{align-items:stretch}.retrieval-period-tabs{width:100%}.retrieval-period-btn{flex:1 1 auto}.retrieval-custom-range{width:100%}.retrieval-custom-range .inp{flex:1 1 130px;width:auto}.retrieval-period-caption{width:100%;margin-left:0}}
     @media(max-width:760px){.retrieval-review-dialog .dlg-b{padding:14px}.retrieval-review-layout{gap:12px}.retrieval-review-candidate-scroll{max-height:38vh}.retrieval-review-conclusion{max-height:42vh;overflow-y:auto;padding-right:4px}.retrieval-review-shortcuts{width:100%;margin-left:0}.retrieval-review-footer{align-items:stretch}.retrieval-review-nav,.retrieval-review-save-actions{width:100%;justify-content:center}.retrieval-review-save-actions{flex-wrap:wrap}.retrieval-review-save-actions .btn{flex:1 1 auto}}
     @media(max-width:1120px){.cards{grid-template-columns:repeat(2,1fr)}.review-metric-cards{grid-template-columns:repeat(4,1fr)}.dashboard-summary-grid{grid-template-columns:1fr}.dashboard-summary-grid>.dashboard-asset,.dashboard-summary-grid>.dashboard-flow{grid-column:1}.dashboard-work-grid,.dashboard-work-grid.without-candidates{grid-template-columns:1fr}.review-detail-grid{grid-template-columns:1fr}.embedding-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.embedding-two,.embedding-hero{grid-template-columns:1fr}.embedding-config-grid{grid-template-columns:1fr 1fr}.embedding-flow{grid-template-columns:repeat(3,minmax(0,1fr))}.embedding-flow-step:after{display:none}.embedding-control-grid{grid-template-columns:1fr}}@media(max-width:760px){.side{width:100%;min-height:auto;padding:12px 16px;display:block}.layout{display:block}.brand{padding:0}.nav{display:flex;flex-direction:row;overflow-x:auto;overflow-y:hidden;margin-top:12px;gap:6px;padding-bottom:2px;scrollbar-width:none;overscroll-behavior-inline:contain}.nav::-webkit-scrollbar{display:none}.nav-item{white-space:nowrap;flex:0 0 auto}.side-foot{display:none}.hd{height:58px;padding:0 16px}.mn{padding:24px 16px 32px}.overview{display:block}.overview h2{font-size:26px}.overview-status{margin-top:10px}.cards,.review-metric-cards{grid-template-columns:1fr 1fr;gap:10px}.card{min-height:124px;padding:15px}.dashboard-summary-grid,.dashboard-grid{gap:12px}.dashboard-asset,.dashboard-flow{padding:17px 16px}.flow-steps{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.flow-step:after{display:none}.insight-head{padding:17px 16px 0}.trend-chart{margin:14px 16px 18px}.todo-list{padding-left:16px;padding-right:16px}.todo-link{margin-left:16px;margin-right:16px}.filter-app-field{width:100%}.filter-app-field .ms{width:auto;flex:1 1 auto}.review-search{width:100%}.review-dialog .dlg-b{padding:14px}.review-panel{padding:14px}.review-form-grid,.review-meta{grid-template-columns:1fr}.review-form-grid .span-2{grid-column:auto}.review-gate{display:none}.embedding-grid,.embedding-config-grid,.embedding-flow{grid-template-columns:1fr}.embedding-hero-side{grid-template-columns:1fr 1fr}.embedding-lab-scope,.embedding-lab-form{grid-template-columns:1fr}.embedding-result{grid-template-columns:36px minmax(0,1fr)}.embedding-score{grid-column:2;text-align:left}.retrieval-review-grid{grid-template-columns:1fr}.retrieval-review-grid .span-2{grid-column:auto}.embedding-readiness{grid-template-columns:1fr}.embedding-release-stage{grid-template-columns:34px minmax(0,1fr)}.embedding-release-stage .btn{grid-column:2;justify-self:start}.embedding-access-input{grid-template-columns:1fr}.embedding-access-buttons{justify-content:flex-start}.embedding-access-meta{display:block}.embedding-access-steps{grid-template-columns:1fr}}@media(max-width:420px){.cards,.review-metric-cards{grid-template-columns:1fr}.flow-steps{grid-template-columns:1fr}.period button{padding:0 7px}.embedding-hero-side{grid-template-columns:1fr}}
-    @media(max-width:760px){.layout{min-height:100vh}.side,.layout.sidebar-collapsed .side{position:static;top:auto;left:auto;z-index:auto;width:100%;min-width:0;max-width:none;height:auto;max-height:none;overflow:visible}.main,.layout.sidebar-collapsed .main{width:100%;min-height:0;margin-left:0}.sidebar-toggle{display:none}.nav-group{display:flex;flex:0 0 auto}.nav-group-head{display:none}.nav-subitems,.layout.sidebar-collapsed .nav-subitems{display:flex!important;align-items:center;padding:0}.nav-subitem{height:44px;padding:0 12px;border:0;border-radius:6px;flex:0 0 auto;font-size:14px}.nav-subitem .nav-subdot{display:none}}
+    @media(max-width:760px){.layout{min-height:100vh}.side{position:static;top:auto;left:auto;z-index:auto;width:100%;min-width:0;max-width:none;height:auto;max-height:none;overflow:visible}.main{width:100%;min-height:0;margin-left:0}.nav-group{display:flex;flex:0 0 auto}.nav-group-head{display:none}.nav-subitems{display:flex!important;align-items:center;padding:0}.nav-subitem{height:44px;padding:0 12px;border:0;border-radius:6px;flex:0 0 auto;font-size:14px}.nav-subitem .nav-subdot{display:none}}
     .import-validation-cell{max-width:210px}.import-validation-cell .tg{margin-bottom:4px}.import-validation-summary{color:#667085;font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.import-review-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px}.import-review-card{padding:11px 12px;border:1px solid #f1dfbd;border-radius:6px;background:#fffaf0}.import-review-card span{display:block;margin-bottom:5px;color:#a96800;font-size:11px;font-weight:700}.import-review-card div{color:#475467;font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.import-review-block{margin-top:10px}.import-review-block-label{margin-bottom:5px;color:#667085;font-size:11px;font-weight:700}.import-review-raw{padding:11px 12px;border:1px solid #edf0f2;border-radius:6px;background:#fafbfc;color:#475467;font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
     @media(max-width:760px){.import-review-grid{grid-template-columns:1fr}}
     .automation-control-card{margin-bottom:14px;padding:18px 20px;border:1px solid #dce7e5;border-radius:10px;background:linear-gradient(135deg,#fff 0%,#f8fcfb 100%);box-shadow:0 3px 12px rgba(16,24,40,.04)}.automation-control-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}.automation-control-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.automation-control-title .tt{font-size:16px}.automation-control-title .hint{max-width:760px;line-height:1.55}.automation-control-status{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;background:#edf7f5;color:#007f6b;font-size:12px;font-weight:700;white-space:nowrap}.automation-control-status.off{background:#f2f4f7;color:#667085}.automation-control-status.running{background:#fff4e5;color:#b54708}.automation-control-row{display:flex;align-items:center;gap:12px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}.automation-action-row{margin-top:12px;padding-top:12px;border-top:1px solid #edf2f1}.automation-date-field{display:flex;align-items:center;gap:7px;color:#475467;font-size:12px;white-space:nowrap;flex:0 0 auto}.automation-date-field .inp{width:148px}.automation-schedule-field{display:flex;align-items:center;gap:7px;color:#475467;font-size:12px;white-space:nowrap;flex:0 0 auto}.automation-action-group{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;overflow-x:auto}.automation-action-group .btn{min-width:112px;flex:0 0 auto}.automation-action-group .btn.start{border-color:#0f9f88;background:#0f9f88;color:#fff}.automation-action-group .btn.start:hover:not(:disabled){background:#087e6c}.automation-action-group .btn.stop{border-color:#e7b8b1;background:#fff6f4;color:#c43f2f}.automation-action-group .btn.stop:hover:not(:disabled){background:#ffede9}.automation-action-group .btn:disabled{opacity:.5;cursor:not-allowed}.automation-running-hint{margin-top:10px;color:#b54708}
     .candidate-quick-actions{display:flex;align-items:center;gap:5px;white-space:nowrap}.candidate-quick-actions .btn{padding:4px 7px}.candidate-quick-actions .reject{border-color:#efc2bb;color:#c83827;background:#fff7f5}.candidate-quick-actions .accept{border-color:#b8ddd4;color:#087e6c;background:#f4fbf9}.candidate-training-toggle{display:inline-flex;align-items:center;gap:6px;color:#475467;font-size:12px;white-space:nowrap}.candidate-training-toggle input{accent-color:var(--teal)}.automation-batch-name{min-width:190px}.automation-batch-name b{display:block;color:#344054;font-size:13px}.automation-batch-name small{display:block;margin-top:4px;color:#98a2b3}.automation-task-feedback{max-width:420px;white-space:normal;line-height:1.55;color:#475467}.automation-task-feedback.error{color:#b42318}.automation-feedback-select{min-width:105px}
     .candidate-media-list{display:flex;flex-direction:column;gap:10px}.candidate-media-card{padding:10px;border:1px solid #e3e8ec;border-radius:8px;background:#fafbfc}.candidate-media-card .content-media-body{grid-template-columns:190px minmax(0,1fr)}.candidate-media-card .content-media-preview{width:190px;height:112px}.candidate-media-empty{padding:16px;border:1px dashed #d0d5dd;border-radius:8px;background:#fafbfc;color:#98a2b3;font-size:12px;text-align:center}.candidate-media-toolbar{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}.candidate-media-url{grid-column:1/-1}.candidate-media-source{font-size:11px;color:#667085;overflow-wrap:anywhere}
     @media(max-width:1120px){.automation-control-row{flex-wrap:wrap}.automation-action-group{margin-left:0}}
-    /* 候选价值复核：按知识库管理最终效果统一卡片、筛选区与表格留白。 */
-    .candidate-review-page{max-width:1680px;padding:30px 48px 48px}
-    .candidate-review-page .overview{margin-bottom:20px}
-    .candidate-review-page .overview h2{font-size:28px;font-weight:750;letter-spacing:-.02em;color:#172b4d}
-    .candidate-review-page .overview p{margin-top:6px;color:#7b8794;font-size:13px}
-    .candidate-review-page .overview-status{font-size:12px;color:#7b8794}.candidate-review-page .overview-status b{color:#0b9f88;font-weight:750}
-    .candidate-review-page .review-metric-cards{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:12px;margin-bottom:18px}
-    .candidate-review-page .review-metric-cards .card{min-width:0;min-height:116px;padding:16px 15px;border:1px solid #e1e7ed;border-radius:8px;background:#fff;box-shadow:0 2px 8px rgba(16,24,40,.035)}
-    .candidate-review-page .review-metric-cards .card.active{border-color:#16a58d;box-shadow:0 0 0 2px rgba(22,165,141,.1)}
-    .candidate-review-page .review-metric-cards .card .lb{font-size:12px;color:#667085;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .candidate-review-page .review-metric-cards .card .vl{margin-top:7px;font-size:29px;line-height:1.1;color:#172b4d;font-weight:750}
-    .candidate-review-page .review-metric-cards .card .metric-note{margin-top:7px;color:#98a2b3;font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .candidate-review-page .review-toolbar{margin:0 0 12px;width:100%;padding:15px 16px;border:1px solid #e1e7ed;border-radius:8px;background:#fff;box-shadow:0 2px 8px rgba(16,24,40,.035);align-items:center;gap:9px}
-    .candidate-review-page .review-toolbar .review-search{width:min(320px,28vw);height:34px;margin-right:auto;border-radius:6px}
-    .candidate-review-page .review-toolbar .inp{height:34px;min-width:118px;border:1px solid #d7dee6;border-radius:6px;background:#fff;color:#344054;font-size:12px}
-    .candidate-review-page .review-toolbar .review-date-field,.candidate-review-page .review-toolbar .automation-date-field{display:inline-flex;align-items:center;gap:6px;color:#667085;font-size:12px;white-space:nowrap}
-    .candidate-review-page .review-toolbar .review-date-field .inp,.candidate-review-page .review-toolbar .automation-date-field .inp{min-width:140px}
-    .candidate-review-page .review-toolbar .candidate-training-toggle{height:34px;padding:0 8px;border:1px solid #d7dee6;border-radius:6px;background:#fafbfc;color:#667085}
-    .candidate-review-page .review-toolbar .btn{height:34px;border-radius:6px;font-size:12px;font-weight:700;white-space:nowrap}
-    .candidate-review-page .review-toolbar .btn.bp{background:#0b9f88;border-color:#0b9f88}
-    .candidate-review-page .review-toolbar .btn.bp:hover:not(:disabled){background:#087f6b;border-color:#087f6b}
-    .candidate-review-page>.tw{margin:0;width:100%;border:1px solid #e1e7ed;border-radius:8px;background:#fff;box-shadow:0 2px 8px rgba(16,24,40,.035);overflow:auto}
+    /* 候选价值复核：使用最终稿的扁平卡片、两层筛选区和轻量表格。 */
+    .candidate-review-page{max-width:none;margin:0;padding:28px 34px 46px;background:#f5f7fa}
+    .candidate-review-page .overview{margin-bottom:22px}
+    .candidate-review-page .overview h2{font-size:26px;font-weight:750;letter-spacing:-.02em;color:#172b4d}
+    .candidate-review-page .overview p{margin-top:7px;color:#7b8794;font-size:13px}
+    .candidate-review-page .overview-status{font-size:12px;color:#98a2b3}.candidate-review-page .overview-status b{color:#0b9f88;font-weight:750}
+    .candidate-review-page .review-metric-cards{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:18px;margin-bottom:22px}
+    .candidate-review-page .review-metric-cards .card{min-width:0;min-height:156px;padding:18px 17px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;box-shadow:0 2px 5px rgba(16,24,40,.035);cursor:pointer}
+    .candidate-review-page .review-metric-cards .card.active{border-color:#14b89e;box-shadow:0 0 0 2px rgba(20,184,158,.10)}
+    .candidate-review-page .review-metric-cards .card .lb{font-size:13px;color:#667085;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .candidate-review-page .review-metric-cards .card .vl{margin-top:13px;font-size:31px;line-height:1.05;color:#172b4d;font-weight:750;font-variant-numeric:tabular-nums}
+    .candidate-review-page .review-metric-cards .card .metric-note{position:relative;margin-top:12px;padding-left:11px;color:#98a2b3;font-size:12px;line-height:1.45;white-space:normal}
+    .candidate-review-page .review-metric-cards .card .metric-note:before{content:'';position:absolute;left:0;top:.53em;width:5px;height:5px;border-radius:50%;background:currentColor}
+    .candidate-review-page .review-metric-cards .card .metric-note b{font-weight:700;color:inherit}
+    .candidate-review-page .candidate-filter-card{margin:0 0 18px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;box-shadow:0 2px 5px rgba(16,24,40,.035);overflow:hidden}
+    .candidate-review-page .candidate-filter-head{display:flex;align-items:center;min-height:58px;padding:0 24px;color:#344054;font-size:16px;font-weight:750}
+    .candidate-review-page .candidate-filter-head:before{content:'';width:4px;height:20px;margin-right:12px;border-radius:3px;background:#12b99f}
+    .candidate-review-page .candidate-filter-grid{display:grid;grid-template-columns:minmax(280px,2fr) minmax(180px,1fr) minmax(180px,1fr) minmax(130px,.34fr);gap:18px 20px;padding:0 24px 22px}
+    .candidate-review-page .candidate-filter-field{display:flex;min-width:0;flex-direction:column;gap:9px;color:#98a2b3;font-size:12px;line-height:1.2}
+    .candidate-review-page .candidate-filter-field.keyword{grid-column:span 1}.candidate-review-page .candidate-filter-field.date-range{grid-column:span 2}
+    .candidate-review-page .candidate-filter-field .inp{width:100%;height:42px;padding:0 14px;border:1px solid #dfe5ec;border-radius:7px;background:#fff;color:#344054;font-size:13px;outline:0}
+    .candidate-review-page .candidate-filter-field .inp:focus{border-color:#0b9f88;box-shadow:0 0 0 3px rgba(11,159,136,.10)}
+    .candidate-review-page .candidate-filter-field.date-range .candidate-date-inputs{display:grid;grid-template-columns:1fr 18px 1fr;align-items:center;gap:8px}.candidate-date-separator{text-align:center;color:#98a2b3}
+    .candidate-review-page .candidate-priority-field{align-self:end;min-height:42px;display:flex;align-items:center;gap:8px;padding-bottom:1px;color:#667085;font-size:13px;white-space:nowrap;cursor:pointer}.candidate-review-page .candidate-priority-field input{accent-color:#0b9f88}
+    .candidate-review-page .candidate-filter-actions{min-height:74px;padding:16px 24px;border-top:1px solid #edf1f4;display:flex;align-items:center;gap:12px;justify-content:flex-end;flex-wrap:wrap}
+    .candidate-review-page .candidate-filter-actions .review-selected-note{margin-right:auto;font-size:13px;color:#667085}.candidate-review-page .candidate-filter-actions .review-selected-note b{color:#0b9f88}
+    .candidate-review-page .candidate-filter-actions .btn{height:38px;padding:0 16px;border-radius:7px;font-size:13px;font-weight:700;white-space:nowrap}
+    .candidate-review-page .candidate-filter-actions .btn.bp{background:#0b9f88;border-color:#0b9f88}.candidate-review-page .candidate-filter-actions .btn.bp:hover:not(:disabled){background:#087f6b;border-color:#087f6b}
+    .candidate-review-page .candidate-filter-actions .candidate-training-toggle{display:inline-flex;align-items:center;gap:6px;color:#667085;font-size:12px;margin-right:auto}.candidate-review-page .candidate-filter-actions .candidate-training-toggle input{accent-color:#0b9f88}
+    .candidate-review-page .integration-hint{margin:0 0 18px;padding:13px 16px;border:1px solid #bcecdf;border-radius:8px;background:#e9faf5;color:#16816e;font-size:12px;box-shadow:none}
+    .candidate-review-page>.tw{margin:0;width:100%;border:1px solid #e2e8f0;border-radius:8px;background:#fff;box-shadow:0 2px 5px rgba(16,24,40,.035);overflow:auto}
     .candidate-review-page>.tw .review-table{min-width:1480px;width:100%;border-collapse:separate;border-spacing:0}
-    .candidate-review-page>.tw .review-table th{height:46px;padding:0 13px;background:#f8fafb;border-bottom:1px solid #e8edf1;color:#667085;font-size:12px;font-weight:700;white-space:nowrap}
-    .candidate-review-page>.tw .review-table td{height:64px;padding:10px 13px;border-bottom:1px solid #edf0f2;color:#344054;font-size:12px;line-height:1.5;vertical-align:middle}
-    .candidate-review-page>.tw .review-table tbody tr:last-child td{border-bottom:0}
-    .candidate-review-page>.tw .review-table tbody tr:hover{background:#f8fcfb}
-    .candidate-review-page>.tw .review-table .review-title strong{color:#172b4d;font-size:13px;font-weight:750}
-    .candidate-review-page>.tw .review-table .review-title small{color:#98a2b3;font-size:11px}
-    .candidate-review-page .candidate-quick-actions{display:flex;align-items:center;gap:7px;min-width:132px}
-    .candidate-review-page .candidate-quick-actions .btn{min-width:60px;height:32px;padding:0 10px;border-radius:6px;font-size:12px;font-weight:700;white-space:nowrap}
-    .candidate-review-page .candidate-quick-actions .btn.reject{border:1px solid #f1c8c2;background:#fff7f5;color:#c83827}
-    .candidate-review-page .candidate-quick-actions .btn.accept{border:1px solid #a9dfd2;background:#effbf8;color:#087f6b}
-    .candidate-review-page>.bar:not(.review-toolbar){margin-top:12px;padding:11px 14px;border:1px solid #e1e7ed;border-radius:8px;background:#fff;box-shadow:0 2px 8px rgba(16,24,40,.035);color:#667085}
-    .candidate-review-page>.bar:not(.review-toolbar) .btn,.candidate-review-page>.bar:not(.review-toolbar) .inp{height:30px;border-radius:6px;font-size:12px}
-    @media(max-width:1280px){.candidate-review-page{padding-left:30px;padding-right:30px}.candidate-review-page .review-metric-cards{grid-template-columns:repeat(4,minmax(0,1fr))}.candidate-review-page .review-toolbar .review-search{width:100%;margin-right:0}.candidate-review-page .review-toolbar .inp{min-width:128px}}
-    @media(max-width:760px){.candidate-review-page{padding:22px 16px 32px}.candidate-review-page .review-metric-cards{grid-template-columns:1fr 1fr;gap:10px}.candidate-review-page .review-toolbar{padding:13px 14px}.candidate-review-page .review-toolbar .review-search,.candidate-review-page .review-toolbar .inp,.candidate-review-page .review-toolbar .review-date-field,.candidate-review-page .review-toolbar .automation-date-field,.candidate-review-page .review-toolbar .candidate-training-toggle,.candidate-review-page .review-toolbar .btn{width:100%;min-width:0;margin-right:0}.candidate-review-page .review-toolbar .review-date-field,.candidate-review-page .review-toolbar .automation-date-field{align-items:stretch;flex-direction:column;gap:5px}.candidate-review-page .review-toolbar .review-date-field .inp,.candidate-review-page .review-toolbar .automation-date-field .inp{width:100%}.candidate-review-page>.bar:not(.review-toolbar){align-items:center}}
+    .candidate-review-page>.tw .review-table th{height:54px;padding:0 14px;background:#f8fafc;border-bottom:1px solid #e7edf2;color:#667085;font-size:12px;font-weight:750;white-space:nowrap}
+    .candidate-review-page>.tw .review-table td{height:78px;padding:12px 14px;border-bottom:1px solid #edf1f4;color:#475467;font-size:12px;line-height:1.55;vertical-align:middle}
+    .candidate-review-page>.tw .review-table tbody tr:last-child td{border-bottom:0}.candidate-review-page>.tw .review-table tbody tr:hover td{background:#fbfefd}
+    .candidate-review-page>.tw .review-table .review-title{max-width:390px}.candidate-review-page>.tw .review-table .review-title strong{color:#344054;font-size:13px;font-weight:700}.candidate-review-page>.tw .review-table .review-title small{color:#a3afbf;font-size:11px}
+    .candidate-review-page .candidate-quick-actions{display:flex;align-items:center;gap:7px;min-width:138px}.candidate-review-page .candidate-quick-actions .btn{min-width:62px;height:32px;padding:0 9px;border-radius:6px;font-size:12px;font-weight:700;white-space:nowrap}.candidate-review-page .candidate-quick-actions .btn.reject{border:1px solid #fecdc7;background:#fff;color:#ef6d5b}.candidate-review-page .candidate-quick-actions .btn.accept{border:1px solid #a8e2d4;background:#fff;color:#0b9f88}
+    .candidate-review-page>.bar:not(.review-toolbar){margin-top:14px;padding:12px 16px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;box-shadow:0 2px 5px rgba(16,24,40,.035);color:#667085}.candidate-review-page>.bar:not(.review-toolbar) .btn,.candidate-review-page>.bar:not(.review-toolbar) .inp{height:32px;border-radius:6px;font-size:12px}
+    @media(max-width:1500px){.candidate-review-page .review-metric-cards{grid-template-columns:repeat(4,minmax(0,1fr))}.candidate-review-page .candidate-filter-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.candidate-review-page .candidate-filter-field.keyword{grid-column:span 2}.candidate-review-page .candidate-filter-field.date-range{grid-column:span 2}}
+    @media(max-width:900px){.candidate-review-page{padding-left:22px;padding-right:22px}.candidate-review-page .candidate-filter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.candidate-review-page .candidate-filter-field.keyword,.candidate-review-page .candidate-filter-field.date-range{grid-column:span 2}}
+    @media(max-width:760px){.candidate-review-page{padding:22px 16px 32px}.candidate-review-page .review-metric-cards{grid-template-columns:1fr 1fr;gap:10px}.candidate-review-page .review-metric-cards .card{min-height:132px}.candidate-review-page .candidate-filter-head{padding:0 16px}.candidate-review-page .candidate-filter-grid{display:flex;flex-direction:column;gap:14px;padding:0 16px 18px}.candidate-review-page .candidate-filter-field.keyword,.candidate-review-page .candidate-filter-field.date-range{grid-column:auto}.candidate-review-page .candidate-filter-actions{padding:14px 16px;justify-content:flex-start}.candidate-review-page .candidate-filter-actions .review-selected-note{width:100%;margin-right:0}.candidate-review-page .candidate-filter-actions .candidate-training-toggle{margin-right:0}.candidate-review-page .candidate-filter-actions .btn{flex:1 1 140px}.candidate-review-page .candidate-filter-field.date-range .candidate-date-inputs{grid-template-columns:1fr}.candidate-date-separator{display:none}}
   </style>
 </head>
 <body>
 <div id="app">
-  <div class="layout" :class="{'sidebar-collapsed':sidebarCollapsed}" v-if="ready">
+  <div class="layout" v-if="ready">
   <aside class="side">
-    <div class="brand"><span class="brand-label">答疑中台</span><button class="sidebar-toggle" type="button" :aria-label="sidebarCollapsed?'展开侧边栏':'收起侧边栏'" :title="sidebarCollapsed?'展开侧边栏':'收起侧边栏'" @click="toggleSidebar">{{sidebarCollapsed?'›':'‹'}}</button></div>
+    <div class="brand"><span class="brand-label">答疑中台</span></div>
     <div class="nav">
       <div class="nav-item" :class="{on:view==='overview'}" @click="openOverview"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg></span>运营总览</div>
       <div class="nav-item" :class="{on:view==='knowledge'}" @click="openKnowledge()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"></path><path d="M4 5.5v16"></path><path d="M8 7h8M8 11h8"></path></svg></span>知识库管理</div>
       <div class="nav-group" v-if="can('knowledge:submit')">
-        <div class="nav-item nav-group-head" :class="{active:isKnowledgeFlowView()}" @click="sidebarCollapsed?toggleSidebar():toggleKnowledgeMenu()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"></path><path d="M4 5.5v16"></path><path d="M8 7h8M8 11h8"></path></svg></span><span class="nav-group-label">知识沉淀</span><span class="nav-group-chevron" :class="{open:knowledgeMenuOpen}" aria-hidden="true">⌄</span></div>
+        <div class="nav-item nav-group-head" :class="{active:isKnowledgeFlowView()}" @click="toggleKnowledgeMenu()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"></path><path d="M4 5.5v16"></path><path d="M8 7h8M8 11h8"></path></svg></span><span class="nav-group-label">知识沉淀</span><span class="nav-group-chevron" :class="{open:knowledgeMenuOpen}" aria-hidden="true">⌄</span></div>
         <div class="nav-subitems" v-show="knowledgeMenuOpen">
           <div class="nav-subitem" :class="{on:view==='candidateReviews'}" title="候选价值复核" @click="openCandidateReviews"><span class="nav-subdot" aria-hidden="true"></span>候选价值复核</div>
           <div class="nav-subitem" :class="{on:view==='automationMonitor'}" title="运行监管" @click="openAutomationMonitor"><span class="nav-subdot" aria-hidden="true"></span>运行监管</div>
@@ -736,34 +725,28 @@
       <div class="card" :class="{active:candidateReviews.filter.priorityOnly}" @click="setCandidateReviewFilter('',true)"><div class="lb">重点复核</div><div class="vl" style="color:#765be6!important">{{candidateReviews.summary.priority}}</div><div class="metric-note"><b style="color:#765be6">高优先级</b> 模型标记风险项</div></div>
       <div class="card" :class="{active:candidateReviews.filter.deduplicationRequired}" @click="setCandidateReviewDeduplicationFilter(true)"><div class="lb">疑似重复确认</div><div class="vl og">{{candidateReviews.summary.deduplication_required}}</div><div class="metric-note"><b>待核对</b> 确认内容是否确实不同</div></div>
     </div>
-    <div class="bar review-toolbar">
-      <span class="tt">审核队列</span>
-      <input class="inp review-search" v-model="candidateReviews.filter.keyword" placeholder="搜索标题、事件 ID 或来源会话" @keyup.enter="loadCandidateReviews">
-      <select class="inp" v-model="candidateReviews.filter.status" @change="loadCandidateReviews">
-        <option value="">全部状态</option>
-        <option value="pending">待人工确认</option>
-        <option value="ready">可批量送审</option>
-        <option value="rejected">不沉淀</option>
-        <option value="submitted">已进入发布审核</option>
-        <option value="failed">送审失败</option>
-      </select>
-      <select class="inp" v-model="candidateReviews.filter.deduplicationRequired" @change="loadCandidateReviews">
-        <option :value="false">全部查重状态</option>
-        <option :value="true">疑似重复确认</option>
-      </select>
-      <select class="inp" v-model="candidateReviews.filter.productCategory" @change="loadCandidateReviews(true)"><option value="">全部品类</option><option v-for="category in candidateReviews.productCategories" :key="category.value" :value="category.value">{{category.label}}</option></select>
-      <select class="inp" v-model="candidateReviews.filter.annotationStatus" @change="loadCandidateReviews(true)"><option value="">全部标注状态</option><option value="annotated">已标注</option><option value="unannotated">未标注</option></select>
-      <select class="inp" v-model="candidateReviews.filter.modelKnowledgeValue" @change="loadCandidateReviews(true)"><option value="">全部模型初标</option><option value="worthy">模型初标：值得沉淀</option><option value="unworthy">模型初标：不值得沉淀</option><option value="pending">模型初标：待确定</option></select>
-      <label class="automation-date-field">更新开始 <input class="inp" type="date" v-model="candidateReviews.filter.updatedFrom" @change="loadCandidateReviews(true)"></label>
-      <label class="automation-date-field">更新结束 <input class="inp" type="date" v-model="candidateReviews.filter.updatedTo" @change="loadCandidateReviews(true)"></label>
-      <label class="review-check-label"><input type="checkbox" v-model="candidateReviews.filter.priorityOnly" @change="loadCandidateReviews"> 仅重点复核</label>
-      <span class="review-selected-note">已选 <b>{{candidateReviews.selected.length}}</b> 条</span>
-      <label class="candidate-training-toggle"><input type="checkbox" v-model="candidateReviews.includeInTraining"> 作为训练样本</label>
-      <button class="btn bd" @click="loadCandidateReviews" :disabled="candidateReviews.loading">{{candidateReviews.loading?'加载中...':'刷新'}}</button>
-      <button class="btn bd" @click="batchAnnotateCandidateReviews('unworthy')" :disabled="candidateReviews.annotating||!candidateReviews.selected.length">批量标为不沉淀</button>
-      <button class="btn bd" @click="batchAnnotateCandidateReviews('worthy')" :disabled="candidateReviews.annotating||!candidateReviews.selected.length">批量标为值得沉淀</button>
-      <button class="btn bp" @click="submitSelectedCandidateReviews" :disabled="candidateReviews.submitting||!selectedSubmittableReviewIds().length">{{candidateReviews.submitting?'送审中...':'批量送审 '+selectedSubmittableReviewIds().length+' 条'}}</button>
-    </div>
+    <section class="candidate-filter-card" aria-label="审核队列筛选条件">
+      <div class="candidate-filter-head">审核队列 · 筛选条件</div>
+      <div class="candidate-filter-grid">
+        <label class="candidate-filter-field keyword"><span>关键词（标题 / 事件 ID / 来源会话）</span><input class="inp" v-model="candidateReviews.filter.keyword" placeholder="⌕ 输入后回车搜索" @keyup.enter="loadCandidateReviews(true)"></label>
+        <label class="candidate-filter-field"><span>审核状态</span><select class="inp" v-model="candidateReviews.filter.status" @change="loadCandidateReviews(true)"><option value="">全部状态</option><option value="pending">待人工确认</option><option value="ready">可批量送审</option><option value="rejected">不沉淀</option><option value="submitted">已进入发布审核</option><option value="failed">送审失败</option></select></label>
+        <label class="candidate-filter-field"><span>查重状态</span><select class="inp" v-model="candidateReviews.filter.deduplicationRequired" @change="loadCandidateReviews(true)"><option :value="false">全部查重状态</option><option :value="true">疑似重复确认</option></select></label>
+        <label class="candidate-filter-field"><span>品类</span><select class="inp" v-model="candidateReviews.filter.productCategory" @change="loadCandidateReviews(true)"><option value="">全部品类</option><option v-for="category in candidateReviews.productCategories" :key="category.value" :value="category.value">{{category.label}}</option></select></label>
+        <label class="candidate-filter-field"><span>标注状态</span><select class="inp" v-model="candidateReviews.filter.annotationStatus" @change="loadCandidateReviews(true)"><option value="">全部标注状态</option><option value="annotated">已标注</option><option value="unannotated">未标注</option></select></label>
+        <label class="candidate-filter-field"><span>模型初标</span><select class="inp" v-model="candidateReviews.filter.modelKnowledgeValue" @change="loadCandidateReviews(true)"><option value="">全部模型初标</option><option value="worthy">模型初标：值得沉淀</option><option value="unworthy">模型初标：不值得沉淀</option><option value="pending">模型初标：待确定</option></select></label>
+        <label class="candidate-filter-field date-range"><span>更新时间范围</span><span class="candidate-date-inputs"><input class="inp" type="date" aria-label="更新开始" v-model="candidateReviews.filter.updatedFrom" @change="loadCandidateReviews(true)"><i class="candidate-date-separator">~</i><input class="inp" type="date" aria-label="更新结束" v-model="candidateReviews.filter.updatedTo" @change="loadCandidateReviews(true)"></span></label>
+        <label class="candidate-priority-field"><input type="checkbox" v-model="candidateReviews.filter.priorityOnly" @change="loadCandidateReviews(true)"> 仅重点复核</label>
+      </div>
+      <div class="candidate-filter-actions">
+        <span class="review-selected-note">已选 <b>{{candidateReviews.selected.length}}</b> 条</span>
+        <label class="candidate-training-toggle"><input type="checkbox" v-model="candidateReviews.includeInTraining"> 作为训练样本</label>
+        <button class="btn bd" @click="loadCandidateReviews" :disabled="candidateReviews.loading">{{candidateReviews.loading?'加载中...':'↻ 刷新'}}</button>
+        <button class="btn bd" @click="resetCandidateReviewFilters" :disabled="candidateReviews.loading">重置筛选</button>
+        <button class="btn br" @click="batchAnnotateCandidateReviews('unworthy')" :disabled="candidateReviews.annotating||!candidateReviews.selected.length">批量标为不沉淀</button>
+        <button class="btn bs" @click="batchAnnotateCandidateReviews('worthy')" :disabled="candidateReviews.annotating||!candidateReviews.selected.length">批量标为值得沉淀</button>
+        <button class="btn bp" @click="submitSelectedCandidateReviews" :disabled="candidateReviews.submitting||!selectedSubmittableReviewIds().length">{{candidateReviews.submitting?'送审中...':'批量送审'}}</button>
+      </div>
+    </section>
     <div class="integration-hint">Answer Hub 同步到本页后，复核人可补充组员验证与修改意见。批量送审只创建“待发布审核”知识，不会直接发布。</div>
     <div class="tw" :class="{'review-loading':candidateReviews.loading}">
       <table class="review-table">
@@ -1856,7 +1839,6 @@ Vue.createApp({
     return {
       ready: false,
       view: 'overview',
-      sidebarCollapsed: localStorage.getItem('kb_sidebar_collapsed') === '1',
       knowledgeMenuOpen: localStorage.getItem('kb_knowledge_menu_open') !== '0',
       token: localStorage.getItem('kb_token') || '',
       currentUser: {},
@@ -3011,11 +2993,6 @@ Vue.createApp({
       this.loadStats();
       this.loadCandidateReviewDashboard();
     },
-    toggleSidebar: function() {
-      this.sidebarCollapsed = !this.sidebarCollapsed;
-      localStorage.setItem('kb_sidebar_collapsed', this.sidebarCollapsed ? '1' : '0');
-      if (!this.sidebarCollapsed && this.isKnowledgeFlowView()) this.knowledgeMenuOpen = true;
-    },
     toggleKnowledgeMenu: function() {
       this.knowledgeMenuOpen = !this.knowledgeMenuOpen;
       localStorage.setItem('kb_knowledge_menu_open', this.knowledgeMenuOpen ? '1' : '0');
@@ -3700,6 +3677,11 @@ Vue.createApp({
       this.candidateReviews.filter.priorityOnly = false;
       this.candidateReviews.selected = [];
       this.loadCandidateReviews();
+    },
+    resetCandidateReviewFilters: function() {
+      this.candidateReviews.filter = {keyword:'', status:'', priorityOnly:false, deduplicationRequired:false, productCategory:'', annotationStatus:'', modelKnowledgeValue:'', updatedFrom:'', updatedTo:''};
+      this.candidateReviews.selected = [];
+      this.loadCandidateReviews(true);
     },
     loadCandidateReviewDashboard: function() {
       var self = this;
