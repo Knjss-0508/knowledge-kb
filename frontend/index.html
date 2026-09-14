@@ -420,6 +420,7 @@
       <div class="nav-item" v-if="can('knowledge:submit')" :class="{on:view==='candidateReviews'}" @click="openCandidateReviews"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4h10a2 2 0 0 1 2 2v14H5V6a2 2 0 0 1 2-2z"></path><path d="M9 4V2h6v2M8 9h8M8 13h5"></path><path d="m14.5 16 1.5 1.5 3-3"></path></svg></span>候选价值复核</div>
       <div class="nav-item" v-if="can('knowledge:submit')" :class="{on:view==='automationMonitor'}" @click="openAutomationMonitor"><span class="nav-icon" aria-hidden="true">◉</span>运行监管</div>
       <div class="nav-item" :class="{on:view==='embeddingModel'}" @click="openEmbeddingModel()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4.5a3 3 0 0 1 5.2-2A3.5 3.5 0 0 1 18 5.8a3.2 3.2 0 0 1 1.2 5.9A3.5 3.5 0 0 1 17 18a3 3 0 0 1-5 2.2A3 3 0 0 1 7 18a3.5 3.5 0 0 1-2.2-6.3A3.2 3.2 0 0 1 6 5.8 3.5 3.5 0 0 1 8 4.5z"></path><path d="M12 4v16M8.5 8.5c1.5.3 2.5 1.2 3.5 2.5M15.5 8.5c-1.5.3-2.5 1.2-3.5 2.5M8.5 15.5c1.5-.3 2.5-1.2 3.5-2.5M15.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5"></path></svg></span>向量模型</div>
+      <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='retrievalReview'}" @click="openRetrievalReviewPage"><span class="nav-icon" aria-hidden="true">✓</span>召回标注</div>
       <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='users'}" @click="openUsers"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c.8-3.2 3.1-5 7-5s6.2 1.8 7 5"></path><path d="M19 8v4M21 10h-4"></path></svg></span>账号管理</div>
     </div>
     <div class="side-foot">
@@ -1180,6 +1181,12 @@
       </tbody></table></div>
     </template>
   </div>
+  <div class="mn embedding-shell" v-if="view==='retrievalReview' && isSuperAdmin()">
+    <section class="embedding-hero"><div class="embedding-hero-copy"><div class="embedding-eyebrow">Retrieval Review</div><h2>召回标注</h2><p>这里只展示待标注召回请求。点击“开始标注”后，按总部标准与业务沉淀分别查看 TOP 3 候选，并逐条标记可参考或不可参考。</p></div><div class="embedding-hero-side"><div class="embedding-mini"><span>待标注</span><b>{{analysis.pagination.total}}</b></div><div class="embedding-mini"><span>数据更新时间</span><b>{{analysis.updatedAt}}</b></div></div></section>
+    <div class="bar"><span class="tt">待标注数据</span><span class="review-selected-note">共 <b>{{analysis.pagination.total}}</b> 条</span><span style="flex:1"></span><button class="btn bd" :disabled="analysis.loading" @click="loadRetrievalReviewPage">刷新</button></div>
+    <div class="tw"><table><thead><tr><th style="width:140px">工单 ID</th><th>查询词</th><th style="width:120px">候选数</th><th style="width:150px">上报时间</th><th style="width:120px">操作</th></tr></thead><tbody><tr v-for="item in analysis.risks" :key="item.id"><td>{{item.conversation_id || item.id}}</td><td><div class="risk-query" :title="item.query">{{item.query}}</div></td><td>{{item.candidate_count || (item.candidates || []).length}}</td><td>{{formatDate(item.created_at)}}</td><td><button class="btn bp bsm" @click="openRetrievalReview(item)">开始标注</button></td></tr><tr v-if="!analysis.risks.length"><td colspan="5" class="review-empty">暂无待标注数据。</td></tr></tbody></table></div>
+    <div class="knowledge-review-batch-bar" v-if="analysis.pagination.total"><div class="knowledge-pagination"><span class="knowledge-pagination-summary">第 {{retrievalPageStart()}}-{{retrievalPageEnd()}} 条 / 共 <b>{{analysis.pagination.total}}</b> 条</span><button class="knowledge-page-nav" @click="changeRetrievalPage(analysis.pagination.page-1)" :disabled="analysis.loading || analysis.pagination.page<=1">‹</button><button class="knowledge-page-nav" @click="changeRetrievalPage(analysis.pagination.page+1)" :disabled="analysis.loading || analysis.pagination.page>=retrievalTotalPages()">›</button></div></div>
+  </div>
   <div class="mn" v-if="view==='users' && isSuperAdmin()">
     <div class="user-form">
       <div><label class="fl">账号</label><input class="fi" v-model="newUser.username" placeholder="输入账号"></div>
@@ -1850,59 +1857,31 @@
                   <div class="embedding-candidate-pool-head"><strong>{{pool.label}}</strong><span>{{pool.items.length}} 条</span></div>
                   <div class="embedding-candidate-pool-empty" v-if="!pool.items.length">本次未返回该来源的候选知识</div>
                   <div class="embedding-candidate-list" v-else>
-                    <label class="embedding-candidate-card" :class="{on:embedding.review.form.expected_knowledge_id===candidate.knowledge_id}" v-for="(candidate,poolIndex) in pool.items" :key="pool.key+'-'+candidate.knowledge_id">
-                      <input class="embedding-candidate-radio" type="radio" v-model="embedding.review.form.expected_knowledge_id" :value="candidate.knowledge_id" @change="selectRetrievalCandidate(candidate.knowledge_id)">
+                    <article class="embedding-candidate-card" v-for="(candidate,poolIndex) in pool.items" :key="pool.key+'-'+candidate.knowledge_id">
                       <span class="embedding-candidate-head">
                         <span class="embedding-candidate-rank">#{{poolIndex+1}}</span>
                         <span class="embedding-candidate-main">
                           <strong>{{candidate.title || candidate.knowledge_id}}</strong>
                           <small>{{candidate.knowledge_id}} · 相似度 {{retrievalCandidateScore(candidate)}}<template v-if="embedding.review.item.selected_knowledge_id===candidate.knowledge_id"> · 下游已采用</template></small>
                         </span>
-                        <span class="embedding-candidate-choice">{{embedding.review.form.expected_knowledge_id===candidate.knowledge_id?'已选择':'选择此知识'}}</span>
+                        <span class="embedding-candidate-choice"><button type="button" class="btn bd bsm" :class="{bp:retrievalCandidateLabel(candidate)==='helpful'}" @click="setRetrievalCandidateLabel(candidate,'helpful')">可参考</button><button type="button" class="btn bd bsm" :class="{bp:retrievalCandidateLabel(candidate)==='unhelpful'}" @click="setRetrievalCandidateLabel(candidate,'unhelpful')">不可参考</button></span>
                       </span>
-                      <span class="embedding-candidate-content" v-if="embedding.review.form.expected_knowledge_id===candidate.knowledge_id" aria-live="polite">
+                      <span class="embedding-candidate-content" aria-live="polite">
                         <span class="embedding-candidate-loading" v-if="candidate._detail_loading">正在加载知识内容...</span>
                         <span class="embedding-candidate-error" v-else-if="candidate._detail_error">{{candidate._detail_error}}</span>
                         <span v-else>{{retrievalCandidateContent(candidate)}}</span>
                       </span>
-                    </label>
+                    </article>
                   </div>
                 </section>
               </div>
             </div>
           </section>
           <section class="retrieval-review-conclusion" aria-labelledby="retrieval-review-conclusion-title">
-            <div class="fl" id="retrieval-review-conclusion-title">人工结论</div>
+            <div class="fl" id="retrieval-review-conclusion-title">标注结论</div>
             <div class="retrieval-review-grid">
-              <div class="span-2">
-                <div class="retrieval-judgement-options">
-                  <label class="retrieval-judgement-option" :class="{on:embedding.review.form.human_judgement==='correct'}">
-                    <input type="radio" value="correct" v-model="embedding.review.form.human_judgement" @change="setRetrievalHumanJudgement('correct')">
-                    <strong>已找到正确知识</strong>
-                    <span>从候选中选择，或填写候选外的正确知识 ID</span>
-                  </label>
-                  <label class="retrieval-judgement-option" :class="{on:embedding.review.form.human_judgement==='irrelevant'}">
-                    <input type="radio" value="irrelevant" v-model="embedding.review.form.human_judgement" @change="setRetrievalHumanJudgement('irrelevant')">
-                    <strong>候选均不适用</strong>
-                    <span>当前候选都不能正确回答这个问题</span>
-                  </label>
-                  <label class="retrieval-judgement-option" :class="{on:embedding.review.form.human_judgement==='uncertain'}">
-                    <input type="radio" value="uncertain" v-model="embedding.review.form.human_judgement" @change="setRetrievalHumanJudgement('uncertain')">
-                    <strong>暂时无法判断</strong>
-                    <span>信息不足，本条不进入训练样本</span>
-                  </label>
-                </div>
-              </div>
-              <div class="span-2 retrieval-derived-note">两类知识分别按当前设置的 TOP 数量计算名次；排序错误、正确知识未召回等原因由所选知识在所属候选池中的位置自动判断。</div>
-              <div><label class="fl">正确知识 ID</label><input class="fi" v-model="embedding.review.form.expected_knowledge_id" :disabled="embedding.review.form.human_judgement!=='correct'" @input="markRetrievalKnowledgeAsCorrect" placeholder="选择候选卡片，或手工填写候选外知识 ID"></div>
-              <div><label class="fl">训练资格</label><label class="review-check-label" style="height:34px"><input type="checkbox" v-model="embedding.review.form.training_eligible" :disabled="embedding.review.form.human_judgement!=='correct' || !embedding.review.form.expected_knowledge_id.trim()" @change="markRetrievalTrainingEligibilityTouched"> 确认后进入训练样本池</label></div>
+              <div class="span-2 retrieval-derived-note">每条候选只标注“可参考”或“不可参考”。总部标准与业务沉淀分别展示，最多各保留 TOP 3。</div>
               <div class="span-2"><label class="fl">说明（选填）</label><textarea class="fi" rows="3" v-model="embedding.review.form.reason" placeholder="可补充人工判定依据"></textarea></div>
-              <div class="span-2 retrieval-review-quick-actions">
-                <span class="retrieval-review-quick-label">快速标注</span>
-                <button type="button" class="btn bd bsm" @click="quickSubmitRetrievalReview('irrelevant')" :disabled="embedding.review.saving">{{canNavigateRetrievalReview(1)?'候选均不适用并下一条':'候选均不适用并保存'}}</button>
-                <button type="button" class="btn bd bsm" @click="quickSubmitRetrievalReview('uncertain')" :disabled="embedding.review.saving">{{canNavigateRetrievalReview(1)?'无法判断并下一条':'无法判断并保存'}}</button>
-                <span class="retrieval-review-shortcuts">Alt+←/→ 切换 · Ctrl+Enter 保存 · Ctrl+Shift+Enter 保存并下一条</span>
-              </div>
             </div>
           </section>
         </div>
@@ -2148,7 +2127,8 @@ Vue.createApp({
         automationMonitor:'运行监管',
         embeddingModel:'向量模型',
         changeLogs:'变更日志',
-        users:'账号管理'
+        users:'账号管理',
+        retrievalReview:'召回标注'
       }[this.view] || '运营总览';
     },
     viewSubtitle: function() {
@@ -2159,7 +2139,8 @@ Vue.createApp({
         automationMonitor:'自动化队列、异常反馈与运行日志',
         embeddingModel:'召回分析、上传查重、纠错与离线训练',
         changeLogs:'已发布知识变更追溯',
-        users:'创建和查看后台账号'
+        users:'创建和查看后台账号',
+        retrievalReview:'待标注召回请求'
       }[this.view] || '知识运营工作台';
     },
     canEditKnowledge: function(item) {
@@ -4858,6 +4839,7 @@ Vue.createApp({
       var params = new URLSearchParams();
       params.set('page', String(self.analysis.pagination.page || 1));
       params.set('page_size', String(self.analysis.pagination.size || 20));
+      if (options.pendingOnly || self.view === 'retrievalReview') params.set('pending_only', 'true');
       var bounds = self.retrievalPeriodBounds(requestedFilter);
       if (bounds) {
         params.set('start_at', bounds.start.toISOString());
@@ -5005,6 +4987,9 @@ Vue.createApp({
           unclassified.push(candidate);
         }
       });
+      headquarters = headquarters.slice(0, 3);
+      business = business.slice(0, 3);
+      unclassified = unclassified.slice(0, 3);
       var pools = [
         {key:'headquarters_standard',label:'总部标准',items:headquarters},
         {key:'business_accumulation',label:'业务沉淀',items:business}
@@ -5017,6 +5002,15 @@ Vue.createApp({
         });
       }
       return pools;
+    },
+    retrievalCandidateLabel: function(candidate) {
+      var labels = this.embedding.review.form.candidate_labels || {};
+      return candidate ? (labels[String(candidate.knowledge_id || '')] || '') : '';
+    },
+    setRetrievalCandidateLabel: function(candidate, label) {
+      if (!candidate || !candidate.knowledge_id) return;
+      if (!this.embedding.review.form.candidate_labels) this.embedding.review.form.candidate_labels = {};
+      this.embedding.review.form.candidate_labels[String(candidate.knowledge_id)] = label;
     },
     retrievalCandidatePoolRank: function(candidate) {
       if (!candidate) return null;
@@ -5175,7 +5169,8 @@ Vue.createApp({
             previouslyReviewed ? !!item.training_eligible : true
           ),
           training_eligible_touched:previouslyReviewed,
-          reason:''
+          reason:'',
+          candidate_labels:(item.event_metadata && item.event_metadata.candidate_labels) || {}
         }
       };
       if (!candidates.length) return;
@@ -5212,50 +5207,20 @@ Vue.createApp({
       var navigationTarget = navigateDelta
         ? self.retrievalReviewNeighbor(navigateDelta)
         : null;
-      var judgement = review.form.human_judgement;
-      var expectedKnowledgeId = review.form.expected_knowledge_id.trim();
-      if (!judgement) { alert('请选择人工结论'); return Promise.resolve(false); }
-      if (judgement === 'correct' && !expectedKnowledgeId) { alert('请选择或填写正确知识 ID'); return Promise.resolve(false); }
-      var reviewStatus = judgement === 'uncertain' ? 'excluded' : 'confirmed';
+      var labels = review.form.candidate_labels || {};
+      var visibleCandidates = [];
+      (self.retrievalCandidatePools() || []).forEach(function(pool){ visibleCandidates = visibleCandidates.concat(pool.items || []); });
+      if (visibleCandidates.some(function(c){ return !labels[String(c.knowledge_id || '')]; })) { alert('请先完成所有 TOP 3 候选的标注'); return Promise.resolve(false); }
+      var reviewStatus = 'confirmed';
+      var expectedKnowledgeId = null;
       var feedbackType = 'none';
       var failureReason = '';
-      if (judgement === 'correct') {
-        var candidates = review.item.candidates || [];
-        var matchedIndex = -1;
-        for (var i = 0; i < candidates.length; i += 1) {
-          if (String(candidates[i].knowledge_id || '') === expectedKnowledgeId) {
-            matchedIndex = i;
-            break;
-          }
-        }
-        if (matchedIndex < 0) {
-          feedbackType = 'corrected';
-          failureReason = 'knowledge_missing';
-        } else {
-          var matchedRank = self.retrievalCandidatePoolRank(candidates[matchedIndex]);
-          if (!matchedRank) matchedRank = matchedIndex + 1;
-          feedbackType = matchedRank <= 1 ? 'helpful' : 'corrected';
-          failureReason = matchedRank <= 1 ? '' : 'wrong_ranking';
-        }
-      } else if (judgement === 'irrelevant') {
-        feedbackType = 'unhelpful';
-        failureReason = 'candidate_irrelevant';
-        expectedKnowledgeId = '';
-      } else {
-        failureReason = 'unknown';
-        expectedKnowledgeId = '';
-      }
-      var trainingEligible = (
-        reviewStatus === 'confirmed' &&
-        judgement === 'correct' &&
-        !!expectedKnowledgeId &&
-        !!review.form.training_eligible
-      );
+      var trainingEligible = false;
       review.saving = true;
       return fetch(API + '/embedding-model/retrieval-events/' + encodeURIComponent(review.item.id) + '/review', {
         method:'POST',
         headers:self.authHeaders({'Content-Type':'application/json'}),
-        body:JSON.stringify({review_status:reviewStatus,expected_knowledge_id:expectedKnowledgeId || null,feedback_type:feedbackType,failure_reason:failureReason,reason:review.form.reason.trim(),training_eligible:trainingEligible})
+        body:JSON.stringify({review_status:reviewStatus,expected_knowledge_id:null,feedback_type:feedbackType,failure_reason:failureReason,candidate_labels:labels,reason:review.form.reason.trim(),training_eligible:false})
       })
         .then(function(response) { return response.json().then(function(data) { if (!response.ok) throw new Error(data.detail || '保存召回标注失败'); return data; }); })
         .then(function() { review.open=false; return Promise.all([self.loadSearchAnalysis(),self.loadEmbeddingOverview()]); })
@@ -7371,6 +7336,14 @@ Vue.createApp({
       var safeSrc = this.normalizePreviewUrl(src);
       if (!safeSrc) return;
       this.full = {show:true, src:safeSrc, isVideo:!!isVideo, error:false, zoom:1};
+    },
+    openRetrievalReviewPage: function() {
+      this.view = 'retrievalReview';
+      this.loadRetrievalReviewPage();
+    },
+    loadRetrievalReviewPage: function() {
+      this.analysis.pagination.page = 1;
+      return this.loadSearchAnalysis({pendingOnly:true});
     },
     setFullPreviewZoom: function(zoom) {
       if (!this.full || this.full.isVideo) return;
