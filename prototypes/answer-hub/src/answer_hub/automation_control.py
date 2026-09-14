@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import os
 from pathlib import Path
 from subprocess import CompletedProcess
 import subprocess
@@ -10,6 +11,9 @@ from typing import Any
 
 
 AUTOMATION_TASK_NAME = "AnswerHubAutomationQueue"
+SYSTEMD_TIMER_UNIT = "answer-hub-queue.timer"
+SYSTEMD_SERVICE_UNIT = "answer-hub-queue.service"
+SYSTEMCTL_COMMAND = "/usr/bin/systemctl"
 
 
 class AutomationTaskControlError(RuntimeError):
@@ -68,14 +72,22 @@ class AutomationTaskController:
         runner: CommandRunner = _run_command,
         retry_launcher: RetryLauncher = _start_retry,
         task_name: str = AUTOMATION_TASK_NAME,
+        platform_name: str | None = None,
     ) -> None:
         if task_name != AUTOMATION_TASK_NAME:
             raise ValueError("只允许控制 Answer Hub 自动化计划任务。")
         self._runner = runner
         self._retry_launcher = retry_launcher
         self.task_name = task_name
+        self._platform_name = platform_name or os.name
+
+    @property
+    def _uses_systemd(self) -> bool:
+        return self._platform_name != "nt"
 
     def status(self) -> dict[str, Any]:
+        if self._uses_systemd:
+            return self._systemd_status()
         command = ["schtasks.exe", "/Query", "/TN", self.task_name, "/FO", "LIST", "/V"]
         try:
             result = self._runner(command)
@@ -112,6 +124,8 @@ class AutomationTaskController:
         }
 
     def set_enabled(self, enabled: bool) -> dict[str, Any]:
+        if self._uses_systemd:
+            return self._systemd_set_enabled(enabled)
         if not enabled:
             # Disabling a scheduled task only prevents future triggers; it does
             # not stop a scanner that is already running. End the current task
@@ -130,6 +144,11 @@ class AutomationTaskController:
         }
 
     def run_now(self) -> dict[str, str]:
+        if self._uses_systemd:
+            self._run_scheduler(
+                ["sudo", "-n", SYSTEMCTL_COMMAND, "start", "--no-block", SYSTEMD_SERVICE_UNIT]
+            )
+            return {"message": "已请求立即执行自动化队列扫描。"}
         self._run_scheduler(["schtasks.exe", "/Run", "/TN", self.task_name])
         return {"message": "已请求立即执行自动化队列扫描。"}
 
@@ -162,6 +181,53 @@ class AutomationTaskController:
         if result.returncode != 0:
             raise AutomationTaskControlError(_command_error(result))
         return result
+
+    def _systemd_status(self) -> dict[str, Any]:
+        try:
+            load_state = self._runner(
+                ["systemctl", "show", SYSTEMD_TIMER_UNIT, "--property=LoadState", "--value"]
+            )
+            enabled_state = self._runner(["systemctl", "is-enabled", SYSTEMD_TIMER_UNIT])
+            running_state = self._runner(["systemctl", "is-active", SYSTEMD_SERVICE_UNIT])
+        except OSError as exc:
+            raise AutomationTaskControlError(f"无法读取 systemd 自动化计划任务状态：{exc}") from exc
+        installed = load_state.returncode == 0 and (load_state.stdout or "").strip() == "loaded"
+        if not installed:
+            return {
+                "task_name": self.task_name,
+                "installed": False,
+                "enabled": False,
+                "running": False,
+                "message": "自动化计划任务尚未安装。",
+            }
+        enabled = enabled_state.returncode == 0
+        running = running_state.returncode == 0 and (running_state.stdout or "").strip() == "active"
+        if not enabled:
+            message = "计划任务已暂停，不会自动扫描新任务。"
+        elif running:
+            message = "计划任务已启用，当前正在扫描或处理队列。"
+        else:
+            message = "计划任务已启用，等待下一次计划扫描。"
+        return {
+            "task_name": self.task_name,
+            "installed": True,
+            "enabled": enabled,
+            "running": running,
+            "message": message,
+        }
+
+    def _systemd_set_enabled(self, enabled: bool) -> dict[str, Any]:
+        current = self.status()
+        if not current.get("installed"):
+            raise AutomationTaskControlError("自动化 systemd 计划任务尚未安装。")
+        action = "enable" if enabled else "disable"
+        self._run_scheduler(
+            ["sudo", "-n", SYSTEMCTL_COMMAND, action, "--now", SYSTEMD_TIMER_UNIT]
+        )
+        return {
+            "enabled": enabled,
+            "message": "已启用自动化计划任务，将创建新的扫描进程。" if enabled else "已停止当前自动化进程并暂停计划任务。",
+        }
 
 
 def read_automation_log_tail(project_root: Path, *, lines: int = 80) -> dict[str, str]:
