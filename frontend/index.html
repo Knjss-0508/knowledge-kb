@@ -407,6 +407,7 @@
     .review-desk-dedup-item strong{overflow-wrap:anywhere}
     .review-desk-dedup-action{flex:0 0 auto}
     @media(max-width:760px){.review-desk-dedup-item{align-items:flex-start;flex-direction:column}.review-desk-dedup-action{width:100%}}
+  .nav-group{margin-top:4px}.nav-group-head{justify-content:flex-start;gap:0;color:#b8c6d8}.nav-group-head.active{color:#fff;background:rgba(255,255,255,.06)}.nav-group-head .nav-group-chevron{margin-left:auto;font-size:12px;transition:transform .18s ease;color:#91a5b8}.nav-group-head .nav-group-chevron.open{transform:rotate(180deg);color:#fff}.nav-subitems{padding:2px 0 4px}.nav-subitem{height:36px;display:flex;align-items:center;padding:0 20px 0 52px;color:#9fb0c0;font-size:12px;cursor:pointer;border-left:3px solid transparent;white-space:nowrap}.nav-subitem:hover{background:rgba(255,255,255,.06);color:#fff}.nav-subitem.on{background:rgba(0,155,131,.22);color:#fff;border-left-color:#20c5a7}.nav-subitem .nav-subdot{width:6px;height:6px;margin-right:9px;border-radius:50%;background:currentColor;opacity:.75}@media(max-width:760px){.nav-group{display:flex;flex:0 0 auto}.nav-group-head{display:none}.nav-subitems{display:flex!important;align-items:center;padding:0}.nav-subitem{height:44px;padding:0 12px;border:0;border-radius:6px;flex:0 0 auto;font-size:14px}.nav-subitem .nav-subdot{display:none}}
   </style>
 </head>
 <body>
@@ -417,8 +418,13 @@
     <div class="nav">
       <div class="nav-item" :class="{on:view==='overview'}" @click="openOverview"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg></span>运营总览</div>
       <div class="nav-item" :class="{on:view==='knowledge'}" @click="openKnowledge()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"></path><path d="M4 5.5v16"></path><path d="M8 7h8M8 11h8"></path></svg></span>知识库管理</div>
-      <div class="nav-item" v-if="can('knowledge:submit')" :class="{on:view==='candidateReviews'}" @click="openCandidateReviews"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4h10a2 2 0 0 1 2 2v14H5V6a2 2 0 0 1 2-2z"></path><path d="M9 4V2h6v2M8 9h8M8 13h5"></path><path d="m14.5 16 1.5 1.5 3-3"></path></svg></span>候选价值复核</div>
-      <div class="nav-item" v-if="can('knowledge:submit')" :class="{on:view==='automationMonitor'}" @click="openAutomationMonitor"><span class="nav-icon" aria-hidden="true">◉</span>运行监管</div>
+      <div class="nav-group" v-if="can('knowledge:submit')">
+        <div class="nav-item nav-group-head" :class="{active:isKnowledgeFlowView()}" @click="toggleKnowledgeMenu()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"></path><path d="M4 5.5v16"></path><path d="M8 7h8M8 11h8"></path></svg></span><span class="nav-group-label">知识沉淀</span><span class="nav-group-chevron" :class="{open:knowledgeMenuOpen}" aria-hidden="true">⌄</span></div>
+        <div class="nav-subitems" v-show="knowledgeMenuOpen">
+          <div class="nav-subitem" :class="{on:view==='candidateReviews'}" title="候选价值复核" @click="openCandidateReviews"><span class="nav-subdot" aria-hidden="true"></span>候选价值复核</div>
+          <div class="nav-subitem" :class="{on:view==='automationMonitor'}" title="运行监管" @click="openAutomationMonitor"><span class="nav-subdot" aria-hidden="true"></span>运行监管</div>
+        </div>
+      </div>
       <div class="nav-item" :class="{on:view==='embeddingModel'}" @click="openEmbeddingModel()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4.5a3 3 0 0 1 5.2-2A3.5 3.5 0 0 1 18 5.8a3.2 3.2 0 0 1 1.2 5.9A3.5 3.5 0 0 1 17 18a3 3 0 0 1-5 2.2A3 3 0 0 1 7 18a3.5 3.5 0 0 1-2.2-6.3A3.2 3.2 0 0 1 6 5.8 3.5 3.5 0 0 1 8 4.5z"></path><path d="M12 4v16M8.5 8.5c1.5.3 2.5 1.2 3.5 2.5M15.5 8.5c-1.5.3-2.5 1.2-3.5 2.5M8.5 15.5c1.5-.3 2.5-1.2 3.5-2.5M15.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5"></path></svg></span>向量模型</div>
       <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='retrievalReview'}" @click="openRetrievalReviewPage"><span class="nav-icon" aria-hidden="true">✓</span>召回标注</div>
       <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='users'}" @click="openUsers"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c.8-3.2 3.1-5 7-5s6.2 1.8 7 5"></path><path d="M19 8v4M21 10h-4"></path></svg></span>账号管理</div>
@@ -1922,6 +1928,7 @@ Vue.createApp({
   data: function() {
     return {
       ready: false,
+      knowledgeMenuOpen: localStorage.getItem('kb_knowledge_menu_open') !== '0',
       view: 'overview',
       token: localStorage.getItem('kb_token') || '',
       currentUser: {},
@@ -3460,6 +3467,8 @@ Vue.createApp({
       this.loadRoles();
       this.loadUsers();
     },
+    toggleKnowledgeMenu: function() { this.knowledgeMenuOpen = !this.knowledgeMenuOpen; localStorage.setItem('kb_knowledge_menu_open', this.knowledgeMenuOpen ? '1' : '0'); },
+    isKnowledgeFlowView: function() { return ['candidateReviews','automationMonitor'].indexOf(this.view) !== -1; },
     openOverview: function() {
       this.view = 'overview';
       this.loadStats();
@@ -4038,6 +4047,7 @@ Vue.createApp({
     },
     openAutomationMonitor: function() {
       if (!this.can('knowledge:submit')) return;
+      this.knowledgeMenuOpen = true;
       this.view = 'automationMonitor';
       this.loadAutomationMonitor();
     },
@@ -4118,6 +4128,7 @@ Vue.createApp({
     changeCandidateReviewPageSize: function(){this.candidateReviews.page=1;this.candidateReviews.selected=[];this.loadCandidateReviews();},
     openCandidateReviews: function() {
       if (!this.can('knowledge:submit')) return;
+      this.knowledgeMenuOpen = true;
       this.view = 'candidateReviews';
       if (!this.knowledgeOrigins.length) this.loadKnowledgeOrigins();
       if (!this.businessTypes.length) this.loadBusinessTypes();
