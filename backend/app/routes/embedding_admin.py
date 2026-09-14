@@ -932,6 +932,7 @@ def review_retrieval_event(
         "reviewed_by": current_user.username,
         "reviewed_at": event.reviewed_at.isoformat(),
     }
+    metadata["candidate_labels"] = dict(body.candidate_labels or {})
     event.event_metadata = metadata
     sample, sample_action = sync_retrieval_training_sample(
         db,
