@@ -1,10 +1,11 @@
 import logging
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
+from sqlalchemy import and_, case, func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1327,6 +1328,10 @@ def submit_retrieval_quality_events(
     results: list[RetrievalQualityEventResult] = []
     recorded = reused = 0
     seen_events: dict[str, RetrievalQualityEvent] = {}
+    seen_manual_feedback: dict[
+        tuple[str, str, str, str],
+        RetrievalQualityEvent,
+    ] = {}
     score_threshold = _active_retrieval_score_threshold(db)
 
     for candidate in body.items:
@@ -1369,6 +1374,79 @@ def submit_retrieval_quality_events(
                 )
             )
             continue
+        manual_feedback_key: tuple[str, str, str, str] | None = None
+        if (
+            candidate_source_kind == "reply"
+            and candidate.feedback_type in ("helpful", "unhelpful")
+        ):
+            metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+            manual_feedback_key = (
+                str(metadata.get("operator_name") or "").strip(),
+                str(candidate.query or "").strip(),
+                str(metadata.get("recommended_reply") or "").strip(),
+                str(candidate.conversation_id or "").strip(),
+            )
+            if not all(manual_feedback_key):
+                manual_feedback_key = None
+
+        if manual_feedback_key is not None:
+            existing = seen_manual_feedback.get(manual_feedback_key)
+            if existing is None:
+                if db.get_bind().dialect.name == "postgresql":
+                    db.execute(
+                        text(
+                            "SELECT pg_advisory_xact_lock("
+                            "hashtextextended(:dedupe_key, 0)"
+                            ")"
+                        ),
+                        {"dedupe_key": "\x1f".join(manual_feedback_key)},
+                    )
+                operator_name, question, recommended_reply, work_order_id = (
+                    manual_feedback_key
+                )
+                existing = (
+                    db.query(RetrievalQualityEvent)
+                    .filter(
+                        RetrievalQualityEvent.source_kind == "reply",
+                        RetrievalQualityEvent.feedback_type.in_(
+                            ("helpful", "unhelpful")
+                        ),
+                        func.trim(RetrievalQualityEvent.conversation_id)
+                        == work_order_id,
+                        func.trim(RetrievalQualityEvent.query_text) == question,
+                        func.trim(
+                            RetrievalQualityEvent.event_metadata[
+                                "operator_name"
+                            ].as_string()
+                        )
+                        == operator_name,
+                        func.trim(
+                            RetrievalQualityEvent.event_metadata[
+                                "recommended_reply"
+                            ].as_string()
+                        )
+                        == recommended_reply,
+                    )
+                    .order_by(
+                        RetrievalQualityEvent.created_at.asc(),
+                        RetrievalQualityEvent.id.asc(),
+                    )
+                    .first()
+                )
+            if existing is not None:
+                seen_manual_feedback[manual_feedback_key] = existing
+                reused += 1
+                results.append(
+                    RetrievalQualityEventResult(
+                        idempotency_key=candidate.idempotency_key,
+                        conversation_id=candidate.conversation_id,
+                        request_id=candidate.request_id,
+                        status="reused",
+                        outcome=existing.outcome,
+                        event_id=existing.id,
+                    )
+                )
+                continue
 
         evaluated_candidate = candidate.model_copy(
             update={"score_threshold": score_threshold}
@@ -1466,6 +1544,8 @@ def submit_retrieval_quality_events(
             )
             continue
         seen_events[candidate.idempotency_key] = event
+        if manual_feedback_key is not None:
+            seen_manual_feedback[manual_feedback_key] = event
         recorded += 1
         results.append(
             RetrievalQualityEventResult(
@@ -1484,6 +1564,195 @@ def submit_retrieval_quality_events(
         reused=reused,
         results=results,
     )
+
+
+def _feedback_record_candidate(event: RetrievalQualityEvent) -> dict[str, Any]:
+    metadata = event.event_metadata if isinstance(event.event_metadata, dict) else {}
+    candidates = [
+        item
+        for item in (event.candidate_snapshot or [])
+        if isinstance(item, dict)
+    ]
+    recommendation_id = str(
+        event.selected_knowledge_id
+        or metadata.get("selected_reply_knowledge_id")
+        or metadata.get("selected_knowledge_id")
+        or metadata.get("feedback_target_knowledge_id")
+        or ""
+    ).strip()
+    selected = next(
+        (
+            item
+            for item in candidates
+            if str(item.get("knowledge_id") or "").strip() == recommendation_id
+        ),
+        candidates[0] if candidates else {},
+    )
+    recommended_reply = str(
+        metadata.get("recommended_reply")
+        or selected.get("recommended_reply")
+        or selected.get("content")
+        or selected.get("title")
+        or ""
+    ).strip()
+    return {
+        "id": event.id,
+        "uploaded_at": (
+            f"{event.created_at.isoformat()}Z"
+            if event.created_at is not None
+            else None
+        ),
+        "operator_name": str(metadata.get("operator_name") or "").strip(),
+        "feedback_type": event.feedback_type,
+        "question": event.query_text,
+        "recommended_reply": recommended_reply,
+        "recommendation_title": str(selected.get("title") or "").strip(),
+        "work_order_id": str(event.conversation_id or "").strip(),
+        "recommendation_id": recommendation_id,
+    }
+
+
+@router.get("/feedback-records")
+def get_feedback_records(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("knowledge:view")),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    start_date: date | None = None,
+    end_date: date | None = None,
+    operator_name: str | None = Query(default=None, max_length=128),
+    feedback_type: str | None = Query(default=None),
+):
+    if feedback_type not in (None, "", "helpful", "unhelpful"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="反馈类型只支持 helpful 或 unhelpful",
+        )
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="开始日期不能晚于结束日期",
+        )
+
+    operator_expr = func.trim(
+        func.coalesce(
+            RetrievalQualityEvent.event_metadata["operator_name"].as_string(),
+            "",
+        )
+    )
+    question_expr = func.trim(
+        func.coalesce(RetrievalQualityEvent.query_text, "")
+    )
+    reply_expr = func.trim(
+        func.coalesce(
+            RetrievalQualityEvent.event_metadata["recommended_reply"].as_string(),
+            "",
+        )
+    )
+    work_order_expr = func.trim(
+        func.coalesce(RetrievalQualityEvent.conversation_id, "")
+    )
+    complete_business_key = and_(
+        operator_expr != "",
+        question_expr != "",
+        reply_expr != "",
+        work_order_expr != "",
+    )
+    incomplete_guard = case(
+        (complete_business_key, ""),
+        else_=RetrievalQualityEvent.id,
+    )
+    deduplicated = (
+        db.query(
+            RetrievalQualityEvent.id.label("event_id"),
+            func.row_number()
+            .over(
+                partition_by=(
+                    operator_expr,
+                    question_expr,
+                    reply_expr,
+                    work_order_expr,
+                    incomplete_guard,
+                ),
+                order_by=(
+                    RetrievalQualityEvent.created_at.asc(),
+                    RetrievalQualityEvent.id.asc(),
+                ),
+            )
+            .label("dedupe_rank"),
+        )
+        .filter(
+            RetrievalQualityEvent.source_kind == "reply",
+            RetrievalQualityEvent.feedback_type.in_(("helpful", "unhelpful")),
+        )
+        .subquery()
+    )
+    base_query = (
+        db.query(RetrievalQualityEvent)
+        .join(
+            deduplicated,
+            RetrievalQualityEvent.id == deduplicated.c.event_id,
+        )
+        .filter(deduplicated.c.dedupe_rank == 1)
+    )
+    query = base_query
+    if start_date is not None:
+        query = query.filter(
+            RetrievalQualityEvent.created_at >= datetime.combine(start_date, time.min)
+        )
+    if end_date is not None:
+        query = query.filter(
+            RetrievalQualityEvent.created_at
+            < datetime.combine(end_date + timedelta(days=1), time.min)
+        )
+    normalized_operator = str(operator_name or "").strip()
+    if normalized_operator:
+        query = query.filter(
+            RetrievalQualityEvent.event_metadata["operator_name"].as_string()
+            == normalized_operator
+        )
+    if feedback_type:
+        query = query.filter(RetrievalQualityEvent.feedback_type == feedback_type)
+
+    total = query.count()
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, total_pages)
+    events = (
+        query.order_by(
+            RetrievalQualityEvent.created_at.desc(),
+            RetrievalQualityEvent.id.desc(),
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    operator_rows = base_query.with_entities(
+        RetrievalQualityEvent.event_metadata
+    ).all()
+    operators = sorted(
+        {
+            str((metadata or {}).get("operator_name") or "").strip()
+            for (metadata,) in operator_rows
+            if isinstance(metadata, dict)
+            and str(metadata.get("operator_name") or "").strip()
+        }
+    )
+    return {
+        "items": [_feedback_record_candidate(event) for event in events],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        },
+        "filters": {
+            "operators": operators,
+            "feedback_types": [
+                {"value": "helpful", "label": "可参考"},
+                {"value": "unhelpful", "label": "不可参考"},
+            ],
+        },
+    }
 
 
 @router.get("/retrieval-analytics")

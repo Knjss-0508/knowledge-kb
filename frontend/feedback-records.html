@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>推荐回复反馈记录</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --primary: #1677ff;
+      --primary-hover: #0958d9;
+      --success: #389e0d;
+      --danger: #cf1322;
+      --text: #172033;
+      --muted: #667085;
+      --border: #dce3ee;
+      --surface: #ffffff;
+      --background: #f4f7fb;
+      --focus: rgba(22, 119, 255, .24);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background: var(--background);
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    button, input, select { font: inherit; }
+    button, select { cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 1px;
+    }
+    .page { width: min(1560px, 100%); margin: 0 auto; padding: 20px; }
+    .header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    h1 { margin: 0; font-size: 24px; line-height: 1.3; }
+    .subtitle { margin: 5px 0 0; color: var(--muted); }
+    .user { color: var(--muted); white-space: nowrap; }
+    .panel {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface);
+      box-shadow: 0 4px 16px rgba(31, 45, 61, .06);
+    }
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr)) auto;
+      gap: 12px;
+      align-items: end;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    label { display: grid; gap: 6px; color: #344054; font-weight: 600; }
+    input, select {
+      width: 100%;
+      min-height: 40px;
+      padding: 8px 10px;
+      color: var(--text);
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #fff;
+    }
+    .actions { display: flex; gap: 8px; }
+    .button {
+      min-height: 40px;
+      padding: 8px 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: #344054;
+      background: #fff;
+      transition: background-color .18s ease, border-color .18s ease;
+    }
+    .button:hover { border-color: #91caff; background: #f0f7ff; }
+    .button.primary { border-color: var(--primary); color: #fff; background: var(--primary); }
+    .button.primary:hover { border-color: var(--primary-hover); background: var(--primary-hover); }
+    .button:disabled { cursor: not-allowed; opacity: .55; }
+    .summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .summary strong { font-size: 16px; }
+    .status { min-height: 21px; color: var(--muted); }
+    .status.error { color: var(--danger); }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; min-width: 1180px; border-collapse: collapse; }
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid #edf0f5;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      color: #475467;
+      background: #f8fafc;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    tbody tr:hover { background: #fafcff; }
+    .time, .operator, .work-order { white-space: nowrap; }
+    .text-cell {
+      min-width: 260px;
+      max-width: 420px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge.helpful { color: #237804; background: #f6ffed; border: 1px solid #b7eb8f; }
+    .badge.unhelpful { color: #a8071a; background: #fff1f0; border: 1px solid #ffa39e; }
+    .empty { padding: 54px 16px; color: var(--muted); text-align: center; }
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 14px 16px;
+    }
+    @media (max-width: 900px) {
+      .page { padding: 12px; }
+      .header { display: block; }
+      .user { margin-top: 8px; }
+      .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .actions { grid-column: 1 / -1; }
+    }
+    @media (max-width: 540px) {
+      .filters { grid-template-columns: 1fr; }
+      .actions { grid-column: auto; }
+      .actions .button { flex: 1; }
+      .summary, .pagination { align-items: flex-start; flex-direction: column; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { scroll-behavior: auto !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <div>
+        <h1>推荐回复反馈记录</h1>
+        <p class="subtitle">查看“可参考 / 不可参考”的上传结果和操作人员。</p>
+      </div>
+      <div class="user" id="current-user" aria-live="polite"></div>
+    </header>
+
+    <form class="panel filters" id="filter-form">
+      <label>工单号<input type="text" id="work-order" placeholder="输入工单号"></label>
+      <label>开始日期<input type="date" id="start-date"></label>
+      <label>结束日期<input type="date" id="end-date"></label>
+      <label>上传人<select id="operator"><option value="">全部人员</option></select></label>
+      <label>反馈类型
+        <select id="feedback-type">
+          <option value="">全部类型</option>
+          <option value="helpful">可参考</option>
+          <option value="unhelpful">不可参考</option>
+        </select>
+      </label>
+      <div class="actions">
+        <button class="button primary" type="submit" id="query-button">查询</button>
+        <button class="button" type="button" id="reset-button">重置</button>
+      </div>
+    </form>
+
+    <section class="panel" aria-labelledby="result-title">
+      <div class="summary">
+        <strong id="result-title">反馈记录</strong>
+        <span class="status" id="status" role="status" aria-live="polite"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">上传时间</th>
+              <th scope="col">上传人</th>
+              <th scope="col">反馈类型</th>
+              <th scope="col">问题</th>
+              <th scope="col">推荐回复</th>
+              <th scope="col">工单号</th>
+            </tr>
+          </thead>
+          <tbody id="records"></tbody>
+        </table>
+        <div class="empty" id="empty" hidden>暂无符合条件的反馈记录</div>
+      </div>
+      <nav class="pagination" aria-label="反馈记录分页">
+        <button class="button" type="button" id="previous">上一页</button>
+        <span id="page-label">第 1 / 1 页</span>
+        <button class="button" type="button" id="next">下一页</button>
+      </nav>
+    </section>
+  </main>
+  <script src="lib/kb-runtime.js"></script>
+  <script>
+    (function () {
+      var API = window.KB_RUNTIME.apiBase;
+      var BASE = window.KB_RUNTIME.baseUrl;
+      var token = localStorage.getItem('kb_token') || '';
+      var page = 1;
+      var totalPages = 1;
+      var loading = false;
+      var records = document.getElementById('records');
+      var empty = document.getElementById('empty');
+      var status = document.getElementById('status');
+      var queryButton = document.getElementById('query-button');
+      var previous = document.getElementById('previous');
+      var next = document.getElementById('next');
+      var pageLabel = document.getElementById('page-label');
+      var operator = document.getElementById('operator');
+      var startDateInput = document.getElementById('start-date');
+      var endDateInput = document.getElementById('end-date');
+
+      function authHeaders() {
+        return token ? { Authorization: 'Bearer ' + token } : {};
+      }
+      function todayDateValue() {
+        var today = new Date();
+        var year = String(today.getFullYear());
+        var month = String(today.getMonth() + 1).padStart(2, '0');
+        var day = String(today.getDate()).padStart(2, '0');
+        return year + '-' + month + '-' + day;
+      }
+      function resetDateRangeToToday() {
+        var today = todayDateValue();
+        startDateInput.value = today;
+        endDateInput.value = today;
+      }
+      function redirectToLogin() {
+        localStorage.removeItem('kb_token');
+        localStorage.removeItem('kb_user');
+        location.replace(BASE + '/login');
+      }
+      function cell(row, className) {
+        var td = document.createElement('td');
+        if (className) td.className = className;
+        td.textContent = row == null || row === '' ? '—' : String(row);
+        return td;
+      }
+      function formatTime(value) {
+        if (!value) return '—';
+        var date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        return new Intl.DateTimeFormat('zh-CN', {
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+          hour12: false
+        }).format(date);
+      }
+      function renderItems(items) {
+        records.textContent = '';
+        empty.hidden = items.length > 0;
+        items.forEach(function (item) {
+          var tr = document.createElement('tr');
+          tr.appendChild(cell(formatTime(item.uploaded_at), 'time'));
+          tr.appendChild(cell(item.operator_name || '未识别', 'operator'));
+          var feedbackCell = document.createElement('td');
+          var badge = document.createElement('span');
+          badge.className = 'badge ' + item.feedback_type;
+          badge.textContent = item.feedback_type === 'helpful' ? '可参考' : '不可参考';
+          feedbackCell.appendChild(badge);
+          tr.appendChild(feedbackCell);
+          tr.appendChild(cell(item.question, 'text-cell'));
+          tr.appendChild(cell(item.recommended_reply || item.recommendation_title, 'text-cell'));
+          tr.appendChild(cell(item.work_order_id, 'work-order'));
+          records.appendChild(tr);
+        });
+      }
+      function updateOperators(values) {
+        var current = operator.value;
+        operator.innerHTML = '<option value="">全部人员</option>';
+        (values || []).forEach(function (name) {
+          var option = document.createElement('option');
+          option.value = name;
+          option.textContent = name;
+          operator.appendChild(option);
+        });
+        operator.value = Array.from(operator.options).some(function (item) {
+          return item.value === current;
+        }) ? current : '';
+      }
+      function setLoading(value) {
+        loading = value;
+        queryButton.disabled = value;
+        previous.disabled = value || page <= 1;
+        next.disabled = value || page >= totalPages;
+        if (value) {
+          status.className = 'status';
+          status.textContent = '正在加载…';
+        }
+      }
+      function load() {
+        if (loading) return;
+        setLoading(true);
+        var params = new URLSearchParams({ page: String(page), page_size: '20' });
+        var startDate = startDateInput.value;
+        var endDate = endDateInput.value;
+        var feedbackType = document.getElementById('feedback-type').value;
+        var workOrder = document.getElementById('work-order').value.trim();
+        if (startDate) params.set('start_date', startDate);
+        if (endDate) params.set('end_date', endDate);
+        if (operator.value) params.set('operator_name', operator.value);
+        if (feedbackType) params.set('feedback_type', feedbackType);
+        if (workOrder) params.set('work_order_id', workOrder);
+        fetch(API + '/integration/feedback-records?' + params.toString(), {
+          headers: authHeaders()
+        }).then(function (response) {
+          if (response.status === 401) return redirectToLogin();
+          return response.json().then(function (data) {
+            if (!response.ok) throw new Error(data.detail || '反馈记录加载失败');
+            return data;
+          });
+        }).then(function (data) {
+          if (!data) return;
+          page = data.pagination.page;
+          totalPages = data.pagination.total_pages;
+          renderItems(data.items || []);
+          updateOperators(data.filters && data.filters.operators);
+          pageLabel.textContent = '第 ' + page + ' / ' + totalPages + ' 页';
+          status.textContent = '共 ' + data.pagination.total + ' 条';
+        }).catch(function (error) {
+          records.textContent = '';
+          empty.hidden = false;
+          empty.textContent = '加载失败，请稍后重试';
+          status.className = 'status error';
+          status.textContent = error.message || '反馈记录加载失败';
+        }).finally(function () {
+          setLoading(false);
+          previous.disabled = page <= 1;
+          next.disabled = page >= totalPages;
+        });
+      }
+
+      resetDateRangeToToday();
+      if (!token) return redirectToLogin();
+      fetch(API + '/auth/me', { headers: authHeaders() })
+        .then(function (response) {
+          if (!response.ok) throw new Error('login required');
+          return response.json();
+        })
+        .then(function (user) {
+          document.getElementById('current-user').textContent =
+            '当前账号：' + (user.username || '已登录');
+          load();
+        })
+        .catch(redirectToLogin);
+      document.getElementById('filter-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        page = 1;
+        load();
+      });
+      document.getElementById('reset-button').addEventListener('click', function () {
+        resetDateRangeToToday();
+        document.getElementById('feedback-type').value = '';
+        document.getElementById('work-order').value = '';
+        operator.value = '';
+        page = 1;
+        load();
+      });
+      previous.addEventListener('click', function () {
+        if (page > 1) { page -= 1; load(); }
+      });
+      next.addEventListener('click', function () {
+        if (page < totalPages) { page += 1; load(); }
+      });
+    })();
+  </script>
+</body>
+</html>

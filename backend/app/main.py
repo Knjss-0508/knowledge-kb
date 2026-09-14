@@ -123,6 +123,14 @@ def serve_login():
     return FileResponse(FRONTEND_DIR / "auth.html", headers=HTML_NO_CACHE_HEADERS)
 
 
+@app.get("/feedback-records")
+def serve_feedback_records():
+    return FileResponse(
+        FRONTEND_DIR / "feedback-records.html",
+        headers=HTML_NO_CACHE_HEADERS,
+    )
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "答疑中台知识库", "version": settings.VERSION}
