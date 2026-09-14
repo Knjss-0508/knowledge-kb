@@ -909,6 +909,7 @@ def _retrieval_request_payload(
         "expected_knowledge_id": state_event.expected_knowledge_id,
         "feedback_type": state_event.feedback_type,
         "failure_reason": state_event.failure_reason,
+        "event_metadata": state_event.event_metadata or {},
         "candidates": candidates,
         "embedding_model": latest_text("embedding_model"),
         "reranker_model": latest_text("reranker_model"),
@@ -1763,6 +1764,7 @@ def get_retrieval_analytics(
     page_size: int = 20,
     start_at: datetime | None = None,
     end_at: datetime | None = None,
+    pending_only: bool = False,
 ):
     page = max(1, int(page or 1))
     page_size = max(1, min(100, int(page_size or 20)))
@@ -1867,8 +1869,12 @@ def get_retrieval_analytics(
         item
         for item in request_payloads
         if (
-            item["outcome"] not in ("accepted", "accepted_alternative")
-            or item["review_status"] == "unreviewed"
+            (item["review_status"] == "unreviewed")
+            if pending_only
+            else (
+                item["outcome"] not in ("accepted", "accepted_alternative")
+                or item["review_status"] == "unreviewed"
+            )
         )
     ]
     risk_total = len(risk_items)

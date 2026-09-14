@@ -181,6 +181,7 @@ class RetrievalQualityReview(BaseModel):
     ] = ""
     reason: str = Field("", max_length=2000)
     training_eligible: bool = False
+    candidate_labels: dict[str, Literal["helpful", "unhelpful"]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_training_label(self):
