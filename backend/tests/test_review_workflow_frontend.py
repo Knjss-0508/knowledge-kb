@@ -186,3 +186,51 @@ assert(vm.full.zoom === 1, 'reset should restore default zoom');
 """,
     )
 
+
+def test_all_business_filter_keeps_scope_fields_visible_and_aggregates_options() -> None:
+    assert '<div class="tab-row" v-if="f.business_type">' not in FRONTEND
+    assert '<div class="filter-applicability-grid" v-if="f.business_type">' not in FRONTEND
+    assert "self.businessTypes.forEach(function(businessType)" in FRONTEND
+    _run_frontend_behavior(
+        r"""
+vm.f = {business_type: '', applicableCategoryIds: [], brandIds: []};
+vm.businessTypes = [{value: 'self_operated'}, {value: 'aggregated'}];
+vm.mhCaches = {
+  self_operated: {
+    applicable_categories: [{categoryId: 'phone', categoryName: '手机'}],
+    brands_by_category: {phone: [{brandId: 'apple', brandName: '苹果'}]},
+    models: [{modelId: 'iphone-15', modelName: 'iPhone 15', categoryId: 'phone', brandId: 'apple'}]
+  },
+  aggregated: {
+    applicable_categories: [{categoryId: 'tablet', categoryName: '平板'}],
+    brands_by_category: {tablet: [{brandId: 'huawei', brandName: '华为'}]},
+    models: [{modelId: 'matepad', modelName: 'MatePad', categoryId: 'tablet', brandId: 'huawei'}]
+  }
+};
+assert(vm.listFilterOptions('applicableCategories').length === 2, 'all business should aggregate categories');
+vm.f.applicableCategoryIds = ['tablet'];
+assert(vm.listFilterOptions('brands')[0].value === 'huawei', 'selected category should use its business cache');
+vm.f.brandIds = ['huawei'];
+assert(vm.listFilterOptions('models')[0].value === 'matepad', 'selected brand should use its business cache');
+""",
+    )
+
+
+def test_wecom_drive_video_opens_in_browser_session() -> None:
+    assert "isWeComDriveUrl: function(value)" in FRONTEND
+    assert "openWeComDriveVideo: function(src)" in FRONTEND
+    assert "在企业微信中打开" in FRONTEND
+    _run_frontend_behavior(
+        r"""
+let opened = null;
+globalThis.window.open = function(src, target) { opened = {src: src, target: target}; return opened; };
+globalThis.alert = function() { throw new Error('should not alert when browser tab opens'); };
+vm.normalizePreviewUrl = function(value) { return value; };
+vm.full = {show: false, src: '', isVideo: false, error: false, zoom: 1};
+vm.showFull('https://drive.weixin.qq.com/example-video', true);
+assert(opened && opened.src === 'https://drive.weixin.qq.com/example-video', 'WeCom drive video should open in a new browser tab');
+assert(opened.target === '_blank', 'WeCom drive video should not be embedded');
+assert(vm.full.show === false, 'WeCom drive video should not enter the embedded preview');
+""",
+    )
+

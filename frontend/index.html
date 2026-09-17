@@ -599,18 +599,18 @@
         <button class="tab-btn" :class="{on:!f.business_type}" @click="setBusinessTypeFilter('')">全部业务</button>
         <button class="tab-btn" v-for="businessType in businessTypes" :key="businessType.value" :class="{on:f.business_type===businessType.value}" @click="setBusinessTypeFilter(businessType.value)">{{businessType.label}}</button>
       </div>
-      <div class="tab-row" v-if="f.business_type">
+      <div class="tab-row">
         <span class="tab-label">知识分类</span>
         <button class="tab-btn" :class="{on:!f.category_id}" @click="setFilter('category_id', '')">全部分类</button>
         <button class="tab-btn" v-for="cat in cats" :key="cat.id" :class="{on:f.category_id===cat.id}" @click="setFilter('category_id', cat.id)">{{cat.name}}</button>
       </div>
-      <div class="filter-applicability-grid" v-if="f.business_type">
+      <div class="filter-applicability-grid">
         <div class="filter-app-field">
           <div class="filter-app-label">适用类目</div>
           <div class="ms">
             <div class="ms-box" @click="focusListFilterInput('listFilterCategoryInput','applicableCategories')">
               <span class="ms-tag" v-for="value in f.applicableCategoryIds" :key="value"><span class="ms-tag-text">{{listFilterSelectedLabel('applicableCategories',value)}}</span><span class="ms-tag-x" @click.stop="removeListFilterSelected('applicableCategories',value)">&times;</span></span>
-              <input ref="listFilterCategoryInput" class="ms-inline-input" v-model="listFilterCategoryKw" placeholder="请选择类目" @focus="focusListFilterInput('listFilterCategoryInput','applicableCategories')">
+              <input ref="listFilterCategoryInput" class="ms-inline-input" v-model="listFilterCategoryKw" :placeholder="f.business_type?'请选择类目':'请选择类目（全部业务）'" @focus="focusListFilterInput('listFilterCategoryInput','applicableCategories')">
               <span class="ms-clear" @click.stop="clearListFilter('applicableCategories')">&times;</span>
             </div>
             <div class="ms-menu" v-if="filterDrop==='applicableCategories'">
@@ -1396,7 +1396,7 @@
                   <article class="candidate-media-card" v-for="(media,mediaIndex) in candidateReviews.form.mediaBlocks" :key="media._uid">
                     <div class="content-block-head">
                       <div class="content-block-head-main"><span class="content-kind" :class="media.type">{{media.type==='image'?'案例图片':'案例视频'}}</span><span class="content-source-badge" :class="{external:!!media.external_url}">{{mediaSourceLabel(media)}}</span></div>
-                      <div class="content-block-actions"><button v-if="candidateReviewMediaUrl(media)" type="button" class="content-action-button" @click="showFull(candidateReviewMediaUrl(media),media.type==='video')">{{media.type==='image'?'查看原图':'播放视频'}}</button><button v-if="!reviewReadonly()" type="button" class="content-action-button danger" @click="removeCandidateReviewMedia(mediaIndex)">删除</button></div>
+                      <div class="content-block-actions"><button v-if="candidateReviewMediaUrl(media)" type="button" class="content-action-button" @click="showFull(candidateReviewMediaUrl(media),media.type==='video')">{{mediaPreviewActionLabel(candidateReviewMediaUrl(media),media.type)}}</button><button v-if="!reviewReadonly()" type="button" class="content-action-button danger" @click="removeCandidateReviewMedia(mediaIndex)">删除</button></div>
                     </div>
                     <div class="content-media-body">
                       <button v-if="candidateReviewMediaUrl(media)" type="button" class="content-media-preview" :aria-label="media.type==='image'?'查看案例原图':'播放案例视频'" @click="showFull(candidateReviewMediaUrl(media),media.type==='video')">
@@ -1466,11 +1466,11 @@
                 <template v-for="(block,blockIndex) in reviewDesk.contentBlocks" :key="'review-desk-content-'+blockIndex">
                   <div v-if="block.type==='text'" class="review-desk-content-text" v-html="linkifyText(block.value)"></div>
                   <figure v-else-if="block.type==='image' || block.type==='video'" class="review-desk-content-media">
-                    <button v-if="block.url" type="button" class="review-desk-content-media-frame" :aria-label="block.type==='image'?'查看图片':'播放视频'" @click="showFull(block.url,block.type==='video')">
+                    <button v-if="block.url" type="button" class="review-desk-content-media-frame" :aria-label="mediaPreviewActionLabel(block.url,block.type)" @click="showFull(block.url,block.type==='video')">
                       <img v-if="block.type==='image' && !block.load_error" :src="block.url" :alt="block.alt || '图片预览'" loading="lazy" decoding="async" referrerpolicy="no-referrer" @load="block.load_error=false" @error="reviewDeskMediaError(block)">
                       <video v-else-if="block.type==='video' && !block.load_error" :src="block.url" muted preload="metadata" playsinline controlsList="nodownload nofullscreen noremoteplayback" disablePictureInPicture @loadedmetadata="block.load_error=false" @error="reviewDeskMediaError(block)"></video>
                       <span v-if="block.load_error" class="review-desk-content-media-error">{{block.type==='image'?'图片':'视频'}}加载失败</span>
-                      <span v-else class="review-desk-content-media-overlay">{{block.type==='image'?'查看图片':'播放视频'}}</span>
+                      <span v-else class="review-desk-content-media-overlay">{{mediaPreviewActionLabel(block.url,block.type)}}</span>
                     </button>
                     <div v-else class="review-desk-content-media-error review-desk-content-media-missing">未找到{{block.type==='image'?'图片':'视频'}}地址</div>
                     <figcaption class="review-desk-content-media-caption">
@@ -1682,7 +1682,7 @@
                       </div>
                       <div class="content-block-actions">
                         <label v-if="childMediaUrl(b)" class="content-action-button" :class="{disabled:saving}">更换文件<input type="file" :accept="b.type==='image'?'image/*':'video/*'" :disabled="saving" class="sr-only" @change="pickFile($event,b)"></label>
-                        <button v-if="childMediaUrl(b)" type="button" class="content-action-button" @click="showFull(childMediaUrl(b),b.type==='video')" :disabled="saving">{{b.type==='image'?'查看原图':'播放视频'}}</button>
+                        <button v-if="childMediaUrl(b)" type="button" class="content-action-button" @click="showFull(childMediaUrl(b),b.type==='video')" :disabled="saving">{{mediaPreviewActionLabel(childMediaUrl(b),b.type)}}</button>
                         <button type="button" class="content-action-button danger" @click="removeContentBlock(bi)" :disabled="saving" :aria-label="'删除第 '+(bi+1)+' 个媒体块'">删除</button>
                       </div>
                     </div>
@@ -1711,7 +1711,7 @@
                         </div>
                         <div class="content-media-status">
                           <span class="content-media-status-text" :title="b.external_url || ''">{{mediaStatusText(b)}}</span>
-                          <button v-if="childMediaUrl(b)" type="button" class="content-media-link" @click="showFull(childMediaUrl(b),b.type==='video')">{{b.type==='image'?'打开预览':'播放预览'}}</button>
+                          <button v-if="childMediaUrl(b)" type="button" class="content-media-link" @click="showFull(childMediaUrl(b),b.type==='video')">{{mediaPreviewActionLabel(childMediaUrl(b),b.type)}}</button>
                           <a v-if="b.external_url" class="content-media-link" :href="childMediaUrl(b)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">打开外链</a>
                         </div>
                       </div>
@@ -5681,6 +5681,9 @@ Vue.createApp({
         })
         .then(function(data) {
           self.businessTypes = Array.isArray(data) ? data : [];
+          self.businessTypes.forEach(function(businessType) {
+            if (businessType && businessType.value) self.loadManhattanOptions(businessType.value);
+          });
         })
         .catch(function(error) {
           console.error(error);
@@ -5857,17 +5860,25 @@ Vue.createApp({
         });
     },
     listFilterOptions: function(key) {
-      if (!this.f.business_type) return [];
-      var cache = this.manhattanCacheFor(this.f.business_type);
+      var self = this;
+      var caches = this.f.business_type
+        ? [this.manhattanCacheFor(this.f.business_type)]
+        : (this.businessTypes || []).map(function(businessType) {
+          return self.manhattanCacheFor(businessType && businessType.value);
+        });
       if (key === 'applicableCategories') {
-        return this.flattenOptions(cache.applicable_categories || []);
+        return this.flattenOptions(caches.reduce(function(result, cache) {
+          return result.concat(cache.applicable_categories || []);
+        }, []));
       }
       if (key === 'brands') {
-        var groups = cache.brands_by_category || {};
         var rawBrands = [];
         if (!(this.f.applicableCategoryIds || []).length) return [];
-        (this.f.applicableCategoryIds || []).forEach(function(categoryId) {
-          rawBrands = rawBrands.concat(groups[categoryId] || []);
+        caches.forEach(function(cache) {
+          var groups = cache.brands_by_category || {};
+          (self.f.applicableCategoryIds || []).forEach(function(categoryId) {
+            rawBrands = rawBrands.concat(groups[categoryId] || []);
+          });
         });
         return this.flattenOptions(rawBrands);
       }
@@ -5882,7 +5893,9 @@ Vue.createApp({
         (this.f.brandIds || []).forEach(function(value) { brandIds[String(value)] = true; });
         var hasCategories = Object.keys(categoryIds).length > 0;
         var hasBrands = Object.keys(brandIds).length > 0;
-        var rawModels = (cache.models || []).filter(function(model) {
+        var rawModels = caches.reduce(function(result, cache) {
+          return result.concat(cache.models || []);
+        }, []).filter(function(model) {
           if (!model || typeof model !== 'object') return true;
           var modelCategoryId = String(model.categoryId || model.category_id || '');
           var modelBrandId = String(model.brandId || model.brand_id || '');
@@ -7332,9 +7345,29 @@ Vue.createApp({
       var externalUrl = this.normalizeExternalMediaUrl(child.external_url, child.type);
       return externalUrl || (child.media_id ? this.mediaUrl(child.media_id) : (child.preview || ''));
     },
+    isWeComDriveUrl: function(value) {
+      try {
+        return new URL(String(value || '')).hostname.toLowerCase() === 'drive.weixin.qq.com';
+      } catch (e) {
+        return false;
+      }
+    },
+    mediaPreviewActionLabel: function(src, type) {
+      if (type === 'video' && this.isWeComDriveUrl(src)) return '在企业微信中打开';
+      return type === 'image' ? '查看原图' : '播放视频';
+    },
+    openWeComDriveVideo: function(src) {
+      var opened = window.open(src, '_blank');
+      if (!opened) alert('浏览器拦截了新窗口，请允许弹窗后再次打开企业微信视频。');
+      else opened.opener = null;
+    },
     showFull: function(src, isVideo) {
       var safeSrc = this.normalizePreviewUrl(src);
       if (!safeSrc) return;
+      if (isVideo && this.isWeComDriveUrl(safeSrc)) {
+        this.openWeComDriveVideo(safeSrc);
+        return;
+      }
       this.full = {show:true, src:safeSrc, isVideo:!!isVideo, error:false, zoom:1};
     },
     openRetrievalReviewPage: function() {
