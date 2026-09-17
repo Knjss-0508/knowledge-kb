@@ -408,6 +408,7 @@
     .review-desk-dedup-action{flex:0 0 auto}
     @media(max-width:760px){.review-desk-dedup-item{align-items:flex-start;flex-direction:column}.review-desk-dedup-action{width:100%}}
   .nav-group{margin-top:4px}.nav-group-head{justify-content:flex-start;gap:0;color:#b8c6d8}.nav-group-head.active{color:#fff;background:rgba(255,255,255,.06)}.nav-group-head .nav-group-chevron{margin-left:auto;font-size:12px;transition:transform .18s ease;color:#91a5b8}.nav-group-head .nav-group-chevron.open{transform:rotate(180deg);color:#fff}.nav-subitems{padding:2px 0 4px}.nav-subitem{height:36px;display:flex;align-items:center;padding:0 20px 0 52px;color:#9fb0c0;font-size:12px;cursor:pointer;border-left:3px solid transparent;white-space:nowrap}.nav-subitem:hover{background:rgba(255,255,255,.06);color:#fff}.nav-subitem.on{background:rgba(0,155,131,.22);color:#fff;border-left-color:#20c5a7}.nav-subitem .nav-subdot{width:6px;height:6px;margin-right:9px;border-radius:50%;background:currentColor;opacity:.75}@media(max-width:760px){.nav-group{display:flex;flex:0 0 auto}.nav-group-head{display:none}.nav-subitems{display:flex!important;align-items:center;padding:0}.nav-subitem{height:44px;padding:0 12px;border:0;border-radius:6px;flex:0 0 auto;font-size:14px}.nav-subitem .nav-subdot{display:none}}
+  .review-confirm-dialog{width:min(440px,calc(100vw - 32px));max-height:calc(100vh - 32px);border-radius:12px}.review-confirm-dialog .dlg-h{min-height:62px;padding:0 22px}.review-confirm-dialog .dlg-b{padding:22px;background:#fafbfc}.review-confirm-dialog .dlg-f{min-height:66px;padding:0 22px}.review-confirm-copy{display:flex;align-items:flex-start;gap:12px;color:#475467;font-size:14px;line-height:1.7}.review-confirm-icon{display:inline-flex;flex:0 0 30px;height:30px;align-items:center;justify-content:center;border-radius:50%;background:#fff0f0;color:#d92d20;font-weight:800}.review-confirm-copy strong{display:block;margin-bottom:4px;color:#1d2939;font-size:15px}.review-confirm-copy span{overflow-wrap:anywhere}.review-confirm-dialog .btn{min-width:76px}
   </style>
 </head>
 <body>
@@ -1906,6 +1907,13 @@
       </div>
     </div>
   </div>
+    <div class="mask" v-if="reviewDesk.confirm.open" role="dialog" aria-modal="true" aria-labelledby="review-confirm-title" @click.self="closeReviewDeskConfirm">
+      <div class="dlg review-confirm-dialog">
+        <div class="dlg-h"><h3 id="review-confirm-title">确认废弃</h3><button type="button" class="dlg-x" aria-label="关闭确认弹窗" @click="closeReviewDeskConfirm">&times;</button></div>
+        <div class="dlg-b"><div class="review-confirm-copy"><span class="review-confirm-icon" aria-hidden="true">!</span><div><strong>确认废弃这条知识？</strong><span>{{reviewDesk.confirm.title}}</span></div></div></div>
+        <div class="dlg-f"><button type="button" class="btn bd" @click="closeReviewDeskConfirm">取消</button><button type="button" class="btn br" @click="confirmReviewDeskDeprecate">确认废弃</button></div>
+      </div>
+    </div>
     <!-- 点击全屏预览 -->
     <div v-if="full.show" class="full-preview" role="dialog" aria-modal="true" :aria-label="full.isVideo?'视频预览':'原图预览'" @click.self="closeFullPreview">
       <div class="full-preview-stage" @click.stop>
@@ -2033,7 +2041,7 @@ Vue.createApp({
       reviewIssueExpandedIds: [],
       batchApproving: false,
       knowledgeBatchResult: {open:false, approved:0, reused:0, failed:0, results:[], completedAt:''},
-      reviewDesk: {open:false, loading:false, saving:false, requestId:0, items:[], currentIndex:-1, detail:null, contentBlocks:[], detailError:'', detailFallback:false, issueExpanded:false, actionMessage:''},
+      reviewDesk: {open:false, loading:false, saving:false, requestId:0, items:[], currentIndex:-1, detail:null, contentBlocks:[], detailError:'', detailFallback:false, issueExpanded:false, actionMessage:'', confirm:{open:false,title:'',moveNext:false}},
       f: {status:'', knowledge_origin:'', business_type:'', category_id:'', applicableCategoryIds:[], brandIds:[], modelIds:[], kw:''},
       appliedKeyword: '',
       filterDrop: '',
@@ -2679,7 +2687,9 @@ Vue.createApp({
           if (requestId === self.reviewDesk.requestId) self.reviewDesk.saving = false;
         });
     },
-    deprecateQuickReview: function(moveNext) {
+    closeReviewDeskConfirm: function() { this.reviewDesk.confirm.open = false; },
+    confirmReviewDeskDeprecate: function() { var moveNext = !!this.reviewDesk.confirm.moveNext; this.reviewDesk.confirm.open = false; this.deprecateQuickReview(moveNext, true); },
+    deprecateQuickReview: function(moveNext, confirmed) {
       var self = this;
       var detail = this.reviewDesk.detail;
       if (!detail || this.reviewDesk.detailFallback || this.reviewDesk.saving) return;
@@ -2687,7 +2697,7 @@ Vue.createApp({
         this.reviewDesk.actionMessage = '当前账号或知识来源不支持废弃操作。';
         return;
       }
-      if (!confirm('确认废弃知识“' + (detail.title || detail.id) + '”？')) return;
+      if (!confirmed) { this.reviewDesk.confirm = {open:true,title:detail.title || detail.id,moveNext:!!moveNext}; return; }
       var requestId = this.reviewDesk.requestId;
       this.reviewDesk.saving = true;
       this.reviewDesk.actionMessage = '';
