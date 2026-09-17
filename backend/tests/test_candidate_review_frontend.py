@@ -33,8 +33,32 @@ def test_candidate_review_displays_and_edits_case_images_and_videos() -> None:
     assert "正文和案例媒体独立保存" in FRONTEND
 
 
+def test_candidate_review_dialog_keeps_compact_training_and_media_typography() -> None:
+    assert (
+        ".candidate-training-toggle{display:inline-flex;align-items:center;gap:6px;"
+        "color:#475467;font-size:12px;white-space:nowrap}"
+        in FRONTEND
+    )
+    assert (
+        ".candidate-media-empty{padding:16px;border:1px dashed #d0d5dd;"
+        "border-radius:8px;background:#fafbfc;color:#98a2b3;font-size:12px;"
+        "text-align:center}"
+        in FRONTEND
+    )
+    assert ".candidate-media-toolbar{display:flex;align-items:center;gap:8px" in FRONTEND
+
+
 def test_candidate_review_preserves_media_when_text_is_edited() -> None:
     assert "contentMediaBlocks: function(content)" in FRONTEND
     assert "candidateReviewContent: function(contentText, originalContent, mediaBlocks)" in FRONTEND
     assert "body.content = candidateContent" in FRONTEND
     assert "{blocks: form.contentText.trim()" not in FRONTEND
+
+
+def test_candidate_review_final_layout_coexists_with_retrieval_review() -> None:
+    assert 'class="candidate-filter-card"' in FRONTEND
+    assert "审核队列 · 筛选条件" in FRONTEND
+    assert '@click="resetCandidateReviewFilters"' in FRONTEND
+    assert "resetCandidateReviewFilters: function()" in FRONTEND
+    assert "openRetrievalReviewPage" in FRONTEND
+    assert "最多各保留 TOP 3" in FRONTEND
