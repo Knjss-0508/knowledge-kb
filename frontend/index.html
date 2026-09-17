@@ -1907,7 +1907,7 @@
       </div>
     </div>
   </div>
-    <div class="mask" v-if="reviewDesk.confirm.open" role="dialog" aria-modal="true" aria-labelledby="review-confirm-title" @click.self="closeReviewDeskConfirm">
+    <div class="mask" v-if="reviewDesk.confirm && reviewDesk.confirm.open" role="dialog" aria-modal="true" aria-labelledby="review-confirm-title" @click.self="closeReviewDeskConfirm">
       <div class="dlg review-confirm-dialog">
         <div class="dlg-h"><h3 id="review-confirm-title">确认废弃</h3><button type="button" class="dlg-x" aria-label="关闭确认弹窗" @click="closeReviewDeskConfirm">&times;</button></div>
         <div class="dlg-b"><div class="review-confirm-copy"><span class="review-confirm-icon" aria-hidden="true">!</span><div><strong>确认废弃这条知识？</strong><span>{{reviewDesk.confirm.title}}</span></div></div></div>
@@ -2546,7 +2546,7 @@ Vue.createApp({
       var seed = item || this.list.find(function(row) { return row && row.status === 'review'; });
       if (!seed || !seed.id) { alert('当前筛选下没有待审核知识'); return; }
       var requestId = Number(this.reviewDesk.requestId || 0) + 1;
-      this.reviewDesk = {open:true, loading:true, saving:false, requestId:requestId, items:[], currentIndex:-1, detail:null, contentBlocks:[], detailError:'', detailFallback:false, issueExpanded:false, actionMessage:''};
+      this.reviewDesk = {open:true, loading:true, saving:false, requestId:requestId, items:[], currentIndex:-1, detail:null, contentBlocks:[], detailError:'', detailFallback:false, issueExpanded:false, actionMessage:'', confirm:{open:false,title:'',moveNext:false}};
       var params = this.knowledgeFilterParams();
       params.delete('status');
       var suffix = params.toString();
