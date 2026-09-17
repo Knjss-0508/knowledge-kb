@@ -1706,6 +1706,9 @@ def get_feedback_records(
             RetrievalQualityEvent.created_at
             < datetime.combine(end_date + timedelta(days=1), time.min)
         )
+    # 上传人下拉只统计当前日期范围内出现过的上传人，避免历史脏值一直出现；
+    # 刻意不受上传人/反馈类型筛选影响，否则选中一项后下拉会塌缩成一项。
+    operator_scope = query
     normalized_operator = str(operator_name or "").strip()
     if normalized_operator:
         query = query.filter(
@@ -1727,7 +1730,7 @@ def get_feedback_records(
         .limit(page_size)
         .all()
     )
-    operator_rows = base_query.with_entities(
+    operator_rows = operator_scope.with_entities(
         RetrievalQualityEvent.event_metadata
     ).all()
     operators = sorted(
