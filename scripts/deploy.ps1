@@ -118,24 +118,35 @@ if ($DatabaseMode -eq "cloud") {
     if ($DatabaseUrl -notmatch "^(postgres|postgresql|postgresql\+psycopg2)://") {
         throw "DATABASE_URL must use a PostgreSQL connection scheme."
     }
-    if ((Get-ConfiguredValue "MEDIA_STORAGE_BACKEND") -ne "s3") {
-        throw "MEDIA_STORAGE_BACKEND=s3 is required in cloud database mode."
-    }
-    $S3Bucket = Get-ConfiguredValue "S3_BUCKET"
-    if (-not $S3Bucket -or $S3Bucket -match "replace-with") {
-        throw "Set a real S3_BUCKET in cloud database mode."
-    }
-    $S3AccessKey = Get-ConfiguredValue "S3_ACCESS_KEY_ID"
-    $S3SecretKey = Get-ConfiguredValue "S3_SECRET_ACCESS_KEY"
-    if ([bool]$S3AccessKey -ne [bool]$S3SecretKey) {
-        throw "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together."
-    }
-    if ((Get-ConfiguredValue "S3_SESSION_TOKEN") -and -not $S3AccessKey) {
-        throw "S3_SESSION_TOKEN requires S3 access key credentials."
-    }
-    $S3Endpoint = Get-ConfiguredValue "S3_ENDPOINT_URL"
-    if ($S3Endpoint -and $S3Endpoint -notmatch "^https?://") {
-        throw "S3_ENDPOINT_URL must start with http:// or https://."
+    $MediaBackend = Get-ConfiguredValue "MEDIA_STORAGE_BACKEND"
+    if ($MediaBackend -eq "s3") {
+        $S3Bucket = Get-ConfiguredValue "S3_BUCKET"
+        if (-not $S3Bucket -or $S3Bucket -match "replace-with") {
+            throw "Set a real S3_BUCKET in cloud database mode."
+        }
+        $S3AccessKey = Get-ConfiguredValue "S3_ACCESS_KEY_ID"
+        $S3SecretKey = Get-ConfiguredValue "S3_SECRET_ACCESS_KEY"
+        if ([bool]$S3AccessKey -ne [bool]$S3SecretKey) {
+            throw "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together."
+        }
+        if ((Get-ConfiguredValue "S3_SESSION_TOKEN") -and -not $S3AccessKey) {
+            throw "S3_SESSION_TOKEN requires S3 access key credentials."
+        }
+        $S3Endpoint = Get-ConfiguredValue "S3_ENDPOINT_URL"
+        if ($S3Endpoint -and $S3Endpoint -notmatch "^https?://") {
+            throw "S3_ENDPOINT_URL must start with http:// or https://."
+        }
+    } elseif ($MediaBackend -eq "remote") {
+        $RemoteMediaBaseUrl = Get-ConfiguredValue "REMOTE_MEDIA_BASE_URL"
+        $RemoteMediaApiKey = Get-ConfiguredValue "REMOTE_MEDIA_API_KEY"
+        if (-not $RemoteMediaBaseUrl -or $RemoteMediaBaseUrl -notmatch "^https?://" -or $RemoteMediaBaseUrl -match "replace-with") {
+            throw "Set REMOTE_MEDIA_BASE_URL to the private old-server media gateway URL."
+        }
+        if (-not $RemoteMediaApiKey -or $RemoteMediaApiKey.Length -lt 24 -or $RemoteMediaApiKey -match "replace-with") {
+            throw "Set REMOTE_MEDIA_API_KEY to a non-placeholder secret of at least 24 characters."
+        }
+    } else {
+        throw "Cloud database mode requires MEDIA_STORAGE_BACKEND=s3 or remote."
     }
     $AdminUsername = Get-ConfiguredValue "INITIAL_ADMIN_USERNAME"
     $AdminPassword = Get-ConfiguredValue "INITIAL_ADMIN_PASSWORD"

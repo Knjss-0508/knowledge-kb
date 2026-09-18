@@ -133,28 +133,41 @@ if [[ "$database_mode" == "cloud" ]]; then
     echo "DATABASE_URL must use a PostgreSQL connection scheme." >&2
     exit 1
   fi
-  if [[ "$(configured_value MEDIA_STORAGE_BACKEND)" != "s3" ]]; then
-    echo "MEDIA_STORAGE_BACKEND=s3 is required in cloud database mode." >&2
-    exit 1
-  fi
-  s3_bucket="$(configured_value S3_BUCKET)"
-  if [[ -z "$s3_bucket" || "$s3_bucket" == *"replace-with"* ]]; then
-    echo "Set a real S3_BUCKET in cloud database mode." >&2
-    exit 1
-  fi
-  s3_access_key="$(configured_value S3_ACCESS_KEY_ID)"
-  s3_secret_key="$(configured_value S3_SECRET_ACCESS_KEY)"
-  if [[ -n "$s3_access_key" && -z "$s3_secret_key" ]] || [[ -z "$s3_access_key" && -n "$s3_secret_key" ]]; then
-    echo "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together." >&2
-    exit 1
-  fi
-  if [[ -n "$(configured_value S3_SESSION_TOKEN)" && -z "$s3_access_key" ]]; then
-    echo "S3_SESSION_TOKEN requires S3 access key credentials." >&2
-    exit 1
-  fi
-  s3_endpoint="$(configured_value S3_ENDPOINT_URL)"
-  if [[ -n "$s3_endpoint" && ! "$s3_endpoint" =~ ^https?:// ]]; then
-    echo "S3_ENDPOINT_URL must start with http:// or https://." >&2
+  media_backend="$(configured_value MEDIA_STORAGE_BACKEND)"
+  if [[ "$media_backend" == "s3" ]]; then
+    s3_bucket="$(configured_value S3_BUCKET)"
+    if [[ -z "$s3_bucket" || "$s3_bucket" == *"replace-with"* ]]; then
+      echo "Set a real S3_BUCKET in cloud database mode." >&2
+      exit 1
+    fi
+    s3_access_key="$(configured_value S3_ACCESS_KEY_ID)"
+    s3_secret_key="$(configured_value S3_SECRET_ACCESS_KEY)"
+    if [[ -n "$s3_access_key" && -z "$s3_secret_key" ]] || [[ -z "$s3_access_key" && -n "$s3_secret_key" ]]; then
+      echo "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together." >&2
+      exit 1
+    fi
+    if [[ -n "$(configured_value S3_SESSION_TOKEN)" && -z "$s3_access_key" ]]; then
+      echo "S3_SESSION_TOKEN requires S3 access key credentials." >&2
+      exit 1
+    fi
+    s3_endpoint="$(configured_value S3_ENDPOINT_URL)"
+    if [[ -n "$s3_endpoint" && ! "$s3_endpoint" =~ ^https?:// ]]; then
+      echo "S3_ENDPOINT_URL must start with http:// or https://." >&2
+      exit 1
+    fi
+  elif [[ "$media_backend" == "remote" ]]; then
+    remote_media_base_url="$(configured_value REMOTE_MEDIA_BASE_URL)"
+    remote_media_api_key="$(configured_value REMOTE_MEDIA_API_KEY)"
+    if [[ ! "$remote_media_base_url" =~ ^https?:// || "$remote_media_base_url" == *"replace-with"* ]]; then
+      echo "Set REMOTE_MEDIA_BASE_URL to the private old-server media gateway URL." >&2
+      exit 1
+    fi
+    if (( ${#remote_media_api_key} < 24 )) || [[ "$remote_media_api_key" == *"replace-with"* ]]; then
+      echo "Set REMOTE_MEDIA_API_KEY to a non-placeholder secret of at least 24 characters." >&2
+      exit 1
+    fi
+  else
+    echo "Cloud database mode requires MEDIA_STORAGE_BACKEND=s3 or remote." >&2
     exit 1
   fi
   admin_username="$(configured_value INITIAL_ADMIN_USERNAME)"
