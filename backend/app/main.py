@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -42,29 +42,49 @@ HTML_NO_CACHE_HEADERS = {
 }
 
 
+def _background_workers_should_start() -> bool:
+    """Return whether this process may consume shared background task tables."""
+
+    return bool(settings.BACKGROUND_WORKERS_ENABLED and not settings.MEDIA_GATEWAY_ONLY)
+
+
+def _gateway_path_allowed(path: str) -> bool:
+    """Keep a gateway-only instance limited to health and private media routes."""
+
+    media_prefix = "/" + settings.REMOTE_MEDIA_PATH_PREFIX.strip("/")
+    if media_prefix == "/":
+        media_prefix = "/internal/media"
+    return path in {"/health", "/ready", media_prefix} or path.startswith(
+        media_prefix + "/"
+    )
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     stop_event = asyncio.Event()
-    media_worker = asyncio.create_task(run_media_deletion_worker(stop_event))
-    import_worker = asyncio.create_task(
-        run_knowledge_import_worker(
-            stop_event,
-            knowledge.process_next_knowledge_import_task,
-        )
-    )
-    vector_worker = asyncio.create_task(
-        run_knowledge_vector_worker(
-            stop_event,
-            knowledge.process_next_knowledge_vector_task,
-        )
-    )
+    workers: list[asyncio.Task] = []
+    if _background_workers_should_start():
+        workers = [
+            asyncio.create_task(run_media_deletion_worker(stop_event)),
+            asyncio.create_task(
+                run_knowledge_import_worker(
+                    stop_event,
+                    knowledge.process_next_knowledge_import_task,
+                )
+            ),
+            asyncio.create_task(
+                run_knowledge_vector_worker(
+                    stop_event,
+                    knowledge.process_next_knowledge_vector_task,
+                )
+            ),
+        ]
     try:
         yield
     finally:
-        stop_event.set()
-        await media_worker
-        await import_worker
-        await vector_worker
+        if workers:
+            stop_event.set()
+            await asyncio.gather(*workers)
 
 
 app = FastAPI(
@@ -86,6 +106,10 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_security_headers(request, call_next):
+    if settings.MEDIA_GATEWAY_ONLY and not _gateway_path_allowed(request.url.path):
+        response = JSONResponse(status_code=404, content={"detail": "Not Found"})
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        return response
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     return response
@@ -146,6 +170,13 @@ def ready():
     except Exception:
         logger.exception("Database readiness check failed.")
         errors["database"] = "unavailable"
+
+    # A gateway-only host has no embedding service by design.  It still checks
+    # the shared database so load balancers do not route to a stale gateway.
+    if settings.MEDIA_GATEWAY_ONLY:
+        if errors:
+            raise HTTPException(status_code=503, detail={"status": "not_ready", "errors": errors})
+        return {"status": "ready"}
 
     health_url = settings.EMBEDDING_HEALTHCHECK_URL.strip()
     if not health_url:

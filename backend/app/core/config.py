@@ -112,6 +112,17 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = ""
     UPLOAD_MAX_BYTES: int = 20 * 1024 * 1024
     MEDIA_STORAGE_BACKEND: str = "local"
+    # Remote media mode keeps the media files on the existing server while a
+    # second backend reaches them through a private, authenticated HTTP API.
+    # The remote service is deliberately configured separately from the public
+    # application URL so the browser never receives this endpoint or key.
+    REMOTE_MEDIA_BASE_URL: str = ""
+    REMOTE_MEDIA_API_KEY: str = ""
+    REMOTE_MEDIA_PATH_PREFIX: str = "/internal/media"
+    REMOTE_MEDIA_TIMEOUT_SECONDS: float = 60.0
+    REMOTE_MEDIA_CONNECT_TIMEOUT_SECONDS: float = 10.0
+    REMOTE_MEDIA_READ_TIMEOUT_SECONDS: float = 300.0
+    REMOTE_MEDIA_VERIFY_TLS: bool = True
     S3_BUCKET: str = ""
     S3_ENDPOINT_URL: str = ""
     S3_REGION: str = "us-east-1"
@@ -128,6 +139,11 @@ class Settings(BaseSettings):
     MEDIA_DELETION_BATCH_SIZE: int = 50
     MEDIA_DELETION_RETRY_BASE_SECONDS: int = 5
     MEDIA_DELETION_RETRY_MAX_SECONDS: int = 3600
+    # Gateway-only deployments keep the database and local media on this host
+    # while another backend serves the application.  They must not start any
+    # import, vector, or media-cleanup workers against the shared database.
+    BACKGROUND_WORKERS_ENABLED: bool = True
+    MEDIA_GATEWAY_ONLY: bool = False
     # Excel imports are persisted before processing, so browser disconnects do
     # not cancel work. A lease enables safe recovery after a backend restart.
     KNOWLEDGE_IMPORT_POLL_SECONDS: float = 1.0
