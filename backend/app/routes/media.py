@@ -126,7 +126,7 @@ def get_internal_media(
     """Private media gateway used by a backend running on another machine."""
 
     _require_internal_media_key(request)
-    if media_storage.backend == "remote":
+    if media_storage.backend != "local":
         raise HTTPException(status_code=503, detail="远程媒体网关配置错误")
     safe_filename = _validate_internal_filename(filename)
     storage_key, mime_type = _media_storage_metadata(
@@ -151,7 +151,7 @@ def get_internal_media(
 @router.put(f"{_INTERNAL_MEDIA_PATH_PREFIX}/{{filename}}", include_in_schema=False)
 async def put_internal_media(filename: str, request: Request):
     _require_internal_media_key(request)
-    if media_storage.backend == "remote":
+    if media_storage.backend != "local":
         raise HTTPException(status_code=503, detail="远程媒体网关配置错误")
     safe_filename = _validate_internal_filename(filename)
     content = await _read_internal_media_body(request)
@@ -172,7 +172,7 @@ def delete_internal_media(
     request: Request,
 ):
     _require_internal_media_key(request)
-    if media_storage.backend == "remote":
+    if media_storage.backend != "local":
         raise HTTPException(status_code=503, detail="远程媒体网关配置错误")
     safe_filename = _validate_internal_filename(filename)
     try:

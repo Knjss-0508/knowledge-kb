@@ -150,6 +150,16 @@ class InternalMediaGatewayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         self.assertFalse((Path(self.temp_dir.name) / "too-large.txt").exists())
 
+    def test_non_local_storage_backend_is_rejected_by_gateway(self):
+        with patch.object(media_routes.media_storage, "backend", "s3"):
+            for method, path, kwargs in (
+                (self.client.put, "/internal/media/misconfigured.txt", {"content": b"x"}),
+                (self.client.get, "/internal/media/misconfigured.txt", {}),
+                (self.client.delete, "/internal/media/misconfigured.txt", {}),
+            ):
+                response = method(path, headers=self._headers(), **kwargs)
+                self.assertEqual(response.status_code, 503)
+
 
 if __name__ == "__main__":
     unittest.main()
