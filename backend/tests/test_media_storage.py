@@ -385,6 +385,31 @@ class RemoteMediaStorageTests(unittest.TestCase):
         with self.assertRaises(MediaStorageError):
             storage.delete("legacy/local/path/missing.png", "missing.png")
 
+    def test_redirect_responses_are_not_treated_as_success(self):
+        def handler(request):
+            return httpx.Response(302, headers={"location": "/login"}, request=request)
+
+        storage = self._storage(handler)
+        with self.assertRaises(MediaStorageError):
+            storage.put("redirect.png", b"image-bytes", "image/png")
+        with self.assertRaises(MediaStorageError):
+            storage.delete("legacy/redirect.png", "redirect.png")
+        with self.assertRaises(MediaStorageError):
+            storage.build_response("legacy/redirect.png", "redirect.png", "image/png")
+
+    def test_not_modified_is_allowed_for_conditional_reads(self):
+        def handler(request):
+            return httpx.Response(304, headers={"etag": '"same"'}, request=request)
+
+        storage = self._storage(handler)
+        response = storage.build_response(
+            "legacy/image.png",
+            "image.png",
+            "image/png",
+            request_headers={"If-None-Match": '"same"'},
+        )
+        self.assertEqual(response.status_code, 304)
+
     def test_unsatisfied_remote_range_is_forwarded_as_416(self):
         def handler(request):
             self.assertEqual(request.headers["range"], "bytes=99-100")

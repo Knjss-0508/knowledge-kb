@@ -492,21 +492,19 @@ class RemoteMediaStorage:
         operation: str,
         *,
         allow_range_not_satisfiable: bool = False,
+        allow_not_modified: bool = False,
     ) -> None:
-        if response.status_code < 400 or (
-            allow_range_not_satisfiable and response.status_code == 416
-        ):
+        status_code = response.status_code
+        if 200 <= status_code < 300:
             return
-        if response.status_code == 404:
+        if allow_not_modified and status_code == 304:
+            return
+        if allow_range_not_satisfiable and status_code == 416:
+            return
+        if status_code == 404:
             raise FileNotFoundError(operation)
-        try:
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise MediaStorageError(
-                f"Remote media {operation} failed with HTTP {response.status_code}."
-            ) from exc
         raise MediaStorageError(
-            f"Remote media {operation} failed with HTTP {response.status_code}."
+            f"Remote media {operation} failed with HTTP {status_code}."
         )
 
     def put(self, filename: str, content: bytes, mime_type: str) -> str:
@@ -574,6 +572,7 @@ class RemoteMediaStorage:
                 stream_context,
                 "read",
                 allow_range_not_satisfiable=("range" in forwarded_request_headers),
+                allow_not_modified=True,
             )
         except Exception:
             stream_context.close()

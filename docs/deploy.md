@@ -94,7 +94,7 @@ MEDIA_GATEWAY_ONLY=true
 
 `REMOTE_MEDIA_BASE_URL` 必须是旧服务器的 Tailscale、WireGuard 或其他 VPN 私网地址；不得填写公网媒体地址，也不得把 `/internal/media`、PostgreSQL `5432` 或旧服务器上传目录开放给公网。共享密钥只供两台后端互认，不是浏览器 Cookie、企业微信 Token 或前端配置，不能写入 Git、日志、截图或接口返回。
 
-旧服务器网关需要仅允许私网来源访问 `/internal/media/*`，并校验同一个 `X-Internal-Media-Key`。来源限制不是应用代码自动完成的，必须在 Tailscale/WireGuard、防火墙或反向代理层落实；应用层只负责路径和共享密钥校验。设置 `MEDIA_GATEWAY_ONLY=true` 后，进程会强制停止全部后台 worker，只放行 `/internal/media/*`、`/health` 和 `/ready`；`/ready` 只检查共享数据库，不要求本机存在 Embedding 服务。新电脑会把浏览器请求的 Range 条件转发到网关，因此视频预览、拖动和分段加载仍由浏览器访问新电脑后端完成，浏览器不会直接拿到旧服务器地址或共享密钥。
+旧服务器网关需要仅允许私网来源访问 `/internal/media/*`，并校验同一个 `X-Internal-Media-Key`。来源限制不是应用代码自动完成的，必须在 Tailscale/WireGuard、防火墙或反向代理层落实；应用层只负责路径和共享密钥校验。设置 `MEDIA_GATEWAY_ONLY=true` 后，进程会强制停止全部后台 worker，只放行 `/internal/media/*`、`/health` 和 `/ready`；`/ready` 只检查共享数据库，不要求本机存在 Embedding 服务，也不能代替媒体目录挂载和文件可读性验证。切换前必须在旧服务器执行一次带密钥的上传、读取（含 Range）和删除探针，确认实际读写的是原 `backend/uploads` 目录。新电脑会把浏览器请求的 Range 条件转发到网关，因此视频预览、拖动和分段加载仍由浏览器访问新电脑后端完成，浏览器不会直接拿到旧服务器地址或共享密钥。
 
 两个服务密钥必须不同：`INTEGRATION_API_KEY` 供自动入库、字典和查重等上游
 接口使用；`RETRIEVAL_API_KEY` 只供答疑插件检索已发布知识并回传召回质量。
@@ -157,7 +157,14 @@ http://127.0.0.1:8000/app
 仅在“新电脑后端 + 旧服务器数据库与本地媒体目录”场景执行以下步骤。切换期间不要让两个完整业务后端同时对同一个 PostgreSQL 提供写服务；旧服务器应只保留受限媒体网关，或先隔离其业务入口和后台 worker。
 
 1. 建立并验证新旧电脑之间的 Tailscale、WireGuard 或等价私网连接；数据库和媒体网关都只允许私网访问。
-2. 在旧服务器保留 `MEDIA_STORAGE_BACKEND=local`、原 `backend/uploads` 目录和媒体网关，并设置与新电脑相同的 `REMOTE_MEDIA_API_KEY`。清理阶段暂时保持 `BACKGROUND_WORKERS_ENABLED=true`、`MEDIA_GATEWAY_ONLY=false`，让原后端继续运行本地媒体清理 worker。进入切换窗口前，在 `/opt/knowledge-kb` 使用旧服务器当前已验证的 Compose 文件组合执行 `docker compose ... config`，核对实际数据库服务、`DATABASE_URL`/`POSTGRES_HOST`、`UPLOAD_DIR` 和媒体卷仍指向原数据库与原 `backend/uploads`；不要把连接密码或共享密钥打印到日志。
+2. 在旧服务器保留 `MEDIA_STORAGE_BACKEND=local`、原 `backend/uploads` 目录和媒体网关，并设置与新电脑相同的 `REMOTE_MEDIA_API_KEY`。清理阶段暂时保持 `BACKGROUND_WORKERS_ENABLED=true`、`MEDIA_GATEWAY_ONLY=false`，让原后端继续运行本地媒体清理 worker。进入切换窗口前，在 `/opt/knowledge-kb` 使用旧服务器当前已验证的 Compose 文件组合执行不展开变量的检查，核对实际服务、挂载和关键配置仍指向原数据库与原 `backend/uploads`；不要把连接密码或共享密钥打印到日志：
+
+   ```bash
+   docker compose ... config --services
+   docker compose ... config --no-interpolate
+   ```
+
+   `--no-interpolate` 只用于检查 Compose 结构和变量引用；不要使用普通的 `docker compose ... config`，因为它会把 `DATABASE_URL`、共享密钥等敏感值展开到终端或日志。
 3. 先阻断旧服务器完整业务入口的新写入，但不要先关闭旧 backend worker。保持旧 worker 运行，清空所有 `storage_backend='local'` 的临时上传和删除队列，直到下列两个计数都为 0：
 
    ```sql

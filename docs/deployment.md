@@ -93,15 +93,24 @@ PostgreSQL `5432`、上传目录或媒体网关公开到公网。
 
 `MEDIA_GATEWAY_ONLY=true` 会强制关闭所有后台 worker，只放行
 `/internal/media/*`、`/health` 和 `/ready`；网关模式的 `/ready` 只检查共享数据库，
-不依赖本机 Embedding 服务。新电脑普通应用节点应使用
+不依赖本机 Embedding 服务，也不能代替媒体目录挂载和文件可读性验证。切换前必须
+执行一次带密钥的上传、读取（含 Range）和删除探针，确认实际读写的是原
+`backend/uploads` 目录。新电脑普通应用节点应使用
 `BACKGROUND_WORKERS_ENABLED=true`、`MEDIA_GATEWAY_ONLY=false`。
 
 旧服务器进入网关模式时，不要套用新电脑的 cloud/local 部署脚本，也不要自行
 追加或删除 `docker-compose.local.yml`。必须沿用旧服务器当前已经验证的 Compose
 文件组合和运行时覆盖文件，按 `docs/server-deployment-boundary.md` 的
-backend-only 更新流程重建并重启 backend；先用 `docker compose ... config` 核对
-`DATABASE_URL`/`POSTGRES_HOST`、`UPLOAD_DIR` 和媒体卷仍指向原数据库与原
-`backend/uploads`，再切换 `MEDIA_GATEWAY_ONLY=true`。旧服务器没有独立的
+backend-only 更新流程重建并重启 backend；先用不展开变量的 Compose 检查核对
+服务、`DATABASE_URL`/`POSTGRES_HOST` 引用、`UPLOAD_DIR` 和媒体卷仍指向原数据库与原
+`backend/uploads`，再切换 `MEDIA_GATEWAY_ONLY=true`：
+
+```bash
+docker compose ... config --services
+docker compose ... config --no-interpolate
+```
+
+不要使用普通的 `docker compose ... config`，因为它会把 `DATABASE_URL`、共享密钥等敏感值展开到终端或日志。旧服务器没有独立的
 运行时组合时，先停在这里，不要用本地示例覆盖生产配置。
 
 新电脑的远程媒体部署不得追加 `docker-compose.local.yml`：
