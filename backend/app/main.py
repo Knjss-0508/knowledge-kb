@@ -29,6 +29,7 @@ from app.routes import (
 from app.services.media_deletion import run_media_deletion_worker
 from app.services.knowledge_import_worker import run_knowledge_import_worker
 from app.services.knowledge_vector_worker import run_knowledge_vector_worker
+from app.services.media_storage import _normalize_remote_media_path_prefix
 
 
 logger = logging.getLogger(__name__)
@@ -51,9 +52,7 @@ def _background_workers_should_start() -> bool:
 def _gateway_path_allowed(path: str) -> bool:
     """Keep a gateway-only instance limited to health and private media routes."""
 
-    media_prefix = "/" + settings.REMOTE_MEDIA_PATH_PREFIX.strip("/")
-    if media_prefix == "/":
-        media_prefix = "/internal/media"
+    media_prefix = _normalize_remote_media_path_prefix(settings.REMOTE_MEDIA_PATH_PREFIX)
     return path in {"/health", "/ready", media_prefix} or path.startswith(
         media_prefix + "/"
     )

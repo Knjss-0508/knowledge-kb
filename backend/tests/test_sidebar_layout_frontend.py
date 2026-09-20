@@ -33,3 +33,13 @@ def test_mobile_layout_returns_sidebar_to_normal_document_flow() -> None:
         "overflow:visible}.main{width:100%;min-height:0;margin-left:0}}"
         in FRONTEND
     )
+
+
+def test_knowledge_sedimentation_keeps_collapsible_child_navigation() -> None:
+    assert "class=\"nav-group\" v-if=\"can('knowledge:submit')\"" in FRONTEND
+    assert "知识沉淀" in FRONTEND
+    assert 'v-show="knowledgeMenuOpen"' in FRONTEND
+    assert 'title="候选价值复核"' in FRONTEND
+    assert 'title="运行监管"' in FRONTEND
+    assert "toggleKnowledgeMenu: function()" in FRONTEND
+    assert "sidebarCollapsed" not in FRONTEND
