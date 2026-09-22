@@ -264,7 +264,42 @@ Register-ScheduledTask -TaskName "KB-GPU-Embedding-Watchdog" `
 1. **为 GPU 节点启用 Windows 自动登录**——最直接有效，重启后自动进入会话，
    Docker Desktop 与看门狗随之启动。
 2. 评估把 Docker Desktop 改为系统级启动（需自行验证该版本是否支持无会话启动）。
-3. 至少部署**外部告警**：在应用服务器上定时检查隧道端口，异常时通知值班人员。
+3. **至少部署外部告警**，把不可见的故障变成可见的（见下）。
+
+### 外部告警（应用服务器侧）
+
+`scripts/check-embedding-tunnel.sh` 定时探测隧道端口：
+
+- 连续失败达到阈值（默认 3 次）时**只告警一次**，避免每 2 分钟重复刷屏；
+- 恢复正常时发出一次恢复告警；
+- 未配置 webhook 时只写日志，配置后 POST 飞书/企业微信机器人文本消息。
+
+安装：
+
+```bash
+install -m 0755 scripts/check-embedding-tunnel.sh /opt/knowledge-kb/scripts/
+# 每 2 分钟检查一次
+( crontab -l 2>/dev/null; \
+  echo '*/2 * * * * /opt/knowledge-kb/scripts/check-embedding-tunnel.sh >/dev/null 2>&1' ) | crontab -
+```
+
+可选环境变量：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `EMBEDDING_TUNNEL_REMOTE_PORT` | `18080` | 隧道端口 |
+| `EMBEDDING_TUNNEL_FAIL_THRESHOLD` | `3` | 连续失败几次后告警 |
+| `EMBEDDING_TUNNEL_ALERT_WEBHOOK` | 空 | 飞书/企业微信机器人地址 |
+| `EMBEDDING_TUNNEL_LOG` | `/var/log/kb-embedding-tunnel.log` | 日志路径 |
+| `EMBEDDING_TUNNEL_STATE_DIR` | `/var/lib/kb-embedding-tunnel` | 计数状态目录 |
+
+实测：
+
+| 场景 | 结果 |
+|---|---|
+| 隧道正常 | 退出码 0，失败计数归零 |
+| 端口错误连续 4 次 | 计数 1→2→3→4，日志**仅在第 3 次出现一条 ALERT** |
+| 恢复后 | 发出「隧道已恢复」告警 |
 
 ### 日常检查
 
