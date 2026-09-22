@@ -248,7 +248,7 @@ Register-ScheduledTask -TaskName "KB-GPU-Embedding-Watchdog" `
 | 两个容器都正常 | 1.3 秒内退出，退出码 0 |
 | 手动停掉隧道容器 | 17 秒内自动恢复并确认 running |
 
-### 必须注意的运维风险：无人登录时无法恢复
+### 无人登录时无法恢复（本节点已缓解）
 
 **GPU 节点重启后若无人登录，Docker Desktop 不会启动。** 看门狗的计划任务
 以 `LogonType Interactive` 注册（不保存密码），因此**在没有交互式会话时也无法运行**。
@@ -259,12 +259,56 @@ Register-ScheduledTask -TaskName "KB-GPU-Embedding-Watchdog" `
 - **知识导入、向量化，以及依赖查询词嵌入的召回会失败**（查询向量缓存在进程内，
   重复的历史查询可能仍命中缓存，容易掩盖问题）。
 
-缓解措施（按可靠性排序）：
+本节点采取的措施（三层，已逐项实测）：
 
-1. **为 GPU 节点启用 Windows 自动登录**——最直接有效，重启后自动进入会话，
-   Docker Desktop 与看门狗随之启动。
-2. 评估把 Docker Desktop 改为系统级启动（需自行验证该版本是否支持无会话启动）。
-3. **至少部署外部告警**，把不可见的故障变成可见的（见下）。
+| 层 | 措施 | 实测结果 |
+|---|---|---|
+| 1 | **Windows 自动登录**（`AutoAdminLogon=1` + `DefaultUserName` + `DefaultPassword`） | 用 `LogonUser` API 校验密码有效，重启后会自动进入会话 |
+| 2 | 看门狗计划任务（登录时 + 每 5 分钟） | 自动执行成功；停掉隧道容器后 17 秒恢复 |
+| 3 | 应用服务器侧告警（每 2 分钟） | 连续失败 3 次告警一次，恢复时也告警 |
+
+配套的自动锁屏：开机自动登录后 60 秒锁屏（计划任务 `KB-Lock-Workstation-AtLogon`），
+兼顾无人值守与物理安全。锁屏不影响看门狗与 Docker Desktop 的运行。
+
+> 注意：自动锁屏后，若**远程重启且没有远程桌面工具**，将无法解锁控制台。
+> 不需要锁屏时可执行 `schtasks /delete /tn KB-Lock-Workstation-AtLogon /f` 移除。
+
+### 凭据与权限加固（部署时必做）
+
+自动登录把密码以**明文**存放在
+`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\DefaultPassword`，
+而该键默认允许 `BUILTIN\Users` 读取。若机器上还存在其他本地账户
+（例如各类工具创建的沙箱账户），这些账户就能读出管理员密码，形成提权路径。
+
+同理，仓库根目录的 `.env` 含数据库密码与 API 密钥，默认继承父目录权限后
+同样对 `Users` 可读写。
+
+加固方式（移除 `Users` / `Authenticated Users`，只保留 SYSTEM 与 Administrators）：
+
+```powershell
+$drop = @("BUILTIN\Users","NT AUTHORITY\Authenticated Users","Everyone","NT AUTHORITY\INTERACTIVE")
+foreach ($path in @("<仓库路径>\.env","<私钥目录>","<私钥文件>")) {
+    $acl = Get-Acl $path
+    # 第二个参数必须是 $false：$true 会把继承来的 ACE 保留成显式项，等于没删
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.Access)) {
+        if ($drop -contains $rule.IdentityReference.Value) {
+            $acl.RemoveAccessRuleSpecific($rule) | Out-Null
+        }
+    }
+    Set-Acl -Path $path -AclObject $acl
+}
+```
+
+改完**必须**重建隧道容器验证私钥 bind mount 仍可读：
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.embedding-gpu.yml `
+  -f docker-compose.embedding-tunnel.yml up -d --force-recreate embedding-tunnel
+```
+
+仍需人工评估的项：自动登录的明文密码建议改用 Sysinternals `Autologon.exe`
+存入 LSA 加密区；管理员密码强度应满足生产环境要求。
 
 ### 外部告警（应用服务器侧）
 
