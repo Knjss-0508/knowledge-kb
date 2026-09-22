@@ -212,16 +212,59 @@ curl -s http://127.0.0.1:8000/ready
 | 杀掉容器内 ssh 进程 | 内置循环 5 秒后重连 |
 | 整容器重启 | 25 秒内自动恢复，后端 `/ready` 正常 |
 
-### 必须注意的运维风险
+### 看门狗（自动恢复）
 
-**GPU 节点重启后若无人登录，Docker Desktop 不会启动，隧道与嵌入服务都不会恢复。**
-此时网站浏览仍可用，但**知识导入、向量化以及依赖查询词嵌入的召回会失败**。
+`scripts/watchdog-gpu-embedding.ps1` 负责在引擎或容器掉线后自动恢复：
 
-缓解措施（任选其一，建议至少做一项）：
+1. `docker info` 不通 → 执行 `docker desktop start` 并等待引擎就绪（默认最多 300 秒）；
+2. 检查 `kb-embedding-qwen` 与 `kb-embedding-tunnel` 是否 `running`；
+3. 有不健康项时执行 `docker compose up -d embedding-qwen embedding-tunnel`；
+4. 结果写入 `logs/gpu-embedding-watchdog.log`（自动截断，最多 2000 行）。
 
-1. 为 GPU 节点启用 Windows 自动登录；
-2. 把 Docker Desktop 配置为系统级启动（需自行验证是否支持无会话启动）；
-3. 在应用服务器侧部署隧道健康监测，隧道不可用时告警。
+注册为计划任务：
+
+```powershell
+$scriptPath = "<仓库绝对路径>\scripts\watchdog-gpu-embedding.ps1"
+$action = New-ScheduledTaskAction -Execute "powershell.exe" `
+  -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
+$trigLogon  = New-ScheduledTaskTrigger -AtLogOn
+$trigRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+  -RepetitionInterval (New-TimeSpan -Minutes 5)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+  -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew `
+  -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+  -LogonType Interactive -RunLevel Highest
+
+Register-ScheduledTask -TaskName "KB-GPU-Embedding-Watchdog" `
+  -Action $action -Trigger $trigLogon, $trigRepeat `
+  -Settings $settings -Principal $principal -Force
+```
+
+实测：
+
+| 场景 | 结果 |
+|---|---|
+| 两个容器都正常 | 1.3 秒内退出，退出码 0 |
+| 手动停掉隧道容器 | 17 秒内自动恢复并确认 running |
+
+### 必须注意的运维风险：无人登录时无法恢复
+
+**GPU 节点重启后若无人登录，Docker Desktop 不会启动。** 看门狗的计划任务
+以 `LogonType Interactive` 注册（不保存密码），因此**在没有交互式会话时也无法运行**。
+
+此时的表现：
+
+- 网站浏览、数据库查询、媒体访问**仍然正常**；
+- **知识导入、向量化，以及依赖查询词嵌入的召回会失败**（查询向量缓存在进程内，
+  重复的历史查询可能仍命中缓存，容易掩盖问题）。
+
+缓解措施（按可靠性排序）：
+
+1. **为 GPU 节点启用 Windows 自动登录**——最直接有效，重启后自动进入会话，
+   Docker Desktop 与看门狗随之启动。
+2. 评估把 Docker Desktop 改为系统级启动（需自行验证该版本是否支持无会话启动）。
+3. 至少部署**外部告警**：在应用服务器上定时检查隧道端口，异常时通知值班人员。
 
 ### 日常检查
 
@@ -236,6 +279,8 @@ docker logs kb-backend --since 10m | grep -iE 'error|timeout'
 # GPU 节点
 docker ps --filter name=kb-embedding-tunnel --format '{{.Status}}'
 docker logs kb-embedding-tunnel --tail 20
+Get-Content logs\gpu-embedding-watchdog.log -Tail 20
+schtasks /query /tn KB-GPU-Embedding-Watchdog /v /fo LIST
 nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv
 ```
 
