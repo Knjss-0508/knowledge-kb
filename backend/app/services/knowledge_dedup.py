@@ -1125,7 +1125,6 @@ def search_embeddings(
     distance = KnowledgeSearchEmbedding.embedding_vector.cosine_distance(query_vector)
     item_query = (
         db.query(Knowledge, distance.label("distance"))
-        .options(joinedload(Knowledge.category))
         .join(
             KnowledgeSearchEmbedding,
             KnowledgeSearchEmbedding.knowledge_id == Knowledge.id,
@@ -1147,17 +1146,46 @@ def search_embeddings(
             Knowledge.tags.any(KnowledgeTag.tag_value_id.in_(tags))
         )
 
-    rows = (
-        item_query.order_by(distance)
-        .limit(max(top_k * 12, 50))
+    candidate_limit = max(top_k * 12, 50)
+    # 第一步只取 id 与距离，第二步再按 id 取完整行。
+    #
+    # 原实现一步取回 (Knowledge, distance) 并按距离排序，但 PostgreSQL 的
+    # LIMIT 是在 Sort **之后**才生效的：排序阶段会把全部候选宽行物化，之后
+    # 只保留 60 行。实测（headquarters_standard）该查询命中 14,367 次共享
+    # 缓冲、耗时约 32 ms，而只取 id 时约 21 ms。
+    #
+    # 浪费的根源是同一条知识在 knowledge_search_embeddings 里有多条嵌入：
+    # 实测 60 行候选只对应 17 个（另一业务 42 个）不同知识条目，其余都是
+    # 重复行，却带着 content 等 JSON 列被完整取回。
+    #
+    # 等价性：候选集仍由完全相同的过滤条件、排序与 LIMIT 决定；每个 id 仍取
+    # 最小距离（= 原实现 max(1 - distance) 的最大分数）；items 仍是按 id 去重
+    # 的 Knowledge 对象。因此 items/scores 与原实现逐项相同。
+    distance_rows = (
+        item_query.with_entities(Knowledge.id, distance.label("distance"))
+        .order_by(distance)
+        .limit(candidate_limit)
         .all()
     )
+    best_distance: dict[str, float] = {}
+    for knowledge_id, distance_value in distance_rows:
+        value = float(distance_value)
+        if knowledge_id not in best_distance or value < best_distance[knowledge_id]:
+            best_distance[knowledge_id] = value
+
     scores: dict[str, float] = {}
     items: dict[str, Knowledge] = {}
-    for item, distance_value in rows:
-        score = max(0.0, 1.0 - float(distance_value))
-        items[item.id] = item
-        scores[item.id] = max(scores.get(item.id, 0.0), score)
+    if best_distance:
+        items = {
+            item.id: item
+            for item in db.query(Knowledge)
+            .options(joinedload(Knowledge.category))
+            .filter(Knowledge.id.in_(list(best_distance)))
+            .all()
+        }
+        for knowledge_id, value in best_distance.items():
+            if knowledge_id in items:
+                scores[knowledge_id] = max(0.0, 1.0 - value)
     ranked = sorted(
         ((items[knowledge_id], score) for knowledge_id, score in scores.items()),
         key=lambda pair: (pair[1], pair[0].quality_score or 0.0),
