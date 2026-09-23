@@ -38,6 +38,23 @@ psql_ro() {
   sudo -u postgres "$PG_BIN/psql" -d "$DB_NAME" -Atc "$1"
 }
 
+# 打印库级持久设置。
+# 注意：setconfig 列在 pg_db_role_setting（别名 s）上，不在 pg_database（别名 d）上。
+# PostgreSQL 18 已移除 pg_database.datconfig，写错列名会报
+#   ERROR: column d.setconfig does not exist
+# 这里显式检查 ERROR —— 否则 SQL 报错会被当成「未设置」静默放过。
+show_db_settings() {
+  local out
+  out=$(psql_ro "SELECT '  ' || coalesce(s.setconfig::text, '(未设置)')
+                   FROM pg_db_role_setting s
+                   JOIN pg_database d ON d.oid = s.setdatabase
+                  WHERE d.datname = '$DB_NAME' AND s.setrole = 0" 2>&1)
+  case "$out" in
+    *ERROR*) fail "查询库级设置失败：$out" ;;
+  esac
+  printf '%s\n' "$out"
+}
+
 echo "=== 0) 前置检查 ==="
 [ -x "$PG_BIN/psql" ] || fail "找不到 $PG_BIN/psql"
 log "psql: $PG_BIN/psql"
@@ -56,10 +73,7 @@ echo "=== 1) 当前值（注意：ALTER DATABASE 只影响【新会话】） ===
 psql_ro "SELECT 'hnsw.ef_search = ' || current_setting('hnsw.ef_search')" 2>&1 | sed 's/^/  /'
 psql_ro "SELECT 'hnsw.iterative_scan = ' || current_setting('hnsw.iterative_scan')" 2>&1 | sed 's/^/  /'
 echo "  --- 库级持久设置（pg_db_role_setting，PG18 起 pg_database.datconfig 已移除） ---"
-psql_ro "SELECT '  ' || coalesce(d.setconfig::text, '(未设置)')
-           FROM pg_db_role_setting s
-           JOIN pg_database d ON d.oid = s.setdatabase
-          WHERE d.datname = '$DB_NAME' AND s.setrole = 0" 2>&1
+show_db_settings
 
 case "$MODE" in
   --verify|verify)
@@ -75,10 +89,7 @@ case "$MODE" in
     log "已重置"
     echo
     echo "  回滚后的库级设置："
-    psql_ro "SELECT '  ' || coalesce(d.setconfig::text, '(未设置)')
-               FROM pg_db_role_setting s
-               JOIN pg_database d ON d.oid = s.setdatabase
-              WHERE d.datname = '$DB_NAME' AND s.setrole = 0" 2>&1
+    show_db_settings
     echo
     echo "  ⚠️ 已存在的连接仍持有旧值，需重启应用才会全部生效："
     echo "     docker restart kb-backend"
@@ -109,18 +120,46 @@ echo
 echo "=== 4) 候选池大小对比（这是调优的直接目的） ==="
 echo "  说明：向量检索的 LIMIT 作用在【向量行】上，而一个知识条目平均有 4~5 个"
 echo "        向量分片。ef_search 过小会导致去重后的知识条目数远少于 top_k。"
-for ef in 40 "$EF_SEARCH"; do
-  n=$(sudo -u postgres env PGOPTIONS="-c hnsw.ef_search=$ef" \
-      "$PG_BIN/psql" -d "$DB_NAME" -Atc "
-        WITH q AS (SELECT embedding_vector FROM knowledge_search_embeddings
-                    WHERE embedding_vector IS NOT NULL LIMIT 1)
-        SELECT count(*) || ' 行 / ' || count(DISTINCT knowledge_id) || ' 个知识条目'
-          FROM (SELECT kse.knowledge_id
-                  FROM knowledge_search_embeddings kse, q
-                 WHERE kse.embedding_vector IS NOT NULL
-                 ORDER BY kse.embedding_vector <=> q.embedding_vector
-                 LIMIT 120) t" 2>/dev/null)
-  log "ef_search=$ef -> $n"
+echo
+echo "  四个必须知道的细节（都踩过）："
+echo "   a) 覆盖库级设置必须用【会话级 SET】。PGOPTIONS 在启动包里下发，"
+echo "      会被 ALTER DATABASE 压过去，用它做对比会得到完全相同的数字。"
+echo "   b) HNSW 索引【只能】用于 ORDER BY 操作数是常量的情况。写成"
+echo "      \`<=> 另一个表或 CTE 的列\` 就用不了索引，会退化成顺序扫描 + 排序，"
+echo "      此时 ef_search 完全不参与，对比必然无差别。"
+echo "   c) 本表只有 4271 行，规划器会认为顺序扫描（约 19ms）比走索引更便宜。"
+echo "      所以要加 enable_seqscan = off 强制走索引，否则测的是顺序扫描。"
+echo "   d) iterative_scan 打开后 ef_search 不再是限制因素 —— pgvector 会持续"
+echo "      迭代扫描直到满足 LIMIT。实测 ef_search=40 + strict_order 就已经拉满。"
+echo
+QVEC=$(psql_ro "SELECT embedding_vector::text FROM knowledge_search_embeddings
+                 WHERE embedding_vector IS NOT NULL LIMIT 1" 2>/dev/null)
+case "$QVEC" in
+  \[*) : ;;
+  *)   fail "取样本向量失败（返回：${QVEC:0:80}）" ;;
+esac
+log "样本向量已取得（${#QVEC} 字符）"
+
+candidate_pool() {
+  local ef="$1" is="$2"
+  sudo -u postgres "$PG_BIN/psql" -d "$DB_NAME" -At \
+    -c "SET hnsw.ef_search = $ef" \
+    -c "SET hnsw.iterative_scan = $is" \
+    -c "SET enable_seqscan = off" \
+    -c "
+      SELECT count(*) || ' 行 / ' || count(DISTINCT knowledge_id) || ' 个知识条目'
+        FROM (SELECT knowledge_id
+                FROM knowledge_search_embeddings
+               WHERE embedding_vector IS NOT NULL
+               ORDER BY embedding_vector <=> '$QVEC'::vector
+               LIMIT 120) t" 2>/dev/null | tail -1
+}
+log "调优前 (ef_search=40,  iterative_scan=off)          -> $(candidate_pool 40 off)"
+log "调优后 (ef_search=$EF_SEARCH, iterative_scan=$ITERATIVE_SCAN) -> $(candidate_pool "$EF_SEARCH" "$ITERATIVE_SCAN")"
+echo
+echo "  参考：ef_search 单独变化的效果（iterative_scan=off）"
+for ef in 4 10 40 200; do
+  log "    ef_search=$ef -> $(candidate_pool "$ef" off)"
 done
 
 echo
