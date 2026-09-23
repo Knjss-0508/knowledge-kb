@@ -1,0 +1,13 @@
+# 行尾策略：这些文件必须固定为 LF。
+#
+# docker-compose.embedding-tunnel.yml 的 command 块内嵌了多行 shell 脚本。
+# 如果工作区被转换成 CRLF，容器内的 sh 会因行尾的 \r 报
+# "not found" 之类的错误，导致隧道容器反复重启。
+# .env.example 被复制成 .env 后，CRLF 也可能让配置值带上多余的 \r。
+#
+# 注意：只声明必要的规则，不要使用 "* text=auto"，否则会触发全仓库
+# 重新规范化，产生巨大的无关改动。
+
+*.sh text eol=lf
+docker-compose*.yml text eol=lf
+.env.example text eol=lf
