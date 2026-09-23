@@ -3,6 +3,7 @@ from __future__ import annotations
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 
@@ -77,11 +78,29 @@ _BUSINESS_TYPE_VALUES = {
 }
 
 
-def normalize_scope_key(value: Any) -> str:
-    raw_value = "" if value is None else str(value)
+_NORMALIZE_SCOPE_KEY_CACHE_MAXSIZE = 131072
+
+
+@lru_cache(maxsize=_NORMALIZE_SCOPE_KEY_CACHE_MAXSIZE)
+def _normalize_scope_key_cached(raw_value: str) -> str:
+    """Pure string transform, memoized because it sits on a very hot path."""
     normalized = unicodedata.normalize("NFKC", raw_value).casefold().strip()
     compact = "".join(character for character in normalized if character.isalnum())
     return "" if compact in _EMPTY_SCOPE_KEYS else compact
+
+
+def normalize_scope_key(value: Any) -> str:
+    raw_value = "" if value is None else str(value)
+    return _normalize_scope_key_cached(raw_value)
+
+
+# 别名组是模块常量，归一化结果不会变化，因此在导入时预计算一次。
+# 原实现每次调用 scope_keys 都重新归一化全部别名组，而 scope_keys 在
+# resolve_applicability_scope 里按车型逐个调用，导致同一个常量被反复计算。
+_NORMALIZED_CATEGORY_ALIAS_GROUPS: tuple[frozenset[str], ...] = tuple(
+    frozenset(normalize_scope_key(alias) for alias in aliases)
+    for aliases in _CATEGORY_ALIAS_GROUPS
+)
 
 
 def _iter_values(value: Any) -> Iterable[Any]:
@@ -104,8 +123,7 @@ def scope_keys(values: Any, kind: str) -> set[str]:
         if normalized:
             keys.add(normalized)
     if kind == "category" and keys:
-        for aliases in _CATEGORY_ALIAS_GROUPS:
-            normalized_aliases = {normalize_scope_key(alias) for alias in aliases}
+        for normalized_aliases in _NORMALIZED_CATEGORY_ALIAS_GROUPS:
             if keys.intersection(normalized_aliases):
                 keys.update(normalized_aliases)
     return keys
