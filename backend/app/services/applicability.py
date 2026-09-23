@@ -438,6 +438,49 @@ def canonicalize_applicability_values(
     )
 
 
+_MODEL_POSITION_INDEX_MEMO: dict[str, Any] = {
+    "cache": None,
+    "business_type": None,
+    "index": None,
+}
+
+
+def _model_position_index(
+    cache: Any,
+    business_type: str,
+    models: list[Any],
+) -> dict[str, list[int]]:
+    """归一化车型键 -> 该车型在 models 中的位置，按缓存快照记忆一次。
+
+    原实现每个请求都遍历全部车型（生产环境实测 31,321 个），每个车型调用
+    scope_keys 三次，一次检索因此在应用层花掉约 122 ms。
+
+    失效判定用**对象身份**：manhattan.py 的 _read_cache() 按
+    (路径, mtime_ns, size) 记忆，缓存文件未变时返回的是同一个 dict 对象，
+    文件变更时返回新的对象。这里同时持有 cache 的强引用，使 is 判断在
+    条目存活期间始终可靠（dict 不支持弱引用，故不能用 WeakKeyDictionary）。
+    """
+    if (
+        _MODEL_POSITION_INDEX_MEMO["cache"] is cache
+        and _MODEL_POSITION_INDEX_MEMO["business_type"] == business_type
+        and _MODEL_POSITION_INDEX_MEMO["index"] is not None
+    ):
+        return _MODEL_POSITION_INDEX_MEMO["index"]
+
+    index: dict[str, list[int]] = {}
+    for position, model in enumerate(models):
+        if not isinstance(model, dict):
+            continue
+        for model_key in scope_keys(model, "model"):
+            index.setdefault(model_key, []).append(position)
+
+    # 只保留一份，内存占用与缓存快照同量级
+    _MODEL_POSITION_INDEX_MEMO["cache"] = cache
+    _MODEL_POSITION_INDEX_MEMO["business_type"] = business_type
+    _MODEL_POSITION_INDEX_MEMO["index"] = index
+    return index
+
+
 def resolve_applicability_scope(
     cache: dict[str, Any],
     business_type: str,
@@ -490,22 +533,32 @@ def resolve_applicability_scope(
                 requested_models.add(model_key[len(brand_key) :])
 
     matching_models: list[dict[str, Any]] = []
-    for model in group["models"]:
-        if not isinstance(model, dict):
-            continue
-        model_category_ids = scope_keys(
-            [model.get("categoryId"), model.get("category_id")],
-            "category",
-        )
-        if category_ids and model_category_ids and model_category_ids.isdisjoint(category_ids):
-            continue
-        model_brand_ids = scope_keys(
-            [model.get("brandId"), model.get("brand_id")],
-            "brand",
-        )
-        if brand_ids and model_brand_ids and model_brand_ids.isdisjoint(brand_ids):
-            continue
-        if not scope_keys(model, "model").isdisjoint(requested_models):
+    if requested_models:
+        # 用车型索引直接取出候选，不再遍历全部车型。索引给出的候选集恰好是
+        # 原实现中通过第三个判断（scope_keys(model, "model") 与 requested_models
+        # 有交集）的那些车型；requested_models 为空时结果必然为空，整个循环可跳过。
+        # sorted 保证 matching_models 的顺序与原实现一致。
+        models = group["models"]
+        position_index = _model_position_index(cache, business_type, models)
+        matched_positions: set[int] = set()
+        for model_key in requested_models:
+            positions = position_index.get(model_key)
+            if positions:
+                matched_positions.update(positions)
+        for position in sorted(matched_positions):
+            model = models[position]
+            model_category_ids = scope_keys(
+                [model.get("categoryId"), model.get("category_id")],
+                "category",
+            )
+            if category_ids and model_category_ids and model_category_ids.isdisjoint(category_ids):
+                continue
+            model_brand_ids = scope_keys(
+                [model.get("brandId"), model.get("brand_id")],
+                "brand",
+            )
+            if brand_ids and model_brand_ids and model_brand_ids.isdisjoint(brand_ids):
+                continue
             matching_models.append(model)
 
     model_keys = set(requested_models)

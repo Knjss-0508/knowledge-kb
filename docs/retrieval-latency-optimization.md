@@ -256,16 +256,131 @@ def normalize_scope_key(value: Any) -> str:
 
 ---
 
-## 八、后续可选项
+## 八、第二轮：车型位置索引（163 ms → 49 ms）
+
+第一轮把 450 ms 降到 163 ms 后重新测量，发现瓶颈**转移**了。
+
+### 测量（同一线程直接调用路由）
+
+```
+models 数量            : 31,321        ← 缓存的车型总数
+resolve_applicability_scope 单次: 121.57 ms   ← 占 163 ms 总时间的 74%
+scope_keys 调用         : 125,287 次
+_read_manhattan_cache   : 0.005 ms     ← 可忽略，不是瓶颈
+cursor.execute          : 仅 4 次 / 33 ms  ← 数据库已不是瓶颈
+
+cProfile tottime 排名:
+  scope_keys           125,287 次  0.218s   ← 第一
+  resolve_..._scope          1 次  0.065s
+  normalize_scope_key  187,950 次  0.061s
+```
+
+`125,287 ≈ 31,321 车型 × 4`，与「每个车型调用 `scope_keys` 三次」完全吻合。
+
+### 根因
+
+```python
+for model in group["models"]:            # 3.1 万个车型，每个请求都全量遍历
+    model_category_ids = scope_keys([model.get("categoryId"), model.get("category_id")], "category")
+    ...
+    model_brand_ids = scope_keys([model.get("brandId"), model.get("brand_id")], "brand")
+    ...
+    if not scope_keys(model, "model").isdisjoint(requested_models):
+        matching_models.append(model)
+```
+
+第一轮给 `normalize_scope_key` 加了 `lru_cache`，把单次归一化变便宜了，但**遍历本身没省**：
+3.1 万次循环、12.5 万次 `scope_keys`、每次都新建 set。
+
+### 修复
+
+预先算好「归一化车型键 → 车型在列表中的位置」：
+
+```python
+index: dict[str, list[int]] = {}
+for position, model in enumerate(models):
+    if not isinstance(model, dict):
+        continue
+    for model_key in scope_keys(model, "model"):
+        index.setdefault(model_key, []).append(position)
+```
+
+查询时只对命中的车型做类目/品牌校验：
+
+```python
+matched_positions = set()
+for model_key in requested_models:
+    positions = position_index.get(model_key)
+    if positions:
+        matched_positions.update(positions)
+for position in sorted(matched_positions):   # sorted 保持与原实现相同的顺序
+    ...
+```
+
+**等价性论证**：索引给出的候选集恰好是原实现中通过第三个判断
+（`not scope_keys(model, "model").isdisjoint(requested_models)`）的那些车型 ——
+因为该判断成立当且仅当存在某个键同时属于 `scope_keys(model, "model")` 与
+`requested_models`，而这正是该车型在索引中出现在某个被请求键下的条件。
+`requested_models` 为空时结果必然为空，整个循环可跳过。
+
+**失效判定用对象身份**：`manhattan.py` 的 `_read_cache()` 已按
+`(路径, st_mtime_ns, st_size)` 记忆，缓存文件未变时返回**同一个 dict 对象**，
+文件变更时返回新对象。因此索引用 `is` 比较即可，不需要猜 `updated_at`。
+同时持有 `cache` 的强引用，使 `is` 判断在条目存活期间始终可靠
+（`dict` 不支持弱引用，不能用 `WeakKeyDictionary`）。
+
+### 验证
+
+1. **681 个用例对拍**：把改动前的实现从 git 取出、与改动后的实现放在同一进程里，
+   覆盖全空 / 类目 ID / 类目名 / 品牌 ID / 品牌名 / 车型 ID / 车型名 / 跨类目组合 /
+   品牌前缀 / 通用键 / 无意义值 / 多值 / 字典 / 嵌套列表 / 空元组 / 空列表 / 空字符串
+   → **681 / 681 结果完全一致**。
+
+2. **测试套件**：新增 `tests/test_model_position_index.py`（含与暴力遍历参考实现对拍、
+   索引重建、非 dict 元素、空车型列表、无车型时跳过索引）+ 原有
+   `test_applicability_scope.py` + `test_business_types.py` → **19 passed**。
+
+3. **端到端（容器内换入新文件，同一线程直接调用路由）**：
+
+```
+旧版本: 7 次  最快 157.3  中位 163.2  最慢 181.1 ms
+新版本: 7 次  最快  44.5  中位  49.1  最慢  51.3 ms      → 快 3.3 倍
+cProfile 函数调用: 1,306,791 → 22,630                    → 减少 98.3%
+```
+
+### 索引构建代价
+
+| 项 | 数值 |
+|---|---|
+| 冷启动首次构建 | 约 88 ~ 197 ms（`lru_cache` 预热后稳定在 ~90 ms） |
+| 索引键数 | 62,475 |
+| 热取 | 0.0002 ms |
+| 重建时机 | 仅当缓存文件变更（`_read_cache` 返回新对象）时 |
+
+这是**一次性**开销，摊销到之后的所有请求上。
+
+### 两轮累计
+
+| 阶段 | 检索延迟 |
+|---|---|
+| 优化前 | 450 ~ 570 ms |
+| 第一轮后（`lru_cache` + 预计算别名组） | 163 ms |
+| 第二轮后（车型位置索引） | **49 ms** |
+
+---
+
+## 九、后续可选项
 
 | 项 | 收益 | 代价 |
 |---|---|---|
-| `resolve_applicability_scope` 按 category/brand 建索引，避免全量遍历车型 | 剩下约 150 ms 中的一部分 | 算法改动，需谨慎验证 |
-| 给该函数加按请求参数的结果缓存 | 重复查询参数时可跳过 | 需处理缓存失效 |
+| ~~`resolve_applicability_scope` 按 category/brand 建索引，避免全量遍历车型~~ **已完成** | 163 → 49 ms | — |
+| 给该函数加按请求参数的结果缓存 | 重复查询参数时可跳过（现在只剩 0.2 ms，收益很小） | 需处理缓存失效 |
 | 检索查询改用 `load_only` 只取需要的列 | 约 12 ms | 需确认调用方不用 `content` |
 | 减少每次检索的连接数 | 减少往返 | 需确认连接池配置 |
+| 把索引构建移到缓存刷新时预热，避免变更后首个请求付 90 ms | 消除一次性毛刺 | 需改缓存刷新路径 |
 
-> 上面几项都**尚未实施**，需要单独排期。
+> 剩下的时间里数据库的 `cursor.execute`（33 ms / 4 次）已是最大项，
+> 继续优化应用层的收益已经很小。
 
 ---
 
@@ -278,8 +393,10 @@ def normalize_scope_key(value: Any) -> str:
 |---|---|---|
 | #98 | 为 `model_configuration` 的 JSON 表达式查询补索引；修正「嵌入占 84%」的错误结论 | worker 轮询查询 215.745 → 0.041 ms；该 worker 进程整体 430 → 4.2 ms |
 | #99 | 补充审计文档：按 PID 隔离后的真实耗时分解 | 请求 455 ms 中数据库只占 85.8 ms |
-| #100 | **本次**：消除适用范围解析热路径上的重复归一化 | 检索 450.9 → 160.1 ms |
+| #100 | 消除适用范围解析热路径上的重复归一化 | 检索 450.9 → 160.1 ms |
 | #101 | 把 `.env.example` 的 blob 规范化为 LF | 消除每次 checkout 的永久「已修改」状态 |
+| #102 | 记录第一轮的上线过程，并标注 `postgresql.conf` 已修 | — |
+| #103 | **本次**：车型位置索引，不再全量遍历 31,321 个车型 | 检索 163.2 → 49.1 ms |
 
 另外两项服务器配置改动（不在代码仓库内）：
 
