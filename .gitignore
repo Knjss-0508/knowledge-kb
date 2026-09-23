@@ -13,6 +13,9 @@ backend/server*.log
 localtunnel*.log
 tools/cloudflared.exe
 
+# GPU 节点看门狗日志（scripts/watchdog-gpu-embedding.ps1 输出）
+logs/
+
 # IDE
 .vscode/
 .idea/
