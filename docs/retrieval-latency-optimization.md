@@ -190,7 +190,73 @@ def normalize_scope_key(value: Any) -> str:
 
 ---
 
-## 七、后续可选项
+## 七、上线记录（2026-09-23）
+
+修复已通过 PR #100 合并进 `master` 并**部署到线上**。
+
+### 部署方式
+
+只部署这一个修复，**不牵动同事尚未部署的提交**：服务器仓库
+`/opt/knowledge-kb` 停在 `server-preserve-20260914`（`fd163ca3`），
+只把修复后的 `backend/app/services/applicability.py` 写入该仓库再重建镜像。
+
+写入前核对过：该文件在服务器上的 md5（`4e3b55b34e2ef3525d946acbecca45d6`）
+与 `origin/master~1` 的版本**完全一致**，确认只替换了本次改的那一处。
+
+### 部署步骤与实测
+
+```
+1) 为当前镜像打回滚标签
+   knowledge-kb-backend:before-appl-fix-20260923-124654 -> 86e646678111
+
+2) 写入修复后的文件（md5 f2cae75fae399d7a099978afb127a800），python3 -m py_compile 通过
+
+3) 后台重建镜像
+   Image knowledge-kb-backend Built        （pip 层命中缓存，仅源码层重跑，约 1 分钟）
+
+4) 校验新镜像内容
+   applicability.py md5 = f2cae75fae399d7a099978afb127a800  ✅
+   embedding.py md5 与服务器一致（此前热修被保留）           ✅
+
+5) 重建容器
+   up -d 耗时 4 秒，就绪探针第 2 次通过，总中断约 6 秒
+```
+
+### 上线后实测
+
+```
+20 次热查询: 最快 167  中位 171  P90 181  最慢 246 ms
+全部 HTTP 200，候选数与部署前一致（无回归）
+
+（部署前中位 450 ~ 570 ms）
+```
+
+其它确认项：
+
+| 项 | 结果 |
+|---|---|
+| 容器状态 | `kb-backend \| Up (healthy)`，重启 0 次 |
+| 公网首页 | HTTP 200 |
+| uploads 文件 | 10 个，与数据库 `knowledge_media` 10 条一致 |
+| `knowledge_items` | 18,630 条 |
+| 数据库日志速率 | 0 行/秒 |
+| 回滚方式 | `docker tag knowledge-kb-backend:before-appl-fix-20260923-124654 knowledge-kb-backend:latest` 后重建容器 |
+
+### 部署后服务器仓库的状态
+
+`/opt/knowledge-kb` 现在有**两个已跟踪文件的改动**，都是**已部署进镜像的源码**，
+不是遗留的临时改动：
+
+- `backend/app/services/embedding.py`（更早的嵌入客户端复用修复，已烘焙进镜像）
+- `backend/app/services/applicability.py`（本次修复）
+
+后续若要把服务器仓库整体升到最新 `master`，需要单独安排一次部署
+（那会一并上线同事的 5 个提交：`media_storage.py` / `media.py` / `main.py` /
+`config.py` / `docker-compose.yml`），属于另一个决策。
+
+---
+
+## 八、后续可选项
 
 | 项 | 收益 | 代价 |
 |---|---|---|
@@ -199,4 +265,25 @@ def normalize_scope_key(value: Any) -> str:
 | 检索查询改用 `load_only` 只取需要的列 | 约 12 ms | 需确认调用方不用 `content` |
 | 减少每次检索的连接数 | 减少往返 | 需确认连接池配置 |
 
-> 本文档只记录已完成的优化。上面几项都**尚未实施**，需要单独排期。
+> 上面几项都**尚未实施**，需要单独排期。
+
+---
+
+## 附：本次优化周期的完整改动清单
+
+同一天围绕「让答疑中台更快」做的一整轮工作，全部走独立分支 + PR 合并，
+每项都有真实测量依据并在服务器上实测验证：
+
+| PR | 内容 | 关键数据 |
+|---|---|---|
+| #98 | 为 `model_configuration` 的 JSON 表达式查询补索引；修正「嵌入占 84%」的错误结论 | worker 轮询查询 215.745 → 0.041 ms；该 worker 进程整体 430 → 4.2 ms |
+| #99 | 补充审计文档：按 PID 隔离后的真实耗时分解 | 请求 455 ms 中数据库只占 85.8 ms |
+| #100 | **本次**：消除适用范围解析热路径上的重复归一化 | 检索 450.9 → 160.1 ms |
+| #101 | 把 `.env.example` 的 blob 规范化为 LF | 消除每次 checkout 的永久「已修改」状态 |
+
+另外两项服务器配置改动（不在代码仓库内）：
+
+| 改动 | 关键数据 |
+|---|---|
+| `ALTER SYSTEM SET log_statement = 'none'` + reload | 日志 11 行/秒 → 0 行/秒；历史日志累计 26 GB |
+| `postgresql.conf` 第 887 行 `log_statement = all` → `'none'` | 防止 `auto.conf` 被清空后日志再次刷屏，零停机 |
