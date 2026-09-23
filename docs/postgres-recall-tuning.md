@@ -177,7 +177,13 @@ sudo -u postgres /www/server/pgsql/bin/psql -d knowledge_base -Atc "SHOW hnsw.ef
 |---|---|---|
 | `shared_buffers` 128MB → 2GB、`effective_cache_size` 4GB → 6GB | **已完成**（2026-09-23）。消除冷启动尖峰（首次召回实测 503 ms，因 HNSW 索引被挤出缓冲区）。实测中断仅 **1.4 秒**（原估 5~10 秒） | 已完成；回滚见下 |
 | 向量检索改用「先按知识条目聚合再 LIMIT」 | 从根上解决「LIMIT 作用在向量行」的问题 | 需要改 SQL 与索引，改动面较大 |
-| 提高查询向量缓存命中率 | 查询向量嵌入占总耗时约 84% | 需要分析真实查询分布 |
+| ~~提高查询向量缓存命中率~~ | ~~查询向量嵌入占总耗时约 84%~~ **此结论已于 2026-09-23 实测推翻**，见 [`postgres-performance-audit.md`](./postgres-performance-audit.md) | 缓存机制（LRU 512 条）**已经存在**，无需重新实现 |
+
+> ⚠️ **更正**：本文档早期版本写「查询向量嵌入占总耗时约 84%」，**这是错的**。
+> 实测热缓存（嵌入已被缓存命中）时请求仍需约 454 ms，说明嵌入不是大头。
+> 真正的大头是后台 worker 每 2.5 秒执行的**无索引 JSON 表达式查询**（每周期约 430 ms）
+> 和长期开启的 `log_statement = all`（26 GB 日志）。
+> 完整测量数据与修复见 [`postgres-performance-audit.md`](./postgres-performance-audit.md)。
 
 ### P0-2 内存调优的回滚
 
