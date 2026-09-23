@@ -318,10 +318,18 @@ payload = {
 | 项 | 收益 | 代价 |
 |---|---|---|
 | 清理/压缩 26 GB 历史日志 | 释放磁盘 | 需维护者确认历史日志是否还有价值 |
-| 同时改掉 `postgresql.conf` 的 `log_statement = all` | 防止配置「复活」 | 需改配置文件并 reload |
+| ~~同时改掉 `postgresql.conf` 的 `log_statement = all`~~ **已完成 2026-09-23** | 防止配置「复活」 | — |
 | 安装 `pg_stat_statements` | 可**持续**按总耗时排序查询，不必每次临时开日志 | **需重启数据库**（实测中断约 1.4 秒） |
 | 改 worker 取数逻辑，省掉恒返回 0 行的查询 A | 再省 0.041 ms/周期 | 代码改动 |
 | 排查 `feedback-status` 接口的 404 | 有客户端在调已删除的接口 | 需确认调用方 |
+
+> **配置文件的 `log_statement = all` 已改掉。** 服务器
+> `/www/server/pgsql/data/postgresql.conf` 第 887 行由 `log_statement = all`
+> 改为 `log_statement = 'none'`，备份为
+> `postgresql.conf.bak-logstmt-20260923-124727`，随后 `pg_reload_conf()` 生效。
+> 这是 SIGHUP 参数，**零停机**：主进程 PID（37838）未变，`SHOW log_statement`
+> 仍为 `none`，日志速率 0 行/秒。此前只有 `postgresql.auto.conf` 里的
+> `ALTER SYSTEM` 值在起作用，配置文件里仍是 `all`，一旦 auto.conf 被清空日志就会再次刷屏。
 
 > `pg_stat_statements` 的扩展文件在 `/www/server/pgsql/share/extension/` 下齐全，
 > 只差 `shared_preload_libraries` + 重启。它能让「哪条查询最耗数据库」变成一个随时可查的问题，
