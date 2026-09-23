@@ -394,18 +394,107 @@ uploads 10 个文件与 knowledge_media 10 条一致；数据库日志 0 行/秒
 
 ---
 
-## 九、后续可选项
+## 九、第三轮：先取 id 再按 id 取全行（50 ms → 40 ms）
+
+第二轮之后剩下的时间几乎全在数据库里：单次检索只有 **3 条 SQL**，合计 32 ms，
+其中 `cursor.execute` 占大头。把每条语句单独计时后看到了这个：
+
+```
+[1] 27.70 ms   rowcount=60   ← knowledge_items 检索（第一个 knowledge_origin）
+[2]  3.99 ms   rowcount=60   ← 同一条 SQL，第二个 knowledge_origin
+[3]  0.30 ms   rowcount=1    ← embedding_runtime_configs
+非数据库时间: 13.0 ms
+```
+
+同一条 SQL 跑两次是设计使然（每个 `knowledge_origin` 各搜一次），但两次差了 7 倍，
+说明第一条本身有问题。
+
+### 怎么找到的
+
+`EXPLAIN (ANALYZE, BUFFERS)` 显示第一条查询**完全没有走向量索引**：
+
+```
+Limit (actual time=21.556..21.567 rows=60)
+  Buffers: shared hit=14367          ← 14,367 次共享缓冲命中
+  -> Sort (top-N heapsort, 223kB)
+       -> Hash Join (actual time=1.550..18.856 rows=4131)
+            -> Seq Scan on knowledge_search_embeddings (rows=4271)
+            -> Hash -> Index Scan using ix_knowledge_items_knowledge_origin (rows=841)
+  width=1771                          ← 单行 1771 字节
+```
+
+三个关键事实：
+
+1. **`LIMIT 60` 在 `Sort` 之后才生效**。排序阶段要把 **4,131 行宽行**（含 `content`
+   等 JSON 列，单行约 1771 字节）全部物化，之后才丢掉 4,071 行。
+2. **候选行里绝大部分是重复的**。同一条知识在 `knowledge_search_embeddings` 里有多条
+   嵌入，所以 60 行候选只对应 **17 个**（`business_accumulation` 下 42 个）不同知识条目。
+   也就是说取回的宽行里有七成是白取的。
+3. **HNSW 索引在生产里从未被使用**（`idx_scan` 只有 124，全是测量时产生的）。
+   即使把向量内联成字面量（`bindparam(..., literal_execute=True)`）逼规划器考虑它，
+   仍然是 `Seq Scan + Sort` —— 因为该表只有 4,271 行，全表扫描确实比索引扫描便宜。
+   **结论：HNSW 不是这里的优化方向，已排除。**
+
+### 修复
+
+把一次查询拆成两步（`backend/app/services/knowledge_dedup.py` 的 `search_embeddings`）：
+
+1. 第一步只用**完全相同**的过滤条件、排序与 `LIMIT` 取 `(id, distance)`，
+   每个 id 取最小距离（等价于原实现 `max(1 - distance)` 的最大分数）；
+2. 第二步按 id 取完整行并 `joinedload` 类目，只取真正命中的条目。
+
+这样排序阶段物化的是窄行（只有 id 和距离），宽行只取真正要用的那十几个。
+
+### 验证方式
+
+| 项 | 结果 |
+|---|---|
+| 响应等价 | 8 个用例（两种业务类型 × 三种知识来源）响应 `sha256` 与改动前**逐个一致** |
+| 测试套件 | 容器内换入新文件跑完整套件，失败集合与基线**完全相同**（18 个既有失败，**0 个新增**）；相关三个测试文件 19 passed |
+| 端到端（24 次） | 中位 **45.5 → 35.5 ms**，P90 **62.6 → 40.5 ms** |
+| 上线后线上 | 24 次中位 40 ms、P90 50 ms，全部 HTTP 200，公网 200 |
+
+> `tests/test_embedding_training_runner.py` 在收集阶段就报
+> `FileNotFoundError: '/training-runner/runner.py'`，是镜像里缺文件的既有问题，
+> 与本次改动无关。
+
+### 上线记录（2026-09-23）
+
+| 项 | 值 |
+|---|---|
+| PR | #105（Squash and merge） |
+| master | `29060ae` |
+| 回滚标签 | `knowledge-kb-backend:before-narrow-fetch-20260923-144635`（= `4f288e3affa4`） |
+| 新镜像 | `knowledge-kb-backend:latest` = `c7694028f37e` |
+| 构建 / 重建耗时 | 10 秒 / 4 秒 |
+| 上线后容器内 md5 | `9fe18e9773b1b7c230ecbe3f1b7e989b` |
+| 热修保留 | `embedding.py` = `28e324a20386b721806a7db339460b36`、`applicability.py` = `3fbf15e40f84813030006dbfac6ab06b` |
+| 回滚方式 | `docker tag knowledge-kb-backend:before-narrow-fetch-20260923-144635 knowledge-kb-backend:latest` 后重建后端容器 |
+
+### 已知风险
+
+- 第二步是按 id 单独取行，若某条目在两次查询之间被删除，该条会从结果中消失
+  （原实现是同一条快照查询，不存在该窗口）。窗口极短，且只会少给一条候选。
+- 第一步返回的 60 行仍可能含重复 id，第二步按 id 去重后条目数与原来一致。
+
+---
+
+## 十、后续可选项
 
 | 项 | 收益 | 代价 |
 |---|---|---|
 | ~~`resolve_applicability_scope` 按 category/brand 建索引，避免全量遍历车型~~ **已完成** | 163 → 49 ms | — |
+| ~~检索查询只取窄列、按 id 再取全行~~ **已完成** | 50 → 40 ms | — |
 | 给该函数加按请求参数的结果缓存 | 重复查询参数时可跳过（现在只剩 0.2 ms，收益很小） | 需处理缓存失效 |
-| 检索查询改用 `load_only` 只取需要的列 | 约 12 ms | 需确认调用方不用 `content` |
+| 确认 `knowledge_search_embeddings` 是否该按 `embedding_kind` 过滤 | 候选集可能大幅缩小（841 条知识对应 4,271 条嵌入） | **会改变检索结果，需产品确认** |
 | 减少每次检索的连接数 | 减少往返 | 需确认连接池配置 |
 | 把索引构建移到缓存刷新时预热，避免变更后首个请求付 90 ms | 消除一次性毛刺 | 需改缓存刷新路径 |
+| 两个 `knowledge_origin` 各查一次数据库 | 合并后省一次往返 | 两次的过滤条件不同，合并需改 SQL 语义 |
 
-> 剩下的时间里数据库的 `cursor.execute`（33 ms / 4 次）已是最大项，
-> 继续优化应用层的收益已经很小。
+> 现在单次检索约 40 ms，其中数据库约 25 ms、非数据库约 13 ms。
+> 应用层继续优化的空间已经很小，剩下的方向是缩小候选集（需要产品确认）
+> 或减少嵌入表的行数。
+
 
 ---
 
@@ -421,7 +510,8 @@ uploads 10 个文件与 knowledge_media 10 条一致；数据库日志 0 行/秒
 | #100 | 消除适用范围解析热路径上的重复归一化 | 检索 450.9 → 160.1 ms |
 | #101 | 把 `.env.example` 的 blob 规范化为 LF | 消除每次 checkout 的永久「已修改」状态 |
 | #102 | 记录第一轮的上线过程，并标注 `postgresql.conf` 已修 | — |
-| #103 | **本次**：车型位置索引，不再全量遍历 31,321 个车型 | 检索 163.2 → 49.1 ms |
+| #103 | 车型位置索引，不再全量遍历 31,321 个车型 | 检索 163.2 → 49.1 ms |
+| #105 | **本次**：检索先取 id 再按 id 取全行，不再物化 4,131 行宽行 | 检索 45.5 → 35.5 ms（中位） |
 
 另外两项服务器配置改动（不在代码仓库内）：
 
@@ -429,3 +519,4 @@ uploads 10 个文件与 knowledge_media 10 条一致；数据库日志 0 行/秒
 |---|---|
 | `ALTER SYSTEM SET log_statement = 'none'` + reload | 日志 11 行/秒 → 0 行/秒；历史日志累计 26 GB |
 | `postgresql.conf` 第 887 行 `log_statement = all` → `'none'` | 防止 `auto.conf` 被清空后日志再次刷屏，零停机 |
+| 排除 HNSW 索引方向 | 该表仅 4,271 行，规划器始终选 `Seq Scan + Sort`；`idx_scan` 仅 124（全为测量产生） |
