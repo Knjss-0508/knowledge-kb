@@ -26,9 +26,10 @@ from app.routes import (
     media,
     tag,
 )
-from app.services.media_deletion import run_media_deletion_worker
+from app.services.embedding import close_embedding_client
 from app.services.knowledge_import_worker import run_knowledge_import_worker
 from app.services.knowledge_vector_worker import run_knowledge_vector_worker
+from app.services.media_deletion import run_media_deletion_worker
 from app.services.media_storage import _normalize_remote_media_path_prefix
 
 
@@ -81,9 +82,12 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
-        if workers:
-            stop_event.set()
-            await asyncio.gather(*workers)
+        try:
+            if workers:
+                stop_event.set()
+                await asyncio.gather(*workers)
+        finally:
+            close_embedding_client()
 
 
 app = FastAPI(

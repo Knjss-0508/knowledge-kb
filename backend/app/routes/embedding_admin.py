@@ -6,6 +6,7 @@ import re
 import secrets
 import uuid
 from datetime import datetime, timedelta
+from time import monotonic
 from typing import Any
 from urllib.parse import urlparse
 
@@ -230,6 +231,27 @@ def _embedding_health_url() -> str:
     return f"{base_url}/health"
 
 
+def _embedding_endpoint_info() -> dict[str, str]:
+    """Describe the configured route without exposing credentials or query data."""
+    parsed = urlparse(settings.EMBEDDING_BASE_URL.strip())
+    host = (parsed.hostname or "").lower()
+    port = parsed.port
+    path = parsed.path.rstrip("/")
+    display_host = host or "未配置"
+    if port is not None:
+        display_host = f"{display_host}:{port}"
+    display = f"{display_host}{path}"
+
+    if host == "host.docker.internal":
+        mode, label = "ssh_reverse_tunnel", "SSH 反向隧道配置"
+    elif host == "embedding-qwen":
+        mode, label = "compose_network", "同机 Compose 模型服务"
+    elif host:
+        mode, label = "custom_endpoint", "自定义模型服务地址"
+    else:
+        mode, label = "not_configured", "模型服务地址未配置"
+    return {"mode": mode, "label": label, "display": display}
+
 def _health_snapshot() -> dict[str, Any]:
     started = datetime.utcnow()
     try:
@@ -244,6 +266,47 @@ def _health_snapshot() -> dict[str, Any]:
             "status": "unavailable",
             "latency_ms": None,
             "error": str(exc)[:300],
+        }
+
+
+def _probe_embedding_runtime() -> dict[str, Any]:
+    """Exercise the real vector-generation path used by retrieval and deduplication."""
+    started = monotonic()
+    endpoint = _embedding_endpoint_info()
+    expected_dimension = int(settings.EMBEDDING_DIMENSIONS)
+    try:
+        vectors = embed_texts(["答疑中台模型链路连通性检测"])
+        actual_dimension = len(vectors[0]) if vectors else 0
+        if actual_dimension != expected_dimension:
+            return {
+                "status": "dimension_mismatch",
+                "latency_ms": round((monotonic() - started) * 1000, 2),
+                "expected_dimension": expected_dimension,
+                "actual_dimension": actual_dimension,
+                "message": "模型可响应，但返回向量维度与知识库配置不一致。",
+                "endpoint": endpoint,
+            }
+        return {
+            "status": "healthy",
+            "latency_ms": round((monotonic() - started) * 1000, 2),
+            "expected_dimension": expected_dimension,
+            "actual_dimension": actual_dimension,
+            "message": "后端已通过当前配置成功生成向量。",
+            "endpoint": endpoint,
+        }
+    except Exception as exc:
+        message = (
+            "无法通过当前配置调用模型，请检查模型服务、SSH 隧道和地址配置。"
+            if isinstance(exc, EmbeddingServiceUnavailable)
+            else "模型链路检测失败，请查看后端日志。"
+        )
+        return {
+            "status": "unavailable",
+            "latency_ms": round((monotonic() - started) * 1000, 2),
+            "expected_dimension": expected_dimension,
+            "actual_dimension": None,
+            "message": message,
+            "endpoint": endpoint,
         }
 
 
@@ -446,7 +509,7 @@ def get_embedding_overview(
             "name": settings.EMBEDDING_MODEL,
             "dimension": settings.EMBEDDING_DIMENSIONS,
             "provider": settings.EMBEDDING_PROVIDER,
-            "base_url": settings.EMBEDDING_BASE_URL,
+            "endpoint": _embedding_endpoint_info(),
             "health": _health_snapshot(),
         },
         "vectors": {
@@ -482,6 +545,18 @@ def get_embedding_overview(
         "runner_access_mode": "task_scoped",
         "active_config": _config_payload(active_config),
         "updated_at": datetime.utcnow().isoformat(),
+    }
+
+
+@router.post("/runtime-probe")
+def probe_embedding_runtime(
+    _: User = Depends(require_permission("embedding:manage")),
+):
+    """Verify the configured model route by generating a disposable test vector."""
+    return {
+        "model": settings.EMBEDDING_MODEL,
+        **_probe_embedding_runtime(),
+        "checked_at": datetime.utcnow().isoformat(),
     }
 
 

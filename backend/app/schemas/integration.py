@@ -511,6 +511,11 @@ class IntegrationStandardSearchCandidate(BaseModel):
     id: str
     title: str
     text: str
+    recommended_reply: str = Field(
+        "",
+        alias="recommendedReply",
+        description="知识库保存的推荐回复；未设置时为空，不以标题或正文兜底",
+    )
     score: float = Field(ge=0, le=1)
     final_score: float = Field(alias="finalScore", ge=0, le=1)
     status: Literal["published"] = "published"
@@ -726,6 +731,7 @@ class RetrievalQualityEventResult(BaseModel):
         "low_score",
         "no_candidates",
         "not_selected",
+        "selection_pending",
         "technical_failure",
     ]
     event_id: str

@@ -64,11 +64,14 @@ GPU 节点（本地电脑，RTX 4060）           应用服务器（原服务器
 | SSH 密钥 | GPU 节点生成密钥对，公钥写入应用服务器 `~/.ssh/authorized_keys` |
 | 应用服务器端口 | `EMBEDDING_TUNNEL_REMOTE_PORT`（默认 18080）未被占用 |
 | GPU 节点 | Docker 可用；GPU 场景需 `docker-compose.embedding-gpu.yml` |
+| Linux Docker 主机名解析 | 后端容器需能将 `host.docker.internal` 解析到宿主机；仓库基础 Compose 已配置 `host-gateway` |
 
 ### 为什么必须设置 `GatewayPorts clientspecified`
 
 默认 `GatewayPorts no` 时，`ssh -R` 只能把转发端口绑定到**回环地址**，
-应用服务器上的后端容器无法通过 `host.docker.internal` 访问它。
+应用服务器上的后端容器无法通过 `host.docker.internal` 访问它。Linux Docker Engine
+还需把该名称解析到宿主机网关；仓库基础 `docker-compose.yml` 已为 backend 配置
+`host.docker.internal:host-gateway`。
 设为 `clientspecified` 后允许客户端指定绑定地址。
 
 > 该选项允许任何已认证的 SSH 客户端绑定非回环地址。
