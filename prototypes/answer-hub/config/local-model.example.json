@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "provider": "group-internal",
+  "base_url": "http://GROUP_LLM_HOST:8000/v1",
+  "model": "deepseek-flash",
+  "media_model": "deepseek-flash",
+  "api_key_env": "GROUP_LLM_API_KEY",
+  "timeout_seconds": 120,
+  "response_read_timeout_seconds": 180,
+  "max_completion_tokens": 2048,
+  "max_retries": 2,
+  "max_requests_per_second": 1,
+  "thinking_type": "disabled"
+}

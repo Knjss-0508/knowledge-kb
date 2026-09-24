@@ -1,0 +1,44 @@
+{
+  "snapshot_version": "local-cz-topic-snapshot-20260903-001",
+  "generated_at": "2026-09-03T10:00:00+08:00",
+  "items": [
+    {
+      "cz_topic_id": "LOCAL-CZ-PUBLISHED-001",
+      "status": "published",
+      "title": "手机外壳外观损伤判定",
+      "business_line": "自营回收",
+      "product_category": "手机",
+      "source_topic_key": "TOP-LOCAL-OUTER-HOUSING",
+      "standard_family": "手机外壳外观标准",
+      "merge_policy": "same_standard_family",
+      "object_key": "外壳",
+      "phenomenon_value": "掉漆",
+      "query_target": "phone_housing_appearance",
+      "detection_target": "",
+      "platform": "通用",
+      "brand": "通用",
+      "model_scope": "通用",
+      "threshold_values": "无明确阈值",
+      "updated_at": "2026-09-03T10:00:00+08:00"
+    },
+    {
+      "cz_topic_id": "LOCAL-CZ-REVIEW-001",
+      "status": "review",
+      "title": "手机屏幕色斑判定",
+      "business_line": "自营回收",
+      "product_category": "手机",
+      "source_topic_key": "TOP-LOCAL-SCREEN-SPOT",
+      "standard_family": "手机屏幕显示标准",
+      "merge_policy": "separate_by_phenomenon",
+      "object_key": "屏幕",
+      "phenomenon_value": "色斑",
+      "query_target": "",
+      "detection_target": "",
+      "platform": "通用",
+      "brand": "通用",
+      "model_scope": "通用",
+      "threshold_values": "无明确阈值",
+      "updated_at": "2026-09-03T10:00:00+08:00"
+    }
+  ]
+}

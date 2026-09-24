@@ -16,6 +16,7 @@ from .automation_queue import (
     process_automation_queue,
     queue_job_metadata_path,
 )
+from .local_model_config import resolve_config_path
 from .mimo import load_dotenv
 
 
@@ -35,8 +36,28 @@ def _configured_path(
     return path
 
 
+def _group_model_configured(environ: Mapping[str, str]) -> bool:
+    """组内本地模型配置（config/local-model.json）是否可直接使用。"""
+    config_path = resolve_config_path()
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(payload, dict) or payload.get("enabled", True) is False:
+        return False
+    if not str(payload.get("base_url") or "").strip():
+        return False
+    if not str(payload.get("model") or "").strip():
+        return False
+    api_key_env = str(payload.get("api_key_env") or "MIMO_API_KEY").strip()
+    return bool(str(environ.get(api_key_env) or "").strip())
+
+
 def _missing_configuration(environ: Mapping[str, str]) -> list[str]:
     missing: list[str] = []
+    # 本地模型配置生效时，模型地址与模型名以 config/local-model.json 为准，
+    # 不再要求个人 MiMo 的 MIMO_API_KEY / MIMO_BASE_URL / MIMO_MODEL。
+    requires_mimo = not _group_model_configured(environ)
     for name in (
         "MIMO_API_KEY",
         "MIMO_BASE_URL",
@@ -44,6 +65,8 @@ def _missing_configuration(environ: Mapping[str, str]) -> list[str]:
         "KB_BASE_URL",
         "KB_INTEGRATION_KEY",
     ):
+        if not requires_mimo and name.startswith("MIMO_"):
+            continue
         if not str(environ.get(name) or "").strip():
             missing.append(name)
     return missing

@@ -50,7 +50,7 @@ $env:PYTHONPATH = Join-Path $ProjectRoot "src"
 $hostName = if ($env:ANSWER_HUB_API_HOST) {
     $env:ANSWER_HUB_API_HOST
 } else {
-    "0.0.0.0"
+    "127.0.0.1"
 }
 $port = if ($env:ANSWER_HUB_API_PORT) {
     $env:ANSWER_HUB_API_PORT
