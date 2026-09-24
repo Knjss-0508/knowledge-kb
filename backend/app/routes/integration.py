@@ -1,4 +1,5 @@
 import logging
+import hashlib
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
@@ -44,9 +45,11 @@ from app.schemas.integration import (
     IntegrationStandardSearchRequest,
     IntegrationStandardSearchResponse,
     IntegrationTaxonomyResponse,
+    RetrievalQualityCandidatePayload,
     RetrievalQualityEventBatch,
     RetrievalQualityEventBatchResponse,
     RetrievalQualityEventResult,
+    RetrievalQualityEventPayload,
 )
 from app.schemas.knowledge import (
     BusinessTypeOption,
@@ -411,11 +414,47 @@ def _queue_duplicate_candidate(
 
 
 _RETRIEVAL_TECHNICAL_FAILURES = {"timeout", "error", "invalid_response"}
+_RETRIEVAL_SELECTION_PENDING = "selection_pending"
 
 
 def _metadata_value(candidate, key, default=None):
     metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
     return metadata.get(key, default)
+
+
+def _retrieval_event_metadata(value) -> dict[str, Any]:
+    """Return retrieval metadata for either an API payload or a DB event."""
+
+    metadata = getattr(value, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = getattr(value, "event_metadata", None)
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _retrieval_selection_observed(value) -> bool:
+    """Whether a retrieval event contains an actual user/plugin choice.
+
+    Automatic ``standard-search`` telemetry deliberately records only the
+    returned candidates.  It must not be interpreted as an explicit
+    ``none_selected`` action.  Older events and normal plugin events retain
+    the historical default of an observed selection state.
+    """
+
+    def marker_is_true(marker) -> bool:
+        if isinstance(marker, str):
+            return marker.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "y",
+                "observed",
+            }
+        return bool(marker)
+
+    metadata = _retrieval_event_metadata(value)
+    if "selection_observed" in metadata:
+        return marker_is_true(metadata.get("selection_observed"))
+    return not marker_is_true(metadata.get("telemetry_only"))
 
 
 def _retrieval_candidate_origins(candidate) -> list[str | None]:
@@ -718,27 +757,38 @@ def _retrieval_request_payload(
         ),
         representative,
     )
+    observed_events = [
+        event
+        for event in ordered_events
+        if _retrieval_selection_observed(event)
+    ]
+    selection_observed = bool(observed_events)
     selection_event = next(
         (
             event
-            for event in ordered_events
+            for event in observed_events
             if (
                 event.selected_knowledge_id
                 or event.selected
                 or event.feedback_type != "none"
             )
         ),
-        representative,
+        observed_events[0] if observed_events else None,
     )
-    selected_knowledge_id = str(
-        selection_event.selected_knowledge_id
-        or (
-            selection_event.top_knowledge_id
-            if selection_event.selected
-            else ""
-        )
-        or ""
-    ).strip() or None
+    selected_knowledge_id = (
+        str(
+            selection_event.selected_knowledge_id
+            or (
+                selection_event.top_knowledge_id
+                if selection_event.selected
+                else ""
+            )
+            or ""
+        ).strip()
+        or None
+        if selection_event is not None
+        else None
+    )
     candidates = _retrieval_request_candidate_snapshot(ordered_events)
     selected_index = next(
         (
@@ -749,7 +799,11 @@ def _retrieval_request_payload(
         ),
         None,
     )
-    selected_candidate_rank = selection_event.selected_candidate_rank
+    selected_candidate_rank = (
+        selection_event.selected_candidate_rank
+        if selection_event is not None
+        else None
+    )
     if selected_index is not None:
         selected_origin = candidates[selected_index].get("knowledge_origin")
         if selected_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS:
@@ -823,7 +877,9 @@ def _retrieval_request_payload(
             )
             else "passed"
         )
-        if selected_knowledge_id:
+        if not selection_observed:
+            selection_status = "not_evaluated"
+        elif selected_knowledge_id:
             selection_status = (
                 "top_selected"
                 if selected_candidate_rank == 1
@@ -844,6 +900,8 @@ def _retrieval_request_payload(
         outcome = "no_candidates"
     elif threshold_status == "below":
         outcome = "low_score"
+    elif selection_status == "not_evaluated" and not selection_observed:
+        outcome = _RETRIEVAL_SELECTION_PENDING
     elif selection_status == "top_selected":
         outcome = "accepted"
     elif selection_status == "alternative_selected":
@@ -904,6 +962,7 @@ def _retrieval_request_payload(
         "request_status": request_status,
         "threshold_status": threshold_status,
         "selection_status": selection_status,
+        "selection_observed": selection_observed,
         "selected_knowledge_id": selected_knowledge_id,
         "selected_candidate_rank": selected_candidate_rank,
         "expected_knowledge_id": state_event.expected_knowledge_id,
@@ -924,6 +983,7 @@ def _retrieval_request_payload(
 
 
 def _retrieval_feedback_dimensions(candidate) -> dict:
+    selection_observed = _retrieval_selection_observed(candidate)
     selected_knowledge_id = (
         candidate.selected_knowledge_id
         or _metadata_value(candidate, "selected_knowledge_id")
@@ -934,6 +994,9 @@ def _retrieval_feedback_dimensions(candidate) -> dict:
         or _metadata_value(candidate, "selected_candidate_rank")
         or (1 if candidate.selected else None)
     )
+    if not selection_observed:
+        selected_knowledge_id = None
+        selected_candidate_rank = None
     selected_pool_rank = _retrieval_selected_pool_rank(
         candidate,
         selected_knowledge_id,
@@ -954,7 +1017,9 @@ def _retrieval_feedback_dimensions(candidate) -> dict:
             if candidate.top_rerank_score < candidate.score_threshold
             else "passed"
         )
-        if selected_knowledge_id:
+        if not _retrieval_selection_observed(candidate):
+            selection_status = "not_evaluated"
+        elif selected_knowledge_id:
             selection_status = (
                 "top_selected"
                 if (
@@ -968,6 +1033,8 @@ def _retrieval_feedback_dimensions(candidate) -> dict:
 
         if threshold_status == "below":
             outcome = "low_score"
+        elif selection_status == "not_evaluated":
+            outcome = _RETRIEVAL_SELECTION_PENDING
         elif selection_status == "top_selected":
             outcome = "accepted"
         elif selection_status == "alternative_selected":
@@ -1002,6 +1069,230 @@ def _retrieval_source_kind(candidate) -> str:
     )
 
 
+def _standard_search_event_idempotency_key(
+    conversation_id: str,
+    request_id: str,
+    source_kind: str,
+) -> str:
+    """Build a stable, bounded key for automatic standard-search telemetry."""
+
+    digest = hashlib.sha256(
+        "\x1f".join((conversation_id, request_id, source_kind)).encode("utf-8")
+    ).hexdigest()
+    return f"knowledge-kb:standard-search:{digest}"
+
+
+def _record_standard_search_events(
+    db: Session,
+    *,
+    body: IntegrationStandardSearchRequest,
+    candidates_by_origin: dict[str, list[tuple[Knowledge, float]]],
+    score_threshold: float,
+    request_status: str = "success",
+    failure_reason: str = "",
+) -> None:
+    """Persist one idempotent quality event for each standard-search pool.
+
+    The QA plugin historically called ``standard-search`` without the separate
+    telemetry endpoint. Recording here keeps the analytics page connected while
+    retaining the existing two-pool contract: headquarters uses ``standard`` and
+    business accumulation uses ``reply`` so the analytics merger can preserve
+    both pools and their independent ranks. Telemetry is best effort and must
+    never turn a successful retrieval into a failed request.
+    """
+
+    source_kind_by_origin = {
+        "headquarters_standard": "standard",
+        "business_accumulation": "reply",
+    }
+    payloads: list[RetrievalQualityEventPayload] = []
+    try:
+        for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS:
+            source_kind = source_kind_by_origin[knowledge_origin]
+            idempotency_key = _standard_search_event_idempotency_key(
+                body.conversation_id,
+                body.request_id,
+                source_kind,
+            )
+            ranked = candidates_by_origin.get(knowledge_origin) or []
+            pool_candidates = [
+                (item, float(score))
+                for item, score in ranked
+                if (
+                    item.status == KnowledgeStatus.PUBLISHED
+                    and float(score) >= score_threshold
+                )
+            ]
+            candidates = [
+                RetrievalQualityCandidatePayload(
+                    knowledge_id=item.id,
+                    rank=index,
+                    title=str(item.title or ""),
+                    embedding_score=score,
+                    rerank_score=score,
+                    final_score=score,
+                    selected=False,
+                )
+                for index, (item, score) in enumerate(pool_candidates, start=1)
+            ]
+            payloads.append(
+                RetrievalQualityEventPayload(
+                    idempotency_key=idempotency_key,
+                    source_system="knowledge-kb-standard-search",
+                    query=body.normalized_question[:1000],
+                    conversation_id=body.conversation_id,
+                    request_id=body.request_id,
+                    schema_version=2,
+                    request_status=request_status,
+                    candidate_count=len(candidates),
+                    top_knowledge_id=(
+                        candidates[0].knowledge_id if candidates else None
+                    ),
+                    top_rerank_score=(
+                        candidates[0].final_score if candidates else None
+                    ),
+                    score_threshold=score_threshold,
+                    selected=False,
+                    candidates=candidates,
+                    embedding_model=settings.EMBEDDING_MODEL,
+                    failure_reason=failure_reason,
+                    metadata={
+                        "source_kind": source_kind,
+                        "candidate_origins": [knowledge_origin] * len(candidates),
+                        "auto_recorded": True,
+                        "telemetry_only": True,
+                        "selection_observed": False,
+                    },
+                )
+            )
+        if payloads:
+            submit_retrieval_quality_events(
+                RetrievalQualityEventBatch(items=payloads),
+                db,
+                None,
+            )
+    except Exception as exc:  # pragma: no cover - telemetry must not break retrieval
+        logger.warning(
+            "Unable to record standard-search retrieval telemetry: conversation_id=%s request_id=%s error=%s",
+            body.conversation_id,
+            body.request_id,
+            exc,
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def _telemetry_candidate_event(
+    db: Session,
+    *,
+    conversation_id: str,
+    request_id: str,
+    source_kind: str,
+) -> RetrievalQualityEvent | None:
+    """Find the latest automatic event carrying a candidate snapshot."""
+
+    events = (
+        db.query(RetrievalQualityEvent)
+        .filter(
+            RetrievalQualityEvent.conversation_id == conversation_id,
+            RetrievalQualityEvent.request_id == request_id,
+            RetrievalQualityEvent.source_kind == source_kind,
+        )
+        .order_by(
+            RetrievalQualityEvent.created_at.desc(),
+            RetrievalQualityEvent.id.desc(),
+        )
+        .limit(20)
+        .all()
+    )
+    for event in events:
+        if (
+            not _retrieval_selection_observed(event)
+            and event.candidate_snapshot
+        ):
+            return event
+    return None
+
+
+def _inherit_telemetry_candidate_snapshot(
+    db: Session,
+    candidate: RetrievalQualityEventPayload,
+    source_kind: str,
+) -> RetrievalQualityEventPayload:
+    """Fill a feedback event that omitted candidates from auto telemetry.
+
+    The browser feedback path historically sent only the selected ID/rank.
+    Keeping the automatic snapshot on the later event prevents the latest
+    source-pool row from hiding the candidates in request-level analytics.
+    """
+
+    if not _retrieval_selection_observed(candidate) or candidate.candidates:
+        return candidate
+    telemetry_event = _telemetry_candidate_event(
+        db,
+        conversation_id=candidate.conversation_id,
+        request_id=candidate.request_id,
+        source_kind=source_kind,
+    )
+    if telemetry_event is None:
+        return candidate
+    snapshot = _retrieval_review_candidate_snapshot(telemetry_event)
+    if not snapshot:
+        return candidate
+
+    inherited_candidates: list[RetrievalQualityCandidatePayload] = []
+    origins: list[str] = []
+    selected_id = str(candidate.selected_knowledge_id or "").strip()
+    selected_rank = candidate.selected_candidate_rank
+    for index, item in enumerate(snapshot, start=1):
+        try:
+            inherited_data = dict(item)
+            inherited_data["selected"] = bool(
+                inherited_data.get("selected")
+                or (
+                    selected_id
+                    and str(inherited_data.get("knowledge_id") or "").strip()
+                    == selected_id
+                )
+                or (selected_rank is not None and index == selected_rank)
+            )
+            inherited = RetrievalQualityCandidatePayload.model_validate(
+                inherited_data
+            )
+        except Exception:
+            continue
+        inherited_candidates.append(inherited)
+        origin = str(item.get("knowledge_origin") or "").strip()
+        origins.append(origin)
+    if not inherited_candidates:
+        return candidate
+
+    metadata = dict(candidate.metadata or {})
+    existing_origins = metadata.get("candidate_origins")
+    if not isinstance(existing_origins, list) or len(existing_origins) != len(
+        inherited_candidates
+    ):
+        metadata["candidate_origins"] = origins
+    metadata["candidate_snapshot_inherited"] = True
+    metadata["candidate_snapshot_source_event_id"] = telemetry_event.id
+    return candidate.model_copy(
+        update={
+            "candidate_count": len(inherited_candidates),
+            "top_knowledge_id": candidate.top_knowledge_id
+            or inherited_candidates[0].knowledge_id,
+            "top_rerank_score": (
+                candidate.top_rerank_score
+                if candidate.top_rerank_score is not None
+                else inherited_candidates[0].final_score
+            ),
+            "candidates": inherited_candidates,
+            "metadata": metadata,
+        }
+    )
+
+
 def _standard_search_strings(values, *, limit: int = 100) -> list[str]:
     result: list[str] = []
     for value in values or []:
@@ -1027,6 +1318,12 @@ def _to_standard_search_candidate(
         id=item.id,
         title=item.title,
         text=_content_to_text(item.content),
+        recommended_reply=(
+            item.content.get("recommended_reply", "")
+            if isinstance(item.content, dict)
+            and isinstance(item.content.get("recommended_reply", ""), str)
+            else ""
+        ),
         score=normalized_score,
         final_score=normalized_score,
         status="published",
@@ -1266,6 +1563,14 @@ def search_standard_provider_knowledge(
             for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS
         }
     except EmbeddingServiceUnavailable as exc:
+        _record_standard_search_events(
+            db,
+            body=body,
+            candidates_by_origin={},
+            score_threshold=score_threshold,
+            request_status="error",
+            failure_reason="technical_failure",
+        )
         logger.warning(
             "Embedding unavailable during standard provider search: "
             "conversation_id=%s request_id=%s error=%s",
@@ -1299,6 +1604,13 @@ def search_standard_provider_knowledge(
         _to_standard_search_candidate(item, score)
         for item, score in published_ranked
     ]
+    _record_standard_search_events(
+        db,
+        body=body,
+        candidates_by_origin=ranked_by_origin,
+        score_threshold=score_threshold,
+        request_status="success" if candidates else "no_match",
+    )
     return IntegrationStandardSearchResponse(
         conversation_id=body.conversation_id,
         request_id=body.request_id,
@@ -1449,13 +1761,17 @@ def submit_retrieval_quality_events(
                 )
                 continue
 
-        evaluated_candidate = candidate.model_copy(
+        evaluated_candidate = _inherit_telemetry_candidate_snapshot(
+            db,
+            candidate,
+            candidate_source_kind,
+        ).model_copy(
             update={"score_threshold": score_threshold}
         )
         dimensions = _retrieval_feedback_dimensions(evaluated_candidate)
         outcome = dimensions["outcome"]
-        candidate_snapshot = _retrieval_candidate_snapshot(candidate)
-        latency_ms = _metadata_value(candidate, "latency_ms")
+        candidate_snapshot = _retrieval_candidate_snapshot(evaluated_candidate)
+        latency_ms = _metadata_value(evaluated_candidate, "latency_ms")
         event = RetrievalQualityEvent(
             id=f"rqe-{uuid.uuid4().hex[:12]}",
             idempotency_key=candidate.idempotency_key,
@@ -1464,33 +1780,33 @@ def submit_retrieval_quality_events(
             request_id=candidate.request_id,
             source_kind=candidate_source_kind,
             query_text=candidate.query,
-            candidate_count=candidate.candidate_count,
-            top_knowledge_id=candidate.top_knowledge_id,
-            top_rerank_score=candidate.top_rerank_score,
+            candidate_count=evaluated_candidate.candidate_count,
+            top_knowledge_id=evaluated_candidate.top_knowledge_id,
+            top_rerank_score=evaluated_candidate.top_rerank_score,
             score_threshold=score_threshold,
-            selected=candidate.selected,
+            selected=evaluated_candidate.selected,
             outcome=outcome,
             schema_version=max(
-                candidate.schema_version,
-                2 if candidate.candidates else 1,
+                evaluated_candidate.schema_version,
+                2 if evaluated_candidate.candidates else 1,
             ),
-            request_status=candidate.request_status,
+            request_status=evaluated_candidate.request_status,
             threshold_status=dimensions["threshold_status"],
             selection_status=dimensions["selection_status"],
             selected_knowledge_id=dimensions["selected_knowledge_id"],
             selected_candidate_rank=dimensions["selected_candidate_rank"],
-            expected_knowledge_id=candidate.expected_knowledge_id,
-            feedback_type=candidate.feedback_type,
-            failure_reason=candidate.failure_reason,
+            expected_knowledge_id=evaluated_candidate.expected_knowledge_id,
+            feedback_type=evaluated_candidate.feedback_type,
+            failure_reason=evaluated_candidate.failure_reason,
             candidate_snapshot=candidate_snapshot,
-            embedding_model=candidate.embedding_model,
-            reranker_model=candidate.reranker_model,
-            prompt_version=candidate.prompt_version,
-            retrieval_latency_ms=candidate.retrieval_latency_ms,
-            rerank_latency_ms=candidate.rerank_latency_ms,
+            embedding_model=evaluated_candidate.embedding_model,
+            reranker_model=evaluated_candidate.reranker_model,
+            prompt_version=evaluated_candidate.prompt_version,
+            retrieval_latency_ms=evaluated_candidate.retrieval_latency_ms,
+            rerank_latency_ms=evaluated_candidate.rerank_latency_ms,
             total_latency_ms=(
-                candidate.total_latency_ms
-                if candidate.total_latency_ms is not None
+                evaluated_candidate.total_latency_ms
+                if evaluated_candidate.total_latency_ms is not None
                 else (
                     max(0.0, float(latency_ms))
                     if latency_ms is not None
@@ -1499,7 +1815,7 @@ def submit_retrieval_quality_events(
             ),
             training_eligible=False,
             review_status="unreviewed",
-            event_metadata=candidate.metadata,
+            event_metadata=evaluated_candidate.metadata,
         )
         try:
             with db.begin_nested():
@@ -1792,6 +2108,7 @@ def get_retrieval_analytics(
         "accepted_alternative": 0,
         "low_score": 0,
         "no_candidates": 0,
+        "selection_pending": 0,
         "not_selected": 0,
         "technical_failure": 0,
         "successful_requests": 0,
@@ -1803,6 +2120,8 @@ def get_retrieval_analytics(
         "top_selected": 0,
         "alternative_selected": 0,
         "none_selected": 0,
+        "selection_observed_requests": 0,
+        "selection_pending_requests": 0,
         "reviewed": 0,
         "training_eligible": 0,
     }
@@ -1843,6 +2162,10 @@ def get_retrieval_analytics(
             and item["request_status"] in ("success", "fallback")
         ):
             summary["candidate_requests"] += 1
+            if item.get("selection_observed"):
+                summary["selection_observed_requests"] += 1
+            elif item["outcome"] == _RETRIEVAL_SELECTION_PENDING:
+                summary["selection_pending_requests"] += 1
             top_score = item["top_rerank_score"]
             if top_score is not None:
                 score_margin = round(
@@ -1901,18 +2224,22 @@ def get_retrieval_analytics(
         ),
         "any_selection_rate": rate(
             summary["top_selected"] + summary["alternative_selected"],
-            summary["candidate_queries"],
+            summary["selection_observed_requests"],
         ),
         "top1_selection_rate": rate(
             summary["top_selected"],
-            summary["candidate_queries"],
+            summary["selection_observed_requests"],
         ),
         "alternative_selection_rate": rate(
             summary["alternative_selected"],
-            summary["candidate_queries"],
+            summary["selection_observed_requests"],
         ),
         "no_selection_rate": rate(
             summary["none_selected"],
+            summary["selection_observed_requests"],
+        ),
+        "selection_observation_rate": rate(
+            summary["selection_observed_requests"],
             summary["candidate_queries"],
         ),
         "review_coverage_rate": rate(summary["reviewed"], summary["total"]),
@@ -1947,9 +2274,18 @@ def get_retrieval_analytics(
                 "状态为成功或回退且有候选的请求中，"
                 "最高分达到当次阈值、但高出不足 0.05 的比例"
             ),
-            "top1_selection_rate": "有候选请求中最终采用所属候选池第一名的比例",
-            "alternative_selection_rate": "有候选请求中最终采用所属候选池第二至第五名的比例",
-            "no_selection_rate": "有候选请求中最终没有采用任何候选的比例",
+            "top1_selection_rate": (
+                "已收到选择结果的有候选请求中最终采用所属候选池第一名的比例"
+            ),
+            "alternative_selection_rate": (
+                "已收到选择结果的有候选请求中最终采用所属候选池第二至第五名的比例"
+            ),
+            "no_selection_rate": (
+                "已收到选择结果的有候选请求中最终没有采用任何候选的比例"
+            ),
+            "selection_observation_rate": (
+                "有候选请求中已经收到明确选择状态的比例；自动召回事件尚待反馈"
+            ),
             "review_coverage_rate": "已由人工明确原因和正确目标的请求比例",
         },
         "pagination": {
@@ -2031,6 +2367,7 @@ def check_knowledge_deduplication(
             scene_tags=body.knowledge.scene_tags,
             knowledge_origin=body.knowledge.knowledge_origin,
             business_type=body.knowledge.business_type,
+            applicable_categories=body.knowledge.applicable_categories,
             exclude_knowledge_id=body.exclude_knowledge_id,
         )
         db.commit()
@@ -2120,6 +2457,7 @@ def submit_knowledge_candidates(
                 scene_tags=candidate.knowledge.scene_tags,
                 knowledge_origin=candidate.knowledge.knowledge_origin,
                 business_type=candidate.knowledge.business_type,
+                applicable_categories=candidate.knowledge.applicable_categories,
             )
         except EmbeddingServiceUnavailable as exc:
             rejected += 1
@@ -2820,6 +3158,7 @@ def submit_candidate_reviews(
                 scene_tags=candidate.knowledge.scene_tags,
                 knowledge_origin=candidate.knowledge.knowledge_origin,
                 business_type=candidate.knowledge.business_type,
+                applicable_categories=candidate.knowledge.applicable_categories,
             )
             deduplication = _to_dedup_response(decision)
             if decision.action == "block_duplicate":

@@ -4,22 +4,32 @@ from unittest.mock import Mock, patch
 import httpx
 
 from app.core.config import settings
-from app.services.embedding import EmbeddingServiceUnavailable, embed_texts
+from app.services.embedding import (
+    EmbeddingServiceUnavailable,
+    close_embedding_client,
+    embed_texts,
+)
 
 
 class EmbeddingProviderTests(unittest.TestCase):
     def setUp(self):
+        close_embedding_client()
         self.original_provider = settings.EMBEDDING_PROVIDER
+        self.original_base_url = settings.EMBEDDING_BASE_URL
         self.original_dimensions = settings.EMBEDDING_DIMENSIONS
         self.original_max_batch_texts = settings.EMBEDDING_MAX_BATCH_TEXTS
         self.original_max_batch_chars = settings.EMBEDDING_MAX_BATCH_CHARS
         settings.EMBEDDING_DIMENSIONS = 2
 
     def tearDown(self):
-        settings.EMBEDDING_PROVIDER = self.original_provider
-        settings.EMBEDDING_DIMENSIONS = self.original_dimensions
-        settings.EMBEDDING_MAX_BATCH_TEXTS = self.original_max_batch_texts
-        settings.EMBEDDING_MAX_BATCH_CHARS = self.original_max_batch_chars
+        try:
+            settings.EMBEDDING_PROVIDER = self.original_provider
+            settings.EMBEDDING_BASE_URL = self.original_base_url
+            settings.EMBEDDING_DIMENSIONS = self.original_dimensions
+            settings.EMBEDDING_MAX_BATCH_TEXTS = self.original_max_batch_texts
+            settings.EMBEDDING_MAX_BATCH_CHARS = self.original_max_batch_chars
+        finally:
+            close_embedding_client()
 
     @staticmethod
     def _http_response(status_code):
@@ -34,7 +44,7 @@ class EmbeddingProviderTests(unittest.TestCase):
     @patch("app.services.embedding.httpx.Client")
     def test_tei_provider_does_not_try_openai_endpoint(self, client_class):
         settings.EMBEDDING_PROVIDER = "tei"
-        client = client_class.return_value.__enter__.return_value
+        client = client_class.return_value
         response = Mock()
         response.json.return_value = [[0.1, 0.2]]
         client.post.return_value = response
@@ -45,7 +55,7 @@ class EmbeddingProviderTests(unittest.TestCase):
     @patch("app.services.embedding.httpx.Client")
     def test_openai_provider_uses_openai_payload(self, client_class):
         settings.EMBEDDING_PROVIDER = "openai_compatible"
-        client = client_class.return_value.__enter__.return_value
+        client = client_class.return_value
         response = Mock()
         response.json.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
         client.post.return_value = response
@@ -60,7 +70,7 @@ class EmbeddingProviderTests(unittest.TestCase):
         client_class,
     ):
         settings.EMBEDDING_PROVIDER = "openai_compatible"
-        client = client_class.return_value.__enter__.return_value
+        client = client_class.return_value
         response = Mock()
         response.json.return_value = {
             "data": [{"embedding": [0.1, 0.2]}],
@@ -68,9 +78,9 @@ class EmbeddingProviderTests(unittest.TestCase):
         client.post.return_value = response
 
         embed_texts(["实时检索"])
-        default_timeout = client_class.call_args.kwargs["timeout"]
+        default_timeout = client.post.call_args.kwargs["timeout"]
         embed_texts(["后台导入"], timeout_seconds=180)
-        import_timeout = client_class.call_args.kwargs["timeout"]
+        import_timeout = client.post.call_args.kwargs["timeout"]
 
         self.assertEqual(
             default_timeout.read,
@@ -79,11 +89,51 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertEqual(import_timeout.read, 180)
 
     @patch("app.services.embedding.httpx.Client")
+    def test_embedding_client_is_reused_between_calls(self, client_class):
+        settings.EMBEDDING_PROVIDER = "openai_compatible"
+        client = client_class.return_value
+        response = Mock()
+        response.json.return_value = {
+            "data": [{"embedding": [0.1, 0.2]}],
+        }
+        client.post.return_value = response
+
+        self.assertEqual(embed_texts(["第一次请求"]), [[0.1, 0.2]])
+        self.assertEqual(embed_texts(["第二次请求"]), [[0.1, 0.2]])
+
+        client_class.assert_called_once()
+        self.assertEqual(client.post.call_count, 2)
+
+    @patch("app.services.embedding.httpx.Client")
+    def test_endpoint_change_rebuilds_embedding_client(self, client_class):
+        settings.EMBEDDING_PROVIDER = "openai_compatible"
+        first_client = Mock()
+        first_response = Mock()
+        first_response.json.return_value = {
+            "data": [{"embedding": [0.1, 0.2]}],
+        }
+        first_client.post.return_value = first_response
+        second_client = Mock()
+        second_response = Mock()
+        second_response.json.return_value = {
+            "data": [{"embedding": [0.3, 0.4]}],
+        }
+        second_client.post.return_value = second_response
+        client_class.side_effect = [first_client, second_client]
+
+        embed_texts(["旧地址"])
+        settings.EMBEDDING_BASE_URL = "http://embedding.test:18080/v1"
+
+        self.assertEqual(embed_texts(["新地址"]), [[0.3, 0.4]])
+        self.assertEqual(client_class.call_count, 2)
+        first_client.close.assert_called_once()
+
+    @patch("app.services.embedding.httpx.Client")
     def test_embedding_requests_are_batched_by_count_and_total_characters(self, client_class):
         settings.EMBEDDING_PROVIDER = "openai_compatible"
         settings.EMBEDDING_MAX_BATCH_TEXTS = 3
         settings.EMBEDDING_MAX_BATCH_CHARS = 5
-        client = client_class.return_value.__enter__.return_value
+        client = client_class.return_value
 
         def response_for_request(*_args, **kwargs):
             response = Mock()
@@ -111,7 +161,7 @@ class EmbeddingProviderTests(unittest.TestCase):
         settings.EMBEDDING_PROVIDER = "openai_compatible"
         settings.EMBEDDING_MAX_BATCH_TEXTS = 2
         settings.EMBEDDING_MAX_BATCH_CHARS = 100
-        client = client_class.return_value.__enter__.return_value
+        client = client_class.return_value
 
         def response_for_request(*_args, **kwargs):
             response = Mock()
@@ -139,7 +189,7 @@ class EmbeddingProviderTests(unittest.TestCase):
     @patch("app.services.embedding.httpx.Client")
     def test_http_statuses_are_classified_for_retry(self, client_class):
         settings.EMBEDDING_PROVIDER = "openai_compatible"
-        client = client_class.return_value.__enter__.return_value
+        client = client_class.return_value
 
         for status_code, retryable in [
             (400, False),
@@ -160,7 +210,7 @@ class EmbeddingProviderTests(unittest.TestCase):
     @patch("app.services.embedding.httpx.Client")
     def test_connection_failure_is_retryable(self, client_class):
         settings.EMBEDDING_PROVIDER = "openai_compatible"
-        client = client_class.return_value.__enter__.return_value
+        client = client_class.return_value
         request = httpx.Request(
             "POST",
             "http://embedding.test/embeddings",
@@ -181,7 +231,7 @@ class EmbeddingProviderTests(unittest.TestCase):
         client_class,
     ):
         settings.EMBEDDING_PROVIDER = "openai_compatible"
-        client = client_class.return_value.__enter__.return_value
+        client = client_class.return_value
         request = httpx.Request(
             "POST",
             "http://embedding.test/embeddings",
@@ -208,7 +258,7 @@ class EmbeddingProviderTests(unittest.TestCase):
     @patch("app.services.embedding.httpx.Client")
     def test_invalid_vector_response_is_not_retryable(self, client_class):
         settings.EMBEDDING_PROVIDER = "openai_compatible"
-        client = client_class.return_value.__enter__.return_value
+        client = client_class.return_value
         response = Mock()
         response.json.return_value = {
             "data": [{"embedding": [0.1]}],
@@ -226,7 +276,7 @@ class EmbeddingProviderTests(unittest.TestCase):
         client_class,
     ):
         settings.EMBEDDING_PROVIDER = "auto"
-        client = client_class.return_value.__enter__.return_value
+        client = client_class.return_value
         client.post.side_effect = [
             self._http_response(400),
             self._http_response(503),
@@ -244,7 +294,7 @@ class EmbeddingProviderTests(unittest.TestCase):
         client_class,
     ):
         settings.EMBEDDING_PROVIDER = "auto"
-        client = client_class.return_value.__enter__.return_value
+        client = client_class.return_value
         client.post.side_effect = [
             self._http_response(400),
             self._http_response(422),

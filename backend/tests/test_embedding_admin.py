@@ -563,6 +563,36 @@ class EmbeddingAdminTests(unittest.TestCase):
                 expression_text,
             )
 
+    def test_embedding_endpoint_info_marks_split_gpu_tunnel(self):
+        from app.routes.embedding_admin import _embedding_endpoint_info
+
+        with patch.object(
+            settings,
+            "EMBEDDING_BASE_URL",
+            "http://host.docker.internal:18080/v1",
+        ):
+            self.assertEqual(
+                _embedding_endpoint_info(),
+                {
+                    "mode": "ssh_reverse_tunnel",
+                    "label": "SSH 反向隧道配置",
+                    "display": "host.docker.internal:18080/v1",
+                },
+            )
+
+    def test_runtime_probe_uses_real_embedding_call_and_checks_dimension(self):
+        from app.routes.embedding_admin import _probe_embedding_runtime
+
+        with patch(
+            "app.routes.embedding_admin.embed_texts",
+            return_value=[[0.1] * settings.EMBEDDING_DIMENSIONS],
+        ) as embed:
+            result = _probe_embedding_runtime()
+
+        self.assertEqual(result["status"], "healthy")
+        self.assertEqual(result["actual_dimension"], settings.EMBEDDING_DIMENSIONS)
+        embed.assert_called_once_with(["答疑中台模型链路连通性检测"])
+
     def test_vector_lab_excludes_managed_exact_knowledge(self):
         db = MagicMock()
         query = MagicMock()

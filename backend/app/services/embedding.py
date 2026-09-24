@@ -21,6 +21,7 @@ class EmbeddingServiceUnavailable(RuntimeError):
 _EMBEDDING_CLIENT_GUARD = Lock()
 _EMBEDDING_CLIENT: httpx.Client | None = None
 _EMBEDDING_CLIENT_BASE_URL: str | None = None
+_EMBEDDING_CLIENT_FACTORY: Any = None
 
 
 def _get_embedding_client() -> httpx.Client:
@@ -36,12 +37,18 @@ def _get_embedding_client() -> httpx.Client:
     reconfiguration are not served by a stale pool.
     """
     global _EMBEDDING_CLIENT, _EMBEDDING_CLIENT_BASE_URL
+    global _EMBEDDING_CLIENT_FACTORY
     base_url = settings.EMBEDDING_BASE_URL.rstrip("/")
+    client_factory = httpx.Client
     with _EMBEDDING_CLIENT_GUARD:
-        if _EMBEDDING_CLIENT is None or _EMBEDDING_CLIENT_BASE_URL != base_url:
+        if (
+            _EMBEDDING_CLIENT is None
+            or _EMBEDDING_CLIENT_BASE_URL != base_url
+            or _EMBEDDING_CLIENT_FACTORY is not client_factory
+        ):
             if _EMBEDDING_CLIENT is not None:
                 _EMBEDDING_CLIENT.close()
-            _EMBEDDING_CLIENT = httpx.Client(
+            _EMBEDDING_CLIENT = client_factory(
                 timeout=httpx.Timeout(settings.EMBEDDING_TIMEOUT_SECONDS),
                 limits=httpx.Limits(
                     max_connections=16,
@@ -52,17 +59,20 @@ def _get_embedding_client() -> httpx.Client:
                 ),
             )
             _EMBEDDING_CLIENT_BASE_URL = base_url
+            _EMBEDDING_CLIENT_FACTORY = client_factory
         return _EMBEDDING_CLIENT
 
 
 def close_embedding_client() -> None:
     """Close the shared embedding client (shutdown and tests)."""
     global _EMBEDDING_CLIENT, _EMBEDDING_CLIENT_BASE_URL
+    global _EMBEDDING_CLIENT_FACTORY
     with _EMBEDDING_CLIENT_GUARD:
         if _EMBEDDING_CLIENT is not None:
             _EMBEDDING_CLIENT.close()
         _EMBEDDING_CLIENT = None
         _EMBEDDING_CLIENT_BASE_URL = None
+        _EMBEDDING_CLIENT_FACTORY = None
 
 
 def _authorization_headers() -> dict[str, str]:
@@ -84,6 +94,8 @@ def _tei_embeddings_url() -> str:
 
 
 def _parse_openai_response(payload: dict[str, Any]) -> list[list[float]]:
+    if not isinstance(payload, dict):
+        raise ValueError("OpenAI-compatible response must be an object.")
     data = payload.get("data")
     if not isinstance(data, list):
         raise ValueError("OpenAI-compatible response does not contain data.")
@@ -180,11 +192,15 @@ def _embed_batch(
     errors: list[tuple[str, bool]] = []
     if provider in {"openai_compatible", "auto"}:
         try:
+            request_kwargs: dict[str, Any] = {
+                "headers": headers,
+                "json": {"model": settings.EMBEDDING_MODEL, "input": texts},
+            }
+            if timeout is not None:
+                request_kwargs["timeout"] = timeout
             response = client.post(
                 _openai_embeddings_url(),
-                headers=headers,
-                json={"model": settings.EMBEDDING_MODEL, "input": texts},
-                timeout=timeout,
+                **request_kwargs,
             )
             response.raise_for_status()
             vectors = _parse_openai_response(response.json())
@@ -201,11 +217,12 @@ def _embed_batch(
 
     if provider in {"tei", "auto"}:
         try:
+            request_kwargs = {"headers": headers, "json": {"inputs": texts}}
+            if timeout is not None:
+                request_kwargs["timeout"] = timeout
             response = client.post(
                 _tei_embeddings_url(),
-                headers=headers,
-                json={"inputs": texts},
-                timeout=timeout,
+                **request_kwargs,
             )
             response.raise_for_status()
             vectors = _parse_tei_response(response.json())
