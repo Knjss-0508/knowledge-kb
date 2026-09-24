@@ -1,0 +1,198 @@
+# PostgreSQL 召回性能调优（库级 HNSW 参数）
+
+> 适用：`knowledge_base`（PostgreSQL 18.0 + pgvector 0.8.6）
+> 脚本：`scripts/apply-postgres-recall-tuning.sh`
+
+## 一、问题
+
+知识召回（`POST /api/v1/knowledge/search`）在向量检索阶段拿到的候选太少，
+导致最终返回的知识条目数远低于 `top_k`，召回质量被白白浪费。
+
+原因在 `backend/app/services/knowledge_dedup.py` 的向量检索语句：
+
+```sql
+ORDER BY embedding_vector <=> :query_vector
+LIMIT max(top_k * 12, 50)          -- 例如 top_k=10 -> LIMIT 120
+```
+
+**这个 LIMIT 作用在「向量行」上，而不是「知识条目」上。** 而
+`knowledge_search_embeddings` 表里一个知识条目平均有 **4.67 个向量分片**
+（4,271 行 / 914 个知识条目），所以 120 行去重后可能只剩 20 多个条目。
+
+再加上 pgvector 的 HNSW 索引默认 `hnsw.ef_search = 40`，索引本身只吐 40 个候选，
+去重后只剩约 20 个知识条目 —— 这就是瓶颈。
+
+## 二、实测数据
+
+| 配置 | 返回向量行 | 去重后知识条目 | 执行时间 |
+|---|---|---|---|
+| `ef_search=40`（默认） | 42 | **22** | 1.3 ms |
+| `ef_search=200` | 120 | **54** | 2.7 ms |
+| `ef_search=200` + `iterative_scan=strict_order` | 120 | 54 | 2.7 ms |
+| 顺序扫描（对照） | 120 | 54 | **19 ~ 28 ms** |
+
+`ef_search` 单独变化的效果（`iterative_scan=off`，强制走索引）：
+
+| `ef_search` | 返回向量行 | 去重后知识条目 |
+|---|---|---|
+| 4 | 5 | 2 |
+| 10 | 11 | 4 |
+| 40 | 42 | 22 |
+| 200 | 120 | 54 |
+
+结论：
+
+1. `ef_search` 从 40 提到 200，**去重后候选从 22 个涨到 54 个（2.5 倍）**，代价只有 1.4 ms。
+2. **`iterative_scan` 才是主导因素** —— 实测 `ef_search=40` 配合 `strict_order`
+   就已经拉满 120 / 54。它让 pgvector 持续迭代扫描直到满足 LIMIT，
+   于是 `ef_search` 不再是限制因素。两个参数都设是双保险。
+3. **HNSW 索引必须保留** —— 顺序扫描是 19~28 ms，比索引慢约 10~20 倍。这组数据也是
+   「不要为了别的目的把 PostgreSQL 换成 MySQL」的直接依据：MySQL 没有 HNSW 索引，
+   也没有可走索引的 `<=>` 余弦运算符，换过去召回会直接退化成全表扫描。
+
+为什么选 `strict_order` 而不是 `relaxed_order`：
+
+- `relaxed_order` 允许返回**乱序**结果，会破坏 `ORDER BY distance LIMIT` 的语义 ——
+  也就是说「最近的 N 条」不再真的是最近的 N 条，这对召回是不可接受的。
+- 两者在本场景下候选数和耗时相同（都是 120 / 54 / 2.7 ms），所以选语义正确的那个。
+
+## 二·补、验证时容易踩的三个坑
+
+这三点都真实踩过，会导致「测出来的数字完全没差别」而误判调优无效：
+
+**1. 覆盖库级设置必须用会话级 `SET`。**
+`PGOPTIONS="-c hnsw.ef_search=40"` 是在启动包里下发的，**会被 `ALTER DATABASE`
+的库级设置压过去**。用它做对比，两个配置会得到完全相同的数字。
+
+```sql
+-- 对
+SET hnsw.ef_search = 40;
+-- 错（会被库级设置覆盖）
+-- PGOPTIONS="-c hnsw.ef_search=40" psql ...
+```
+
+**2. HNSW 索引只能用于 `ORDER BY` 操作数是「常量」的情况。**
+如果写成 `<=> 另一个表或 CTE 的列`（相关子查询形式），规划器**用不了索引**，
+会退化成顺序扫描 + 排序，此时 `ef_search` 完全不参与：
+
+```sql
+-- 能用索引（常量操作数）
+ORDER BY embedding_vector <=> '[0.1, 0.2, ...]'::vector LIMIT 120
+
+-- 用不了索引（列操作数）→ 顺序扫描 4271 行
+WITH q AS (SELECT embedding_vector FROM ... LIMIT 1)
+SELECT ... FROM knowledge_search_embeddings kse, q
+ ORDER BY kse.embedding_vector <=> q.embedding_vector LIMIT 120
+```
+
+> 注意 `backend/app/services/knowledge_dedup.py` 用的是
+> `embedding_vector.cosine_distance(query_vector)`，`query_vector` 是绑定参数（常量），
+> 所以**生产查询是能用索引的** —— 索引统计可证实：
+> `pg_stat_user_indexes` 里 `ix_..._vector_hnsw` 有实际扫描计数。
+
+**3. 表太小的时候规划器会主动放弃索引。**
+`knowledge_search_embeddings` 只有 4,271 行，顺序扫描约 19 ms，
+规划器会认为它比走 HNSW 索引更便宜。**所以验证时要加 `SET enable_seqscan = off`
+强制走索引**，否则测的是顺序扫描，`ef_search` 自然看不出效果。
+
+```sql
+SET hnsw.ef_search = 40;
+SET hnsw.iterative_scan = off;
+SET enable_seqscan = off;        -- 关键
+EXPLAIN (ANALYZE, COSTS OFF)
+SELECT ... ORDER BY embedding_vector <=> '[...]'::vector LIMIT 120;
+-- 期望看到 Index Scan using ix_knowledge_search_embeddings_vector_hnsw
+```
+
+`scripts/apply-postgres-recall-tuning.sh` 的第 4 步已按上述三点实现。
+
+## 三、执行
+
+```bash
+# 应用（需 root，脚本内部会切到 postgres 超级用户）
+sudo bash scripts/apply-postgres-recall-tuning.sh
+
+# 只查看当前值，不做修改
+sudo bash scripts/apply-postgres-recall-tuning.sh --verify
+
+# 回滚
+sudo bash scripts/apply-postgres-recall-tuning.sh --rollback
+```
+
+**为什么必须超级用户**：`hnsw.ef_search` / `hnsw.iterative_scan` 是 **pgvector 的扩展级 GUC**，
+`ALTER DATABASE ... SET` 设置扩展 GUC 需要超级用户权限。应用用户 `knowledge_admin`
+（`rolsuper=false`、`rolcreatedb=false`）执行会报：
+
+```
+ERROR:  permission denied to set parameter "hnsw.ef_search"
+```
+
+脚本内部通过 `sudo -u postgres` 提权，只修改 `knowledge_base` 这一个库，
+**不影响同实例的其他数据库**。
+
+## 四、生效范围（重要）
+
+`ALTER DATABASE ... SET` **只对新建立的会话生效**。应用后端用的是连接池，
+已经存在的连接仍持有旧值。
+
+所以应用之后必须重启后端：
+
+```bash
+docker restart kb-backend
+```
+
+## 五、验证
+
+```bash
+# 库级持久设置
+sudo -u postgres /www/server/pgsql/bin/psql -d knowledge_base -Atc "
+  SELECT d.datname || ' -> ' || s.setconfig::text
+    FROM pg_db_role_setting s
+    JOIN pg_database d ON d.oid = s.setdatabase
+   WHERE s.setrole = 0"
+
+# 期望输出
+#   knowledge_base -> {hnsw.ef_search=200,hnsw.iterative_scan=strict_order}
+```
+
+> 注意：PostgreSQL 18 已移除 `pg_database.datconfig` 列，必须查 `pg_db_role_setting`。
+
+新会话读值：
+
+```bash
+sudo -u postgres /www/server/pgsql/bin/psql -d knowledge_base -Atc "SHOW hnsw.ef_search"
+```
+
+## 六、相关文件
+
+| 文件 | 说明 |
+|---|---|
+| `backend/app/services/knowledge_dedup.py` | 向量检索语句与 `LIMIT max(top_k*12, 50)` |
+| `backend/migrations/versions/20260712_02_vector_indexes.py` | HNSW 索引的创建（`vector_cosine_ops`） |
+| `scripts/apply-postgres-recall-tuning.sh` | 本调优的应用/验证/回滚脚本 |
+
+## 七、后续可选项
+
+| 项 | 状态 / 收益 | 代价 |
+|---|---|---|
+| `shared_buffers` 128MB → 2GB、`effective_cache_size` 4GB → 6GB | **已完成**（2026-09-23）。消除冷启动尖峰（首次召回实测 503 ms，因 HNSW 索引被挤出缓冲区）。实测中断仅 **1.4 秒**（原估 5~10 秒） | 已完成；回滚见下 |
+| 向量检索改用「先按知识条目聚合再 LIMIT」 | 从根上解决「LIMIT 作用在向量行」的问题 | 需要改 SQL 与索引，改动面较大 |
+| ~~提高查询向量缓存命中率~~ | ~~查询向量嵌入占总耗时约 84%~~ **此结论已于 2026-09-23 实测推翻**，见 [`postgres-performance-audit.md`](./postgres-performance-audit.md) | 缓存机制（LRU 512 条）**已经存在**，无需重新实现 |
+
+> ⚠️ **更正**：本文档早期版本写「查询向量嵌入占总耗时约 84%」，**这是错的**。
+> 实测热缓存（嵌入已被缓存命中）时请求仍需约 454 ms，说明嵌入不是大头。
+> 真正的大头是后台 worker 每 2.5 秒执行的**无索引 JSON 表达式查询**（每周期约 430 ms）
+> 和长期开启的 `log_statement = all`（26 GB 日志）。
+> 完整测量数据与修复见 [`postgres-performance-audit.md`](./postgres-performance-audit.md)。
+
+### P0-2 内存调优的回滚
+
+```bash
+# 配置备份在 /www/server/pgsql/data/postgresql.conf.bak-p02-<时间戳>
+cp -a /www/server/pgsql/data/postgresql.conf.bak-p02-20260923-102950 \
+      /www/server/pgsql/data/postgresql.conf
+/etc/init.d/pgsql restart
+```
+
+> ⚠️ 不要用宝塔面板改 PostgreSQL 配置 —— 面板可能重写 `postgresql.conf`。
+> 改完检查：`grep -E '^(shared_buffers|effective_cache_size)' /www/server/pgsql/data/postgresql.conf`

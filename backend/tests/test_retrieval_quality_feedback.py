@@ -6,10 +6,12 @@ from app.models.integration import RetrievalQualityEvent
 from app.routes.integration import (
     _retrieval_candidate_snapshot,
     _retrieval_feedback_dimensions,
+    _record_standard_search_events,
     get_retrieval_analytics,
     submit_retrieval_quality_events,
 )
 from app.schemas.integration import (
+    IntegrationStandardSearchRequest,
     RetrievalQualityEventBatch,
     RetrievalQualityEventPayload,
 )
@@ -165,6 +167,276 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
             _retrieval_feedback_dimensions(technical)["outcome"],
             "technical_failure",
         )
+
+    def test_standard_search_events_are_split_by_pool_and_idempotent(self):
+        from types import SimpleNamespace
+
+        body = IntegrationStandardSearchRequest.model_validate(
+            {
+                "conversationId": "202609240001",
+                "requestId": "standard-search-idempotency-1",
+                "normalizedQuestion": "手机屏幕漏光如何判断",
+            }
+        )
+        headquarters = SimpleNamespace(
+            id="HQ-1",
+            title="总部标准一",
+            status="published",
+        )
+        business = SimpleNamespace(
+            id="BA-1",
+            title="业务沉淀一",
+            status="published",
+        )
+        candidates_by_origin = {
+            "headquarters_standard": [(headquarters, 0.91)],
+            "business_accumulation": [(business, 0.88)],
+        }
+
+        _record_standard_search_events(
+            self.db,
+            body=body,
+            candidates_by_origin=candidates_by_origin,
+            score_threshold=0.42,
+        )
+        first_events = self.db.query(RetrievalQualityEvent).all()
+        self.assertEqual(len(first_events), 2)
+        self.assertEqual(
+            {event.source_kind for event in first_events},
+            {"standard", "reply"},
+        )
+        self.assertEqual(
+            {event.candidate_snapshot[0]["knowledge_origin"] for event in first_events},
+            {"headquarters_standard", "business_accumulation"},
+        )
+
+        _record_standard_search_events(
+            self.db,
+            body=body,
+            candidates_by_origin=candidates_by_origin,
+            score_threshold=0.42,
+        )
+        self.assertEqual(self.db.query(RetrievalQualityEvent).count(), 2)
+        analytics = get_retrieval_analytics(self.db, None)
+        self.assertEqual(analytics["summary"]["total"], 1)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 1)
+        self.assertEqual(analytics["risks"][0]["candidate_count"], 2)
+
+        plugin_feedback = self._payload(
+            "plugin-selection",
+            conversation_id="202609240001",
+            request_id="standard-search-idempotency-1",
+            candidate_count=1,
+            top_knowledge_id="BA-1",
+            top_rerank_score=0.88,
+            selected=True,
+            selected_knowledge_id="BA-1",
+            selected_candidate_rank=1,
+            candidates=[
+                {
+                    "knowledge_id": "BA-1",
+                    "rank": 1,
+                    "title": "业务沉淀一",
+                    "final_score": 0.88,
+                    "selected": True,
+                }
+            ],
+            metadata={
+                "source_kind": "reply",
+                "candidate_origins": ["business_accumulation"],
+            },
+        )
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=[plugin_feedback]),
+            self.db,
+            None,
+        )
+        analytics = get_retrieval_analytics(self.db, None)
+        self.assertEqual(analytics["summary"]["total"], 1)
+        self.assertEqual(analytics["summary"]["top_selected"], 1)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 1)
+        self.assertEqual(analytics["risks"][0]["candidate_count"], 2)
+
+    def test_auto_telemetry_is_pending_and_excluded_from_selection_rates(self):
+        from types import SimpleNamespace
+
+        body = IntegrationStandardSearchRequest.model_validate(
+            {
+                "conversationId": "202609240002",
+                "requestId": "standard-search-pending-1",
+                "normalizedQuestion": "手机屏幕漏光如何判断",
+            }
+        )
+        candidates_by_origin = {
+            "headquarters_standard": [
+                (
+                    SimpleNamespace(
+                        id="HQ-PENDING",
+                        title="总部标准",
+                        status="published",
+                    ),
+                    0.91,
+                )
+            ],
+            "business_accumulation": [],
+        }
+
+        _record_standard_search_events(
+            self.db,
+            body=body,
+            candidates_by_origin=candidates_by_origin,
+            score_threshold=0.42,
+        )
+
+        events = {
+            event.source_kind: event
+            for event in self.db.query(RetrievalQualityEvent).all()
+        }
+        self.assertEqual(events["standard"].selection_status, "not_evaluated")
+        self.assertEqual(events["standard"].outcome, "selection_pending")
+        self.assertEqual(events["reply"].outcome, "no_candidates")
+
+        analytics = get_retrieval_analytics(self.db, None)
+        self.assertEqual(analytics["summary"]["total"], 1)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 1)
+        self.assertEqual(analytics["summary"]["selection_observed_requests"], 0)
+        self.assertEqual(analytics["summary"]["selection_pending_requests"], 1)
+        self.assertEqual(analytics["summary"]["selection_pending"], 1)
+        self.assertEqual(analytics["summary"]["none_selected"], 0)
+        self.assertEqual(analytics["rates"]["selection_observation_rate"], 0.0)
+        self.assertEqual(analytics["rates"]["no_selection_rate"], 0.0)
+        self.assertEqual(
+            analytics["risks"][0]["selection_status"],
+            "not_evaluated",
+        )
+        self.assertEqual(analytics["risks"][0]["outcome"], "selection_pending")
+
+    def test_plugin_event_without_candidates_inherits_auto_snapshot_and_wins_selection(self):
+        from types import SimpleNamespace
+
+        body = IntegrationStandardSearchRequest.model_validate(
+            {
+                "conversationId": "202609240003",
+                "requestId": "standard-search-inherit-1",
+                "normalizedQuestion": "手机屏幕漏光如何判断",
+            }
+        )
+        candidates_by_origin = {
+            "headquarters_standard": [
+                (
+                    SimpleNamespace(
+                        id="HQ-INHERIT",
+                        title="总部标准",
+                        status="published",
+                    ),
+                    0.91,
+                )
+            ],
+            "business_accumulation": [
+                (
+                    SimpleNamespace(
+                        id="BA-INHERIT",
+                        title="业务沉淀",
+                        status="published",
+                    ),
+                    0.88,
+                )
+            ],
+        }
+        _record_standard_search_events(
+            self.db,
+            body=body,
+            candidates_by_origin=candidates_by_origin,
+            score_threshold=0.42,
+        )
+
+        plugin_feedback = self._payload(
+            "plugin-empty-candidates",
+            conversation_id=body.conversation_id,
+            request_id=body.request_id,
+            candidate_count=0,
+            top_knowledge_id=None,
+            top_rerank_score=None,
+            selected=True,
+            selected_knowledge_id="BA-INHERIT",
+            selected_candidate_rank=None,
+            candidates=[],
+            metadata={"source_kind": "reply"},
+        )
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=[plugin_feedback]),
+            self.db,
+            None,
+        )
+
+        plugin_event = (
+            self.db.query(RetrievalQualityEvent)
+            .filter(
+                RetrievalQualityEvent.idempotency_key == "plugin-empty-candidates"
+            )
+            .one()
+        )
+        self.assertEqual(plugin_event.candidate_count, 1)
+        self.assertEqual(plugin_event.top_knowledge_id, "BA-INHERIT")
+        self.assertEqual(
+            [item["knowledge_id"] for item in plugin_event.candidate_snapshot],
+            ["BA-INHERIT"],
+        )
+        self.assertTrue(plugin_event.event_metadata["candidate_snapshot_inherited"])
+        self.assertEqual(plugin_event.selection_status, "top_selected")
+
+        analytics = get_retrieval_analytics(self.db, None)
+        self.assertEqual(analytics["summary"]["total"], 1)
+        self.assertEqual(analytics["summary"]["candidate_requests"], 1)
+        self.assertEqual(analytics["summary"]["selection_observed_requests"], 1)
+        self.assertEqual(analytics["summary"]["selection_pending_requests"], 0)
+        self.assertEqual(analytics["summary"]["top_selected"], 1)
+        self.assertEqual(analytics["rates"]["selection_observation_rate"], 1.0)
+        self.assertEqual(analytics["rates"]["top1_selection_rate"], 1.0)
+        self.assertEqual(analytics["risks"][0]["candidate_count"], 2)
+        self.assertEqual(
+            {candidate["knowledge_origin"] for candidate in analytics["risks"][0]["candidates"]},
+            {"headquarters_standard", "business_accumulation"},
+        )
+
+    def test_auto_low_score_keeps_low_score_outcome_without_pending_selection(self):
+        payload = self._payload(
+            "auto-low-score",
+            conversation_id="202609240004",
+            request_id="standard-search-low-score-1",
+            candidate_count=1,
+            top_knowledge_id="HQ-LOW",
+            top_rerank_score=0.2,
+            score_threshold=0.42,
+            selected=False,
+            selected_knowledge_id=None,
+            selected_candidate_rank=None,
+            candidates=[
+                {
+                    "knowledge_id": "HQ-LOW",
+                    "rank": 1,
+                    "title": "低分总部标准",
+                    "final_score": 0.2,
+                    "selected": False,
+                }
+            ],
+            metadata={
+                "source_kind": "standard",
+                "selection_observed": False,
+                "telemetry_only": True,
+            },
+        )
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=[payload]),
+            self.db,
+            None,
+        )
+
+        analytics = get_retrieval_analytics(self.db, None)
+        self.assertEqual(analytics["summary"]["low_score"], 1)
+        self.assertEqual(analytics["summary"]["selection_pending"], 0)
+        self.assertEqual(analytics["summary"]["selection_pending_requests"], 0)
+        self.assertEqual(analytics["rates"]["no_selection_rate"], 0.0)
 
     def test_selection_rank_is_calculated_within_each_knowledge_origin_pool(self):
         business_top = self._payload(

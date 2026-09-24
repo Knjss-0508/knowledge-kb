@@ -21,6 +21,11 @@ services:
       dockerfile: backend/Dockerfile
     container_name: kb-backend
     restart: unless-stopped
+    extra_hosts:
+      # Linux Docker Engine does not provide this Docker Desktop hostname by
+      # default. The split GPU topology uses it to reach the SSH reverse tunnel
+      # bound on the application server host.
+      - "host.docker.internal:host-gateway"
     ports:
       - "${HOST_BIND_IP:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
     environment:

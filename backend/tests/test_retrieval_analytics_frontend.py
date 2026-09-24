@@ -9,9 +9,9 @@ class RetrievalAnalyticsFrontendContractTests(unittest.TestCase):
             Path(__file__).resolve().parents[2] / "frontend" / "index.html"
         ).read_text(encoding="utf-8")
 
-    def test_time_filter_defaults_to_today_and_exposes_required_ranges(self):
+    def test_time_filter_defaults_to_recent_history_and_exposes_required_ranges(self):
         self.assertIn(
-            "timeFilter:{mode:'today',appliedMode:'today'",
+            "timeFilter:{mode:'7d',appliedMode:'7d'",
             self.html,
         )
         for value, label in (
@@ -128,6 +128,15 @@ class RetrievalAnalyticsFrontendContractTests(unittest.TestCase):
         self.assertNotIn("阈值通过率", self.html)
         self.assertNotIn("threshold_pass_rate", self.html)
         self.assertNotIn("threshold_passed", self.html)
+
+    def test_unobserved_selection_is_presented_as_pending_feedback(self):
+        self.assertIn("选择反馈覆盖率", self.html)
+        self.assertIn("analysis.rates.selection_observation_rate", self.html)
+        self.assertIn("analysis.summary.selection_observed_requests", self.html)
+        self.assertIn("analysis.summary.selection_pending_requests", self.html)
+        self.assertIn("not_evaluated:'待反馈'", self.html)
+        self.assertIn("selection_pending:'待反馈'", self.html)
+        self.assertIn("未反馈请求不计入分母", self.html)
 
 
 if __name__ == "__main__":

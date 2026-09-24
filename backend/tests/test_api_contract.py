@@ -529,6 +529,7 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn("productType", request_properties)
         self.assertIn("businessType", candidate_properties)
         self.assertIn("finalScore", candidate_properties)
+        self.assertIn("recommendedReply", candidate_properties)
         self.assertIn("sourceRef", candidate_properties)
         self.assertIn("retrievalMode", response_properties)
         self.assertIn("knowledgeVersion", response_properties)

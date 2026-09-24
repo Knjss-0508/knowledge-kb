@@ -1,0 +1,75 @@
+# 仅「模型在本机、应用后端与数据库在远端」的部署形态使用。
+#
+# 用途：把本机的 embedding-qwen 服务通过 SSH 反向隧道暴露给远端服务器，
+# 使远端后端可以调用本机 GPU，而数据库仍留在远端、无需跨公网访问数据库。
+#
+# 为什么用 SSH 反向隧道而不是 VPN：
+#   GPU 节点通常位于 NAT 之后，远端服务器无法主动连入；同时云厂商安全组
+#   常阻断入站 UDP，导致 Tailscale/WireGuard 无法打洞，只能走 DERP 中继。
+#   实测同一链路：直连 TCP 22 握手 32ms，经 DERP 中继 351ms（慢 11 倍）。
+#   由 GPU 节点主动向远端建立 SSH 连接可同时绕开这两个限制。
+#
+# 使用前提：
+#   1. 必须与某个 embedding 覆盖文件同时加载（本文件依赖 embedding-qwen 服务）：
+#        docker compose -f docker-compose.yml \
+#          -f docker-compose.embedding-gpu.yml \
+#          -f docker-compose.embedding-tunnel.yml up -d embedding-qwen embedding-tunnel
+#   2. 远端服务器 /etc/ssh/sshd_config 需设置：
+#        GatewayPorts clientspecified
+#      否则 ssh 无法把转发端口绑定到非回环地址，隧道建立后立即退出。
+#   3. 远端后端 .env 需把嵌入地址指向隧道（远端后端容器可解析 host.docker.internal）：
+#        EMBEDDING_BASE_URL=http://host.docker.internal:18080/v1
+#      注意端口要与 EMBEDDING_TUNNEL_REMOTE_PORT 一致。
+#   4. 远端后端必须同时保留本机 CPU 嵌入服务作为回滚手段，详见
+#      docs/gpu-embedding-tunnel.md 的「回滚」章节。
+
+services:
+  embedding-tunnel:
+    image: ${EMBEDDING_TUNNEL_IMAGE:-alpine:3.20}
+    container_name: kb-embedding-tunnel
+    restart: unless-stopped
+    depends_on:
+      embedding-qwen:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    # 内层重连循环 + 外层 restart 策略双重保障：
+    # 远端 sshd 重启、网络抖动、容器重启后都能自动恢复。
+    #
+    # 注意：命令里的 shell 变量必须写成 $$VAR。compose 会把单个 $VAR
+    # 当作宿主环境变量插值，未定义时替换为空串，导致 ssh 收到空端口而反复重启。
+    command:
+      - |
+        set -e
+        apk add --no-cache openssh-client >/dev/null 2>&1
+        mkdir -p /root/.ssh
+        cp /key/id_ed25519 /root/.ssh/id_ed25519
+        chmod 600 /root/.ssh/id_ed25519
+        echo "[tunnel] $${REMOTE_BIND}:$${REMOTE_PORT} -> $${TARGET_HOST}:$${TARGET_PORT} via $${SSH_USER}@$${SSH_HOST}:$${SSH_PORT}"
+        while true; do
+          ssh -N \
+            -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=20 \
+            -o ServerAliveCountMax=3 \
+            -o ExitOnForwardFailure=yes \
+            -o TCPKeepAlive=yes \
+            -o ConnectTimeout=10 \
+            -i /root/.ssh/id_ed25519 \
+            -p "$${SSH_PORT}" \
+            -R "$${REMOTE_BIND}:$${REMOTE_PORT}:$${TARGET_HOST}:$${TARGET_PORT}" \
+            "$${SSH_USER}@$${SSH_HOST}"
+          code=$$?
+          echo "[tunnel] 连接结束（退出码 $${code}），5 秒后重连"
+          sleep 5
+        done
+    environment:
+      SSH_HOST: ${EMBEDDING_TUNNEL_SSH_HOST:?需要在 .env 设置 EMBEDDING_TUNNEL_SSH_HOST（远端服务器地址）}
+      SSH_PORT: ${EMBEDDING_TUNNEL_SSH_PORT:-22}
+      SSH_USER: ${EMBEDDING_TUNNEL_SSH_USER:-root}
+      REMOTE_BIND: ${EMBEDDING_TUNNEL_REMOTE_BIND:-0.0.0.0}
+      REMOTE_PORT: ${EMBEDDING_TUNNEL_REMOTE_PORT:-18080}
+      TARGET_HOST: ${EMBEDDING_TUNNEL_TARGET_HOST:-embedding-qwen}
+      TARGET_PORT: ${EMBEDDING_TUNNEL_TARGET_PORT:-80}
+    volumes:
+      # 私钥只读挂载；容器内复制后 chmod 600，因为 Windows 挂载无法保留权限。
+      # 私钥文件不要提交到 Git。
+      - ${EMBEDDING_TUNNEL_KEY_PATH:?需要在 .env 设置 EMBEDDING_TUNNEL_KEY_PATH（SSH 私钥绝对路径）}:/key/id_ed25519:ro

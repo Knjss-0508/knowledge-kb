@@ -334,7 +334,7 @@
     .embedding-hero-copy{position:relative;z-index:1}.embedding-eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#91ddd2}.embedding-hero h2{margin:7px 0 8px;font-size:26px}.embedding-hero p{margin:0;max-width:720px;color:#c9e4e1;line-height:1.7;font-size:13px}
     .embedding-model-line{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:17px;font-size:12px;color:#d8f0ed}.embedding-code{display:inline-flex;padding:5px 9px;border:1px solid rgba(255,255,255,.18);border-radius:5px;background:rgba(0,0,0,.12);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:#fff}
     .embedding-hero-side{position:relative;z-index:1;display:grid;grid-template-columns:1fr 1fr;gap:10px;align-content:center}.embedding-mini{padding:13px 14px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(255,255,255,.08);backdrop-filter:blur(6px)}.embedding-mini span{display:block;color:#b8dcd8;font-size:11px}.embedding-mini b{display:block;margin-top:5px;font-size:15px}.embedding-health{display:inline-flex;align-items:center;gap:6px}.embedding-health:before{content:"";width:7px;height:7px;border-radius:50%;background:#7f8c8d;box-shadow:0 0 0 3px rgba(255,255,255,.08)}.embedding-health.good:before{background:#44e0a9}.embedding-health.warn:before{background:#ffd166}.embedding-health.bad:before{background:#ff7869}
-    .embedding-tabs{display:flex;gap:6px;overflow-x:auto;padding:5px;border:1px solid var(--line);border-radius:9px;background:#fff}.embedding-tab{flex:0 0 auto;height:36px;padding:0 15px;border:0;border-radius:6px;background:transparent;color:#667085;font-size:13px;cursor:pointer}.embedding-tab:hover{background:#f2f7f6;color:#177c6c}.embedding-tab.on{background:#e4f8f2;color:#007f6b;font-weight:700}
+    .embedding-tabs{display:flex;gap:6px;overflow-x:auto;padding:5px;border:1px solid var(--line);border-radius:9px;background:#fff}.embedding-tab{flex:0 0 auto;height:36px;padding:0 15px;border:0;border-radius:6px;background:transparent;color:#667085;font-size:13px;cursor:pointer}.embedding-tab:hover{background:#f2f7f6;color:#177c6c}.embedding-tab.on{background:#e4f8f2;color:#007f6b;font-weight:700}.embedding-tab-probe{margin-left:auto;color:#007f6b;border:1px solid #b9e5d9;background:#f3fbf8}.embedding-runtime-result{display:flex;align-items:center;gap:9px;padding:10px 13px;border:1px solid #dce8e5;border-radius:7px;background:#fafdfc;color:#475467;font-size:12px;line-height:1.5}.embedding-runtime-result strong{color:#344054}.embedding-runtime-result.good{border-color:#b9e5d9;background:#f2fbf7}.embedding-runtime-result.good strong{color:#087f62}.embedding-runtime-result.warn{border-color:#f4d99b;background:#fffaf0}.embedding-runtime-result.bad{border-color:#f2b8ae;background:#fff5f3}.embedding-runtime-result.bad strong{color:#b42318}
     .embedding-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.embedding-card{padding:18px;border:1px solid var(--line);border-radius:9px;background:#fff;box-shadow:0 8px 24px rgba(16,24,40,.035)}.embedding-card h3{margin:0;color:#344054;font-size:14px}.embedding-card p{margin:6px 0 0;color:#98a2b3;font-size:11px;line-height:1.6}.embedding-kpi{margin-top:14px;font-size:27px;font-weight:750;color:#1d2939;font-variant-numeric:tabular-nums}.embedding-kpi.teal{color:#008f78}.embedding-kpi.orange{color:#d96d00}.embedding-kpi.violet{color:#6b52d9}.embedding-progress{height:7px;margin-top:13px;border-radius:999px;background:#edf1f4;overflow:hidden}.embedding-progress i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#00a58b,#44ccb6)}
     .embedding-two{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(300px,.7fr);gap:14px}.embedding-panel{border:1px solid var(--line);border-radius:9px;background:#fff;overflow:hidden}.embedding-panel-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid #edf0f3}.embedding-panel-head h3{margin:0;font-size:14px}.embedding-panel-head p{margin:4px 0 0;color:#98a2b3;font-size:11px}.embedding-panel-head-actions{display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap}.embedding-panel-body{padding:18px}.embedding-runner-info{display:grid;gap:11px}.embedding-info-row{display:flex;justify-content:space-between;gap:16px;padding-bottom:10px;border-bottom:1px dashed #e7eaee;font-size:12px}.embedding-info-row:last-child{padding-bottom:0;border-bottom:0}.embedding-info-row span{color:#7a8697}.embedding-info-row b{color:#344054;text-align:right}
     .metric-definition{margin-top:10px;padding-top:10px;border-top:1px dashed #e7eaee;color:#7a8697;font-size:11px;line-height:1.55}.metric-definition strong{color:#344054}
@@ -946,11 +946,12 @@
           <span class="embedding-code">{{embedding.overview.model.name || '-'}}</span>
           <span>{{embedding.overview.model.dimension || 0}} 维</span>
           <span>{{embedding.overview.model.provider || '-'}}</span>
+          <span v-if="embedding.overview.model.endpoint">{{embedding.overview.model.endpoint.label}} · {{embedding.overview.model.endpoint.display}}</span>
         </div>
       </div>
       <div class="embedding-hero-side" v-if="isSuperAdmin()">
-        <div class="embedding-mini"><span>推理服务</span><b class="embedding-health" :class="embeddingHealthClass()">{{embeddingHealthLabel()}}</b></div>
-        <div class="embedding-mini"><span>本机 Runner</span><b class="embedding-health" :class="runnerHealthClass()">{{runnerStatusLabel(embedding.overview.runner)}}</b></div>
+        <div class="embedding-mini"><span>模型服务健康检查</span><b class="embedding-health" :class="embeddingHealthClass()">{{embeddingHealthLabel()}}</b></div>
+        <div class="embedding-mini"><span>模型调用链路</span><b class="embedding-health" :class="embeddingProbeClass()">{{embeddingProbeLabel()}}</b></div>
         <div class="embedding-mini"><span>已确认样本</span><b>{{embedding.overview.samples.verified || 0}}</b></div>
         <div class="embedding-mini"><span>进行中任务</span><b>{{embedding.overview.jobs.active || 0}}</b></div>
       </div>
@@ -969,6 +970,11 @@
       <button class="embedding-tab" v-if="isSuperAdmin()" :class="{on:embedding.tab==='lab'}" @click="setEmbeddingTab('lab')">召回实验室</button>
       <button class="embedding-tab" v-if="isSuperAdmin()" :class="{on:embedding.tab==='samples'}" @click="setEmbeddingTab('samples')">纠错样本</button>
       <button class="embedding-tab" v-if="isSuperAdmin()" :class="{on:embedding.tab==='training'}" @click="setEmbeddingTab('training')">训练与版本</button>
+      <button class="embedding-tab embedding-tab-probe" v-if="isSuperAdmin()" type="button" @click="probeEmbeddingRuntime" :disabled="embedding.probing">{{embedding.probing?'正在检测…':'检测模型链路'}}</button>
+    </div>
+    <div v-if="isSuperAdmin() && (embedding.runtimeProbe || embedding.probing)" class="embedding-runtime-result" :class="embeddingProbeClass()" role="status" aria-live="polite">
+      <strong>{{embedding.probing?'正在通过后端调用模型…':embeddingProbeLabel()}}</strong>
+      <span v-if="embedding.runtimeProbe && !embedding.probing">{{embedding.runtimeProbe.message}}<template v-if="embedding.runtimeProbe.status==='healthy'"> · {{embedding.runtimeProbe.actual_dimension}} 维 · {{formatMs(embedding.runtimeProbe.latency_ms)}}</template><template v-if="embedding.runtimeProbe.endpoint"> · {{embedding.runtimeProbe.endpoint.label}}（{{embedding.runtimeProbe.endpoint.display}}）</template></span>
     </div>
 
     <template v-if="embedding.tab==='overview' && isSuperAdmin()">
@@ -988,12 +994,12 @@
           </div>
         </div>
         <div class="embedding-panel">
-          <div class="embedding-panel-head"><div><h3>本机 GPU Runner</h3><p>电脑主动连接服务器，不开放本机入站端口</p></div><button class="btn bd bsm" @click="loadEmbeddingOverview">刷新</button></div>
+          <div class="embedding-panel-head"><div><h3>模型连接诊断</h3><p>检测后端当前配置地址是否能实际生成符合维度的向量</p></div><button class="btn bp bsm" @click="probeEmbeddingRuntime" :disabled="embedding.probing">{{embedding.probing?'检测中…':'检测模型链路'}}</button></div>
           <div class="embedding-panel-body embedding-runner-info">
-            <div class="embedding-info-row"><span>设备</span><b>{{embedding.overview.runner && embedding.overview.runner.gpu_name || '尚未连接'}}</b></div>
-            <div class="embedding-info-row"><span>显存</span><b>{{runnerMemoryText(embedding.overview.runner)}}</b></div>
-            <div class="embedding-info-row"><span>CUDA</span><b>{{embedding.overview.runner && embedding.overview.runner.cuda_version || '-'}}</b></div>
-            <div class="embedding-info-row"><span>最后心跳</span><b>{{embedding.overview.runner ? formatDate(embedding.overview.runner.last_seen_at) : '-'}}</b></div>
+            <div class="embedding-info-row"><span>部署路径</span><b>{{embedding.overview.model.endpoint && embedding.overview.model.endpoint.label || '未识别'}}</b></div>
+            <div class="embedding-info-row"><span>后端访问地址</span><b>{{embedding.overview.model.endpoint && embedding.overview.model.endpoint.display || '-'}}</b></div>
+            <div class="embedding-info-row"><span>实际向量检测</span><b>{{embeddingProbeLabel()}}</b></div>
+            <div class="embedding-info-row"><span>训练 Runner</span><b>{{runnerStatusLabel(embedding.overview.runner)}}（独立于推理服务）</b></div>
           </div>
         </div>
       </div>
@@ -1016,12 +1022,16 @@
         <span class="retrieval-period-caption">当前范围：<b>{{retrievalPeriodLabel()}}</b><template v-if="analysis.loading"> · 正在加载</template></span>
         <div v-if="analysis.error" class="retrieval-period-error" role="alert">{{analysis.error}}</div>
       </div>
+      <div v-if="!analysis.loading && !analysis.error && analysis.summary.total===0" class="integration-hint retrieval-empty-hint" role="status">
+        当前范围内暂无已落库的召回事件，不代表模型返回为空。可切换“近7天”或“全部”查看历史数据；新检索请求会在服务端自动记录候选，选择采用率需等待工作台回传选择反馈。
+      </div>
       <div class="embedding-grid">
         <div class="embedding-card"><h3>候选覆盖率</h3><div class="embedding-kpi teal">{{formatPercent(analysis.rates.candidate_coverage_rate)}}</div><div class="metric-definition"><strong>请求口径：</strong>{{analysis.summary.candidate_requests}} 个有候选请求 / {{analysis.summary.successful_requests}} 个成功请求；每个请求只计 1 次。</div></div>
         <div class="embedding-card"><h3>临界候选占比</h3><div class="embedding-kpi">{{formatPercent(analysis.rates.near_threshold_rate)}}</div><div class="metric-definition"><strong>定义：</strong>状态为成功或回退且有候选的请求中，最高分达到当次阈值、但高出不足 0.05 的比例；越高表示越多结果贴近阈值边界，需关注阈值稳定性。</div></div>
-        <div class="embedding-card"><h3>首位采用率</h3><div class="embedding-kpi teal">{{formatPercent(analysis.rates.top1_selection_rate)}}</div><div class="metric-definition"><strong>定义：</strong>有候选请求中，最终采用所属候选池第一名的比例，主要反映排序质量。</div></div>
-        <div class="embedding-card"><h3>替代候选采用率</h3><div class="embedding-kpi violet">{{formatPercent(analysis.rates.alternative_selection_rate)}}</div><div class="metric-definition"><strong>定义：</strong>未采用所属候选池第一名，但采用该池第二至第五名的比例。</div></div>
-        <div class="embedding-card"><h3>真正未采用率</h3><div class="embedding-kpi orange">{{formatPercent(analysis.rates.no_selection_rate)}}</div><div class="metric-definition"><strong>定义：</strong>已经返回候选，但最终没有采用任何候选的比例。</div></div>
+        <div class="embedding-card"><h3>选择反馈覆盖率</h3><div class="embedding-kpi">{{formatPercent(analysis.rates.selection_observation_rate)}}</div><div class="metric-definition"><strong>请求口径：</strong>{{analysis.summary.selection_observed_requests}} 个已收到选择结果 / {{analysis.summary.candidate_requests}} 个有候选请求；自动记录的候选不会伪造选择结果。</div></div>
+        <div class="embedding-card"><h3>首位采用率</h3><div class="embedding-kpi teal">{{formatPercent(analysis.rates.top1_selection_rate)}}</div><div class="metric-definition"><strong>定义：</strong>已收到选择结果的有候选请求中，最终采用所属候选池第一名的比例，主要反映排序质量。</div></div>
+        <div class="embedding-card"><h3>替代候选采用率</h3><div class="embedding-kpi violet">{{formatPercent(analysis.rates.alternative_selection_rate)}}</div><div class="metric-definition"><strong>定义：</strong>已收到选择结果的有候选请求中，未采用所属候选池第一名但采用该池第二至第五名的比例。</div></div>
+        <div class="embedding-card"><h3>真正未采用率</h3><div class="embedding-kpi orange">{{formatPercent(analysis.rates.no_selection_rate)}}</div><div class="metric-definition"><strong>定义：</strong>已收到选择结果的有候选请求中，最终明确没有采用任何候选的比例；未反馈请求不计入分母。</div></div>
         <div class="embedding-card"><h3>人工标注覆盖率</h3><div class="embedding-kpi">{{formatPercent(analysis.rates.review_coverage_rate)}}</div><div class="metric-definition"><strong>定义：</strong>已由人工明确正确知识、候选均不适用或暂时无法判断的请求比例。</div></div>
         <div class="embedding-card"><h3>无候选请求</h3><div class="embedding-kpi orange">{{analysis.summary.no_candidates}}</div><div class="metric-definition"><strong>定义：</strong>召回服务正常返回，但该次请求的候选列表为空；可能是知识缺失、查询表达或适用范围过滤问题。</div></div>
         <div class="embedding-card"><h3>技术失败</h3><div class="embedding-kpi">{{analysis.summary.technical_failure}}</div><div class="metric-definition"><strong>定义：</strong>超时、服务错误或响应损坏，不应记为知识缺口或训练负样本。</div></div>
@@ -1032,7 +1042,7 @@
           <div class="embedding-panel-body">
             <div class="embedding-info-row"><span>成功请求 / 全部请求</span><b>{{analysis.summary.successful_requests}} / {{analysis.summary.total}}</b></div>
             <div class="embedding-info-row"><span>临界候选 / 明显高于阈值 / 低于阈值</span><b>{{analysis.summary.near_threshold}} / {{analysis.summary.clear_threshold}} / {{analysis.summary.threshold_below}}</b></div>
-            <div class="embedding-info-row"><span>首位采用 / 替代采用 / 未采用</span><b>{{analysis.summary.top_selected}} / {{analysis.summary.alternative_selected}} / {{analysis.summary.none_selected}}</b></div>
+            <div class="embedding-info-row"><span>首位采用 / 替代采用 / 真正未采用 / 待反馈</span><b>{{analysis.summary.top_selected}} / {{analysis.summary.alternative_selected}} / {{analysis.summary.none_selected}} / {{analysis.summary.selection_pending_requests}}</b></div>
           </div>
         </div>
         <div class="embedding-panel">
@@ -1187,8 +1197,8 @@
         </div>
         <div class="embedding-flow-step" :class="runnerHealthClass()==='good' ? 'ready' : ''">
           <div class="embedding-flow-index"><i></i><span>步骤 3</span></div>
-          <h4>本机 GPU 训练</h4>
-          <p>{{embedding.overview.runner ? runnerStatusLabel(embedding.overview.runner) + ' · ' + runnerMemoryText(embedding.overview.runner) : '在桌面控制台粘贴任务 URL 和密钥'}}</p>
+          <h4>LoRA 训练 Runner</h4>
+          <p>{{embedding.overview.runner ? runnerStatusLabel(embedding.overview.runner) + ' · ' + runnerMemoryText(embedding.overview.runner) : '训练 Runner 单独接入；不影响上方嵌入模型推理链路'}}</p>
         </div>
         <div class="embedding-flow-step" :class="embedding.models.length ? 'ready' : ''">
           <div class="embedding-flow-index"><i></i><span>步骤 4</span></div>
@@ -1203,8 +1213,8 @@
       </div>
       <div class="embedding-control-grid">
         <div class="embedding-control-card">
-          <h3>训练控制</h3>
-          <p>创建任务时生成任务专属 URL 和密钥；任意训练电脑粘贴后只会执行这一条任务。</p>
+          <h3>LoRA 训练控制</h3>
+          <p>训练与线上嵌入推理分开运行。创建任务会生成专属 URL 和密钥，交给单独安装训练 Runner 的电脑使用。</p>
           <div class="embedding-readiness">
             <div class="embedding-readiness-item"><span>确认样本</span><b>{{embedding.overview.samples.verified || 0}} 条</b></div>
             <div class="embedding-readiness-item"><span>Runner</span><b>{{runnerStatusLabel(embedding.overview.runner)}}</b></div>
@@ -1223,7 +1233,7 @@
           </div>
         </div>
       </div>
-      <div class="embedding-warning">训练会在这台电脑的宿主机 GPU Runner 中执行，本机不启动项目容器或业务服务。候选审批不会上传模型；模型上传、替换生产模型和全量向量重建都必须分别取得明确授权。</div>
+      <div class="embedding-warning">线上检索与查重由旧服务器后端经 SSH 反向隧道调用新电脑上的 Embedding 服务；LoRA 训练 Runner 是独立可选组件，不是推理服务状态。候选审批不会上传模型；模型上传、替换生产模型和全量向量重建都必须分别取得明确授权。</div>
       <div class="bar"><span class="tt">训练任务</span></div>
       <div class="tw"><table><thead><tr><th>候选模型</th><th style="width:100px">样本</th><th style="width:120px">状态</th><th style="width:200px">阶段 / 进度</th><th style="width:150px">Runner</th><th style="width:160px">创建时间</th><th style="width:190px">操作</th></tr></thead><tbody>
         <tr v-for="job in embedding.jobs" :key="job.id"><td><div style="font-weight:700">{{job.candidate_model_name}}</div><div class="embedding-log" :title="job.error_message || job.log_tail">{{job.error_message || job.log_tail || job.dataset_hash}}</div><div class="embedding-log" v-if="job.runner_access && job.runner_access.configured">{{job.runner_access.expired?'接入密钥已过期':('接入密钥有效至 ' + formatDate(job.runner_access.expires_at))}}</div></td><td>{{job.sample_count}}</td><td><span class="embedding-status" :class="job.status">{{jobStatusLabel(job.status)}}</span></td><td><div>{{job.stage}}</div><div class="embedding-progress"><i :style="{width:Math.max(0,Math.min(100,job.progress||0))+'%'}"></i></div></td><td>{{job.runner_id || '等待粘贴任务信息'}}</td><td>{{formatDate(job.created_at)}}</td><td><div class="embedding-actions" style="margin-top:0"><button v-if="job.runner_access && job.runner_access.can_regenerate" class="btn bp bsm" @click="regenerateEmbeddingJobAccess(job)">重新生成接入信息</button><button v-if="['queued','claimed','running','evaluating'].indexOf(job.status)!==-1" class="btn bd bsm" @click="cancelEmbeddingJob(job)">取消</button></div></td></tr>
@@ -2003,13 +2013,13 @@ Vue.createApp({
         updatedAt: '-'
       },
       analysis: {
-        summary:{total:0, accepted:0, accepted_alternative:0, low_score:0, no_candidates:0, not_selected:0, technical_failure:0, successful_requests:0, candidate_requests:0, candidate_queries:0, near_threshold:0, clear_threshold:0, threshold_below:0, top_selected:0, alternative_selected:0, none_selected:0, reviewed:0, training_eligible:0},
-        rates:{candidate_coverage_rate:0, near_threshold_rate:0, any_selection_rate:0, top1_selection_rate:0, alternative_selection_rate:0, no_selection_rate:0, review_coverage_rate:0},
+        summary:{total:0, accepted:0, accepted_alternative:0, low_score:0, no_candidates:0, not_selected:0, selection_pending:0, technical_failure:0, successful_requests:0, candidate_requests:0, candidate_queries:0, selection_observed_requests:0, selection_pending_requests:0, near_threshold:0, clear_threshold:0, threshold_below:0, top_selected:0, alternative_selected:0, none_selected:0, reviewed:0, training_eligible:0},
+        rates:{candidate_coverage_rate:0, near_threshold_rate:0, selection_observation_rate:0, any_selection_rate:0, top1_selection_rate:0, alternative_selection_rate:0, no_selection_rate:0, review_coverage_rate:0},
         latency:{count:0, average_ms:null, p50_ms:null, p95_ms:null},
-        definitions:{candidate_coverage_rate:'成功请求中至少返回一条候选知识的比例',near_threshold_rate:'状态为成功或回退且有候选的请求中，最高分达到当次阈值、但高出不足 0.05 的比例',top1_selection_rate:'有候选请求中最终采用第一名的比例',alternative_selection_rate:'有候选请求中最终采用第二名及以后候选的比例',no_selection_rate:'有候选请求中最终没有采用任何候选的比例',review_coverage_rate:'已由人工明确原因和正确目标的请求比例'},
+        definitions:{candidate_coverage_rate:'成功请求中至少返回一条候选知识的比例',near_threshold_rate:'状态为成功或回退且有候选的请求中，最高分达到当次阈值、但高出不足 0.05 的比例',selection_observation_rate:'有候选请求中已收到工作台选择结果的比例',top1_selection_rate:'已收到选择结果的有候选请求中最终采用第一名的比例',alternative_selection_rate:'已收到选择结果的有候选请求中最终采用第二名及以后候选的比例',no_selection_rate:'已收到选择结果的有候选请求中最终没有采用任何候选的比例',review_coverage_rate:'已由人工明确原因和正确目标的请求比例'},
         risks:[],
         pagination:{page:1,size:20,appliedPage:1,appliedSize:20,total:0,totalPages:1,jumpPage:''},
-        timeFilter:{mode:'today',appliedMode:'today',startDate:'',endDate:'',appliedStartDate:'',appliedEndDate:''},
+        timeFilter:{mode:'7d',appliedMode:'7d',startDate:'',endDate:'',appliedStartDate:'',appliedEndDate:''},
         loading:false,
         error:'',
         requestSeq:0,
@@ -2030,7 +2040,9 @@ Vue.createApp({
           vectors:{published_total:0,dedup_covered:0,search_covered:0,dedup_missing:0,search_missing:0,dedup_coverage_rate:0,search_coverage_rate:0},
           samples:{candidate:0,verified:0,excluded:0},
           jobs:{queued:0,active:0,completed:0,failed:0,latest:null},
-          runner:null,
+        runner:null,
+        runtimeProbe:null,
+        probing:false,
           runner_configured:false,
           runner_access_mode:'task_scoped',
           active_config:{version:0,status:'environment_default',config:{}}
@@ -3587,6 +3599,23 @@ Vue.createApp({
         .catch(function(error) { console.error(error); })
         .finally(function() { self.embedding.loading = false; });
     },
+    probeEmbeddingRuntime: function() {
+      var self = this;
+      if (!self.isSuperAdmin() || self.embedding.probing) return;
+      self.embedding.probing = true;
+      fetch(API + '/embedding-model/runtime-probe', {method:'POST',headers:self.authHeaders()})
+        .then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok) throw new Error(data.detail || '模型链路检测失败');
+            return data;
+          });
+        })
+        .then(function(data) { self.embedding.runtimeProbe = data || null; })
+        .catch(function(error) {
+          self.embedding.runtimeProbe = {status:'unavailable',message:error.message,endpoint:self.embedding.overview.model.endpoint || null};
+        })
+        .finally(function() { self.embedding.probing = false; });
+    },
     loadEmbeddingConfigs: function() {
       var self = this;
       if (!self.isSuperAdmin()) return;
@@ -4995,7 +5024,7 @@ Vue.createApp({
       return {passed:'达到阈值',below:'低于阈值',not_applicable:'不适用'}[value] || value || '-';
     },
     selectionStatusLabel: function(value) {
-      return {top_selected:'采用第一名',alternative_selected:'采用其他候选',none_selected:'未采用任何候选',not_evaluated:'未进入选择'}[value] || value || '-';
+      return {top_selected:'采用第一名',alternative_selected:'采用其他候选',none_selected:'未采用任何候选',not_evaluated:'待反馈'}[value] || value || '-';
     },
     embeddingHealthClass: function() {
       return this.embedding.overview.model.health && this.embedding.overview.model.health.status === 'healthy' ? 'good' : 'bad';
@@ -5003,6 +5032,20 @@ Vue.createApp({
     embeddingHealthLabel: function() {
       var health = this.embedding.overview.model.health || {};
       return health.status === 'healthy' ? ('正常 · ' + this.formatMs(health.latency_ms)) : '不可用';
+    },
+    embeddingProbeClass: function() {
+      var probe = this.embedding.runtimeProbe;
+      if (this.embedding.probing) return 'warn';
+      if (!probe) return 'warn';
+      return probe.status === 'healthy' ? 'good' : 'bad';
+    },
+    embeddingProbeLabel: function() {
+      var probe = this.embedding.runtimeProbe;
+      if (this.embedding.probing) return '检测中';
+      if (!probe) return '尚未检测';
+      if (probe.status === 'healthy') return '实际调用正常';
+      if (probe.status === 'dimension_mismatch') return '维度不一致';
+      return '实际调用失败';
     },
     runnerHealthClass: function() {
       var runner = this.embedding.overview.runner;
@@ -5535,7 +5578,7 @@ Vue.createApp({
       }[match.match_type] || '疑似重复';
     },
     outcomeLabel: function(outcome) {
-      return {accepted:'采用首位',accepted_alternative:'采用其他候选',low_score:'低于阈值',no_candidates:'无候选',not_selected:'未采用',technical_failure:'技术失败'}[outcome] || outcome;
+      return {accepted:'采用首位',accepted_alternative:'采用其他候选',low_score:'低于阈值',no_candidates:'无候选',not_selected:'未采用',selection_pending:'待反馈',technical_failure:'技术失败'}[outcome] || outcome;
     },
     changeFieldLabel: function(field) {
       return {
