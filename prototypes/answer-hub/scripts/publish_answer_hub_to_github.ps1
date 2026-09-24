@@ -92,6 +92,7 @@ function Copy-AnswerHubSource {
         ".tmp-*",
         ".tmp_*",
         ".venv",
+        ".venv-win",
         ".cz_test_venv",
         "__pycache__",
         "github-cli",
@@ -151,6 +152,7 @@ function Assert-StagingSafety {
     $forbiddenDirectoryNamesAnywhere = @(
         ".git",
         ".venv",
+        ".venv-win",
         ".cz_test_venv",
         "__pycache__",
         "dify",
@@ -274,6 +276,10 @@ Invoke-CheckedCommand "Configure non-interactive Git output" {
     & $Git -C $cloneRoot config core.pager cat
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to disable the Git pager."
+    }
+    & $Git -C $cloneRoot config core.whitespace cr-at-eol
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to configure CRLF whitespace handling."
     }
     & $Git -C $cloneRoot config core.quotepath false
     if ($LASTEXITCODE -ne 0) {
