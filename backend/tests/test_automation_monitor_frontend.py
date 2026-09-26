@@ -87,3 +87,75 @@ def test_start_and_stop_automation_keep_logical_and_scheduled_switches_aligned()
         check=False,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_date_range_waits_for_both_dates_before_saving() -> None:
+    node = shutil.which("node")
+    assert node, "Node.js is required for the automation monitor behavior test"
+    frontend_path = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
+    script = textwrap.dedent(
+        f"""
+        const assert = require('assert');
+        const fs = require('fs');
+        const vm = require('vm');
+        const html = fs.readFileSync({json.dumps(str(frontend_path))}, 'utf8');
+        const scripts = Array.from(
+          html.matchAll(/<script(?:\\s[^>]*)?>([\\s\\S]*?)<\\/script>/gi),
+          function(match) {{ return match[1]; }}
+        );
+        const appSource = scripts.find(function(source) {{
+          return source.indexOf('Vue.createApp({{') !== -1;
+        }});
+        let appOptions = null;
+        const sandbox = {{
+          window: {{KB_RUNTIME: {{apiBase: '', baseUrl: ''}}}},
+          localStorage: {{getItem: function() {{ return ''; }}}},
+          Vue: {{createApp: function(options) {{
+            appOptions = options;
+            return {{mount: function() {{ return null; }}}};
+          }}}},
+          console: console,
+          URL: URL,
+          URLSearchParams: URLSearchParams,
+          setTimeout: setTimeout,
+          clearTimeout: clearTimeout
+        }};
+        vm.createContext(sandbox);
+        vm.runInContext(appSource, sandbox);
+        const context = {{
+          answerHubMonitor: {{
+            control: {{
+              plan: {{
+                knowledge_settle_from_date: '2026-09-13',
+                knowledge_settle_to_date: ''
+              }}
+            }}
+          }},
+          saveCalls: 0,
+          saveAutomationMonitorControl: null
+        }};
+        Object.keys(appOptions.methods).forEach(function(name) {{
+          if (typeof appOptions.methods[name] === 'function') {{
+            context[name] = appOptions.methods[name].bind(context);
+          }}
+        }});
+        context.saveAutomationMonitorControl = function() {{ this.saveCalls += 1; }};
+        context.saveAutomationMonitorDateRange();
+        assert.strictEqual(context.saveCalls, 0);
+        assert.strictEqual(
+          context.answerHubMonitor.control.plan.knowledge_settle_from_date,
+          '2026-09-13'
+        );
+        context.answerHubMonitor.control.plan.knowledge_settle_to_date = '2026-09-14';
+        context.saveAutomationMonitorDateRange();
+        assert.strictEqual(context.saveCalls, 1);
+        """
+    )
+    completed = subprocess.run(
+        [node, "-e", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
