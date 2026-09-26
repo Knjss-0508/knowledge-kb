@@ -598,7 +598,7 @@ Token 由使用者只填入本机 `.env`，不得粘贴到聊天、命令历史�
   --max-pages 0
 ```
 
-`--max-pages 0` 表示不限制游标分页页数，持续读取到接口返回完成。PowerZhuan QA 接口当前只返回顶层 `records`，没有可用的游标或 `has_more` 字段，因此会用一次 `limit=10000` 请求读取指定日期范围；如果实际记录超过该值，应提高 `SECOND_PART_QUERY_LIMIT`，不得改回固定单页读取。
+`--max-pages 0` 表示不限制游标分页页数，持续读取到接口返回完成。`--exclude-existing-records` 会扫描队列中的 `pending`、`processing`、`completed` 和 `failed` 文件，按 `工单ID`、`数据ID` 或 `来源记录ID` 排除已经出现的记录，适合在一次拉取被截断后补充剩余数据。PowerZhuan QA 接口当前只返回顶层 `records`，没有可用的游标或 `has_more` 字段，因此会用一次 `limit=10000` 请求读取指定日期范围；如果实际记录超过该值，应提高 `SECOND_PART_QUERY_LIMIT`，不得改回固定单页读取。
 
 如果返回“缺少必填字段”，说明 PowerZhuan 的 `records[0]` 字段名与模板别名不同；
 此时应提供一条已脱敏的 `records[0]` JSON 样例调整映射，不得放宽门禁或让空记录入队。

@@ -13,4 +13,5 @@ def test_scheduled_queue_prefers_saved_plan_dates_before_today_fallback() -> Non
     assert 'to_date=${ANSWER_HUB_SCHEDULE_TO_DATE:-${plan_to:-$today}}' in SCRIPT
     assert 'export SECOND_PART_QUERY_LIMIT="${ANSWER_HUB_SECOND_PART_QUERY_LIMIT:-10000}"' in SCRIPT
     assert '--max-pages 0' in SCRIPT
+    assert '--exclude-existing-records' in SCRIPT
     assert 'state_file="data/second-part-pull/scheduled-${from_date//-/}-${to_date//-/}-state.json"' in SCRIPT

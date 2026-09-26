@@ -23,7 +23,7 @@ from .automation_queue import (
     AutomationQueue,
     read_queue_job_metadata,
 )
-from .excel_io import write_rows_to_workbook
+from .excel_io import read_workbook_rows, write_rows_to_workbook
 from .mimo import load_dotenv
 from .workflow import SOURCE_COLUMNS
 
@@ -528,6 +528,35 @@ def _find_existing_batch(
     return None
 
 
+def _existing_record_ids(queue: AutomationQueue) -> set[str]:
+    record_ids: set[str] = set()
+    queue.ensure()
+    for directory in (
+        queue.pending,
+        queue.processing,
+        queue.completed,
+        queue.failed,
+    ):
+        for source_path in directory.iterdir():
+            if (
+                not source_path.is_file()
+                or source_path.name.startswith("~$")
+                or source_path.suffix.lower() not in SUPPORTED_SOURCE_SUFFIXES
+            ):
+                continue
+            try:
+                _, rows = read_workbook_rows(source_path)
+            except (OSError, ValueError):
+                continue
+            for row in rows:
+                for field in ("工单ID", "数据ID", "来源记录ID"):
+                    record_id = _text(row.get(field))
+                    if record_id:
+                        record_ids.add(record_id)
+                        break
+    return record_ids
+
+
 def _safe_filename_fragment(value: Any) -> str:
     fragment = re.sub(
         r"[^A-Za-z0-9._-]+",
@@ -602,6 +631,7 @@ def pull_second_part_to_queue(
     output_root: str | Path,
     state_path: str | Path,
     max_pages: int = 10,
+    exclude_existing_records: bool = False,
     fetcher: SecondPartPageFetcher | None = None,
 ) -> dict[str, Any]:
     load_dotenv()
@@ -612,6 +642,11 @@ def pull_second_part_to_queue(
     state = _load_state(state_file, profile.name)
     cursor = _text(state.get("cursor"))
     page_fetcher = fetcher or UrllibSecondPartPageFetcher()
+    existing_record_ids = (
+        _existing_record_ids(queue)
+        if exclude_existing_records
+        else set()
+    )
     configured_page_limit = int(max_pages)
     page_limit = configured_page_limit if configured_page_limit > 0 else None
     summary: dict[str, Any] = {
@@ -628,6 +663,7 @@ def pull_second_part_to_queue(
         "queued_jobs": 0,
         "reused_jobs": 0,
         "rejected_records": 0,
+        "skipped_existing_records": 0,
         "jobs": [],
         "rejection_reports": [],
     }
@@ -682,6 +718,19 @@ def pull_second_part_to_queue(
 
         if items:
             rows, rejected_records = _map_records(profile, items)
+            if existing_record_ids:
+                rows_to_queue = [
+                    row
+                    for row in rows
+                    if not any(
+                        _text(row.get(field)) in existing_record_ids
+                        for field in ("工单ID", "数据ID", "来源记录ID")
+                    )
+                ]
+                summary["skipped_existing_records"] += (
+                    len(rows) - len(rows_to_queue)
+                )
+                rows = rows_to_queue
             batch_key = _batch_key(
                 profile,
                 cursor,

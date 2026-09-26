@@ -272,6 +272,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=10,
         help="Maximum pages to fetch; use 0 to follow pagination until the API reports completion",
     )
+    second_part_pull.add_argument(
+        "--exclude-existing-records",
+        action="store_true",
+        help="Skip records whose 工单ID/数据ID/来源记录ID already exists in the queue",
+    )
 
     retry_run = subparsers.add_parser(
         "retry-run",
@@ -571,6 +576,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_root=Path(args.output_dir),
                 state_path=Path(args.state_file),
                 max_pages=max(0, args.max_pages),
+                exclude_existing_records=args.exclude_existing_records,
             )
         except SecondPartPullError as exc:
             print(
