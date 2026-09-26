@@ -4164,10 +4164,12 @@ Vue.createApp({
     },
     startAutomationProcess: function(){
       this.answerHubMonitor.control.enabled=true;
+      this.answerHubMonitor.control.schedule_enabled=true;
       this.saveAutomationMonitorControl();
     },
     stopAutomationProcess: function(){
       this.answerHubMonitor.control.enabled=false;
+      this.answerHubMonitor.control.schedule_enabled=false;
       this.saveAutomationMonitorControl();
     },
     runAutomationMonitorOnce: function(){this.runAutomationMonitorAction('run');},
