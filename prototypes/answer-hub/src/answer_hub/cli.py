@@ -270,6 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-pages",
         type=int,
         default=10,
+        help="Maximum pages to fetch; use 0 to follow pagination until the API reports completion",
     )
 
     retry_run = subparsers.add_parser(
@@ -569,7 +570,7 @@ def main(argv: list[str] | None = None) -> int:
                 queue_root=Path(args.queue_dir),
                 output_root=Path(args.output_dir),
                 state_path=Path(args.state_file),
-                max_pages=max(1, args.max_pages),
+                max_pages=max(0, args.max_pages),
             )
         except SecondPartPullError as exc:
             print(

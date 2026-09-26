@@ -612,7 +612,8 @@ def pull_second_part_to_queue(
     state = _load_state(state_file, profile.name)
     cursor = _text(state.get("cursor"))
     page_fetcher = fetcher or UrllibSecondPartPageFetcher()
-    page_limit = max(1, int(max_pages))
+    configured_page_limit = int(max_pages)
+    page_limit = configured_page_limit if configured_page_limit > 0 else None
     summary: dict[str, Any] = {
         "status": "idle",
         "profile": profile.name,
@@ -631,7 +632,9 @@ def pull_second_part_to_queue(
         "rejection_reports": [],
     }
 
-    for _page_index in range(page_limit):
+    page_index = 0
+    while page_limit is None or page_index < page_limit:
+        page_index += 1
         try:
             response = page_fetcher.fetch_page(profile, cursor)
         except SecondPartPullError:

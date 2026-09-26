@@ -233,6 +233,55 @@ def test_pull_advances_only_through_successfully_queued_pages(tmp_path: Path) ->
     assert json.loads(state_path.read_text(encoding="utf-8"))["cursor"] == "cursor-2"
 
 
+def test_pull_with_zero_max_pages_reads_until_api_completion(
+    tmp_path: Path,
+) -> None:
+    profile = _write_profile(tmp_path / "profile.json")
+    fetcher = FakeFetcher(
+        {
+            "": {
+                "data": {
+                    "items": [
+                        {
+                            "work_order_id": "WO-001",
+                            "conversation": "第一页",
+                            "product_type": "手机",
+                        }
+                    ],
+                    "next_cursor": "cursor-2",
+                    "has_more": True,
+                }
+            },
+            "cursor-2": {
+                "data": {
+                    "items": [
+                        {
+                            "work_order_id": "WO-002",
+                            "conversation": "第二页",
+                            "product_type": "手机",
+                        }
+                    ],
+                    "next_cursor": "",
+                    "has_more": False,
+                }
+            },
+        }
+    )
+
+    summary = pull_second_part_to_queue(
+        profile,
+        queue_root=tmp_path / "queue",
+        output_root=tmp_path / "runs",
+        state_path=tmp_path / "pull-state.json",
+        max_pages=0,
+        fetcher=fetcher,
+    )
+
+    assert summary["fetched_pages"] == 2
+    assert summary["fetched_records"] == 2
+    assert summary["queued_jobs"] == 2
+
+
 def test_pull_rejects_records_missing_profile_required_fields(
     tmp_path: Path,
 ) -> None:

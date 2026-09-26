@@ -40,7 +40,7 @@ export PYTHONUTF8=1
 export PYTHONPATH="$project_root/src"
 pull_succeeded=0
 for attempt in 1 2 3; do
-  if "$project_root/.venv/bin/python" -m answer_hub.cli second-part-pull --profile config/second-part-pull.powerzhuan.local.json --queue-dir data/automation-queue --output-dir outputs/automation-runs --state-file "$state_file" --max-pages 1; then
+  if "$project_root/.venv/bin/python" -m answer_hub.cli second-part-pull --profile config/second-part-pull.powerzhuan.local.json --queue-dir data/automation-queue --output-dir outputs/automation-runs --state-file "$state_file" --max-pages 0; then
     pull_succeeded=1
     break
   fi
