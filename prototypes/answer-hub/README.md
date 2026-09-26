@@ -558,7 +558,7 @@ GET https://qa.powerzhuan.cn/api/records
 
 - Bearer Token 从 `SECOND_PART_API_TOKEN` 环境变量读取；
 - `from`、`to` 使用 `SECOND_PART_QUERY_FROM_DATE` 和 `SECOND_PART_QUERY_TO_DATE`；
-- `limit=1000`；
+- 默认由定时脚本使用 `limit=10000`，也可通过 `ANSWER_HUB_SECOND_PART_QUERY_LIMIT` 覆盖；
 - 响应记录路径为顶层 `records`；
 - `工单ID`、`聊天内容`和`产品类型`为必填映射，字段不匹配时停止入队。
 
@@ -595,8 +595,10 @@ Token 由使用者只填入本机 `.env`，不得粘贴到聊天、命令历史�
   --queue-dir data\automation-queue `
   --output-dir outputs\automation-runs `
   --state-file data\second-part-pull\powerzhuan-state.json `
-  --max-pages 1
+  --max-pages 0
 ```
+
+`--max-pages 0` 表示不限制游标分页页数，持续读取到接口返回完成。`--exclude-existing-records` 会扫描队列中的 `pending`、`processing`、`completed` 和 `failed` 文件，按 `工单ID`、`数据ID` 或 `来源记录ID` 排除已经出现的记录，适合在一次拉取被截断后补充剩余数据。PowerZhuan QA 接口当前只返回顶层 `records`，没有可用的游标或 `has_more` 字段，因此会用一次 `limit=10000` 请求读取指定日期范围；如果实际记录超过该值，应提高 `SECOND_PART_QUERY_LIMIT`，不得改回固定单页读取。
 
 如果返回“缺少必填字段”，说明 PowerZhuan 的 `records[0]` 字段名与模板别名不同；
 此时应提供一条已脱敏的 `records[0]` JSON 样例调整映射，不得放宽门禁或让空记录入队。

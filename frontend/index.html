@@ -860,8 +860,8 @@
         <span class="automation-control-status" :class="{off:!answerHubMonitor.control.enabled}">{{answerHubMonitor.control.enabled?'自动化已开始':'自动化已停止'}}</span>
       </div>
       <div class="automation-control-row">
-          <label class="automation-date-field">沉淀开始日期 <input class="inp" type="date" v-model="answerHubMonitor.control.plan.knowledge_settle_from_date" @change="saveAutomationMonitorControl"></label>
-          <label class="automation-date-field">沉淀结束日期 <input class="inp" type="date" v-model="answerHubMonitor.control.plan.knowledge_settle_to_date" @change="saveAutomationMonitorControl"></label>
+          <label class="automation-date-field">沉淀开始日期 <input class="inp" type="date" v-model="answerHubMonitor.control.plan.knowledge_settle_from_date" @change="saveAutomationMonitorDateRange"></label>
+          <label class="automation-date-field">沉淀结束日期 <input class="inp" type="date" v-model="answerHubMonitor.control.plan.knowledge_settle_to_date" @change="saveAutomationMonitorDateRange"></label>
           <label class="review-check-label"><input type="checkbox" v-model="answerHubMonitor.control.schedule_enabled" @change="saveAutomationMonitorControl"> 定时任务</label>
           <label class="automation-schedule-field">执行时间 <input class="inp" type="time" v-model="answerHubMonitor.control.schedule_time" @change="saveAutomationMonitorControl"></label>
       </div>
@@ -4152,6 +4152,13 @@ Vue.createApp({
             .catch(function(){self.answerHubMonitor.service={status:'unavailable',message:e.message};});
         })
         .finally(function(){self.answerHubMonitor.loading=false;});
+    },
+    saveAutomationMonitorDateRange: function(){
+      var plan=(this.answerHubMonitor.control||{}).plan||{};
+      var from=String(plan.knowledge_settle_from_date||'').trim();
+      var to=String(plan.knowledge_settle_to_date||'').trim();
+      if (Boolean(from)!==Boolean(to)) return;
+      this.saveAutomationMonitorControl();
     },
     saveAutomationMonitorControl: function(){
       var self=this, control=self.answerHubMonitor.control||{};
