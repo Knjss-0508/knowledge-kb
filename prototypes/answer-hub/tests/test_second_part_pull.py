@@ -430,6 +430,41 @@ def test_powerzhuan_profile_uses_documented_query_contract(
     assert captured["timeout"] == 30.0
 
 
+def test_scheduler_limit_override_allows_full_date_window_fetch(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SECOND_PART_API_TOKEN", "private-test-token")
+    monkeypatch.setenv("SECOND_PART_QUERY_FROM_DATE", "2026-09-13")
+    monkeypatch.setenv("SECOND_PART_QUERY_TO_DATE", "2026-09-14")
+    monkeypatch.setenv("SECOND_PART_QUERY_LIMIT", "3000")
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"records":[]}'
+
+    def fake_urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(second_part_pull_module, "urlopen", fake_urlopen)
+    profile = SecondPartPullProfile.load(
+        PROJECT_ROOT
+        / "config"
+        / "second-part-pull.powerzhuan.example.json"
+    )
+    UrllibSecondPartPageFetcher().fetch_page(profile, "")
+
+    assert "limit=3000" in captured["request"].full_url
+
+
 def test_powerzhuan_profile_maps_observed_record_fields(
     tmp_path: Path,
 ) -> None:

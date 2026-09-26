@@ -64,6 +64,16 @@ def _int_value(value: Any, default: int) -> int:
         return default
 
 
+def _request_limit(profile: "SecondPartPullProfile") -> int:
+    return max(
+        1,
+        _int_value(
+            os.getenv("SECOND_PART_QUERY_LIMIT"),
+            profile.batch_size,
+        ),
+    )
+
+
 def _float_value(value: Any, default: float) -> float:
     try:
         return float(value)
@@ -295,12 +305,12 @@ class UrllibSecondPartPageFetcher:
             else:
                 body[profile.cursor_param] = cursor
         if profile.method == "GET":
-            params[profile.limit_param] = profile.batch_size
+            params[profile.limit_param] = _request_limit(profile)
             query = urlencode(params, doseq=True)
             url = f"{profile.url}{'&' if '?' in profile.url else '?'}{query}"
             data = None
         else:
-            body[profile.limit_param] = profile.batch_size
+            body[profile.limit_param] = _request_limit(profile)
             url = profile.url
             data = json.dumps(
                 body,

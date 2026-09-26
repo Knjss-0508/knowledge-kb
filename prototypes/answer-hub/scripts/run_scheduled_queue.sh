@@ -35,6 +35,7 @@ done
 state_file="data/second-part-pull/scheduled-${from_date//-/}-${to_date//-/}-state.json"
 export SECOND_PART_QUERY_FROM_DATE="$from_date"
 export SECOND_PART_QUERY_TO_DATE="$to_date"
+export SECOND_PART_QUERY_LIMIT="${ANSWER_HUB_SECOND_PART_QUERY_LIMIT:-10000}"
 export PYTHONUTF8=1
 export PYTHONPATH="$project_root/src"
 pull_succeeded=0
