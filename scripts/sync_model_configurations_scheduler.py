@@ -47,6 +47,12 @@ IGNORED_SOURCE_HEADERS = (
     "蜂窝网络",
     "光线传感器",
 )
+CELLS_GET_CONTRACT_GUIDANCE = (
+    "处理 ranges[n].cells 之前，必须先查看顶层 has_more，以及每个 range 的 "
+    "actual_range / row_indices / col_indices。定位真实行号时用 row_indices[i]，"
+    "定位真实列字母时用 col_indices[j]，不要按二维数组下标自己数行列；"
+    "skip_hidden=true、skip_filter=true 或结果被截断时，这样会错位。"
+)
 
 
 class SyncSchedulerError(RuntimeError):
@@ -316,6 +322,13 @@ def _row_value(row: Sequence[Any], headers: Mapping[str, int], name: str) -> str
     return _cell_value(row[index])
 
 
+def _is_contract_guidance_warning(message: str) -> bool:
+    """识别 cells-get 每次返回的固定读取契约提示，而非真实数据告警。"""
+    normalized = re.sub(r"\s+", " ", message).strip()
+    expected = re.sub(r"\s+", " ", CELLS_GET_CONTRACT_GUIDANCE).strip()
+    return normalized == expected
+
+
 def build_payload(
     *,
     workbook_response: Mapping[str, Any],
@@ -328,7 +341,7 @@ def build_payload(
     if not isinstance(data, Mapping):
         raise SyncSchedulerError("飞书表格读取结果缺少 data 节点，禁止同步。")
     warning_message = _text(data.get("warning_message"))
-    if warning_message:
+    if warning_message and not _is_contract_guidance_warning(warning_message):
         raise SyncSchedulerError(
             "飞书表格读取返回告警，禁止把可能不完整的数据写入知识库："
             + _safe_message(warning_message, spreadsheet_token=spreadsheet_token)
@@ -891,3 +904,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

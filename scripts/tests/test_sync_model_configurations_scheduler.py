@@ -14,6 +14,7 @@ if str(SCRIPT_ROOT) not in sys.path:
 from sync_model_configurations_scheduler import (  # noqa: E402
     SchedulerConfig,
     SyncSchedulerError,
+    CELLS_GET_CONTRACT_GUIDANCE,
     build_payload,
     run_once,
     _spreadsheet_fingerprint,
@@ -191,6 +192,64 @@ class BuildPayloadTests(unittest.TestCase):
                 spreadsheet_token="sheet-token",
             )
 
+    def test_contract_guidance_warning_is_allowed_after_metadata_checks(self):
+        cells = _cells()
+        cells["data"]["warning_message"] = (
+            "处理 ranges[n].cells 之前，必须先查看顶层 has_more，以及每个 range 的 "
+            "actual_range / row_indices / col_indices。定位真实行号时用 row_indices[i]，"
+            "定位真实列字母时用 col_indices[j]，不要按二维数组下标自己数行列；"
+            "skip_hidden=true、skip_filter=true 或结果被截断时，这样会错位。"
+        )
+
+        payload = build_payload(
+            workbook_response=_workbook(),
+            cells_response=cells,
+            sheet_id="w3Caff",
+            spreadsheet_token="sheet-token",
+        )
+
+        self.assertEqual(len(payload["records"]), 1)
+
+    def test_contract_guidance_with_extra_warning_is_rejected(self):
+        cells = _cells()
+        cells["data"]["warning_message"] = (
+            CELLS_GET_CONTRACT_GUIDANCE + " 另有结果达到输出上限。"
+        )
+
+        with self.assertRaisesRegex(SyncSchedulerError, "告警"):
+            build_payload(
+                workbook_response=_workbook(),
+                cells_response=cells,
+                sheet_id="w3Caff",
+                spreadsheet_token="sheet-token",
+            )
+
+    def test_contract_guidance_does_not_override_has_more(self):
+        cells = _cells()
+        cells["data"]["warning_message"] = CELLS_GET_CONTRACT_GUIDANCE
+        cells["data"]["has_more"] = True
+
+        with self.assertRaisesRegex(SyncSchedulerError, "读取不完整"):
+            build_payload(
+                workbook_response=_workbook(),
+                cells_response=cells,
+                sheet_id="w3Caff",
+                spreadsheet_token="sheet-token",
+            )
+
+    def test_contract_guidance_does_not_override_range_truncation(self):
+        cells = _cells()
+        cells["data"]["warning_message"] = CELLS_GET_CONTRACT_GUIDANCE
+        cells["data"]["ranges"][0]["truncated"] = True
+
+        with self.assertRaisesRegex(SyncSchedulerError, "被截断"):
+            build_payload(
+                workbook_response=_workbook(),
+                cells_response=cells,
+                sheet_id="w3Caff",
+                spreadsheet_token="sheet-token",
+            )
+
 
 class ScheduledSyncTests(unittest.TestCase):
     def test_ssh_target_sends_json_to_the_backend_container(self):
@@ -336,3 +395,4 @@ class ScheduledSyncTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
