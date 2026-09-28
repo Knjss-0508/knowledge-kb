@@ -176,6 +176,12 @@ def assess_auto_review_candidate(
         reasons.append("证据不足")
     if _text(candidate.get("模型初标内容一致性")) != "一致":
         reasons.append("知识内容一致性未通过")
+    if _text(candidate.get("模型初标草稿质量")) != "合格":
+        reasons.append("转写草稿质量未通过")
+    if _text(candidate.get("模型初标建议动作")) != "submit_for_human_review":
+        reasons.append("模型未建议进入人工复核")
+    if _text(candidate.get("模型初标风险标记")):
+        reasons.append("模型标记了内容风险")
     if _text(candidate.get("模型初标标题质量")) != "清晰":
         reasons.append("标题质量未通过")
     if _text(candidate.get("模型初标图片必要性")) == "图片不足":
