@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     ANSWER_HUB_API_BASE_URL: str = ""
     ANSWER_HUB_API_KEY: str = ""
     ANSWER_HUB_API_TIMEOUT_SECONDS: float = 15.0
+    # Internal OpenAI-compatible endpoint used only for shadow evaluation and
+    # draft annotation. Empty defaults prevent accidental production calls.
+    DEEPSEEK_BASE_URL: str = ""
+    DEEPSEEK_API_KEY: str = ""
+    DEEPSEEK_MODEL: str = "deepseek-flash"
+    DEEPSEEK_TIMEOUT_SECONDS: float = 60.0
+    DEEPSEEK_PROMPT_VERSION: str = "confidence-review-correction-v1"
+    GROUP_LLM_BASE_URL: str = ""
+    GROUP_LLM_API_KEY: str = ""
 
     # OpenAI-compatible embedding service, normally the internal Qwen3 service.
     EMBEDDING_PROVIDER: str = "openai_compatible"
