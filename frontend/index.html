@@ -2029,7 +2029,7 @@
               <template v-if="workOrderChatUrl(embedding.review.item.conversation_id)">
                 <div class="retrieval-review-chat-popout-icon" aria-hidden="true">↗</div>
                 <strong>聊天平台将在独立窗口打开</strong>
-                <span>窗口会自动尝试放到当前盲标页面左侧，保留答疑平台的顶层登录状态。</span>
+                <span>窗口会覆盖在盲标弹窗左侧，右侧保留盲标工单详情，并使用答疑平台的顶层登录状态。</span>
                 <button type="button" class="btn bp" @click="openWorkOrderChat(embedding.review.item.conversation_id)">打开聊天记录</button>
                 <a v-if="workOrderChatBlockedUrl" class="retrieval-review-chat-fallback" :href="workOrderChatBlockedUrl" target="_blank" rel="noopener noreferrer">弹窗被浏览器拦截，改为新标签页打开</a>
               </template>
@@ -5463,14 +5463,13 @@ Vue.createApp({
       var currentLeft = Number(window.screenX || window.screenLeft || availableLeft);
       var currentTop = Number(window.screenY || window.screenTop || availableTop);
       var currentWidth = Number(window.outerWidth || window.innerWidth || 980);
-      var currentRight = currentLeft + currentWidth;
-      var gap = 12;
-      var chatWidth = Math.min(760, Math.max(560, Math.floor(availableWidth * 0.42)));
-      var chatHeight = Math.min(availableHeight, Math.max(720, Number(window.outerHeight || 800)));
-      var left = currentLeft - chatWidth - gap;
-      if (left < availableLeft) left = currentRight + gap;
-      if (left + chatWidth > availableLeft + availableWidth) left = availableLeft;
-      var top = Math.max(availableTop, Math.min(currentTop, availableTop + availableHeight - chatHeight));
+      // 让独立窗口覆盖盲标弹窗左侧，保留右侧的盲标工单详情可见。
+      var chatWidth = Math.min(820, Math.max(620, Math.floor(currentWidth * 0.48)));
+      var chatHeight = Math.min(860, Math.max(640, Math.floor((window.outerHeight || window.innerHeight || 900) * 0.78)));
+      var left = currentLeft + Math.max(24, Math.floor((currentWidth - chatWidth) * 0.08));
+      var top = currentTop + Math.max(56, Math.floor((window.outerHeight || window.innerHeight || 900) * 0.08));
+      if (left + chatWidth > availableLeft + availableWidth) left = Math.max(availableLeft, availableLeft + availableWidth - chatWidth - 18);
+      if (top + chatHeight > availableTop + availableHeight) top = Math.max(availableTop, availableTop + availableHeight - chatHeight - 18);
       var features = [
         'popup=yes',
         'width=' + chatWidth,
