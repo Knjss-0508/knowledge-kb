@@ -14,6 +14,7 @@ if str(SCRIPT_ROOT) not in sys.path:
 from sync_model_configurations_scheduler import (  # noqa: E402
     SchedulerConfig,
     SyncSchedulerError,
+    CELLS_GET_CONTRACT_GUIDANCE,
     build_payload,
     run_once,
     _spreadsheet_fingerprint,
@@ -193,10 +194,7 @@ class BuildPayloadTests(unittest.TestCase):
 
     def test_contract_guidance_warning_is_allowed_after_metadata_checks(self):
         cells = _cells()
-        cells["data"]["warning_message"] = (
-            "Before reading ranges[n].cells, check has_more and each range's "
-            "actual_range / row_indices / col_indices."
-        )
+        cells["data"]["warning_message"] = CELLS_GET_CONTRACT_GUIDANCE
 
         payload = build_payload(
             workbook_response=_workbook(),
@@ -206,6 +204,32 @@ class BuildPayloadTests(unittest.TestCase):
         )
 
         self.assertEqual(len(payload["records"]), 1)
+
+    def test_contract_guidance_does_not_override_has_more(self):
+        cells = _cells()
+        cells["data"]["warning_message"] = CELLS_GET_CONTRACT_GUIDANCE
+        cells["data"]["has_more"] = True
+
+        with self.assertRaisesRegex(SyncSchedulerError, "读取不完整"):
+            build_payload(
+                workbook_response=_workbook(),
+                cells_response=cells,
+                sheet_id="w3Caff",
+                spreadsheet_token="sheet-token",
+            )
+
+    def test_contract_guidance_does_not_override_range_truncation(self):
+        cells = _cells()
+        cells["data"]["warning_message"] = CELLS_GET_CONTRACT_GUIDANCE
+        cells["data"]["ranges"][0]["truncated"] = True
+
+        with self.assertRaisesRegex(SyncSchedulerError, "被截断"):
+            build_payload(
+                workbook_response=_workbook(),
+                cells_response=cells,
+                sheet_id="w3Caff",
+                spreadsheet_token="sheet-token",
+            )
 
 
 class ScheduledSyncTests(unittest.TestCase):
@@ -352,3 +376,4 @@ class ScheduledSyncTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
