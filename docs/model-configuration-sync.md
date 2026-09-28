@@ -13,7 +13,7 @@
 
 同步程序读取并校验以下字段：
 
-- 知识ID（选填）、标题
+- 来源知识ID（选填，兼容旧表头“知识ID”）、标题
 - 品牌ID、品牌
 - 型号ID、型号
 - 综合内容
@@ -72,7 +72,72 @@ docker compose exec -T backend \
 变更日志。品类ID、品牌ID、型号ID组合发生冲突时整次同步失败并回滚。
 源表行消失不会自动废弃旧知识，避免在没有明确禁用字段时误删。
 
-## 3. 精确查询
+## 3. 定时自动同步
+
+生产环境可以使用仓库中的
+`scripts/sync_model_configurations_scheduler.py` 配合 systemd timer。脚本运行在
+安装了 `lark-cli` 的调度主机，不运行在 backend 容器内，因为 backend 镜像不包含
+`lark-cli`。调度主机可以就是服务器，也可以是办公网 Windows 主机；后者通过
+SSH 将 JSON 送入服务器的 `kb-backend` 容器，不需要开放新的公网端口。
+
+默认每 15 分钟执行一次，单次执行最长约 45 分钟（包含网络重试），流程为：
+
+1. 读取飞书文档 `revision`；与上次成功 checkpoint 相同则直接结束。
+2. revision 变化后读取完整工作表并执行与手动导出相同的全表校验。
+3. 读取结束后再次检查 revision；读取期间发生变化则丢弃本次结果并重试。
+4. 校验通过后调用容器内 `sync_model_configurations`，成功后才写入 checkpoint。
+5. 记录新增、修改、未变化结果；源表删行默认不自动废弃知识。
+
+安装模板：
+
+```bash
+install -d -m 0750 /etc/knowledge-kb /var/lib/knowledge-kb/model-configuration-sync
+install -m 0640 deploy/systemd/model-configuration-sync.env.example \
+  /etc/knowledge-kb/model-configuration-sync.env
+install -m 0644 deploy/systemd/knowledge-kb-model-configuration-sync.service \
+  /etc/systemd/system/knowledge-kb-model-configuration-sync.service
+install -m 0644 deploy/systemd/knowledge-kb-model-configuration-sync.timer \
+  /etc/systemd/system/knowledge-kb-model-configuration-sync.timer
+systemctl daemon-reload
+systemctl enable --now knowledge-kb-model-configuration-sync.timer
+```
+
+启用前必须满足：
+
+- 服务器安装 `lark-cli`；
+- 飞书应用申请 `sheets:spreadsheet:read`，并获得目标表访问权；
+- 服务器上的运行用户（模板默认是 root）完成 `lark-cli` bot 身份配置；
+- 先执行一次 `--check-only`，确认表格能完整读取，再启动 timer。
+
+如果调度主机是 Windows、服务器只提供 SSH，可以直接运行：
+
+```powershell
+python scripts/sync_model_configurations_scheduler.py `
+  --identity bot `
+  --target ssh `
+  --ssh-host 81.71.6.245 `
+  --ssh-user root `
+  --ssh-key 'D:\下载\Lark\81.71.6.245_id_ed25519' `
+  --check-only
+```
+
+确认检查成功后，将同一命令交给 Windows 任务计划程序，每 15 分钟运行一次；
+建议任务使用专用运行账号，私钥文件只授予该账号读取权限。不要把飞书 OAuth
+令牌、应用密钥或私钥写进仓库、JSON、任务参数或日志。
+
+检查和查看日志：
+
+```bash
+systemctl start knowledge-kb-model-configuration-sync.service
+systemctl status knowledge-kb-model-configuration-sync.service
+journalctl -u knowledge-kb-model-configuration-sync.service -n 100 --no-pager
+cat /var/lib/knowledge-kb/model-configuration-sync/state.json
+```
+
+脚本不会把 OAuth 令牌或应用密钥写入同步 JSON、checkpoint 或日志。定时任务只
+同步新增和修改，不会因为表格读取不完整、权限失效或临时网络错误而删除旧知识。
+
+## 4. 精确查询
 
 插件通过独立 HTTP 请求调用现有
 `/api/v1/integration/standard-search`，并设置

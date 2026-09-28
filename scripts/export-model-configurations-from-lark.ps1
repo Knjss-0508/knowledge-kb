@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param(
     [Parameter()]
+    [ValidateSet('user', 'bot')]
+    [string]$Identity = 'user',
+
+    [Parameter()]
     [string]$SpreadsheetToken = "TLxlsXMKJhPn1htD31lcdl2enKd",
 
     [Parameter()]
@@ -24,7 +28,7 @@ if (-not (Get-Command lark-cli -ErrorAction SilentlyContinue)) {
 if (-not $Range.Trim()) {
     $workbookInfoRaw = (
         & lark-cli sheets +workbook-info `
-            --as user `
+            --as $Identity `
             --spreadsheet-token $SpreadsheetToken `
             --json |
             Out-String
@@ -44,7 +48,7 @@ if (-not $Range.Trim()) {
 
 $rawOutput = (
     & lark-cli sheets +cells-get `
-        --as user `
+        --as $Identity `
         --spreadsheet-token $SpreadsheetToken `
         --sheet-id $SheetId `
         --range $Range `
@@ -163,7 +167,14 @@ for ($rowIndex = 1; $rowIndex -lt $rows.Count; $rowIndex += 1) {
         )
     }
 
-    $sourceRecordId = Get-CellText -Row $row -Header "知识ID"
+    $sourceRecordId = ""
+    foreach ($sourceIdHeader in @("来源知识ID", "知识ID", "记录ID")) {
+        $candidateSourceId = Get-CellText -Row $row -Header $sourceIdHeader
+        if ($candidateSourceId) {
+            $sourceRecordId = $candidateSourceId
+            break
+        }
+    }
     $brandId = [string]$requiredValues["品牌ID"]
     $modelId = [string]$requiredValues["型号ID"]
     $modelKey = "119|$brandId|$modelId"
