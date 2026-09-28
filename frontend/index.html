@@ -5462,15 +5462,20 @@ Vue.createApp({
       var availableHeight = Number(screenInfo.availHeight || window.innerHeight || 900);
       var currentLeft = Number(window.screenX || window.screenLeft || availableLeft);
       var currentTop = Number(window.screenY || window.screenTop || availableTop);
-      var currentWidth = Number(window.outerWidth || window.innerWidth || 980);
-      // 让独立窗口覆盖盲标弹窗左侧，保留右侧的盲标工单详情可见。
-      // 目标布局：左上方悬浮聊天窗口，右侧保留盲标工单详情。
-      var chatWidth = Math.min(820, Math.max(760, Math.floor(availableWidth * 0.4)));
-      var chatHeight = Math.min(availableHeight - 24, Math.max(760, Math.floor(availableHeight * 0.9)));
-      var left = Math.max(availableLeft + 16, currentLeft + 58);
-      var top = Math.max(availableTop + 12, currentTop + 12);
+      var viewportWidth = Number(window.innerWidth || window.outerWidth || 980);
+      var viewportHeight = Number(window.innerHeight || window.outerHeight || 900);
+      var browserChromeHeight = Math.max(0, Number(window.outerHeight || viewportHeight) - viewportHeight);
+      // 与 .retrieval-review-dialog 的实际布局对齐：聊天窗口覆盖左侧内容区，避开标题栏和底部操作栏。
+      var dialogWidth = Math.min(1420, Math.floor(viewportWidth * 0.98));
+      var dialogHeight = Math.min(900, Math.floor(viewportHeight * 0.94));
+      var dialogLeft = Math.max(0, Math.floor((viewportWidth - dialogWidth) / 2));
+      var dialogTop = Math.max(0, Math.floor((viewportHeight - dialogHeight) / 2));
+      var chatWidth = Math.min(720, Math.max(620, Math.floor((dialogWidth - 16) * 0.46)));
+      var chatHeight = Math.max(640, dialogHeight - 72 - 66 - 6);
+      var left = currentLeft + dialogLeft;
+      var top = currentTop + browserChromeHeight + dialogTop + 72;
       if (left + chatWidth > availableLeft + availableWidth) left = Math.max(availableLeft + 12, availableLeft + availableWidth - chatWidth - 12);
-      if (top + chatHeight > availableTop + availableHeight) top = Math.max(availableTop + 12, availableTop + availableHeight - chatHeight - 12);
+      if (top + chatHeight > availableTop + availableHeight) chatHeight = Math.max(560, availableTop + availableHeight - top - 12);
       var features = [
         'popup=yes',
         'width=' + chatWidth,
