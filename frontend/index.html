@@ -475,6 +475,12 @@
     @media(max-width:1120px){.blind-label-hero,.blind-label-summary,.blind-label-admin-detail{grid-template-columns:1fr}.blind-label-filter-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.blind-label-overview-cards{grid-template-columns:repeat(4,minmax(0,1fr))}}
     @media(max-width:760px){.blind-label-hero{padding:20px 17px}.blind-label-hero-side{grid-template-columns:1fr 1fr}.blind-label-tabs{overflow-x:auto}.blind-label-tab{white-space:nowrap}.blind-label-tab-right{display:none}.blind-label-summary,.blind-label-info-grid{grid-template-columns:1fr}.blind-label-filter-grid{display:flex;flex-direction:column;padding:14px}.blind-label-filter-field.wide{grid-column:auto}.blind-label-filter-actions{justify-content:flex-start;padding:12px 14px}.blind-label-filter-actions .hint{width:100%;margin-right:0}.blind-label-overview-cards{grid-template-columns:1fr 1fr}.blind-label-toolbar{padding:12px 14px}.blind-label-toolbar-spacer{display:none}.blind-label-query,.blind-label-subline{max-width:220px}.blind-label-dialog{width:100%;height:100%;max-height:100vh;border-radius:0}.blind-label-dialog .dlg-b{padding:14px}.blind-label-work-order-top,.blind-label-candidate-headline{align-items:flex-start}.blind-label-candidate-headline{flex-wrap:wrap}.blind-label-choice-buttons{width:100%;padding-left:40px}.blind-label-choice-buttons .btn{flex:1}.blind-label-dialog .dlg-f{align-items:stretch;flex-wrap:wrap}.blind-label-dialog .dlg-f .btn{flex:1 1 auto}.blind-label-dialog-foot-note{width:100%;margin-right:0}.blind-label-admin-detail{grid-template-columns:1fr}.blind-label-media{width:132px;height:82px}}
     .blind-label-arbitration-box{margin-top:10px;padding:10px 11px;border:1px solid #f0d7b4;border-radius:7px;background:#fffaf1}.blind-label-arbitration-summary{display:grid;gap:9px;margin-top:10px;padding-top:10px;border-top:1px solid #edf0f2}.blind-label-arbitration-summary .btn{justify-self:start}.blind-label-pagination{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:12px;color:#667085;font-size:12px}
+    .retrieval-review-ticket{flex-wrap:wrap}
+    .workorder-chat-trigger{margin-left:auto}
+    .workorder-chat-fallback{margin-bottom:10px;padding:8px 10px;background:#fffaf0;color:#8a6300;font-size:12px;line-height:1.6}
+    .workorder-chat-fallback a{margin-left:8px;color:#007f6b;text-decoration:underline}
+    .workorder-chat-trigger:focus-visible,.workorder-chat-fallback a:focus-visible{outline:2px solid #008c76;outline-offset:2px}
+    @media(max-width:600px){.workorder-chat-trigger{margin-left:0}}
   </style>
 </head>
 <body>
@@ -1997,7 +2003,11 @@
     <div class="dlg retrieval-review-dialog" role="dialog" aria-modal="true" aria-labelledby="retrieval-review-title">
       <div class="dlg-h"><h3 id="retrieval-review-title">召回事件人工标注</h3><button class="dlg-x" aria-label="关闭召回事件人工标注" @click="embedding.review.open=false">&times;</button></div>
       <div class="dlg-b">
-        <div class="retrieval-review-ticket"><span>工单ID：</span><strong>{{String(embedding.review.item.conversation_id || '').trim() || '-'}}</strong></div>
+        <div class="retrieval-review-ticket">
+          <span>工单ID：</span><strong>{{String(embedding.review.item.conversation_id || '').trim() || '-'}}</strong>
+          <button type="button" class="btn bd bsm workorder-chat-trigger" title="在独立窗口查看聊天记录" aria-label="聊天记录（在新窗口打开）" :disabled="!workOrderChatUrl(embedding.review.item.conversation_id)" @click="openWorkOrderChat(embedding.review.item.conversation_id)">聊天记录</button>
+        </div>
+        <div v-if="workOrderChatBlockedUrl" class="workorder-chat-fallback" role="status">未能打开聊天窗口，请允许本站弹出窗口，或<a :href="workOrderChatBlockedUrl" target="_blank" rel="noopener noreferrer">在新标签页打开聊天记录</a>。</div>
         <div class="embedding-warning">{{embedding.review.item.query}}</div>
         <div class="retrieval-review-layout">
           <section class="retrieval-review-candidates" aria-labelledby="retrieval-review-candidates-title">
@@ -2155,6 +2165,7 @@ Vue.createApp({
         requestSeq:0,
         updatedAt:'-'
       },
+      workOrderChatBlockedUrl: '',
       blindLabeling: {
         tab:'mine',
         loading:false,
@@ -5347,6 +5358,30 @@ Vue.createApp({
       if (item.feedback_type === 'unhelpful' || item.failure_reason === 'candidate_irrelevant') return 'irrelevant';
       return '';
     },
+    workOrderChatUrl: function(workOrderId) {
+      // 工单 ID 超出 JS 安全整数范围，始终按字符串拼接，避免精度丢失。
+      var id = String(workOrderId == null ? '' : workOrderId).trim();
+      if (!id || id === '-') return '';
+      return 'https://zzdy.powerzhuan.cn/#/workorderDetail?questionFormId=' + encodeURIComponent(id) + '&sceneType=2';
+    },
+    openWorkOrderChat: function(workOrderId) {
+      this.workOrderChatBlockedUrl = '';
+      var url = this.workOrderChatUrl(workOrderId);
+      if (!url) return;
+      // 在点击事件中同步打开独立窗口，使用答疑平台的顶层登录环境。
+      // 不传 noopener 特性：它成功时也返回 null，无法据此识别弹窗拦截。
+      // 新页面异步加载前立即断开 opener，防止外部页面控制标注页。
+      try {
+        var chatWindow = window.open(url, '_blank', 'popup=yes,width=1100,height=800,resizable=yes,scrollbars=yes');
+        if (!chatWindow) {
+          this.workOrderChatBlockedUrl = url;
+          return;
+        }
+        chatWindow.opener = null;
+      } catch (error) {
+        this.workOrderChatBlockedUrl = url;
+      }
+    },
     retrievalReviewIndex: function() {
       var items = Array.isArray(this.analysis.risks) ? this.analysis.risks : [];
       var currentId = String(
@@ -5430,6 +5465,7 @@ Vue.createApp({
     },
     openRetrievalReview: function(item) {
       var self = this;
+      self.workOrderChatBlockedUrl = '';
       var candidates = (item.candidates || []).map(function(candidate) {
         var copy = Object.assign({}, candidate);
         copy._detail_loading = !!copy.knowledge_id && (
