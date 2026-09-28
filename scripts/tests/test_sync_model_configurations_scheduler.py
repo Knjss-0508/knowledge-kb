@@ -180,6 +180,20 @@ class BuildPayloadTests(unittest.TestCase):
 
         self.assertEqual(payload["records"][0]["source_record_id"], "external-001")
 
+    def test_invisible_format_characters_are_removed_from_identity_fields(self):
+        cells = _cells()
+        cells["data"]["ranges"][0]["cells"][1][2]["value"] = "LDBO\u200c\u200c"
+
+        payload = build_payload(
+            workbook_response=_workbook(),
+            cells_response=cells,
+            sheet_id="w3Caff",
+            spreadsheet_token="sheet-token",
+        )
+
+        self.assertEqual(payload["records"][0]["brand_name"], "LDBO")
+        self.assertEqual(payload["records"][0]["source_fields"]["品牌"], "LDBO")
+
     def test_read_warning_is_fail_closed(self):
         cells = _cells()
         cells["data"]["warning_message"] = "结果达到输出上限"
@@ -278,7 +292,12 @@ class ScheduledSyncTests(unittest.TestCase):
             command = runner.call_args.args[0]
             self.assertEqual(command[0], "ssh")
             self.assertIn("root@81.71.6.245", command)
-            self.assertIn("exec -i kb-backend", command[-1])
+            self.assertEqual(
+                command[-1],
+                "docker exec -i kb-backend python -m "
+                "app.scripts.sync_model_configurations - --actor "
+                + config.actor,
+            )
             self.assertEqual(
                 runner.call_args.kwargs["input"],
                 json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -395,4 +414,5 @@ class ScheduledSyncTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
