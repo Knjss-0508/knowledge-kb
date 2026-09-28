@@ -32,6 +32,50 @@ class IntegrationIngestion(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ConfidenceTrainingSettingsRecord(Base):
+    """One durable, local-only configuration record for confidence evaluation."""
+
+    __tablename__ = "confidence_training_settings"
+
+    id = Column(String(64), primary_key=True)
+    settings = Column(JSON, nullable=False, default=dict)
+    updated_by = Column(String(128), nullable=False, default="system")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ConfidenceTrainingJob(Base):
+    """A manually created local rehearsal task for confidence-model training."""
+
+    __tablename__ = "confidence_training_jobs"
+
+    id = Column(String(64), primary_key=True)
+    status = Column(String(48), nullable=False, default="waiting_for_internal_trainer", index=True)
+    stage = Column(String(128), nullable=False, default="训练输入已冻结，等待内部训练器")
+    model_name = Column(String(256), nullable=False, default="deepseek-flash")
+    evaluation_scope = Column(String(32), nullable=False, default="shadow_only")
+    dataset_hash = Column(String(64), nullable=False, index=True)
+    dataset_payload = Column(JSON, nullable=False, default=list)
+    sample_count = Column(Integer, nullable=False, default=0)
+    train_count = Column(Integer, nullable=False, default=0)
+    validation_count = Column(Integer, nullable=False, default=0)
+    test_count = Column(Integer, nullable=False, default=0)
+    requested_by = Column(String(128), nullable=False)
+    error_message = Column(String(2000), nullable=False, default="")
+    analysis_result = Column(JSON, nullable=False, default=dict)
+    candidate_prompt = Column(String(20000), nullable=False, default="")
+    resolved_model_version = Column(String(256), nullable=False, default="")
+    shadow_evaluation = Column(JSON, nullable=False, default=dict)
+    # Human disposition for any sample made worse by a candidate prompt.  This
+    # is deliberately separate from the candidate-review human truth.
+    regression_reviews = Column(JSON, nullable=False, default=dict)
+    # Candidate prompts are immutable revisions; a newer candidate must never
+    # silently replace the one that was evaluated before it.
+    prompt_versions = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class RetrievalQualityEvent(Base):
     __tablename__ = "retrieval_quality_events"
 

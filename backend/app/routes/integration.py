@@ -65,6 +65,7 @@ from app.services.candidate_review import (
     normalize_human_review,
     normalize_knowledge_value,
 )
+from app.services.model_annotation import ModelAnnotationError, annotate_transcribed_candidate
 from app.services.embedding import EmbeddingServiceUnavailable
 from app.services.embedding_runtime import get_active_runtime_values
 from app.services.knowledge_dedup import (
@@ -2773,6 +2774,7 @@ def list_candidate_reviews(
     summary = {
         "total": len(all_items),
         "pending": sum(item.review_status == "pending" for item in all_items),
+        "revision_required": sum(item.review_status == "revision_required" for item in all_items),
         "ready": sum(item.review_status == "ready" for item in all_items),
         "rejected": sum(item.review_status == "rejected" for item in all_items),
         "submitted": sum(item.review_status == "submitted" for item in all_items),
@@ -2857,6 +2859,29 @@ def list_candidate_reviews(
     )
 
 
+@router.get(
+    "/candidate-reviews/{ingestion_id}",
+    response_model=CandidateReviewListItem,
+)
+def get_candidate_review(
+    ingestion_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("knowledge:submit")),
+):
+    """Read one candidate for cross-page investigation without changing its review."""
+
+    item = (
+        db.query(IntegrationIngestion)
+        .filter(
+            IntegrationIngestion.id == ingestion_id,
+            IntegrationIngestion.review_status.isnot(None),
+            IntegrationIngestion.source_system != "excel",
+        )
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="候选复核记录不存在。")
+    return _candidate_review_item(item)
 @router.post(
     "/candidate-reviews:batch-annotate",
     response_model=CandidateReviewBatchAnnotateResponse,
@@ -3075,6 +3100,71 @@ def update_candidate_review(
     item.reviewed_at = datetime.utcnow()
     item.error_code = None
     item.error_message = None
+    db.commit()
+    db.refresh(item)
+    return _candidate_review_item(item)
+
+
+@router.post(
+    "/candidate-reviews/{ingestion_id}/model-annotate",
+    response_model=CandidateReviewListItem,
+)
+def annotate_candidate_review_draft(
+    ingestion_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    """Run the configured internal DeepSeek-flash on one saved draft.
+
+    The model result is an auditable suggestion only.  It never writes the
+    human review or submits the candidate for publication.
+    """
+    item = (
+        db.query(IntegrationIngestion)
+        .filter(
+            IntegrationIngestion.id == ingestion_id,
+            IntegrationIngestion.review_status.isnot(None),
+            IntegrationIngestion.source_system != "excel",
+        )
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="候选复核记录不存在。")
+    if item.review_status == "submitted":
+        raise HTTPException(status_code=409, detail="已送审候选不能重新模型标注。")
+    payload, knowledge = _candidate_payload_with_taxonomy_defaults(item.candidate_payload)
+    draft = {
+        "title": str(knowledge.get("title") or ""),
+        "content": knowledge.get("content"),
+        "recommended_reply": knowledge.get("recommended_reply"),
+        "category_id": knowledge.get("category_id"),
+        "business_type": knowledge.get("business_type"),
+    }
+    if not draft["title"] or not draft["content"]:
+        raise HTTPException(409, "请先生成并保存知识转写草稿，再发起模型标注。")
+    candidate = {
+        "event_id": item.event_id,
+        "draft": draft,
+        "evidence_excerpt": str(knowledge.get("evidence_excerpt") or ""),
+        "source_conversation_id": item.source_conversation_id,
+        "previous_model_review": dict(payload.get("model_review") or {}),
+    }
+    try:
+        model_review = annotate_transcribed_candidate(candidate)
+    except ModelAnnotationError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    payload["model_review"] = model_review
+    metadata = dict(item.review_metadata or {})
+    metadata["model_review"] = model_review
+    metadata["model_annotation"] = {
+        "status": "completed",
+        "annotated_by": current_user.username,
+        "requested_model": model_review.get("requested_model"),
+        "resolved_model_version": model_review.get("resolved_model_version"),
+        "prompt_version": model_review.get("prompt_version"),
+    }
+    item.candidate_payload = payload
+    item.review_metadata = metadata
     db.commit()
     db.refresh(item)
     return _candidate_review_item(item)

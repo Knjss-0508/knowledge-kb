@@ -495,8 +495,9 @@
       <div class="nav-group" v-if="can('knowledge:submit')">
         <div class="nav-item nav-group-head" :class="{active:isKnowledgeFlowView()}" @click="toggleKnowledgeMenu()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"></path><path d="M4 5.5v16"></path><path d="M8 7h8M8 11h8"></path></svg></span><span class="nav-group-label">知识沉淀</span><span class="nav-group-chevron" :class="{open:knowledgeMenuOpen}" aria-hidden="true">⌄</span></div>
         <div class="nav-subitems" v-show="knowledgeMenuOpen">
-          <div class="nav-subitem" :class="{on:view==='candidateReviews'}" title="候选价值复核" @click="openCandidateReviews"><span class="nav-subdot" aria-hidden="true"></span>候选价值复核</div>
           <div class="nav-subitem" :class="{on:view==='automationMonitor'}" title="运行监管" @click="openAutomationMonitor"><span class="nav-subdot" aria-hidden="true"></span>运行监管</div>
+          <div class="nav-subitem" :class="{on:view==='candidateReviews'}" title="候选价值复核" @click="openCandidateReviews"><span class="nav-subdot" aria-hidden="true"></span>候选价值复核</div>
+          <div class="nav-subitem" :class="{on:view==='confidenceTraining'}" title="置信度训练" @click="openConfidenceTraining"><span class="nav-subdot" aria-hidden="true"></span>置信度训练</div>
         </div>
       </div>
       <div class="nav-item" :class="{on:view==='embeddingModel'}" @click="openEmbeddingModel()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4.5a3 3 0 0 1 5.2-2A3.5 3.5 0 0 1 18 5.8a3.2 3.2 0 0 1 1.2 5.9A3.5 3.5 0 0 1 17 18a3 3 0 0 1-5 2.2A3 3 0 0 1 7 18a3.5 3.5 0 0 1-2.2-6.3A3.2 3.2 0 0 1 6 5.8 3.5 3.5 0 0 1 8 4.5z"></path><path d="M12 4v16M8.5 8.5c1.5.3 2.5 1.2 3.5 2.5M15.5 8.5c-1.5.3-2.5 1.2-3.5 2.5M8.5 15.5c1.5-.3 2.5-1.2 3.5-2.5M15.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5"></path></svg></span>向量模型</div>
@@ -954,6 +955,15 @@
         </tbody>
       </table>
     </div>
+  </div>
+  <div class="mn" v-if="view==='confidenceTraining' && can('knowledge:submit')">
+    <section class="overview"><div><h2>置信度训练</h2><p>用人工真值（来自候选复核）评测自动模型；仅生成训练候选与影子结果，不自动发布或切换生产模型。</p></div><div class="overview-status">模型：<b>{{confidenceTraining.overview.model || 'deepseek-flash'}}</b></div></section>
+    <div class="bar"><span class="tt">置信度评测</span><button class="btn bd" @click="loadConfidenceTraining" :disabled="confidenceTraining.loading">{{confidenceTraining.loading?'加载中...':'刷新'}}</button><button class="btn bd" @click="testConfidenceTrainingConnection" :disabled="confidenceTraining.connectionTesting">{{confidenceTraining.connectionTesting?'测试中...':'测试模型连接'}}</button><button class="btn bp" @click="createConfidenceTrainingJob" :disabled="confidenceTraining.jobCreating">{{confidenceTraining.jobCreating?'创建中...':'创建训练候选任务'}}</button></div>
+    <div class="cards review-metric-cards"><div class="card"><div class="lb">知识候选</div><div class="vl bl">{{confidenceTraining.overview.total}}</div><div class="metric-note">人工复核工作簿中的候选</div></div><div class="card"><div class="lb">自动模型评测</div><div class="vl gn">{{confidenceTraining.overview.scored}}</div><div class="metric-note">系统自动比较沉淀价值和草稿处理动作</div></div><div class="card"><div class="lb">训练候选</div><div class="vl og">{{confidenceTraining.overview.training_candidate_count}}</div><div class="metric-note">不等于已训练或已发布</div></div></div>
+    <div class="bar"><label class="review-check-label"><input type="checkbox" v-model="confidenceTraining.settings.training_candidate_collection_enabled"> 收集训练候选</label><label class="review-check-label"><input type="checkbox" v-model="confidenceTraining.settings.training_snapshot_enabled"> 冻结训练快照</label><button class="btn bd bsm" @click="saveConfidenceTrainingSettings">保存设置</button><button class="btn bd bsm" @click="exportConfidenceTraining('training')">导出训练候选</button><button class="btn bd bsm" @click="exportConfidenceTraining('evaluation')">导出评测结果</button></div>
+    <div class="tw"><table class="review-table"><thead><tr><th>候选</th><th>人工真值（来自候选复核）</th><th>自动模型评测</th><th>操作</th></tr></thead><tbody><tr v-for="item in confidenceTrainingVisibleItems()" :key="item.id"><td>{{item.title || item.id}}</td><td>{{item.human_label || '-'}}</td><td>{{item.model_label || '-'}}</td><td><button class="btn bd bsm" @click="correctConfidenceTrainingItem(item)">影子纠错</button></td></tr><tr v-if="!confidenceTraining.items.length"><td colspan="4" class="review-empty">暂无可评测样本</td></tr></tbody></table></div>
+    <div class="bar"><span>第 {{confidenceTrainingPageStart()}}-{{confidenceTrainingPageEnd()}} 条</span><button class="btn bd bsm" @click="changeConfidenceTrainingPage(confidenceTraining.candidatePage-1)">上一页</button><button class="btn bd bsm" @click="changeConfidenceTrainingPage(confidenceTraining.candidatePage+1)">下一页</button></div>
+    <section class="bar" v-for="job in confidenceTraining.jobs" :key="job.id"><span class="tt">{{job.id}} · 影子评测</span><span>{{job.stage}}</span><button class="btn bp bsm" @click="startConfidenceShadowRerun(job)">候选 Prompt 影子复跑</button><button class="btn bd bsm" v-if="canGeneratePromptRevision(job)" @click="createConfidencePromptRevision(job)">生成 v1.1 候选 Prompt</button><div class="hint">退化样本快速定位 · 退化样本处理 · 保存退化复核</div><div class="hint">样本原始数据 / 旧 Prompt 输出 / 候选 Prompt 输出</div><button class="btn bd bsm" @click="toggleShadowSampleDetail(job)">查看数据详情</button></section>
   </div>
   <div class="mn embedding-shell" v-if="view==='embeddingModel'">
     <section class="embedding-hero">
@@ -2254,6 +2264,7 @@ Vue.createApp({
         updatedAt: '-'
       },
       answerHubMonitor: {loading:false,logsLoading:false,actionLoading:false,updatedAt:'-',page:1,pageSize:20,service:{status:'unknown',message:''},control:{enabled:false,schedule_enabled:false,schedule_time:'02:00',running:false,plan:{knowledge_settle_from_date:'',knowledge_settle_to_date:'',second_part_query_from_date:'',second_part_query_to_date:'',timezone:'Asia/Shanghai'}},summary:{pending:0,running:0,attention:0,completed:0,cz_sync_failed:0},jobs:[],filter:{status:'',keyword:''},log:{name:'',content:''}},
+      confidenceTraining: {tab:'candidates',loading:false,connectionTesting:false,jobCreating:false,candidatePage:1,candidatePageSize:20,items:[],jobs:[],settings:{training_candidate_collection_enabled:true,training_snapshot_enabled:false,auto_training_job_enabled:false,production_auto_review_enabled:false},overview:{total:0,scored:0,training_candidate_count:0,model:'deepseek-flash'}},
       legacyAnswerHubPaths: {overview:'/answer-hub/overview',control:'/answer-hub/control',runs:'/answer-hub/runs'},
       changeLogs: {item:null, entries:[]},
       knowledgeReviewSelection: [],
@@ -2379,6 +2390,7 @@ Vue.createApp({
         knowledge:'知识库管理',
         candidateReviews:'候选价值复核',
         automationMonitor:'运行监管',
+        confidenceTraining:'置信度训练',
         embeddingModel:'向量模型',
         changeLogs:'变更日志',
         users:'账号管理',
@@ -2391,6 +2403,7 @@ Vue.createApp({
         knowledge:'知识内容维护与审核',
         candidateReviews:'候选价值判断与批量送审',
         automationMonitor:'自动化队列、异常反馈与运行日志',
+        confidenceTraining:'模型置信度评测、训练候选质检与影子回放',
         embeddingModel:'召回分析、上传查重、纠错与离线训练',
         changeLogs:'已发布知识变更追溯',
         users:'创建和查看后台账号',
@@ -4312,8 +4325,43 @@ Vue.createApp({
       localStorage.setItem('kb_knowledge_menu_open', this.knowledgeMenuOpen ? '1' : '0');
     },
     isKnowledgeFlowView: function() {
-      return ['candidateReviews','automationMonitor'].indexOf(this.view) !== -1;
+      return ['candidateReviews','automationMonitor','confidenceTraining'].indexOf(this.view) !== -1;
     },
+    openConfidenceTraining: function() {
+      if (!this.can('knowledge:submit')) return;
+      this.knowledgeMenuOpen = true;
+      this.view = 'confidenceTraining';
+      this.loadConfidenceTraining();
+    },
+    loadConfidenceTraining: function() {
+      var self=this; self.confidenceTraining.loading=true;
+      Promise.all([
+        fetch(API + '/confidence-training/overview',{headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'加载置信度概览失败');return d;});}),
+        fetch(API + '/confidence-training/items',{headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'加载训练候选失败');return d;});}),
+        fetch(API + '/confidence-training/jobs',{headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'加载影子任务失败');return d;});})
+      ]).then(function(values){self.confidenceTraining.overview=Object.assign(self.confidenceTraining.overview,values[0]||{});self.confidenceTraining.settings=Object.assign(self.confidenceTraining.settings,(values[0]||{}).settings||{});self.confidenceTraining.items=Array.isArray(values[1])?values[1]:[];self.confidenceTraining.jobs=Array.isArray(values[2])?values[2]:[];self.confidenceTraining.candidatePage=1;}).catch(function(error){alert(error.message);}).finally(function(){self.confidenceTraining.loading=false;});
+    },
+    saveConfidenceTrainingSettings: function() {
+      var self=this;
+      fetch(API + '/confidence-training/settings',{method:'PATCH',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({training_candidate_collection_enabled:!!self.confidenceTraining.settings.training_candidate_collection_enabled,training_snapshot_enabled:!!self.confidenceTraining.settings.training_snapshot_enabled,auto_training_job_enabled:false,production_auto_review_enabled:false})}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'保存设置失败');return d;});}).then(function(settings){self.confidenceTraining.settings=settings;});
+    },
+    testConfidenceTrainingConnection: function() { var self=this;self.confidenceTraining.connectionTesting=true;fetch(API + '/confidence-training/model-connection-test',{method:'POST',headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'模型连接失败');return d;});}).then(function(){alert('模型连接测试通过。');}).catch(function(error){alert(error.message);}).finally(function(){self.confidenceTraining.connectionTesting=false;}); },
+    createConfidenceTrainingJob: function() { var self=this;self.confidenceTraining.jobCreating=true;fetch(API + '/confidence-training/jobs',{method:'POST',headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'创建训练候选任务失败');return d;});}).then(function(job){self.confidenceTraining.jobs = [job].concat((self.confidenceTraining.jobs || []).filter(function(item){return item.id!==job.id;}));}).catch(function(error){alert(error.message);}).finally(function(){self.confidenceTraining.jobCreating=false;}); },
+    startConfidenceShadowRerun: function(job) { var self=this;fetch(API + '/confidence-training/jobs/' + encodeURIComponent(job.id) + '/shadow-rerun',{method:'POST',headers:self.authHeaders()}).then(function(){self.loadConfidenceTraining();}); },
+    createConfidencePromptRevision: function(job) { fetch(API + '/confidence-training/jobs/' + encodeURIComponent(job.id) + '/prompt-revisions',{method:'POST',headers:this.authHeaders()}).then(this.loadConfidenceTraining.bind(this)); },
+    correctConfidenceTrainingItem: function(item) { fetch(API + '/confidence-training/items/' + encodeURIComponent(item.id) + '/correct',{method:'POST',headers:this.authHeaders()}).then(this.loadConfidenceTraining.bind(this)); },
+    exportConfidenceTraining: function(format) { window.open(API + '/confidence-training/export?format=' + encodeURIComponent(format),'_blank'); },
+    confidenceTrainingVisibleItems: function() { var start=(this.confidenceTraining.candidatePage-1)*this.confidenceTraining.candidatePageSize;return this.confidenceTraining.items.slice(start,start+this.confidenceTraining.candidatePageSize); },
+    confidenceTrainingPageCount: function() { return Math.max(1,Math.ceil(this.confidenceTraining.items.length/this.confidenceTraining.candidatePageSize)); },
+    confidenceTrainingPageStart: function() { return this.confidenceTraining.items.length?(this.confidenceTraining.candidatePage-1)*this.confidenceTraining.candidatePageSize+1:0; },
+    confidenceTrainingPageEnd: function() { return Math.min(this.confidenceTraining.items.length,this.confidenceTraining.candidatePage*this.confidenceTraining.candidatePageSize); },
+    changeConfidenceTrainingPage: function(page) { this.confidenceTraining.candidatePage=Math.max(1,Math.min(Number(page)||1,this.confidenceTrainingPageCount())); },
+    shadowRegressedRows: function(job) { return ((job.shadow_evaluation||{}).rows||[]).filter(function(row){return row.regressed;}); },
+    shadowEvaluationVisibleRows: function(job) { return ((job.shadow_evaluation||{}).rows||[]).slice(0,20); },
+    shadowEvaluationPageCount: function(job) { return Math.max(1,Math.ceil((((job.shadow_evaluation||{}).rows||[]).length)/20)); },
+    toggleShadowSampleDetail: function(job) { job.inspectionOnly=!job.inspectionOnly; },
+    saveConfidenceRegression: function(job, row, decision, note) { return fetch(API + '/confidence-training/jobs/' + encodeURIComponent(job.id) + '/regressions/' + encodeURIComponent(row.id),{method:'PATCH',headers:this.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({decision:decision,note:note||''})}).then(this.loadConfidenceTraining.bind(this)); },
+    canGeneratePromptRevision: function(job) { return !!job && ['shadow_rerun_review_pending','prompt_revision_ready'].indexOf(job.status)!==-1; },
     openAutomationMonitor: function() {
       if (!this.can('knowledge:submit')) return;
       this.knowledgeMenuOpen = true;

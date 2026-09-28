@@ -19,6 +19,7 @@ from app.routes import (
     blind_labeling,
     business_type,
     category,
+    confidence_training,
     embedding_admin,
     integration,
     knowledge,
@@ -80,6 +81,9 @@ async def lifespan(_: FastAPI):
                     knowledge.process_next_knowledge_vector_task,
                 )
             ),
+            asyncio.create_task(
+                confidence_training.run_confidence_shadow_rerun_worker(stop_event)
+            ),
         ]
         if settings.BLIND_LABEL_AUTO_RELEASE_ENABLED:
             workers.append(asyncio.create_task(run_blind_label_auto_release_worker(stop_event)))
@@ -133,6 +137,7 @@ app.include_router(blind_labeling.router, prefix=settings.API_V1_PREFIX)
 app.include_router(answer_hub.router, prefix=settings.API_V1_PREFIX)
 app.include_router(automation_monitor.router, prefix=settings.API_V1_PREFIX)
 app.include_router(integration.router, prefix=settings.API_V1_PREFIX)
+app.include_router(confidence_training.router, prefix=settings.API_V1_PREFIX)
 app.include_router(embedding_admin.router, prefix=settings.API_V1_PREFIX)
 app.include_router(media.router)
 
