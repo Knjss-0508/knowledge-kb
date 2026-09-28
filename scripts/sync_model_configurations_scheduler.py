@@ -48,7 +48,7 @@ IGNORED_SOURCE_HEADERS = (
     "光线传感器",
 )
 CELLS_GET_CONTRACT_GUIDANCE = (
-    "使用 ranges[n].cells 之前，请务必检查顶层 has_more，以及每个 range 的 "
+    "处理 ranges[n].cells 之前，必须先查看顶层 has_more，以及每个 range 的 "
     "actual_range / row_indices / col_indices。定位真实行号时用 row_indices[i]，"
     "定位真实列字母时用 col_indices[j]，不要按二维数组下标自己数行列；"
     "skip_hidden=true、skip_filter=true 或结果被截断时，这样会错位。"
