@@ -144,6 +144,13 @@ class Settings(BaseSettings):
     # import, vector, or media-cleanup workers against the shared database.
     BACKGROUND_WORKERS_ENABLED: bool = True
     MEDIA_GATEWAY_ONLY: bool = False
+    # Blind-label assignments are a fixed-time reservation. A background
+    # worker reclaims unfinished assignments after the configured timeout so
+    # work-order slots cannot remain occupied indefinitely.
+    BLIND_LABEL_AUTO_RELEASE_ENABLED: bool = True
+    BLIND_LABEL_ASSIGNMENT_TIMEOUT_SECONDS: int = 24 * 60 * 60
+    BLIND_LABEL_RELEASE_POLL_SECONDS: float = 300.0
+    BLIND_LABEL_RELEASE_BATCH_SIZE: int = 100
     # Excel imports are persisted before processing, so browser disconnects do
     # not cancel work. A lease enables safe recovery after a backend restart.
     KNOWLEDGE_IMPORT_POLL_SECONDS: float = 1.0

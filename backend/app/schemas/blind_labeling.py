@@ -11,6 +11,7 @@ class BlindLabelAnnotationInput(BaseModel):
 
     candidate_ref: str = Field(..., alias="candidateRef", min_length=1, max_length=64)
     verdict: Literal["referable", "not_referable", "可参考", "不可参考"]
+    reason_code: str = Field("", alias="reasonCode", max_length=64)
     reason: str = Field("", max_length=2000)
 
     @field_validator("verdict", mode="before")
@@ -35,6 +36,8 @@ class BlindLabelSubmitRequest(BaseModel):
         max_length=3,
         alias="annotations",
     )
+    note: str = Field("", max_length=2000)
+    task_reason_code: str = Field("", alias="taskReasonCode", max_length=64)
 
 
 class BlindLabelReleaseRequest(BaseModel):
@@ -128,6 +131,8 @@ class BlindLabelAssignmentSummary(BaseModel):
     started_at: datetime | None = Field(default=None, alias="startedAt")
     completed_at: datetime | None = Field(default=None, alias="completedAt")
     annotation_count: int = Field(default=0, alias="annotationCount")
+    note: str = ""
+    task_reason_code: str = Field(default="", alias="taskReasonCode")
 
     model_config = ConfigDict(populate_by_name=True)
 

@@ -30,6 +30,9 @@ class GatewayConfigurationTests(unittest.TestCase):
         config = Settings(_env_file=None)
         self.assertTrue(config.BACKGROUND_WORKERS_ENABLED)
         self.assertFalse(config.MEDIA_GATEWAY_ONLY)
+        self.assertTrue(config.BLIND_LABEL_AUTO_RELEASE_ENABLED)
+        self.assertEqual(config.BLIND_LABEL_ASSIGNMENT_TIMEOUT_SECONDS, 24 * 60 * 60)
+        self.assertEqual(config.BLIND_LABEL_RELEASE_POLL_SECONDS, 300.0)
 
     def test_gateway_mode_forces_workers_off(self):
         with patch.object(main.settings, "BACKGROUND_WORKERS_ENABLED", True), patch.object(
@@ -94,15 +97,18 @@ class GatewayConfigurationTests(unittest.TestCase):
                 main.settings, "BACKGROUND_WORKERS_ENABLED", True
             ), patch.object(main, "run_media_deletion_worker") as media_worker, patch.object(
                 main, "run_knowledge_import_worker"
-            ) as import_worker, patch.object(main, "run_knowledge_vector_worker") as vector_worker:
+            ) as import_worker, patch.object(main, "run_knowledge_vector_worker") as vector_worker, patch.object(
+                main, "run_blind_label_auto_release_worker"
+            ) as blind_label_worker:
                 async with main.lifespan(None):
                     pass
-                return media_worker, import_worker, vector_worker
+                return media_worker, import_worker, vector_worker, blind_label_worker
 
-        media_worker, import_worker, vector_worker = asyncio.run(run())
+        media_worker, import_worker, vector_worker, blind_label_worker = asyncio.run(run())
         media_worker.assert_not_called()
         import_worker.assert_not_called()
         vector_worker.assert_not_called()
+        blind_label_worker.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from inspect import signature
 from unittest.mock import MagicMock
 
@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, update
 from sqlalchemy.orm import sessionmaker
 
 from app.models.blind_labeling import (
@@ -21,6 +21,8 @@ from app.models.knowledge import Category, Knowledge, KnowledgeStatus
 from app.models.user import User
 from app.routes.blind_labeling import (
     arbitrate_work_order,
+    get_my_batch,
+    list_my_assignments,
     release_assignment_compat,
     release_my_assignment,
     require_blind_annotator,
@@ -28,13 +30,18 @@ from app.routes.blind_labeling import (
 )
 from app.schemas.blind_labeling import BlindLabelClaimRequest, BlindLabelReleaseRequest
 from app.services.blind_labeling import (
+    BLIND_LABEL_AUTO_RELEASE_REASON,
     BLIND_LABEL_BATCH_SIZE,
+    _choose_assignments,
     batch_summary,
     claim_batch,
     consensus_for_work_order,
+    current_batch,
     ensure_work_orders,
+    mark_assignment_started,
     overview,
     public_assignment_detail,
+    release_expired_assignments,
     release_assignment,
     submit_assignment,
 )
@@ -163,9 +170,18 @@ def _all_refs(assignment):
 
 
 def _labels(assignment, verdict="referable"):
+    refs = _all_refs(assignment)
+    if verdict == "referable":
+        # The new workflow records only the one selected best candidate.
+        refs = refs[:1]
     return [
-        {"candidate_ref": ref, "verdict": verdict, "reason": "测试"}
-        for ref in _all_refs(assignment)
+        {
+            "candidate_ref": ref,
+            "verdict": verdict,
+            "reason_code": "topic_irrelevant" if verdict == "not_referable" else "",
+            "reason": "测试" if verdict == "not_referable" else "",
+        }
+        for ref in refs
     ]
 
 
@@ -185,6 +201,150 @@ def test_claim_materializes_business_top3_and_reuses_active_batch(db):
     assert [item.id for item in same_assignments] == [assignments[0].id]
 
 
+def test_ensure_work_orders_materializes_newest_eligible_event_first(db):
+    now = datetime.utcnow()
+    db.query(RetrievalQualityEvent).filter_by(id="event-1").update(
+        {"created_at": now - timedelta(days=2)}
+    )
+    db.add(
+        RetrievalQualityEvent(
+            id="event-newest",
+            idempotency_key="event-key-newest",
+            source_system="test",
+            conversation_id="conversation-newest",
+            request_id="request-newest",
+            source_kind="reply",
+            query_text="最新手机问题",
+            candidate_count=3,
+            top_knowledge_id="biz-1",
+            top_rerank_score=0.9,
+            score_threshold=0.42,
+            outcome="accepted",
+            request_status="success",
+            candidate_snapshot=[
+                {
+                    "knowledge_id": f"biz-{index}",
+                    "rank": index,
+                    "title": f"业务知识 {index}",
+                    "final_score": 0.9 - index * 0.01,
+                    "knowledge_origin": "business_accumulation",
+                }
+                for index in range(1, 4)
+            ],
+            event_metadata={"candidate_origins": ["business_accumulation"] * 3},
+            created_at=now,
+        )
+    )
+    db.flush()
+
+    assert ensure_work_orders(db, 1) == 1
+    work_order = db.query(BlindLabelWorkOrder).one()
+
+    assert work_order.source_event_id == "event-newest"
+    assert work_order.source_created_at == now
+
+
+def test_choose_assignments_fills_existing_work_orders_before_newest_fresh_items(db):
+    now = datetime.utcnow()
+    db.add(
+        User(
+            id="u5",
+            username="u5",
+            password_hash="unused",
+            role="junior_support",
+            is_active=True,
+        )
+    )
+    work_orders = {
+        "two-old": BlindLabelWorkOrder(
+            id="wo-two-old",
+            conversation_id="priority-two-old",
+            query_text="已有两人标注的旧工单",
+            candidate_snapshot=[{"candidate_ref": "cand-two-old"}],
+            source_created_at=now - timedelta(days=3),
+        ),
+        "one-new": BlindLabelWorkOrder(
+            id="wo-one-new",
+            conversation_id="priority-one-new",
+            query_text="已有一人标注的新工单",
+            candidate_snapshot=[{"candidate_ref": "cand-one-new"}],
+            source_created_at=now - timedelta(days=1),
+        ),
+        "one-old": BlindLabelWorkOrder(
+            id="wo-one-old",
+            conversation_id="priority-one-old",
+            query_text="已有一人标注的旧工单",
+            candidate_snapshot=[{"candidate_ref": "cand-one-old"}],
+            source_created_at=now - timedelta(days=2),
+        ),
+        "fresh": BlindLabelWorkOrder(
+            id="wo-fresh",
+            conversation_id="priority-fresh",
+            query_text="尚未分配的最新工单",
+            candidate_snapshot=[{"candidate_ref": "cand-fresh"}],
+            source_created_at=now,
+        ),
+    }
+    db.add_all(work_orders.values())
+    batches = {
+        user_id: BlindLabelBatch(
+            id=f"priority-batch-{user_id}",
+            user_id=user_id,
+            target_count=BLIND_LABEL_BATCH_SIZE,
+            status="active",
+        )
+        for user_id in ("u1", "u2", "u4", "u5")
+    }
+    db.add_all(batches.values())
+    db.flush()
+    db.add_all(
+        [
+            BlindLabelAssignment(
+                id="priority-two-u1",
+                batch_id=batches["u1"].id,
+                work_order_id=work_orders["two-old"].id,
+                user_id="u1",
+                status="assigned",
+            ),
+            BlindLabelAssignment(
+                id="priority-two-u2",
+                batch_id=batches["u2"].id,
+                work_order_id=work_orders["two-old"].id,
+                user_id="u2",
+                status="assigned",
+            ),
+            BlindLabelAssignment(
+                id="priority-one-new-u1",
+                batch_id=batches["u1"].id,
+                work_order_id=work_orders["one-new"].id,
+                user_id="u1",
+                status="assigned",
+            ),
+            BlindLabelAssignment(
+                id="priority-one-old-u1",
+                batch_id=batches["u1"].id,
+                work_order_id=work_orders["one-old"].id,
+                user_id="u1",
+                status="assigned",
+            ),
+        ]
+    )
+    db.flush()
+
+    first = _choose_assignments(db, batches["u4"], "u4", needed=1)
+    db.flush()
+    assert [item.work_order_id for item in first] == [work_orders["two-old"].id]
+    assert (
+        db.query(BlindLabelAssignment)
+        .filter_by(work_order_id=work_orders["two-old"].id)
+        .count()
+        == 3
+    )
+
+    second = _choose_assignments(db, batches["u5"], "u5", needed=1)
+    assert [item.work_order_id for item in second] == [work_orders["one-new"].id]
+
+
 def test_claim_batch_is_fixed_to_50_and_normalizes_legacy_active_batch(db):
     legacy_batch = BlindLabelBatch(
         id="legacy-batch",
@@ -201,6 +361,75 @@ def test_claim_batch_is_fixed_to_50_and_normalizes_legacy_active_batch(db):
     assert batch.target_count == BLIND_LABEL_BATCH_SIZE
     assert batch_summary(db, batch)["total"] == BLIND_LABEL_BATCH_SIZE
     assert len(rows) == 1
+
+
+def test_current_batch_does_not_auto_claim_after_a_completed_batch(db):
+    completed = BlindLabelBatch(
+        id="completed-batch",
+        user_id="u1",
+        target_count=BLIND_LABEL_BATCH_SIZE,
+        status="completed",
+        completed_at=datetime.utcnow(),
+    )
+    db.add(completed)
+    db.flush()
+
+    visible, visible_rows = current_batch(db, "u1")
+
+    assert visible.id == completed.id
+    assert visible.status == "completed"
+    assert visible_rows == []
+    assert db.query(BlindLabelBatch).filter_by(user_id="u1").count() == 1
+
+    next_batch, _ = claim_batch(db, "u1")
+
+    assert next_batch.id != completed.id
+    assert next_batch.status == "active"
+    assert db.query(BlindLabelBatch).filter_by(user_id="u1").count() == 2
+
+
+def test_submitting_the_last_item_completes_batch_and_next_claim_is_explicit(db):
+    ensure_work_orders(db, 1)
+    batch, rows = claim_batch(db, "u1", target_count=1)
+    # Use a one-item target to exercise the same completion transition without
+    # manufacturing fifty fixture work orders; normal claims remain fixed at
+    # BLIND_LABEL_BATCH_SIZE.
+    batch.target_count = 1
+    assignment = rows[0]
+
+    submit_assignment(db, assignment, _labels(assignment))
+    db.commit()
+
+    assert batch.status == "completed"
+    assert batch.completed_at is not None
+    visible, visible_rows = current_batch(db, "u1")
+    assert visible.id == batch.id
+    assert visible_rows == []
+
+    next_batch, next_rows = claim_batch(db, "u1")
+    assert next_batch.id != batch.id
+    assert next_batch.status == "active"
+    assert next_batch.target_count == BLIND_LABEL_BATCH_SIZE
+    assert next_rows == []
+
+
+def test_get_my_batch_is_read_only_after_completion(db):
+    completed = BlindLabelBatch(
+        id="completed-readonly-batch",
+        user_id="u1",
+        target_count=BLIND_LABEL_BATCH_SIZE,
+        status="completed",
+        completed_at=datetime.utcnow(),
+    )
+    db.add(completed)
+    db.commit()
+
+    response = get_my_batch(target_count=BLIND_LABEL_BATCH_SIZE, db=db, current_user=db.get(User, "u1"))
+
+    assert response["batch"]["id"] == completed.id
+    assert response["batch"]["status"] == "completed"
+    assert response["items"] == []
+    assert db.query(BlindLabelBatch).filter_by(user_id="u1").count() == 1
 
 
 def test_claim_request_rejects_non_fixed_batch_size():
@@ -252,10 +481,12 @@ def test_three_users_are_capped_and_consensus_never_writes_legacy_event(db):
         _, rows = claim_batch(db, user_id, target_count=1)
         assignments.append(rows[0])
     for index, assignment in enumerate(assignments):
+        verdict = "referable" if index < 2 else "not_referable"
         submit_assignment(
             db,
             assignment,
-            _labels(assignment, "referable" if index < 2 else "not_referable"),
+            _labels(assignment, verdict),
+            task_reason_code="knowledge_missing" if verdict == "not_referable" else "",
         )
     db.commit()
     work_order = assignments[0].work_order
@@ -275,18 +506,97 @@ def test_three_users_are_capped_and_consensus_never_writes_legacy_event(db):
     assert fourth_rows == []
 
 
-def test_release_frees_slot_but_does_not_allow_same_user_reassignment(db):
+def test_single_choice_consensus_does_not_treat_omitted_candidates_as_negative_votes(db):
+    ensure_work_orders(db, 1)
+    assignments = []
+    for user_id in ("u1", "u2", "u3"):
+        _, rows = claim_batch(db, user_id, target_count=1)
+        assignments.append(rows[0])
+
+    refs = _all_refs(assignments[0])
+    for assignment, ref in zip(assignments, refs, strict=True):
+        submit_assignment(
+            db,
+            assignment,
+            [{"candidate_ref": ref, "verdict": "referable"}],
+        )
+    db.commit()
+
+    consensus = consensus_for_work_order(db, assignments[0].work_order)
+
+    assert consensus["status"] == "majority"
+    assert consensus["needs_arbitration"] is True
+    assert all(
+        result["referable_count"] == 1
+        and result["not_referable_count"] == 0
+        and result["status"] == "needs_arbitration"
+        for result in consensus["candidate_results"]
+    )
+
+
+def test_expired_assignment_is_automatically_reclaimed_and_frees_its_slot(db):
     ensure_work_orders(db, 1)
     _, rows = claim_batch(db, "u1", target_count=1)
     assignment = rows[0]
-    release_assignment(db, assignment, "无法标注")
+    now = datetime.utcnow()
+    assignment.assigned_at = now - timedelta(hours=24)
+    assert release_expired_assignments(db, now=now, timeout_seconds=24 * 60 * 60) == 1
     db.commit()
+    assert assignment.status == "released"
+    assert assignment.release_reason == BLIND_LABEL_AUTO_RELEASE_REASON
+    listed = list_my_assignments(
+        batch_id=None,
+        assignment_status=None,
+        include_released=False,
+        page=1,
+        page_size=50,
+        db=db,
+        current_user=db.get(User, "u1"),
+    )
+    assert listed["batch"]["released_count"] == 1
+    with pytest.raises(ValueError, match="超时自动回收"):
+        submit_assignment(db, assignment, _labels(assignment))
+    with pytest.raises(ValueError, match="超时自动回收"):
+        mark_assignment_started(db, assignment)
     assert assignment.status == "released"
     _, again = claim_batch(db, "u1", target_count=1)
     assert again == []
-    # Another user can take the released slot.
+    # 其他标注员可以占用系统回收后释放的工单名额。
     _, another = claim_batch(db, "u2", target_count=1)
     assert len(another) == 1
+
+
+def test_auto_release_keeps_unexpired_and_completed_assignments(db):
+    ensure_work_orders(db, 1)
+    _, rows = claim_batch(db, "u1", target_count=1)
+    assignment = rows[0]
+    now = datetime.utcnow()
+    assignment.assigned_at = now - timedelta(hours=24) + timedelta(seconds=1)
+    assert release_expired_assignments(db, now=now, timeout_seconds=24 * 60 * 60) == 0
+    submit_assignment(db, assignment, _labels(assignment))
+    assignment.assigned_at = now - timedelta(days=2)
+    assert release_expired_assignments(db, now=now, timeout_seconds=24 * 60 * 60) == 0
+    assert assignment.status == "completed"
+
+
+def test_starting_a_stale_assignment_cannot_revive_an_auto_released_task(db):
+    ensure_work_orders(db, 1)
+    _, rows = claim_batch(db, "u1", target_count=1)
+    assignment = rows[0]
+    db.execute(
+        update(BlindLabelAssignment)
+        .where(BlindLabelAssignment.id == assignment.id)
+        .values(
+            status="released",
+            release_reason=BLIND_LABEL_AUTO_RELEASE_REASON,
+            released_at=datetime.utcnow(),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    assert assignment.status == "assigned"
+    with pytest.raises(ValueError, match="超时自动回收"):
+        mark_assignment_started(db, assignment)
+    assert assignment.status == "released"
 
 
 def test_public_detail_does_not_leak_ids_scores_or_other_annotations(db):
@@ -308,7 +618,13 @@ def test_arbitration_resolves_disputed_consensus_and_overview_aliases(db):
         _, rows = claim_batch(db, user_id, target_count=1)
         assignments.append(rows[0])
     for index, assignment in enumerate(assignments):
-        submit_assignment(db, assignment, _labels(assignment, "referable" if index < 2 else "not_referable"))
+        verdict = "referable" if index < 2 else "not_referable"
+        submit_assignment(
+            db,
+            assignment,
+            _labels(assignment, verdict),
+            task_reason_code="knowledge_missing" if verdict == "not_referable" else "",
+        )
     db.commit()
     work_order = assignments[0].work_order
     for index, candidate in enumerate(work_order.candidate_snapshot, start=1):
@@ -330,6 +646,95 @@ def test_arbitration_resolves_disputed_consensus_and_overview_aliases(db):
     )
     result = overview(db, dimension="disputed")
     assert result["summary"]["total"] == 0
+
+
+def test_referable_reason_is_optional_but_not_referable_reason_is_required(db):
+    ensure_work_orders(db, 1)
+    _, rows = claim_batch(db, "u1", target_count=1)
+    assignment = rows[0]
+    refs = _all_refs(assignment)
+    annotations = [
+        {"candidate_ref": refs[0], "verdict": "referable", "reason_code": "", "reason": ""},
+        {"candidate_ref": refs[1], "verdict": "not_referable", "reason_code": "content_outdated", "reason": ""},
+    ]
+
+    created = submit_assignment(db, assignment, annotations, note="整体补充说明")
+
+    assert [item.reason_code for item in created] == ["", "content_outdated"]
+    assert assignment.note == "整体补充说明"
+    assert assignment.task_reason_code == ""
+    assert consensus_for_work_order(db, assignment.work_order)["status"] == "pending"
+
+
+def test_all_not_referable_requires_three_candidate_reasons_but_not_task_reason(db):
+    ensure_work_orders(db, 1)
+    _, rows = claim_batch(db, "u1", target_count=1)
+    assignment = rows[0]
+    annotations = _labels(assignment, "not_referable")
+
+    created = submit_assignment(
+        db,
+        assignment,
+        annotations,
+    )
+
+    assert len(created) == len(_all_refs(assignment))
+    assert assignment.task_reason_code == ""
+
+
+def test_partial_all_not_referable_submission_is_rejected_atomically(db):
+    ensure_work_orders(db, 1)
+    _, rows = claim_batch(db, "u1", target_count=1)
+    assignment = rows[0]
+    refs = _all_refs(assignment)
+    partial = [
+        {"candidate_ref": refs[0], "verdict": "not_referable", "reason_code": "topic_irrelevant"},
+        {"candidate_ref": refs[1], "verdict": "not_referable", "reason_code": "content_outdated"},
+    ]
+
+    with pytest.raises(ValueError, match="分别选择每条候选的原因"):
+        submit_assignment(db, assignment, partial)
+
+    assert assignment.status != "completed"
+    assert db.query(BlindLabelAnnotation).filter_by(assignment_id=assignment.id).count() == 0
+
+
+def test_multiple_referable_candidates_are_rejected(db):
+    ensure_work_orders(db, 1)
+    _, rows = claim_batch(db, "u1", target_count=1)
+    assignment = rows[0]
+    refs = _all_refs(assignment)
+    duplicate_best = [
+        {"candidate_ref": refs[0], "verdict": "referable"},
+        {"candidate_ref": refs[1], "verdict": "referable"},
+    ]
+
+    with pytest.raises(ValueError, match="只能选择一条可参考"):
+        submit_assignment(db, assignment, duplicate_best)
+
+    assert assignment.status != "completed"
+    assert db.query(BlindLabelAnnotation).filter_by(assignment_id=assignment.id).count() == 0
+
+
+def test_reason_codes_reject_invalid_combinations_and_allow_legacy_task_reason(db):
+    ensure_work_orders(db, 1)
+    _, rows = claim_batch(db, "u1", target_count=1)
+    assignment = rows[0]
+    refs = _all_refs(assignment)
+    invalid = [
+        {"candidate_ref": refs[0], "verdict": "referable", "reason_code": "topic_irrelevant", "reason": ""},
+        {"candidate_ref": refs[1], "verdict": "referable", "reason_code": "", "reason": ""},
+        {"candidate_ref": refs[2], "verdict": "referable", "reason_code": "", "reason": ""},
+    ]
+    with pytest.raises(ValueError, match="可参考原因"):
+        submit_assignment(db, assignment, invalid)
+
+    mixed = [
+        {"candidate_ref": refs[0], "verdict": "referable", "reason_code": "", "reason": ""},
+        {"candidate_ref": refs[1], "verdict": "not_referable", "reason_code": "topic_irrelevant", "reason": ""},
+    ]
+    created = submit_assignment(db, assignment, mixed, task_reason_code="knowledge_missing")
+    assert len(created) == 2
 
 
 def test_post_claim_and_overview_compatibility_fields(db):
