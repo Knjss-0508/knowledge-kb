@@ -56,6 +56,24 @@ def require_blind_annotator():
     return checker
 
 
+def require_blind_label_release_access():
+    """Allow owners to release their own task and arbiters to release any task.
+
+    Administrators do not participate in personal blind-label batches, so this
+    deliberately does not reuse :func:`require_blind_annotator`.
+    """
+
+    def checker(user: User = Depends(get_current_user)) -> User:
+        if not (
+            has_permission(user, "retrieval:blind_label")
+            or has_permission(user, "retrieval:label_arbitrate")
+        ):
+            raise HTTPException(403, "Permission denied.")
+        return user
+
+    return checker
+
+
 def _normalize_datetime(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -110,9 +128,9 @@ def _get_work_order(db: Session, identifier: str) -> BlindLabelWorkOrder | None:
     )
 
 
-def _claim_response(db: Session, user_id: str, target_count: int):
+def _claim_response(db: Session, user_id: str):
     try:
-        batch, assignments = claim_batch(db, user_id, target_count)
+        batch, assignments = claim_batch(db, user_id)
         db.commit()
     except Exception:
         db.rollback()
@@ -132,26 +150,33 @@ def _require_own_or_admin(current_user: User, assignment: BlindLabelAssignment) 
 
 @router.get("/my-batch")
 def get_my_batch(
-    target_count: int = Query(BLIND_LABEL_BATCH_SIZE, ge=1, le=500),
+    target_count: int = Query(
+        BLIND_LABEL_BATCH_SIZE,
+        ge=BLIND_LABEL_BATCH_SIZE,
+        le=BLIND_LABEL_BATCH_SIZE,
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_blind_annotator()),
 ):
     """Reuse the current unfinished batch, or create/refill a random batch."""
 
-    return _claim_response(db, current_user.id, target_count)
+    return _claim_response(db, current_user.id)
 
 
 @router.post("/my-batch:claim")
 def claim_my_batch(
     body: BlindLabelClaimRequest | None = None,
-    target_count: int | None = Query(None, ge=1, le=500),
+    target_count: int | None = Query(
+        None,
+        ge=BLIND_LABEL_BATCH_SIZE,
+        le=BLIND_LABEL_BATCH_SIZE,
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_blind_annotator()),
 ):
     """POST compatibility form for clients that model claiming as a command."""
 
-    requested = target_count or (body.target_count if body else BLIND_LABEL_BATCH_SIZE)
-    return _claim_response(db, current_user.id, requested)
+    return _claim_response(db, current_user.id)
 
 
 @router.get("/my-assignments")
@@ -277,7 +302,7 @@ def release_my_assignment(
     assignment_id: str,
     body: BlindLabelReleaseRequest | None = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_blind_annotator()),
+    current_user: User = Depends(require_blind_label_release_access()),
 ):
     assignment = _get_assignment(db, assignment_id)
     if assignment.user_id != current_user.id and not has_permission(current_user, "retrieval:label_arbitrate"):
@@ -296,7 +321,7 @@ def release_assignment_compat(
     assignment_id: str | None = Query(None, alias="assignmentId"),
     body: BlindLabelReleaseRequest | None = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_blind_annotator()),
+    current_user: User = Depends(require_blind_label_release_access()),
 ):
     assignment_id = assignment_id or (body.assignment_id if body else None)
     if not assignment_id:

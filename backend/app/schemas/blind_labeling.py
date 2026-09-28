@@ -47,7 +47,7 @@ class BlindLabelReleaseRequest(BaseModel):
 class BlindLabelClaimRequest(BaseModel):
     """Optional JSON body for the POST claim compatibility endpoint."""
 
-    target_count: int = Field(50, alias="targetCount", ge=1, le=500)
+    target_count: Literal[50] = Field(50, alias="targetCount")
 
     model_config = ConfigDict(populate_by_name=True)
 

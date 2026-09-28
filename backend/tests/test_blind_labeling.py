@@ -1,6 +1,11 @@
 from datetime import datetime
+from inspect import signature
+from unittest.mock import MagicMock
 
 import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -14,8 +19,16 @@ from app.models.blind_labeling import (
 from app.models.integration import RetrievalQualityEvent
 from app.models.knowledge import Category, Knowledge, KnowledgeStatus
 from app.models.user import User
-from app.routes.blind_labeling import require_blind_annotator
+from app.routes.blind_labeling import (
+    arbitrate_work_order,
+    release_assignment_compat,
+    release_my_assignment,
+    require_blind_annotator,
+    require_blind_label_release_access,
+)
+from app.schemas.blind_labeling import BlindLabelClaimRequest, BlindLabelReleaseRequest
 from app.services.blind_labeling import (
+    BLIND_LABEL_BATCH_SIZE,
     batch_summary,
     claim_batch,
     consensus_for_work_order,
@@ -161,6 +174,7 @@ def test_claim_materializes_business_top3_and_reuses_active_batch(db):
     batch, assignments = claim_batch(db, "u1", target_count=1)
     db.commit()
     assert batch.status == "active"
+    assert batch.target_count == BLIND_LABEL_BATCH_SIZE
     assert len(assignments) == 1
     assert len(assignments[0].work_order.candidate_snapshot) == 3
     assert assignments[0].work_order.conversation_id == "conversation-1"
@@ -169,6 +183,66 @@ def test_claim_materializes_business_top3_and_reuses_active_batch(db):
     reused, same_assignments = claim_batch(db, "u1", target_count=1)
     assert reused.id == batch.id
     assert [item.id for item in same_assignments] == [assignments[0].id]
+
+
+def test_claim_batch_is_fixed_to_50_and_normalizes_legacy_active_batch(db):
+    legacy_batch = BlindLabelBatch(
+        id="legacy-batch",
+        user_id="u1",
+        target_count=1,
+        status="active",
+    )
+    db.add(legacy_batch)
+    db.commit()
+
+    batch, rows = claim_batch(db, "u1", target_count=500)
+
+    assert batch.id == legacy_batch.id
+    assert batch.target_count == BLIND_LABEL_BATCH_SIZE
+    assert batch_summary(db, batch)["total"] == BLIND_LABEL_BATCH_SIZE
+    assert len(rows) == 1
+
+
+def test_claim_request_rejects_non_fixed_batch_size():
+    assert BlindLabelClaimRequest().target_count == BLIND_LABEL_BATCH_SIZE
+    assert BlindLabelClaimRequest(targetCount=BLIND_LABEL_BATCH_SIZE).target_count == BLIND_LABEL_BATCH_SIZE
+    with pytest.raises(ValidationError):
+        BlindLabelClaimRequest(targetCount=1)
+    with pytest.raises(ValidationError):
+        BlindLabelClaimRequest(targetCount=500)
+
+
+def test_claim_routes_reject_client_attempts_to_change_batch_size(db):
+    from app.core.database import get_db
+    from app.main import app
+    from app.routes.auth import get_current_user
+
+    current_user = db.get(User, "u1")
+
+    def override_get_db():
+        yield MagicMock()
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = lambda: current_user
+    client = TestClient(app)
+    try:
+        assert client.get("/api/v1/blind-labeling/my-batch?target_count=1").status_code == 422
+        assert (
+            client.post(
+                "/api/v1/blind-labeling/my-batch:claim?target_count=500"
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                "/api/v1/blind-labeling/my-batch:claim", json={"targetCount": 1}
+            ).status_code
+            == 422
+        )
+    finally:
+        client.close()
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 def test_three_users_are_capped_and_consensus_never_writes_legacy_event(db):
@@ -262,9 +336,9 @@ def test_post_claim_and_overview_compatibility_fields(db):
     ensure_work_orders(db, 1)
     batch, rows = claim_batch(db, "u1", target_count=1)
     summary = batch_summary(db, batch)
-    assert summary["total"] == 1
+    assert summary["total"] == BLIND_LABEL_BATCH_SIZE
     assert summary["assigned"] == 1
-    assert summary["pending"] == 0
+    assert summary["pending"] == BLIND_LABEL_BATCH_SIZE - 1
     assert rows[0].id
 
     result = overview(db, dimension="consensus")
@@ -287,6 +361,57 @@ def test_admin_is_not_auto_assigned_a_personal_batch():
         is_active=True,
     )
     assert checker(support) is support
+
+
+def test_arbitrator_can_release_another_users_assignment_without_personal_batch_access(db):
+    ensure_work_orders(db, 1)
+    _, rows = claim_batch(db, "u1", target_count=1)
+    assignment = rows[0]
+    admin = User(
+        id="admin",
+        username="admin",
+        password_hash="unused",
+        role="super_admin",
+        is_active=True,
+    )
+    db.add(admin)
+    db.commit()
+
+    release_access = require_blind_label_release_access()
+    assert release_access(admin) is admin
+    assert (
+        signature(release_my_assignment).parameters["current_user"].default.dependency(
+            admin
+        )
+        is admin
+    )
+    assert (
+        signature(release_assignment_compat).parameters["current_user"].default.dependency(
+            admin
+        )
+        is admin
+    )
+    assert (
+        signature(arbitrate_work_order).parameters["current_user"].default.dependency(
+            admin
+        )
+        is admin
+    )
+
+    response = release_my_assignment(
+        assignment.id,
+        BlindLabelReleaseRequest(reason="管理员释放"),
+        db,
+        admin,
+    )
+
+    db.refresh(assignment)
+    assert response == {"status": "released", "assignment_id": assignment.id}
+    assert assignment.status == "released"
+
+    with pytest.raises(HTTPException) as denied:
+        release_my_assignment(assignment.id, None, db, db.get(User, "u2"))
+    assert denied.value.status_code == 403
 
 
 def test_blind_label_api_contract_exposes_claim_detail_and_overview_routes():

@@ -375,10 +375,19 @@ def _choose_assignments(
     return created
 
 
-def claim_batch(db: Session, user_id: str, target_count: int = BLIND_LABEL_BATCH_SIZE) -> tuple[BlindLabelBatch, list[BlindLabelAssignment]]:
-    """Return/reuse a user's active batch and fill it to the requested size."""
+def claim_batch(
+    db: Session,
+    user_id: str,
+    target_count: int = BLIND_LABEL_BATCH_SIZE,
+) -> tuple[BlindLabelBatch, list[BlindLabelAssignment]]:
+    """Return/reuse a user's fixed-size 50-item batch.
 
-    target_count = max(1, min(int(target_count or BLIND_LABEL_BATCH_SIZE), 500))
+    ``target_count`` is retained only for compatibility with earlier callers;
+    it is intentionally ignored so a browser request cannot reserve more or
+    fewer work orders than the established blind-label batch size.
+    """
+
+    target_count = BLIND_LABEL_BATCH_SIZE
     batch = (
         db.query(BlindLabelBatch)
         .filter(
@@ -417,9 +426,9 @@ def claim_batch(db: Session, user_id: str, target_count: int = BLIND_LABEL_BATCH
             if batch is None:
                 raise
     else:
-        # Keep the original batch size stable if the caller sends a different
-        # value on a later visit.
-        target_count = int(batch.target_count or target_count)
+        # Normalize active batches created before batch size became fixed.
+        if int(batch.target_count or 0) != BLIND_LABEL_BATCH_SIZE:
+            batch.target_count = BLIND_LABEL_BATCH_SIZE
 
     rows = _active_batch_rows(db, batch)
     needed = max(0, target_count - len(rows))
