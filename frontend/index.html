@@ -1276,7 +1276,8 @@
     <div class="blind-label-tabs" role="tablist" aria-label="召回盲标视图">
       <button v-if="!isBlindLabelAdmin()" type="button" class="blind-label-tab" :class="{on:blindLabeling.tab==='mine'}" @click="setBlindLabelTab('mine')">我的盲标任务</button>
       <button v-if="!isBlindLabelAdmin()" type="button" class="blind-label-tab" :class="{on:blindLabeling.tab==='completed'}" @click="setBlindLabelTab('completed')">我的已标注</button>
-      <button v-if="isBlindLabelAdmin()" type="button" class="blind-label-tab" :class="{on:blindLabeling.tab==='overview'}" @click="setBlindLabelTab('overview')">盲标总览</button>
+      <button v-if="isBlindLabelAdmin()" id="blind-label-people-tab" type="button" role="tab" aria-controls="blind-label-people-panel" :aria-selected="blindLabeling.tab==='people'" class="blind-label-tab" :class="{on:blindLabeling.tab==='people'}" @click="setBlindLabelTab('people')">人员统计</button>
+      <button v-if="isBlindLabelAdmin()" id="blind-label-work-orders-tab" type="button" role="tab" aria-controls="blind-label-work-orders-panel" :aria-selected="blindLabeling.tab==='workOrders'" class="blind-label-tab" :class="{on:blindLabeling.tab==='workOrders'}" @click="setBlindLabelTab('workOrders')">已标注总览</button>
       <span class="blind-label-tab-right">每工单最多 3 名标注员</span>
     </div>
 
@@ -1303,7 +1304,7 @@
       </div>
     </template>
 
-    <template v-if="blindLabeling.tab==='overview' && isBlindLabelAdmin()">
+    <template v-if="isBlindLabelOverviewTab()">
       <div v-if="blindLabeling.overview.error" class="blind-label-error" role="alert">{{blindLabeling.overview.error}}</div>
       <div class="cards review-metric-cards blind-label-overview-cards">
         <article class="card"><span class="card-label">工单总数</span><strong>{{blindLabeling.overview.summary.total}}</strong><small>纳入盲标的工单</small></article>
@@ -1318,8 +1319,8 @@
       <section class="blind-label-filter-card">
         <div class="blind-label-filter-head"><div><h3>总览筛选</h3><p>按时间、状态、标注维度、人员和工单关键词定位结果</p></div><button class="btn bd bsm" type="button" @click="resetBlindLabelOverviewFilters">重置</button></div>
         <div class="blind-label-filter-grid">
-          <label class="blind-label-filter-field"><span>开始日期</span><input class="inp" type="date" v-model="blindLabeling.overview.filters.dateFrom"></label>
-          <label class="blind-label-filter-field"><span>结束日期</span><input class="inp" type="date" v-model="blindLabeling.overview.filters.dateTo"></label>
+          <label class="blind-label-filter-field"><span>开始日期</span><input class="inp" type="date" v-model="blindLabeling.overview.filters.dateFrom" @click="openBlindLabelDatePicker"></label>
+          <label class="blind-label-filter-field"><span>结束日期</span><input class="inp" type="date" v-model="blindLabeling.overview.filters.dateTo" @click="openBlindLabelDatePicker"></label>
           <label class="blind-label-filter-field"><span>工单状态</span><select class="inp" v-model="blindLabeling.overview.filters.status"><option value="">全部状态</option><option value="pending">待标注</option><option value="in_progress">进行中</option><option value="partial">部分完成</option><option value="completed">已完成</option><option value="disputed">待仲裁</option></select></label>
           <label class="blind-label-filter-field"><span>标注维度</span><select class="inp" v-model="blindLabeling.overview.filters.dimension"><option value="">全部维度</option><option value="helpful">可参考</option><option value="unhelpful">不可参考</option><option value="consensus">已达成共识</option><option value="disputed">存在分歧</option></select></label>
           <label class="blind-label-filter-field"><span>标注员</span><select class="inp" v-model="blindLabeling.overview.filters.annotator"><option value="">全部标注员</option><option v-for="person in blindLabeling.overview.people" :key="person.user_id || person.username" :value="person.user_id || person.username">{{person.username || person.user_id}}</option></select></label>
@@ -1327,11 +1328,15 @@
         </div>
         <div class="blind-label-filter-actions"><span class="hint">支持按标注活动时间筛选；候选只保留业务沉淀 TOP 3</span><button class="btn bp" type="button" @click="applyBlindLabelOverviewFilters" :disabled="blindLabeling.overview.loading">{{blindLabeling.overview.loading?'查询中...':'应用筛选'}}</button></div>
       </section>
-      <div class="blind-label-section-head"><div><h3>按人员统计</h3><p>每人独立完成量、可参考比例和平均耗时</p></div><span class="hint">{{blindLabeling.overview.people.length}} 人</span></div>
-      <div class="tw"><table class="blind-label-person-table"><thead><tr><th>标注员</th><th style="width:100px">已分配</th><th style="width:100px">已完成</th><th style="width:170px">完成进度</th><th style="width:110px">总标注数</th><th style="width:115px">可参考率</th><th style="width:120px">平均耗时</th><th style="width:145px">最后活动</th></tr></thead><tbody><tr v-for="person in blindLabeling.overview.people" :key="person.user_id || person.username"><td><div class="blind-label-user-label"><span class="blind-label-avatar">{{blindLabelInitial(person.username || person.user_id)}}</span><span>{{person.username || person.user_id || '-'}}</span></div></td><td>{{person.assigned || person.assigned_count || person.total_assigned || 0}}</td><td>{{person.completed || person.completed_count || person.total_completed || 0}}</td><td><div class="blind-label-progress-cell"><span class="blind-label-mini-track"><i :style="{width:blindLabelProgress(person.completed || person.completed_count || person.total_completed,person.assigned || person.assigned_count || person.total_assigned)+'%'}"></i></span><span>{{blindLabelProgress(person.completed || person.completed_count || person.total_completed,person.assigned || person.assigned_count || person.total_assigned)}}%</span></div></td><td>{{person.annotations || person.annotation_count || person.total_annotations || 0}}</td><td>{{blindLabelPersonHelpfulRate(person)}}</td><td>{{blindLabelDuration(person.average_duration_seconds || person.average_duration_ms || person.avg_duration_ms)}}</td><td>{{formatDate(person.last_activity_at || person.updated_at)}}</td></tr><tr v-if="!blindLabeling.overview.people.length"><td colspan="8" class="blind-label-empty">暂无人员统计数据。</td></tr></tbody></table></div>
-      <div class="blind-label-section-head"><div><h3>已标注工单总览</h3><p>点击详情查看三名标注员的独立结果与共识</p></div><span class="hint">共 {{blindLabeling.overview.workOrders.length}} 条</span></div>
-      <div class="tw" :class="{'blind-label-loading':blindLabeling.overview.loading}"><table class="blind-label-order-table"><thead><tr><th style="width:145px">工单 ID</th><th>问题摘要</th><th style="width:120px">标注进度</th><th style="width:150px">标注结论</th><th style="width:145px">一致性</th><th style="width:160px">最后标注时间</th><th style="width:90px;text-align:right">操作</th></tr></thead><tbody><tr v-for="workOrder in blindLabeling.overview.workOrders" :key="workOrder.id || workOrder.work_order_id || workOrder.conversation_id"><td>{{blindLabelWorkOrderId(workOrder)}}</td><td><div class="blind-label-query" :title="blindLabelQuery(workOrder)">{{blindLabelQuery(workOrder)}}</div><div class="blind-label-subline">业务沉淀 · {{blindLabelCategory(workOrder) || '未分类'}}</div></td><td><div class="blind-label-progress-cell"><span>{{blindLabelCompletedCount(workOrder)}} / {{blindLabelMaxAnnotators(workOrder)}}</span><span class="blind-label-status" :class="blindLabelStatusClass(workOrder.status)">{{blindLabelStatusLabel(workOrder.status)}}</span></div></td><td><div class="blind-label-dimension"><b>{{blindLabelConsensusLabel(workOrder)}}</b><span v-if="blindLabelDimensionText(workOrder)" class="blind-label-choice" :class="blindLabelDimensionClass(workOrder)">{{blindLabelDimensionText(workOrder)}}</span></div></td><td><span class="blind-label-status" :class="blindLabelConsensusClass(workOrder)">{{blindLabelConsensusLabel(workOrder)}}</span></td><td>{{formatDate(workOrder.last_annotated_at || workOrder.updated_at || workOrder.created_at)}}</td><td style="text-align:right"><button class="btn bd bsm" type="button" @click="openBlindLabelWorkOrder(workOrder)">查看详情</button></td></tr><tr v-if="!blindLabeling.overview.workOrders.length"><td colspan="7" class="blind-label-empty">当前筛选下暂无已标注工单。</td></tr></tbody></table></div>
-      <div v-if="blindLabeling.overview.pagination.totalPages > 1" class="blind-label-pagination"><button class="btn bd bsm" type="button" @click="changeBlindLabelOverviewPage(-1)" :disabled="blindLabeling.overview.loading || blindLabeling.overview.pagination.page <= 1">上一页</button><span>第 {{blindLabeling.overview.pagination.page}} / {{blindLabeling.overview.pagination.totalPages}} 页 · 共 {{blindLabeling.overview.pagination.total}} 条</span><button class="btn bd bsm" type="button" @click="changeBlindLabelOverviewPage(1)" :disabled="blindLabeling.overview.loading || blindLabeling.overview.pagination.page >= blindLabeling.overview.pagination.totalPages">下一页</button></div>
+      <template v-if="blindLabeling.tab==='people'">
+        <div class="blind-label-section-head"><div><h3>按人员统计</h3><p>每人独立完成量、可参考比例和平均耗时</p></div><span class="hint">{{blindLabeling.overview.people.length}} 人</span></div>
+        <div id="blind-label-people-panel" role="tabpanel" aria-labelledby="blind-label-people-tab" class="tw" :class="{'blind-label-loading':blindLabeling.overview.loading}"><table class="blind-label-person-table"><thead><tr><th>标注员</th><th style="width:100px">已分配</th><th style="width:100px">已完成</th><th style="width:170px">完成进度</th><th style="width:110px">总标注数</th><th style="width:115px">可参考率</th><th style="width:120px">平均耗时</th><th style="width:145px">最后活动</th></tr></thead><tbody><tr v-for="person in blindLabeling.overview.people" :key="person.user_id || person.username"><td><div class="blind-label-user-label"><span class="blind-label-avatar">{{blindLabelInitial(person.username || person.user_id)}}</span><span>{{person.username || person.user_id || '-'}}</span></div></td><td>{{person.assigned || person.assigned_count || person.total_assigned || 0}}</td><td>{{person.completed || person.completed_count || person.total_completed || 0}}</td><td><div class="blind-label-progress-cell"><span class="blind-label-mini-track"><i :style="{width:blindLabelProgress(person.completed || person.completed_count || person.total_completed,person.assigned || person.assigned_count || person.total_assigned)+'%'}"></i></span><span>{{blindLabelProgress(person.completed || person.completed_count || person.total_completed,person.assigned || person.assigned_count || person.total_assigned)}}%</span></div></td><td>{{person.annotations || person.annotation_count || person.total_annotations || 0}}</td><td>{{blindLabelPersonHelpfulRate(person)}}</td><td>{{blindLabelDuration(person.average_duration_seconds || person.average_duration_ms || person.avg_duration_ms)}}</td><td>{{formatDate(person.last_activity_at || person.updated_at)}}</td></tr><tr v-if="!blindLabeling.overview.people.length"><td colspan="8" class="blind-label-empty">暂无人员统计数据。</td></tr></tbody></table></div>
+      </template>
+      <template v-if="blindLabeling.tab==='workOrders'">
+        <div class="blind-label-section-head"><div><h3>已标注工单总览</h3><p>点击详情查看三名标注员的独立结果与共识</p></div><span class="hint">共 {{blindLabeling.overview.workOrders.length}} 条</span></div>
+        <div id="blind-label-work-orders-panel" role="tabpanel" aria-labelledby="blind-label-work-orders-tab" class="tw" :class="{'blind-label-loading':blindLabeling.overview.loading}"><table class="blind-label-order-table"><thead><tr><th style="width:145px">工单 ID</th><th>问题摘要</th><th style="width:120px">标注进度</th><th style="width:150px">标注结论</th><th style="width:145px">一致性</th><th style="width:160px">最后标注时间</th><th style="width:90px;text-align:right">操作</th></tr></thead><tbody><tr v-for="workOrder in blindLabeling.overview.workOrders" :key="workOrder.id || workOrder.work_order_id || workOrder.conversation_id"><td>{{blindLabelWorkOrderId(workOrder)}}</td><td><div class="blind-label-query" :title="blindLabelQuery(workOrder)">{{blindLabelQuery(workOrder)}}</div><div class="blind-label-subline">业务沉淀 · {{blindLabelCategory(workOrder) || '未分类'}}</div></td><td><div class="blind-label-progress-cell"><span>{{blindLabelCompletedCount(workOrder)}} / {{blindLabelMaxAnnotators(workOrder)}}</span><span class="blind-label-status" :class="blindLabelStatusClass(workOrder.status)">{{blindLabelStatusLabel(workOrder.status)}}</span></div></td><td><div class="blind-label-dimension"><b>{{blindLabelConsensusLabel(workOrder)}}</b><span v-if="blindLabelDimensionText(workOrder)" class="blind-label-choice" :class="blindLabelDimensionClass(workOrder)">{{blindLabelDimensionText(workOrder)}}</span></div></td><td><span class="blind-label-status" :class="blindLabelConsensusClass(workOrder)">{{blindLabelConsensusLabel(workOrder)}}</span></td><td>{{formatDate(workOrder.last_annotated_at || workOrder.updated_at || workOrder.created_at)}}</td><td style="text-align:right"><button class="btn bd bsm" type="button" @click="openBlindLabelWorkOrder(workOrder)">查看详情</button></td></tr><tr v-if="!blindLabeling.overview.workOrders.length"><td colspan="7" class="blind-label-empty">当前筛选下暂无已标注工单。</td></tr></tbody></table></div>
+        <div v-if="blindLabeling.overview.pagination.totalPages > 1" class="blind-label-pagination"><button class="btn bd bsm" type="button" @click="changeBlindLabelOverviewPage(-1)" :disabled="blindLabeling.overview.loading || blindLabeling.overview.pagination.page <= 1">上一页</button><span>第 {{blindLabeling.overview.pagination.page}} / {{blindLabeling.overview.pagination.totalPages}} 页 · 共 {{blindLabeling.overview.pagination.total}} 条</span><button class="btn bd bsm" type="button" @click="changeBlindLabelOverviewPage(1)" :disabled="blindLabeling.overview.loading || blindLabeling.overview.pagination.page >= blindLabeling.overview.pagination.totalPages">下一页</button></div>
+      </template>
     </template>
   </div>
   <div class="mn" v-if="view==='users' && isSuperAdmin()">
@@ -2327,6 +2332,20 @@ Vue.createApp({
     },
     isBlindLabelAdmin: function() {
       return this.can('retrieval:label_overview');
+    },
+    isBlindLabelOverviewTab: function() {
+      return this.isBlindLabelAdmin() && ['people','workOrders'].indexOf(this.blindLabeling.tab) !== -1;
+    },
+    openBlindLabelDatePicker: function(event) {
+      var input = event && event.currentTarget;
+      if (!input || input.disabled) return;
+      input.focus();
+      if (typeof input.showPicker !== 'function') return;
+      try {
+        input.showPicker();
+      } catch (error) {
+        // Some engines allow focus but do not expose the native picker API.
+      }
     },
     can: function(permission) {
       var perms = (this.currentUser && this.currentUser.permissions) || [];
@@ -7746,17 +7765,20 @@ Vue.createApp({
     openRetrievalReviewPage: function() {
       if (!this.canAccessBlindLabeling()) return;
       this.view = 'retrievalReview';
-      this.blindLabeling.tab = this.isBlindLabelAdmin() ? 'overview' : 'mine';
-      if (this.blindLabeling.tab === 'overview') this.loadBlindLabelOverview();
+      this.blindLabeling.tab = this.isBlindLabelAdmin() ? 'people' : 'mine';
+      if (this.isBlindLabelOverviewTab()) this.loadBlindLabelOverview();
       else if (this.blindLabeling.tab === 'mine') this.claimBlindLabelBatch();
       else this.loadBlindLabelAssignments(false);
     },
     setBlindLabelTab: function(tab) {
-      if (tab === 'overview' && !this.isBlindLabelAdmin()) return;
-      if (tab !== 'overview' && this.isBlindLabelAdmin()) return;
-      if (tab !== 'overview' && !this.can('retrieval:blind_label') && !this.isSuperAdmin()) return;
+      if (this.isBlindLabelAdmin()) {
+        if (['people','workOrders'].indexOf(tab) === -1) return;
+      } else {
+        if (['mine','completed'].indexOf(tab) === -1) return;
+        if (!this.can('retrieval:blind_label') && !this.isSuperAdmin()) return;
+      }
       this.blindLabeling.tab = tab;
-      if (tab === 'overview') this.loadBlindLabelOverview();
+      if (this.isBlindLabelOverviewTab()) this.loadBlindLabelOverview();
       else this.loadBlindLabelAssignments(false);
     },
     loadBlindLabelAssignments: function(autoClaim) {
@@ -8008,7 +8030,7 @@ Vue.createApp({
         detail.arbitrationReason = '';
         return self.openBlindLabelWorkOrder(detail.item || {id:workOrderId});
       }).then(function() {
-        if (self.blindLabeling.tab === 'overview') return self.loadBlindLabelOverview();
+        if (self.isBlindLabelOverviewTab()) return self.loadBlindLabelOverview();
         return null;
       }).catch(function(error) {
         alert(error.message || '提交仲裁结论失败');
