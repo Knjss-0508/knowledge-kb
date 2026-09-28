@@ -47,6 +47,12 @@ IGNORED_SOURCE_HEADERS = (
     "蜂窝网络",
     "光线传感器",
 )
+CELLS_GET_CONTRACT_GUIDANCE = (
+    "使用 ranges[n].cells 之前，请务必检查顶层 has_more，以及每个 range 的 "
+    "actual_range / row_indices / col_indices。定位真实行号时用 row_indices[i]，"
+    "定位真实列字母时用 col_indices[j]，不要按二维数组下标自己数行列；"
+    "skip_hidden=true、skip_filter=true 或结果被截断时，这样会错位。"
+)
 
 
 class SyncSchedulerError(RuntimeError):
@@ -318,16 +324,9 @@ def _row_value(row: Sequence[Any], headers: Mapping[str, int], name: str) -> str
 
 def _is_contract_guidance_warning(message: str) -> bool:
     """识别 cells-get 每次返回的固定读取契约提示，而非真实数据告警。"""
-    normalized = message.casefold()
-    required_markers = (
-        "has_more",
-        "actual_range",
-        "row_indices",
-        "col_indices",
-    )
-    return "ranges[n].cells" in normalized and all(
-        marker in normalized for marker in required_markers
-    )
+    normalized = re.sub(r"\s+", " ", message).strip()
+    expected = re.sub(r"\s+", " ", CELLS_GET_CONTRACT_GUIDANCE).strip()
+    return normalized == expected
 
 
 def build_payload(
@@ -905,3 +904,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
