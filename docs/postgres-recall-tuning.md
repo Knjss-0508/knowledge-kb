@@ -196,4 +196,3 @@ cp -a /www/server/pgsql/data/postgresql.conf.bak-p02-20260923-102950 \
 
 > ⚠️ 不要用宝塔面板改 PostgreSQL 配置 —— 面板可能重写 `postgresql.conf`。
 > 改完检查：`grep -E '^(shared_buffers|effective_cache_size)' /www/server/pgsql/data/postgresql.conf`
-
