@@ -123,6 +123,11 @@ class BlindLabelAssignment(Base):
     completed_at = Column(DateTime, nullable=True, index=True)
     released_at = Column(DateTime, nullable=True)
     release_reason = Column(String(512), nullable=False, default="")
+    # Assignment-level note and all-candidates-missed classification are kept
+    # separate from per-candidate annotations.  This prevents a single free
+    # text note from being copied onto every candidate in the same work order.
+    note = Column(Text, nullable=False, default="")
+    task_reason_code = Column(String(64), nullable=False, default="")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -169,6 +174,7 @@ class BlindLabelAnnotation(Base):
     user_id = Column(String(64), ForeignKey("users.id"), nullable=False, index=True)
     candidate_ref = Column(String(64), nullable=False)
     verdict = Column(String(24), nullable=False)
+    reason_code = Column(String(64), nullable=False, default="")
     reason = Column(Text, nullable=False, default="")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 

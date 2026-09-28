@@ -12,6 +12,7 @@ from app.core.database import get_db
 from app.models.blind_labeling import (
     BlindLabelArbitration,
     BlindLabelAssignment,
+    BlindLabelBatch,
     BlindLabelWorkOrder,
 )
 from app.models.user import User
@@ -28,6 +29,7 @@ from app.services.blind_labeling import (
     assignment_summary,
     batch_summary,
     claim_batch,
+    current_batch,
     mark_assignment_started,
     overview,
     private_work_order_detail,
@@ -57,17 +59,10 @@ def require_blind_annotator():
 
 
 def require_blind_label_release_access():
-    """Allow owners to release their own task and arbiters to release any task.
-
-    Administrators do not participate in personal blind-label batches, so this
-    deliberately does not reuse :func:`require_blind_annotator`.
-    """
+    """仅允许仲裁管理员在紧急情况下回收未完成的盲标任务。"""
 
     def checker(user: User = Depends(get_current_user)) -> User:
-        if not (
-            has_permission(user, "retrieval:blind_label")
-            or has_permission(user, "retrieval:label_arbitrate")
-        ):
+        if not has_permission(user, "retrieval:label_arbitrate"):
             raise HTTPException(403, "Permission denied.")
         return user
 
@@ -158,9 +153,20 @@ def get_my_batch(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_blind_annotator()),
 ):
-    """Reuse the current unfinished batch, or create/refill a random batch."""
+    """Read the current batch without silently claiming the next one.
 
-    return _claim_response(db, current_user.id)
+    A completed batch is returned as context with no active items.  The client
+    must call the explicit ``POST /my-batch:claim`` command when the annotator
+    chooses to receive another 50-item batch.
+    """
+
+    batch, assignments = current_batch(db, current_user.id)
+    return {
+        "batch": batch_summary(db, batch) if batch else None,
+        "items": [assignment_summary(db, item) for item in assignments],
+        "assignments": [assignment_summary(db, item) for item in assignments],
+        "total": len(assignments),
+    }
 
 
 @router.post("/my-batch:claim")
@@ -203,7 +209,14 @@ def list_my_assignments(
     ).all()
     total = len(assignments)
     start = (page - 1) * page_size
+    batch = (
+        db.query(BlindLabelBatch)
+        .filter(BlindLabelBatch.user_id == current_user.id)
+        .order_by(BlindLabelBatch.created_at.desc(), BlindLabelBatch.id.desc())
+        .first()
+    )
     return {
+        "batch": batch_summary(db, batch) if batch else None,
         "items": [assignment_summary(db, item) for item in assignments[start : start + page_size]],
         "total": total,
         "page": page,
@@ -246,9 +259,13 @@ def get_assignment_detail(
     if assignment is None:
         raise HTTPException(status_code=404, detail="盲标任务不存在")
     _require_own_or_admin(current_user, assignment)
-    if assignment.user_id == current_user.id and assignment.status == "assigned":
-        mark_assignment_started(db, assignment)
-        db.commit()
+    if assignment.user_id == current_user.id:
+        try:
+            assignment = mark_assignment_started(db, assignment)
+            db.commit()
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     if _admin_can_view(current_user):
         return private_work_order_detail(db, assignment.work_order)
     return public_assignment_detail(db, assignment)
@@ -269,6 +286,8 @@ def submit_assignment_labels(
             db,
             assignment,
             [item.model_dump(by_alias=False) for item in body.annotations],
+            note=body.note,
+            task_reason_code=body.task_reason_code,
         )
         db.commit()
     except ValueError as exc:
@@ -304,9 +323,9 @@ def release_my_assignment(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_blind_label_release_access()),
 ):
+    if not has_permission(current_user, "retrieval:label_arbitrate"):
+        raise HTTPException(status_code=403, detail="仅管理员可应急回收未完成盲标任务")
     assignment = _get_assignment(db, assignment_id)
-    if assignment.user_id != current_user.id and not has_permission(current_user, "retrieval:label_arbitrate"):
-        raise HTTPException(status_code=403, detail="只能释放自己的未完成盲标任务")
     try:
         release_assignment(db, assignment, body.reason if body else "")
         db.commit()

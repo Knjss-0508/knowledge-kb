@@ -28,6 +28,7 @@ from app.routes import (
     tag,
 )
 from app.services.embedding import close_embedding_client
+from app.services.blind_label_auto_release_worker import run_blind_label_auto_release_worker
 from app.services.knowledge_import_worker import run_knowledge_import_worker
 from app.services.knowledge_vector_worker import run_knowledge_vector_worker
 from app.services.media_deletion import run_media_deletion_worker
@@ -80,6 +81,8 @@ async def lifespan(_: FastAPI):
                 )
             ),
         ]
+        if settings.BLIND_LABEL_AUTO_RELEASE_ENABLED:
+            workers.append(asyncio.create_task(run_blind_label_auto_release_worker(stop_event)))
     try:
         yield
     finally:

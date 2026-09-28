@@ -292,6 +292,9 @@ def validate_schema() -> None:
         ("knowledge_vector_tasks", "updated_at"),
         ("retrieval_quality_events", "request_id"),
         ("retrieval_quality_events", "source_kind"),
+        ("blind_label_assignments", "note"),
+        ("blind_label_assignments", "task_reason_code"),
+        ("blind_label_annotations", "reason_code"),
     }
     required_non_nullable_columns = {
         ("knowledge_vector_tasks", "id"),
@@ -308,6 +311,9 @@ def validate_schema() -> None:
         ("knowledge_items", "knowledge_origin"),
         ("knowledge_import_tasks", "retry_rows"),
         ("retrieval_quality_events", "source_kind"),
+        ("blind_label_assignments", "note"),
+        ("blind_label_assignments", "task_reason_code"),
+        ("blind_label_annotations", "reason_code"),
     }
     required_categories = {
         "cat-qc-standard",
@@ -430,7 +436,10 @@ def validate_schema() -> None:
                      ('knowledge_items', 'knowledge_origin'),
                      ('knowledge_import_tasks', 'retry_rows'),
                      ('retrieval_quality_events', 'request_id'),
-                     ('retrieval_quality_events', 'source_kind')
+                     ('retrieval_quality_events', 'source_kind'),
+                     ('blind_label_assignments', 'note'),
+                     ('blind_label_assignments', 'task_reason_code'),
+                     ('blind_label_annotations', 'reason_code')
                    )
                 """
             )

@@ -8,17 +8,17 @@ blind-label overview/consensus endpoints.
 from __future__ import annotations
 
 import copy
-import random
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.blind_labeling import (
     BlindLabelAnnotation,
     BlindLabelArbitration,
@@ -35,6 +35,26 @@ BLIND_LABEL_MAX_CANDIDATES = 3
 BLIND_LABEL_VERDICTS = {"referable", "not_referable"}
 BLIND_LABEL_ASSIGNMENT_STATUSES = {"assigned", "in_progress", "completed", "released"}
 BLIND_LABEL_ACTIVE_STATUSES = {"assigned", "in_progress", "completed"}
+BLIND_LABEL_AUTO_RELEASE_REASON = "系统超时自动回收"
+# A verdict remains the only value used by consensus and arbitration.  These
+# codes are structured diagnostic evidence for later retrieval/knowledge work.
+BLIND_LABEL_REFERABLE_REASON_CODES = {
+    "needs_conditions",
+    "needs_merge",
+    "other",
+}
+BLIND_LABEL_NOT_REFERABLE_REASON_CODES = {
+    "topic_irrelevant",
+    "content_incorrect",
+    "content_outdated",
+    "conditions_not_met",
+    "other",
+}
+BLIND_LABEL_TASK_REASON_CODES = {
+    "knowledge_exists_not_recalled",
+    "knowledge_missing",
+    "unable_to_judge",
+}
 _PRIVATE_CANDIDATE_KEYS = {
     "knowledge_id",
     "knowledge_origin",
@@ -188,8 +208,8 @@ def freeze_work_order_snapshot(db: Session, event: RetrievalQualityEvent) -> dic
 def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
     """Materialize missing conversation work orders from business-pool events.
 
-    Event selection is randomized server-side.  A unique conversation constraint
-    and nested transactions make concurrent claim requests safe even when both
+    Events are materialized newest first.  A unique conversation constraint and
+    nested transactions make concurrent claim requests safe even when both
     happen to inspect the same telemetry row.
     """
 
@@ -211,8 +231,8 @@ def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
             RetrievalQualityEvent.request_status.in_(("success", "fallback")),
         )
         # Scan newest first so a conversation's frozen snapshot always comes
-        # from its latest eligible retrieval event.  The resulting conversations
-        # are shuffled below for fair random dispatch.
+        # from its latest eligible retrieval event and newly created work orders
+        # retain a deterministic source-time priority for dispatch.
         .order_by(RetrievalQualityEvent.created_at.desc(), RetrievalQualityEvent.id.desc())
         .limit(limit)
         .all()
@@ -223,7 +243,6 @@ def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
         if conversation_id and conversation_id not in latest_by_conversation:
             latest_by_conversation[conversation_id] = event
     events = list(latest_by_conversation.values())
-    random.shuffle(events)
     created = 0
     seen_in_run: set[str] = set()
     for event in events:
@@ -298,15 +317,6 @@ def _maybe_complete_batch(db: Session, batch: BlindLabelBatch) -> None:
         batch.completed_at = datetime.utcnow()
 
 
-def _user_assignment_ids(db: Session, user_id: str) -> set[str]:
-    return {
-        str(work_order_id)
-        for (work_order_id,) in db.query(BlindLabelAssignment.work_order_id)
-        .filter(BlindLabelAssignment.user_id == user_id)
-        .all()
-    }
-
-
 def _work_order_capacity(db: Session, work_order_id: str) -> int:
     rows = (
         db.query(BlindLabelAssignment.user_id, BlindLabelAssignment.status)
@@ -330,23 +340,52 @@ def _choose_assignments(
 ) -> list[BlindLabelAssignment]:
     if needed <= 0:
         return []
-    excluded_ids = _user_assignment_ids(db, user_id)
-    # Pull a randomized bounded pool and lock each selected work order again
-    # before counting active annotators.  PostgreSQL honors the row lock; SQLite
-    # simply serializes the test transaction.
+    active_assignment_count = (
+        db.query(func.count(BlindLabelAssignment.id))
+        .filter(
+            BlindLabelAssignment.work_order_id == BlindLabelWorkOrder.id,
+            BlindLabelAssignment.status.in_(BLIND_LABEL_ACTIVE_STATUSES),
+        )
+        .correlate(BlindLabelWorkOrder)
+        .scalar_subquery()
+    )
+    current_user_already_assigned = (
+        db.query(BlindLabelAssignment.id)
+        .filter(
+            BlindLabelAssignment.work_order_id == BlindLabelWorkOrder.id,
+            BlindLabelAssignment.user_id == user_id,
+        )
+        .exists()
+    )
+    generated_at = func.coalesce(
+        BlindLabelWorkOrder.source_created_at,
+        BlindLabelWorkOrder.created_at,
+    )
+    # First fill work orders already assigned to other annotators, favoring the
+    # ones nearest the three-person cap.  Within the same assignment level,
+    # dispatch the newest source work order first.  Lock each selected work
+    # order again before counting active annotators: PostgreSQL honors the row
+    # lock; SQLite simply serializes the test transaction.
     candidates = (
         db.query(BlindLabelWorkOrder)
-        .order_by(func.random())
+        .filter(
+            ~current_user_already_assigned,
+            active_assignment_count < BLIND_LABEL_MAX_ASSIGNMENTS,
+        )
+        .order_by(
+            active_assignment_count.desc(),
+            generated_at.desc(),
+            BlindLabelWorkOrder.id.desc(),
+        )
         .limit(max(200, needed * 30))
         .all()
     )
     created: list[BlindLabelAssignment] = []
+    selected_work_order_ids: set[str] = set()
     for candidate in candidates:
-        if len(created) >= needed or candidate.id in {
-            item.work_order_id for item in created
-        }:
+        if len(created) >= needed:
             break
-        if candidate.id in excluded_ids:
+        if candidate.id in selected_work_order_ids:
             continue
         locked = (
             db.query(BlindLabelWorkOrder)
@@ -368,10 +407,9 @@ def _choose_assignments(
                 db.add(assignment)
                 db.flush()
         except IntegrityError:
-            excluded_ids.add(locked.id)
             continue
         created.append(assignment)
-        excluded_ids.add(locked.id)
+        selected_work_order_ids.add(locked.id)
     return created
 
 
@@ -440,22 +478,48 @@ def claim_batch(
     return batch, _active_batch_rows(db, batch)
 
 
-def mark_assignment_started(db: Session, assignment: BlindLabelAssignment) -> None:
-    if assignment.status == "assigned":
-        assignment.status = "in_progress"
-        assignment.started_at = datetime.utcnow()
-        db.flush()
+def current_batch(
+    db: Session,
+    user_id: str,
+) -> tuple[BlindLabelBatch | None, list[BlindLabelAssignment]]:
+    """Read a user's current batch without creating or assigning anything.
+
+    The read endpoint must not silently start the next 50-item batch after a
+    user finishes the previous one.  An explicit ``claim_batch`` call is the
+    command that creates/refills a batch.  When no active batch exists, return
+    the most recent completed batch as context and an empty work-item list;
+    callers can then show a deliberate "领取下一批" action.
+    """
+
+    batch = (
+        db.query(BlindLabelBatch)
+        .filter(
+            BlindLabelBatch.user_id == user_id,
+            BlindLabelBatch.status == "active",
+        )
+        .order_by(BlindLabelBatch.created_at.desc(), BlindLabelBatch.id.desc())
+        .first()
+    )
+    if batch is not None:
+        return batch, _active_batch_rows(db, batch)
+    batch = (
+        db.query(BlindLabelBatch)
+        .filter(BlindLabelBatch.user_id == user_id)
+        .order_by(BlindLabelBatch.created_at.desc(), BlindLabelBatch.id.desc())
+        .first()
+    )
+    return batch, []
 
 
-def submit_assignment(
+def mark_assignment_started(
     db: Session,
     assignment: BlindLabelAssignment,
-    annotations: Iterable[dict[str, Any]],
-) -> list[BlindLabelAnnotation]:
-    """Validate and persist a complete one-shot annotation submission."""
+) -> BlindLabelAssignment:
+    """在行锁下把待标任务切换为进行中，绝不复活已回收任务。"""
 
     locked = (
         db.query(BlindLabelAssignment)
+        .populate_existing()
         .filter(BlindLabelAssignment.id == assignment.id)
         .with_for_update()
         .first()
@@ -463,6 +527,38 @@ def submit_assignment(
     if locked is None:
         raise ValueError("盲标分配不存在")
     if locked.status == "released":
+        if locked.release_reason == BLIND_LABEL_AUTO_RELEASE_REASON:
+            raise ValueError("该盲标任务已超时自动回收，请刷新后领取新任务")
+        raise ValueError("该盲标任务已释放")
+    if locked.status == "assigned":
+        locked.status = "in_progress"
+        locked.started_at = datetime.utcnow()
+        db.flush()
+    return locked
+
+
+def submit_assignment(
+    db: Session,
+    assignment: BlindLabelAssignment,
+    annotations: Iterable[dict[str, Any]],
+    *,
+    note: str = "",
+    task_reason_code: str = "",
+) -> list[BlindLabelAnnotation]:
+    """Validate and persist a complete one-shot annotation submission."""
+
+    locked = (
+        db.query(BlindLabelAssignment)
+        .populate_existing()
+        .filter(BlindLabelAssignment.id == assignment.id)
+        .with_for_update()
+        .first()
+    )
+    if locked is None:
+        raise ValueError("盲标分配不存在")
+    if locked.status == "released":
+        if locked.release_reason == BLIND_LABEL_AUTO_RELEASE_REASON:
+            raise ValueError("该盲标任务已超时自动回收，请刷新后领取新任务")
         raise ValueError("该盲标任务已释放")
     if locked.status == "completed":
         raise ValueError("该盲标任务已经提交")
@@ -487,16 +583,46 @@ def submit_assignment(
             raise ValueError("同一候选项不能重复标注")
         if verdict not in BLIND_LABEL_VERDICTS:
             raise ValueError("标注结果必须为 referable 或 not_referable")
+        reason_code = str(item.get("reason_code") or item.get("reasonCode") or "").strip()
+        reason = str(item.get("reason") or "").strip()[:2000]
+        if verdict == "referable":
+            if reason_code and reason_code not in BLIND_LABEL_REFERABLE_REASON_CODES:
+                raise ValueError("可参考原因不合法")
+        else:
+            if reason_code not in BLIND_LABEL_NOT_REFERABLE_REASON_CODES:
+                raise ValueError("选择不可参考时必须选择原因")
+        if reason_code == "other" and not reason:
+            raise ValueError("选择其他原因时请填写补充说明")
         seen.add(candidate_ref)
         normalized.append(
             {
                 "candidate_ref": candidate_ref,
                 "verdict": verdict,
-                "reason": str(item.get("reason") or "").strip()[:2000],
+                "reason_code": reason_code,
+                "reason": reason,
             }
         )
-    if seen != expected_refs:
-        raise ValueError("必须完成当前任务中全部业务沉淀候选的标注")
+    task_reason_code = str(task_reason_code or "").strip()
+    if task_reason_code and task_reason_code not in BLIND_LABEL_TASK_REASON_CODES:
+        raise ValueError("本工单原因不合法")
+
+    referable_items = [
+        item for item in normalized if item["verdict"] == "referable"
+    ]
+    if len(referable_items) > 1:
+        raise ValueError("一次标注只能选择一条可参考候选")
+
+    if not referable_items:
+        # The only valid submission without a referable candidate is the
+        # explicit "全部不可参考" path.  It must carry a decision and reason
+        # for every frozen candidate.  The assignment-level task reason is
+        # retained as optional compatibility metadata and is not required.
+        if seen != expected_refs:
+            raise ValueError("三条候选均不可参考时，必须分别选择每条候选的原因")
+    # A single referable candidate is sufficient to complete this work order.
+    # The other candidates may be omitted by the new UI; when a client still
+    # submits explicit not-referable decisions, their reason validation above
+    # remains in force.
     created: list[BlindLabelAnnotation] = []
     for item in normalized:
         annotation = BlindLabelAnnotation(
@@ -506,12 +632,15 @@ def submit_assignment(
             user_id=locked.user_id,
             candidate_ref=item["candidate_ref"],
             verdict=item["verdict"],
+            reason_code=item["reason_code"],
             reason=item["reason"],
         )
         db.add(annotation)
         created.append(annotation)
     locked.status = "completed"
     locked.completed_at = datetime.utcnow()
+    locked.note = str(note or "").strip()[:2000]
+    locked.task_reason_code = task_reason_code
     locked.updated_at = datetime.utcnow()
     _maybe_complete_batch(db, locked.batch)
     db.flush()
@@ -521,6 +650,7 @@ def submit_assignment(
 def release_assignment(db: Session, assignment: BlindLabelAssignment, reason: str = "") -> None:
     locked = (
         db.query(BlindLabelAssignment)
+        .populate_existing()
         .filter(BlindLabelAssignment.id == assignment.id)
         .with_for_update()
         .first()
@@ -536,6 +666,60 @@ def release_assignment(db: Session, assignment: BlindLabelAssignment, reason: st
     locked.release_reason = str(reason or "").strip()[:512]
     locked.updated_at = datetime.utcnow()
     db.flush()
+
+
+def release_expired_assignments(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    timeout_seconds: int | None = None,
+    batch_size: int | None = None,
+) -> int:
+    """自动回收领取超时但尚未提交的盲标任务。
+
+    ``assigned_at`` 是唯一可靠的租约起点：页面没有草稿和心跳，不能用
+    ``updated_at`` 伪造活跃时间。行锁使后台回收与最终提交互斥；先获得锁的
+    一方完成后，另一方会按最新状态跳过或返回已回收提示。
+    """
+
+    if not settings.BLIND_LABEL_AUTO_RELEASE_ENABLED:
+        return 0
+    effective_timeout = max(
+        1,
+        int(
+            settings.BLIND_LABEL_ASSIGNMENT_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else timeout_seconds
+        ),
+    )
+    limit = max(
+        1,
+        int(
+            settings.BLIND_LABEL_RELEASE_BATCH_SIZE
+            if batch_size is None
+            else batch_size
+        ),
+    )
+    released_at = now or datetime.utcnow()
+    cutoff = released_at - timedelta(seconds=effective_timeout)
+    assignments = (
+        db.query(BlindLabelAssignment)
+        .filter(
+            BlindLabelAssignment.status.in_(("assigned", "in_progress")),
+            BlindLabelAssignment.assigned_at <= cutoff,
+        )
+        .order_by(BlindLabelAssignment.assigned_at, BlindLabelAssignment.id)
+        .with_for_update(skip_locked=True)
+        .limit(limit)
+        .all()
+    )
+    for assignment in assignments:
+        assignment.status = "released"
+        assignment.released_at = released_at
+        assignment.release_reason = BLIND_LABEL_AUTO_RELEASE_REASON
+        assignment.updated_at = released_at
+    db.flush()
+    return len(assignments)
 
 
 def batch_summary(db: Session, batch: BlindLabelBatch) -> dict[str, Any]:
@@ -605,12 +789,16 @@ def assignment_summary(db: Session, assignment: BlindLabelAssignment) -> dict[st
         "updated_at": assignment.updated_at,
         "annotation_count": int(annotation_count),
         "annotations": int(annotation_count),
+        "note": assignment.note or "",
+        "task_reason_code": assignment.task_reason_code or "",
     }
 
 
 def public_assignment_detail(db: Session, assignment: BlindLabelAssignment) -> dict[str, Any]:
     return {
         "assignment": assignment_summary(db, assignment),
+        "note": assignment.note or "",
+        "task_reason_code": assignment.task_reason_code or "",
         "candidates": [
             _public_candidate(item)
             for item in (assignment.work_order.candidate_snapshot or [])
@@ -620,6 +808,7 @@ def public_assignment_detail(db: Session, assignment: BlindLabelAssignment) -> d
             {
                 "candidateRef": item.candidate_ref,
                 "verdict": item.verdict,
+                "reasonCode": item.reason_code or "",
                 "reason": item.reason,
             }
             for item in sorted(assignment.annotations, key=lambda value: value.candidate_ref)
@@ -649,6 +838,38 @@ def consensus_for_work_order(db: Session, work_order: BlindLabelWorkOrder) -> di
         .filter(BlindLabelArbitration.work_order_id == work_order.id)
         .all()
     }
+    # New submissions contain at most one referable candidate.  In that mode,
+    # different selected candidates are a real disagreement even though the
+    # non-selected candidates are intentionally omitted rather than recorded
+    # as negative labels.  Keep the old per-candidate positive/negative split
+    # behavior for legacy submissions that contain multiple referable labels.
+    referable_refs_by_assignment = [
+        {
+            annotation.candidate_ref
+            for annotation in assignment.annotations
+            if annotation.verdict == "referable"
+        }
+        for assignment in assignments
+    ]
+    single_choice_mode = bool(assignments) and all(
+        len(refs) <= 1 for refs in referable_refs_by_assignment
+    )
+    selected_refs = {
+        next(iter(refs))
+        for refs in referable_refs_by_assignment
+        if len(refs) == 1
+    }
+    choice_disagreement = (
+        single_choice_mode
+        and len(assignments) >= BLIND_LABEL_MAX_ASSIGNMENTS
+        and len(
+            {
+                next(iter(refs)) if refs else None
+                for refs in referable_refs_by_assignment
+            }
+        )
+        > 1
+    )
     for candidate in candidates:
         ref = str(candidate.get("candidate_ref") or "")
         votes = [
@@ -666,9 +887,10 @@ def consensus_for_work_order(db: Session, work_order: BlindLabelWorkOrder) -> di
             counts.get("referable", 0) > 0
             and counts.get("not_referable", 0) > 0
         )
+        choice_split = choice_disagreement and ref in selected_refs
         if arbitration is not None:
             candidate_status = "arbitrated"
-        elif split:
+        elif split or choice_split:
             candidate_status = "needs_arbitration"
         elif len(votes) >= BLIND_LABEL_MAX_ASSIGNMENTS:
             candidate_status = "unanimous"
@@ -682,7 +904,7 @@ def consensus_for_work_order(db: Session, work_order: BlindLabelWorkOrder) -> di
                 "not_referable_count": int(counts.get("not_referable", 0)),
                 "preliminary_verdict": preliminary,
                 "status": candidate_status,
-                "needs_arbitration": split and arbitration is None,
+                "needs_arbitration": (split or choice_split) and arbitration is None,
                 "arbitrated_verdict": arbitration.verdict if arbitration else None,
                 "arbitrated_by": arbitration.arbitrated_by if arbitration else None,
                 "arbitration_reason": arbitration.reason if arbitration else "",
@@ -698,13 +920,15 @@ def consensus_for_work_order(db: Session, work_order: BlindLabelWorkOrder) -> di
             result["referable_count"] > 0 and result["not_referable_count"] > 0
             for result in candidate_results
         )
+        has_disagreement = split or choice_disagreement
         unresolved_split = any(
-            result["referable_count"] > 0
-            and result["not_referable_count"] > 0
-            and not result["arbitrated"]
-            for result in candidate_results
+            result["needs_arbitration"] for result in candidate_results
         )
-        overall_status = "majority" if unresolved_split else ("arbitrated" if split else "unanimous")
+        overall_status = (
+            "majority"
+            if unresolved_split
+            else ("arbitrated" if has_disagreement else "unanimous")
+        )
         needs_arbitration = unresolved_split
     return {
         "status": overall_status,
@@ -743,6 +967,7 @@ def private_work_order_detail(db: Session, work_order: BlindLabelWorkOrder) -> d
                     {
                         "candidate_ref": annotation.candidate_ref,
                         "verdict": annotation.verdict,
+                        "reason_code": annotation.reason_code or "",
                         "reason": annotation.reason,
                         "created_at": annotation.created_at,
                     }
