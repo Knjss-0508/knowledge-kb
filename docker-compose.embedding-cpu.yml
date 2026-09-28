@@ -1,10 +1,29 @@
+# 本机 CPU 嵌入服务 —— 现在是**可选退路**，默认不参与部署。
+#
+# 背景：拆分拓扑（GPU 在新电脑、后端与数据库在服务器）下，后端通过 SSH 反向
+# 隧道直连新电脑 GPU，本机 CPU 服务只在隧道不可用时当退路。实测（2026-09-28）：
+#   - 近 1h / 6h / 24h / 72h 推理请求数均为 0；最后一次推理是 2026-09-22T09:31:55Z；
+#   - 单次推理隧道 171 ms、本机 CPU 999 ms，GPU 快 5.8 倍；
+#   - 本机 CPU 服务常驻内存 2.67 GB，而系统可用内存只剩 4.4 GB。
+# 因此在服务器上不再让它常驻。
+#
+# 为什么用 profile 而不是删掉服务定义：
+#   1. docker compose up -d 默认不启动带 profile 的服务，后端不会再被拉起；
+#   2. 服务定义保留，docker-compose.server.yml 对它的覆盖（ports: !reset []）
+#      仍然有效，不会因为「引用不存在的服务」而报错；
+#   3. 退路只需一条命令，见下方注释。
+#
+# 启用退路（服务器上，隧道中断时）：
+#   docker compose -f docker-compose.yml -f docker-compose.embedding-cpu.yml \
+#     --profile cpu-fallback up -d embedding-qwen
+#   然后把后端 .env 的 EMBEDDING_BASE_URL 临时改回 http://embedding-qwen:80/v1
+#   并重建后端容器。
+#
+# 注意：这里**不能**给 backend 加 depends_on embedding-qwen。带 profile 的服务
+# 默认不存在，depends_on 会让整个 compose 项目在校验阶段直接报错。
 services:
-  backend:
-    depends_on:
-      embedding-qwen:
-        condition: service_healthy
-
   embedding-qwen:
+    profiles: ["cpu-fallback"]
     build:
       context: .
       dockerfile: embedding-cpu/Dockerfile
