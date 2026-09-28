@@ -18,9 +18,9 @@ from app.models.user import User, UserSession
 router = APIRouter(prefix="/auth", tags=["Auth"])
 ROLES = {
     "visitor": {"label": "游客用户", "permissions": {"knowledge:view"}},
-    "junior_support": {"label": "小小答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_own_review", "password:reset_self"}},
-    "senior_support": {"label": "大大答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_review_all", "knowledge:approve", "password:reset_self"}},
-    "super_support": {"label": "超级答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_review_all", "knowledge:edit_published", "knowledge:approve", "password:reset_self"}},
+    "junior_support": {"label": "小小答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_own_review", "password:reset_self", "retrieval:blind_label"}},
+    "senior_support": {"label": "大大答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_review_all", "knowledge:approve", "password:reset_self", "retrieval:blind_label"}},
+    "super_support": {"label": "超级答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_review_all", "knowledge:edit_published", "knowledge:approve", "password:reset_self", "retrieval:blind_label"}},
     "super_admin": {"label": "超级管理员", "permissions": {"*", "account:manage"}},
 }
 
@@ -35,6 +35,9 @@ PERMISSION_LABELS = {
     "knowledge:publish": "发布知识",
     "knowledge:deprecate": "废弃知识",
     "password:reset_self": "修改本人密码",
+    "retrieval:blind_label": "参与召回盲标",
+    "retrieval:label_overview": "查看召回盲标总览",
+    "retrieval:label_arbitrate": "仲裁召回盲标分歧",
     "account:manage": "管理账号",
 }
 

@@ -462,6 +462,19 @@
     @media(max-width:1500px){.candidate-review-page .review-metric-cards{grid-template-columns:repeat(4,minmax(0,1fr))}.candidate-review-page .candidate-filter-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.candidate-review-page .candidate-filter-field.keyword{grid-column:span 2}.candidate-review-page .candidate-filter-field.date-range{grid-column:span 2}}
     @media(max-width:900px){.candidate-review-page{padding-left:22px;padding-right:22px}.candidate-review-page .candidate-filter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.candidate-review-page .candidate-filter-field.keyword,.candidate-review-page .candidate-filter-field.date-range{grid-column:span 2}}
     @media(max-width:760px){.candidate-review-page{padding:22px 16px 32px}.candidate-review-page .review-metric-cards{grid-template-columns:1fr 1fr;gap:10px}.candidate-review-page .review-metric-cards .card{min-height:132px}.candidate-review-page .candidate-filter-head{padding:0 16px}.candidate-review-page .candidate-filter-grid{display:flex;flex-direction:column;gap:14px;padding:0 16px 18px}.candidate-review-page .candidate-filter-field.keyword,.candidate-review-page .candidate-filter-field.date-range{grid-column:auto}.candidate-review-page .candidate-filter-actions{padding:14px 16px;justify-content:flex-start}.candidate-review-page .candidate-filter-actions .review-selected-note{width:100%;margin-right:0}.candidate-review-page .candidate-filter-actions .candidate-training-toggle{margin-right:0}.candidate-review-page .candidate-filter-actions .btn{flex:1 1 140px}.candidate-review-page .candidate-filter-field.date-range .candidate-date-inputs{grid-template-columns:1fr}.candidate-date-separator{display:none}}
+
+    /* 召回盲标：标注员只可查看自己被派发的工单；总览仅由具备总览权限的账号访问。 */
+    .blind-label-shell{display:flex;flex-direction:column;gap:16px}
+    .blind-label-hero{position:relative;overflow:hidden;display:grid;grid-template-columns:minmax(0,1.25fr) minmax(300px,.75fr);gap:18px;padding:24px;border-radius:12px;background:linear-gradient(132deg,#11323b,#15575b 56%,#128777);color:#fff;box-shadow:0 16px 36px rgba(17,65,70,.18)}
+    .blind-label-hero:after{content:"";position:absolute;right:-90px;top:-132px;width:278px;height:278px;border:45px solid rgba(255,255,255,.09);border-radius:50%;pointer-events:none}.blind-label-hero-copy,.blind-label-hero-side{position:relative;z-index:1}.blind-label-eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#9ce8dc}.blind-label-hero h2{margin:7px 0 8px;font-size:26px}.blind-label-hero p{max-width:720px;margin:0;color:#d0ebe7;font-size:13px;line-height:1.72}.blind-label-hero-side{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-content:center}.blind-label-mini{padding:13px 14px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(255,255,255,.09);backdrop-filter:blur(6px)}.blind-label-mini span{display:block;color:#c2e2dd;font-size:11px}.blind-label-mini b{display:block;margin-top:5px;font-size:16px;font-variant-numeric:tabular-nums}.blind-label-tabs{display:flex;align-items:center;gap:6px;padding:5px;border:1px solid var(--line);border-radius:9px;background:#fff}.blind-label-tab{height:36px;padding:0 15px;border:0;border-radius:6px;background:transparent;color:#667085;font-size:13px;cursor:pointer}.blind-label-tab:hover{background:#f2f7f6;color:#177c6c}.blind-label-tab.on{background:#e4f8f2;color:#007f6b;font-weight:700}.blind-label-tab-right{margin-left:auto;color:#667085;font-size:12px}
+    .blind-label-summary{display:grid;grid-template-columns:minmax(240px,.95fr) minmax(0,1.7fr);gap:14px}.blind-label-progress-card{padding:18px;border:1px solid #cde7e0;border-radius:9px;background:linear-gradient(135deg,#f2fbf8,#fff)}.blind-label-progress-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.blind-label-progress-head h3{margin:0;color:#1d2939;font-size:15px}.blind-label-progress-head p{margin:5px 0 0;color:#667085;font-size:12px;line-height:1.5}.blind-label-progress-number{color:#007f6b;font-size:23px;font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap}.blind-label-progress-track{height:8px;margin-top:15px;overflow:hidden;border-radius:999px;background:#dfeeea}.blind-label-progress-track i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#11a889,#0a8570);transition:width .2s ease}.blind-label-progress-meta{display:flex;justify-content:space-between;gap:8px;margin-top:8px;color:#667085;font-size:11px}.blind-label-progress-meta b{color:#007f6b}.blind-label-info-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.blind-label-info{padding:16px;border:1px solid var(--line);border-radius:9px;background:#fff}.blind-label-info span{display:block;color:#98a2b3;font-size:11px}.blind-label-info b{display:block;margin-top:7px;color:#344054;font-size:22px;font-variant-numeric:tabular-nums}.blind-label-info small{display:block;margin-top:5px;color:#667085;font-size:11px}
+    .blind-label-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:13px 16px;border:1px solid var(--line);border-radius:8px;background:#fff}.blind-label-toolbar .tt{font-size:16px}.blind-label-toolbar-spacer{flex:1}.blind-label-status{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;background:#f2f4f7;color:#667085;font-size:11px;font-weight:700;white-space:nowrap}.blind-label-status.assigned,.blind-label-status.in_progress,.blind-label-status.partial{background:#fff4dd;color:#986000}.blind-label-status.completed,.blind-label-status.consensus{background:#e4f8f2;color:#007f6b}.blind-label-status.released,.blind-label-status.expired{background:#f2f4f7;color:#667085}.blind-label-status.disputed,.blind-label-status.failed{background:#fff0ed;color:#c83827}.blind-label-query{max-width:540px;color:#344054;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.blind-label-subline{max-width:540px;margin-top:4px;color:#98a2b3;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.blind-label-empty{padding:56px 18px!important;color:#98a2b3!important;text-align:center!important}.blind-label-error{padding:11px 13px;border:1px solid #f1c5bd;border-radius:7px;background:#fff7f5;color:#b42318;font-size:12px;line-height:1.55}.blind-label-loading{opacity:.62;pointer-events:none}
+    .blind-label-filter-card{overflow:hidden;border:1px solid #e2e8f0;border-radius:9px;background:#fff;box-shadow:0 2px 5px rgba(16,24,40,.035)}.blind-label-filter-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 17px 0}.blind-label-filter-head h3{margin:0;color:#344054;font-size:15px}.blind-label-filter-head p{margin:4px 0 0;color:#98a2b3;font-size:11px}.blind-label-filter-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:15px 17px}.blind-label-filter-field{display:flex;min-width:0;flex-direction:column;gap:6px}.blind-label-filter-field.wide{grid-column:span 2}.blind-label-filter-field span{color:#667085;font-size:11px;font-weight:700}.blind-label-filter-field .inp{width:100%;height:34px}.blind-label-filter-dates{display:grid;grid-template-columns:1fr 12px 1fr;gap:7px;align-items:center}.blind-label-filter-dates i{color:#98a2b3;text-align:center;font-style:normal}.blind-label-filter-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 17px;border-top:1px solid #edf1f4;background:#fbfcfd}.blind-label-filter-actions .hint{margin-right:auto}
+    .blind-label-overview-cards{grid-template-columns:repeat(4,minmax(0,1fr))}.blind-label-overview-cards .card{min-height:122px;cursor:default}.blind-label-overview-cards .card:after{width:82px;height:82px;border-width:15px}.blind-label-overview-cards .card:nth-child(2):after{border-color:#fff0d3}.blind-label-overview-cards .card:nth-child(3):after{border-color:#d9f5ed}.blind-label-overview-cards .card:nth-child(4):after{border-color:#ffe3dd}.blind-label-overview-cards .card:nth-child(5):after{border-color:#dce8ff}.blind-label-overview-cards .card:nth-child(6):after{border-color:#e9e4ff}.blind-label-overview-cards .card:nth-child(7):after{border-color:#fff0ed}.blind-label-overview-cards .card:nth-child(8):after{border-color:#d9f5ed}.blind-label-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:2px 0 -3px}.blind-label-section-head h3{margin:0;color:#344054;font-size:16px}.blind-label-section-head p{margin:4px 0 0;color:#98a2b3;font-size:12px}.blind-label-person-table{min-width:900px}.blind-label-order-table{min-width:1180px}.blind-label-progress-cell{display:flex;align-items:center;gap:8px;min-width:116px}.blind-label-mini-track{width:62px;height:6px;overflow:hidden;border-radius:999px;background:#e5efed}.blind-label-mini-track i{display:block;height:100%;border-radius:inherit;background:#10a88a}.blind-label-dimension{display:flex;align-items:center;gap:5px;flex-wrap:wrap}.blind-label-dimension b{color:#344054;font-size:12px}.blind-label-user-label{display:flex;align-items:center;gap:8px}.blind-label-avatar{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#e4f8f2;color:#007f6b;font-size:11px;font-weight:800}.blind-label-annotator-results{display:grid;gap:8px}.blind-label-annotator-row{display:grid;grid-template-columns:36px minmax(0,1fr) auto;gap:10px;align-items:start;padding:10px 11px;border:1px solid #e8edef;border-radius:7px;background:#fbfcfd}.blind-label-annotator-row b{color:#344054;font-size:12px}.blind-label-annotator-row small{display:block;margin-top:3px;color:#667085;font-size:11px;line-height:1.5}.blind-label-choice{display:inline-flex;align-items:center;padding:3px 7px;border-radius:999px;font-size:10px;font-weight:800;white-space:nowrap}.blind-label-choice.helpful{background:#e4f8f2;color:#007f6b}.blind-label-choice.unhelpful{background:#fff0ed;color:#c83827}.blind-label-choice.pending{background:#f2f4f7;color:#667085}
+    .blind-label-dialog{width:min(1030px,96vw);height:min(900px,calc(100vh - 44px));display:flex;flex-direction:column}.blind-label-dialog .dlg-b{min-height:0;flex:1;overflow:auto;padding:18px 22px;background:#fafbfc}.blind-label-dialog .dlg-f{flex:0 0 auto}.blind-label-work-order{padding:15px 16px;border:1px solid #dfe7e9;border-radius:8px;background:#fff}.blind-label-work-order-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.blind-label-work-order-id{color:#98a2b3;font:12px/1.45 Consolas,"SFMono-Regular",monospace}.blind-label-work-order h4{margin:8px 0 0;color:#1d2939;font-size:16px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}.blind-label-work-order-meta{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:11px;color:#667085;font-size:11px}.blind-label-candidate-section{margin-top:14px}.blind-label-candidate-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.blind-label-candidate-head h4{margin:0;color:#344054;font-size:14px}.blind-label-candidate-head p{margin:4px 0 0;color:#98a2b3;font-size:11px;line-height:1.5}.blind-label-candidate-list{display:grid;gap:10px}.blind-label-candidate{border:1px solid #dfe6e9;border-radius:8px;background:#fff;overflow:hidden}.blind-label-candidate-headline{display:flex;align-items:flex-start;gap:11px;padding:13px 14px}.blind-label-candidate-rank{display:grid;place-items:center;flex:0 0 29px;width:29px;height:29px;border-radius:7px;background:#e8f7f3;color:#008c76;font-size:12px;font-weight:800}.blind-label-candidate-main{min-width:0;flex:1}.blind-label-candidate-main strong{display:block;color:#1d2939;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.blind-label-candidate-body{border-top:1px solid #edf0f2;padding:11px 14px;background:#fbfcfd;color:#475467;font-size:12px;line-height:1.72;white-space:pre-wrap;overflow-wrap:anywhere}.blind-label-candidate-media{display:flex;gap:9px;flex-wrap:wrap;margin-top:10px}.blind-label-media{position:relative;width:145px;height:88px;overflow:hidden;border:1px solid #d8e0e7;border-radius:6px;background:#f2f4f7;cursor:pointer}.blind-label-media img,.blind-label-media video{display:block;width:100%;height:100%;object-fit:contain;background:#f7f8fa}.blind-label-media video{background:#101828}.blind-label-media span{position:absolute;inset:0;display:grid;place-items:center;background:rgba(16,24,40,.43);color:#fff;font-size:11px;font-weight:700;opacity:0;transition:opacity .15s ease}.blind-label-media:hover span,.blind-label-media:focus-visible span{opacity:1}.blind-label-choice-buttons{display:flex;align-items:center;gap:7px;flex:0 0 auto}.blind-label-choice-buttons .btn{min-width:72px}.blind-label-choice-buttons .btn.on-helpful{border-color:#0d9b82;background:#e4f8f2;color:#007f6b}.blind-label-choice-buttons .btn.on-unhelpful{border-color:#e9a89d;background:#fff0ed;color:#c83827}.blind-label-note{margin-top:14px;padding:13px 14px;border:1px solid #e1e7e9;border-radius:8px;background:#fff}.blind-label-note label{display:block;margin-bottom:6px;color:#475467;font-size:12px;font-weight:700}.blind-label-note textarea{min-height:80px;resize:vertical}.blind-label-dialog-foot-note{margin-right:auto;color:#667085;font-size:11px;line-height:1.5}.blind-label-admin-detail{display:grid;grid-template-columns:minmax(0,.95fr) minmax(330px,1.05fr);gap:14px}.blind-label-admin-detail .blind-label-candidate-section{margin-top:0}.blind-label-admin-detail-side{display:flex;flex-direction:column;gap:14px}.blind-label-detail-card{padding:14px;border:1px solid #dfe7e9;border-radius:8px;background:#fff}.blind-label-detail-card h4{margin:0 0 10px;color:#344054;font-size:13px}.blind-label-detail-consensus{padding:10px 11px;border-radius:7px;background:#f2fbf7;color:#176c5b;font-size:12px;line-height:1.6}.blind-label-detail-consensus.disputed{background:#fff7f5;color:#b42318}
+    @media(max-width:1120px){.blind-label-hero,.blind-label-summary,.blind-label-admin-detail{grid-template-columns:1fr}.blind-label-filter-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.blind-label-overview-cards{grid-template-columns:repeat(4,minmax(0,1fr))}}
+    @media(max-width:760px){.blind-label-hero{padding:20px 17px}.blind-label-hero-side{grid-template-columns:1fr 1fr}.blind-label-tabs{overflow-x:auto}.blind-label-tab{white-space:nowrap}.blind-label-tab-right{display:none}.blind-label-summary,.blind-label-info-grid{grid-template-columns:1fr}.blind-label-filter-grid{display:flex;flex-direction:column;padding:14px}.blind-label-filter-field.wide{grid-column:auto}.blind-label-filter-actions{justify-content:flex-start;padding:12px 14px}.blind-label-filter-actions .hint{width:100%;margin-right:0}.blind-label-overview-cards{grid-template-columns:1fr 1fr}.blind-label-toolbar{padding:12px 14px}.blind-label-toolbar-spacer{display:none}.blind-label-query,.blind-label-subline{max-width:220px}.blind-label-dialog{width:100%;height:100%;max-height:100vh;border-radius:0}.blind-label-dialog .dlg-b{padding:14px}.blind-label-work-order-top,.blind-label-candidate-headline{align-items:flex-start}.blind-label-candidate-headline{flex-wrap:wrap}.blind-label-choice-buttons{width:100%;padding-left:40px}.blind-label-choice-buttons .btn{flex:1}.blind-label-dialog .dlg-f{align-items:stretch;flex-wrap:wrap}.blind-label-dialog .dlg-f .btn{flex:1 1 auto}.blind-label-dialog-foot-note{width:100%;margin-right:0}.blind-label-admin-detail{grid-template-columns:1fr}.blind-label-media{width:132px;height:82px}}
+    .blind-label-arbitration-box{margin-top:10px;padding:10px 11px;border:1px solid #f0d7b4;border-radius:7px;background:#fffaf1}.blind-label-arbitration-summary{display:grid;gap:9px;margin-top:10px;padding-top:10px;border-top:1px solid #edf0f2}.blind-label-arbitration-summary .btn{justify-self:start}.blind-label-pagination{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:12px;color:#667085;font-size:12px}
   </style>
 </head>
 <body>
@@ -479,8 +492,8 @@
           <div class="nav-subitem" :class="{on:view==='automationMonitor'}" title="运行监管" @click="openAutomationMonitor"><span class="nav-subdot" aria-hidden="true"></span>运行监管</div>
         </div>
       </div>
-      <div class="nav-item" :class="{on:view==='embeddingModel'}" @click="openEmbeddingModel()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4.5a3 3 0 0 1 5.2-2A3.5 3.5 0 0 1 18 5.8a3.2 3.2 0 0 1 1.2 5.9A3.5 3.5 0 0 1 17 18a3 3 0 0 1-5 2.2A3 3 0 0 1 7 18a3.5 3.5 0 0 1-2.2-6.3A3.2 3.2 0 0 1 6 5.8 3.5 3.5 0 0 1 8 4.5z"></path><path d="M12 4v16M8.5 8.5c1.5.3 2.5 1.2 3.5 2.5M15.5 8.5c-1.5.3-2.5 1.2-3.5 2.5M8.5 15.5c1.5-.3 2.5-1.2 3.5-2.5M15.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5"></path></svg></span>向量模型</div>
-      <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='retrievalReview'}" @click="openRetrievalReviewPage"><span class="nav-icon" aria-hidden="true">✓</span>召回标注</div>
+      <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='embeddingModel'}" @click="openEmbeddingModel()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4.5a3 3 0 0 1 5.2-2A3.5 3.5 0 0 1 18 5.8a3.2 3.2 0 0 1 1.2 5.9A3.5 3.5 0 0 1 17 18a3 3 0 0 1-5 2.2A3 3 0 0 1 7 18a3.5 3.5 0 0 1-2.2-6.3A3.2 3.2 0 0 1 6 5.8 3.5 3.5 0 0 1 8 4.5z"></path><path d="M12 4v16M8.5 8.5c1.5.3 2.5 1.2 3.5 2.5M15.5 8.5c-1.5.3-2.5 1.2-3.5 2.5M8.5 15.5c1.5-.3 2.5-1.2 3.5-2.5M15.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5"></path></svg></span>向量模型</div>
+      <div class="nav-item" v-if="canAccessBlindLabeling()" :class="{on:view==='retrievalReview'}" @click="openRetrievalReviewPage"><span class="nav-icon" aria-hidden="true">✓</span>召回标注</div>
       <div class="nav-item" v-if="isSuperAdmin()" :class="{on:view==='users'}" @click="openUsers"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c.8-3.2 3.1-5 7-5s6.2 1.8 7 5"></path><path d="M19 8v4M21 10h-4"></path></svg></span>账号管理</div>
     </div>
     <div class="side-foot">
@@ -935,7 +948,7 @@
       </table>
     </div>
   </div>
-  <div class="mn embedding-shell" v-if="view==='embeddingModel'">
+  <div class="mn embedding-shell" v-if="view==='embeddingModel' && isSuperAdmin()">
     <section class="embedding-hero">
       <div class="embedding-hero-copy">
         <div class="embedding-eyebrow">{{isSuperAdmin()?'Embedding Control Plane':'Embedding Retrieval Analytics'}}</div>
@@ -1246,11 +1259,80 @@
       </tbody></table></div>
     </template>
   </div>
-  <div class="mn embedding-shell" v-if="view==='retrievalReview' && isSuperAdmin()">
-    <section class="embedding-hero"><div class="embedding-hero-copy"><div class="embedding-eyebrow">Retrieval Review</div><h2>召回标注</h2><p>这里只展示待标注召回请求。点击“开始标注”后，按总部标准与业务沉淀分别查看 TOP 3 候选，并逐条标记可参考或不可参考。</p></div><div class="embedding-hero-side"><div class="embedding-mini"><span>待标注</span><b>{{analysis.pagination.total}}</b></div><div class="embedding-mini"><span>数据更新时间</span><b>{{analysis.updatedAt}}</b></div></div></section>
-    <div class="bar"><span class="tt">待标注数据</span><span class="review-selected-note">共 <b>{{analysis.pagination.total}}</b> 条</span><span style="flex:1"></span><button class="btn bd" :disabled="analysis.loading" @click="loadRetrievalReviewPage">刷新</button></div>
-    <div class="tw"><table><thead><tr><th style="width:140px">工单 ID</th><th>查询词</th><th style="width:120px">候选数</th><th style="width:150px">上报时间</th><th style="width:120px">操作</th></tr></thead><tbody><tr v-for="item in analysis.risks" :key="item.id"><td>{{item.conversation_id || item.id}}</td><td><div class="risk-query" :title="item.query">{{item.query}}</div></td><td>{{item.candidate_count || (item.candidates || []).length}}</td><td>{{formatDate(item.created_at)}}</td><td><button class="btn bp bsm" @click="openRetrievalReview(item)">开始标注</button></td></tr><tr v-if="!analysis.risks.length"><td colspan="5" class="review-empty">暂无待标注数据。</td></tr></tbody></table></div>
-    <div class="knowledge-review-batch-bar" v-if="analysis.pagination.total"><div class="knowledge-pagination"><span class="knowledge-pagination-summary">第 {{retrievalPageStart()}}-{{retrievalPageEnd()}} 条 / 共 <b>{{analysis.pagination.total}}</b> 条</span><button class="knowledge-page-nav" @click="changeRetrievalPage(analysis.pagination.page-1)" :disabled="analysis.loading || analysis.pagination.page<=1">‹</button><button class="knowledge-page-nav" @click="changeRetrievalPage(analysis.pagination.page+1)" :disabled="analysis.loading || analysis.pagination.page>=retrievalTotalPages()">›</button></div></div>
+  <div class="mn blind-label-shell" v-if="view==='retrievalReview' && canAccessBlindLabeling()">
+    <section class="blind-label-hero">
+      <div class="blind-label-hero-copy">
+        <div class="blind-label-eyebrow">Blind Labeling</div>
+        <h2>召回盲标工作台</h2>
+        <p v-if="isBlindLabelAdmin()">查看盲标整体进度、人员产出与工单一致性；管理员只查看聚合后的标注结果，不影响标注员的独立判断。</p>
+        <p v-else>每批随机分配 50 个工单。只展示前三条候选，隐藏来源、ID、分数和其他人的标注结果。</p>
+      </div>
+      <div class="blind-label-hero-side">
+        <div class="blind-label-mini"><span>{{isBlindLabelAdmin() ? '已标注工单' : '本批已完成'}}</span><b>{{isBlindLabelAdmin() ? blindLabeling.overview.summary.completed : blindLabeling.batch.completed}}<template v-if="!isBlindLabelAdmin()"> / {{blindLabeling.batch.total || 50}}</template></b></div>
+        <div class="blind-label-mini"><span>{{isBlindLabelAdmin() ? '共识率' : '批次状态'}}</span><b>{{isBlindLabelAdmin() ? blindLabelPercent(blindLabeling.overview.summary.consensus_rate) : blindLabelBatchStatusLabel(blindLabeling.batch.status)}}</b></div>
+      </div>
+    </section>
+
+    <div class="blind-label-tabs" role="tablist" aria-label="召回盲标视图">
+      <button v-if="!isBlindLabelAdmin()" type="button" class="blind-label-tab" :class="{on:blindLabeling.tab==='mine'}" @click="setBlindLabelTab('mine')">我的盲标任务</button>
+      <button v-if="!isBlindLabelAdmin()" type="button" class="blind-label-tab" :class="{on:blindLabeling.tab==='completed'}" @click="setBlindLabelTab('completed')">我的已标注</button>
+      <button v-if="isBlindLabelAdmin()" type="button" class="blind-label-tab" :class="{on:blindLabeling.tab==='overview'}" @click="setBlindLabelTab('overview')">盲标总览</button>
+      <span class="blind-label-tab-right">每工单最多 3 名标注员</span>
+    </div>
+
+    <template v-if="blindLabeling.tab==='mine' || blindLabeling.tab==='completed'">
+      <div class="blind-label-summary">
+        <section class="blind-label-progress-card">
+          <div class="blind-label-progress-head"><div><h3>当前 50 条批次</h3><p>{{blindLabelBatchStatusLabel(blindLabeling.batch.status)}}<template v-if="blindLabeling.batch.started_at"> · {{formatDate(blindLabeling.batch.started_at)}} 开始</template></p></div><div class="blind-label-progress-number">{{blindLabeling.batch.completed || 0}}/{{blindLabeling.batch.total || 50}}</div></div>
+          <div class="blind-label-progress-track"><i :style="{width:blindLabelBatchPercent()+'%'}"></i></div>
+          <div class="blind-label-progress-meta"><span>已完成 <b>{{blindLabeling.batch.completed || 0}}</b></span><span>待处理 <b>{{blindLabeling.batch.pending || 0}}</b></span><span>进行中 <b>{{blindLabeling.batch.in_progress || 0}}</b></span></div>
+        </section>
+        <div class="blind-label-info-grid">
+          <article class="blind-label-info"><span>可标注工单</span><b>{{blindLabeling.assignments.length}}</b><small>当前账号已分配</small></article>
+          <article class="blind-label-info"><span>本批完成率</span><b>{{blindLabelBatchPercent()}}%</b><small>提交后计入批次</small></article>
+          <article class="blind-label-info"><span>已释放任务</span><b>{{blindLabelCountByStatus('released')}}</b><small>未完成可再次分配</small></article>
+        </div>
+      </div>
+      <div v-if="blindLabeling.error" class="blind-label-error" role="alert">{{blindLabeling.error}}</div>
+      <div class="blind-label-toolbar"><span class="tt">{{blindLabeling.tab==='mine'?'我的待标工单':'我的已标注工单'}}</span><span class="review-selected-note">共 <b>{{blindLabeling.assignments.length}}</b> 条</span><span class="blind-label-toolbar-spacer"></span><button v-if="blindLabeling.tab==='mine' && !blindLabeling.assignments.length" class="btn bp" type="button" @click="claimBlindLabelBatch" :disabled="blindLabeling.claiming">{{blindLabeling.claiming?'分配中...':'领取 50 条任务'}}</button><button v-if="blindLabeling.tab==='mine'" class="btn bd" type="button" @click="claimBlindLabelBatch" :disabled="blindLabeling.claiming">{{blindLabeling.claiming?'刷新中...':'补充/刷新任务'}}</button><button class="btn bd" type="button" @click="loadBlindLabelAssignments" :disabled="blindLabeling.loading">刷新</button></div>
+      <div class="tw" :class="{'blind-label-loading':blindLabeling.loading}">
+        <table class="blind-label-order-table"><thead><tr><th style="width:150px">工单 ID</th><th>问题摘要</th><th style="width:110px">候选数</th><th style="width:125px">状态</th><th style="width:155px">分配时间</th><th style="width:140px;text-align:right">操作</th></tr></thead><tbody>
+          <tr v-for="assignment in blindLabeling.assignments" :key="assignment.id || assignment.assignment_id || assignment.work_order_id"><td><span class="blind-label-subline" style="margin-top:0">{{blindLabelWorkOrderId(assignment)}}</span></td><td><div class="blind-label-query" :title="blindLabelQuery(assignment)">{{blindLabelQuery(assignment)}}</div><div class="blind-label-subline"><template v-if="assignment.updated_at">最近更新 {{formatDate(assignment.updated_at)}}</template><template v-else>等待标注</template></div></td><td>{{blindLabelCandidateCount(assignment)}}</td><td><span class="blind-label-status" :class="blindLabelStatusClass(assignment.status)">{{blindLabelStatusLabel(assignment.status)}}</span></td><td>{{formatDate(assignment.assigned_at || assignment.created_at)}}</td><td style="text-align:right"><button class="btn bp bsm" type="button" @click="openBlindLabelAssignment(assignment)">{{blindLabelIsDone(assignment)?'查看详情':'开始标注'}}</button></td></tr>
+          <tr v-if="!blindLabeling.assignments.length"><td colspan="6" class="blind-label-empty">{{blindLabeling.tab==='mine'?'当前没有待标工单。点击“领取 50 条任务”开始盲标。':'暂无已标注工单。完成提交后会显示在这里。'}}</td></tr>
+        </tbody></table>
+      </div>
+    </template>
+
+    <template v-if="blindLabeling.tab==='overview' && isBlindLabelAdmin()">
+      <div v-if="blindLabeling.overview.error" class="blind-label-error" role="alert">{{blindLabeling.overview.error}}</div>
+      <div class="cards review-metric-cards blind-label-overview-cards">
+        <article class="card"><span class="card-label">工单总数</span><strong>{{blindLabeling.overview.summary.total}}</strong><small>纳入盲标的工单</small></article>
+        <article class="card"><span class="card-label">待标注</span><strong>{{blindLabeling.overview.summary.pending}}</strong><small>尚未完成</small></article>
+        <article class="card"><span class="card-label">进行中</span><strong>{{blindLabeling.overview.summary.in_progress}}</strong><small>已领取未提交</small></article>
+        <article class="card"><span class="card-label">部分完成</span><strong>{{blindLabeling.overview.summary.partial}}</strong><small>等待更多标注员</small></article>
+        <article class="card"><span class="card-label">已完成</span><strong>{{blindLabeling.overview.summary.completed}}</strong><small>三人或达成共识</small></article>
+        <article class="card"><span class="card-label">待仲裁</span><strong>{{blindLabeling.overview.summary.disputed}}</strong><small>结果存在分歧</small></article>
+        <article class="card"><span class="card-label">标注总数</span><strong>{{blindLabeling.overview.summary.annotations}}</strong><small>业务沉淀候选标注</small></article>
+        <article class="card"><span class="card-label">活跃标注员</span><strong>{{blindLabeling.overview.summary.active_annotators}}</strong><small>当前有标注记录</small></article>
+      </div>
+      <section class="blind-label-filter-card">
+        <div class="blind-label-filter-head"><div><h3>总览筛选</h3><p>按时间、状态、标注维度、人员和工单关键词定位结果</p></div><button class="btn bd bsm" type="button" @click="resetBlindLabelOverviewFilters">重置</button></div>
+        <div class="blind-label-filter-grid">
+          <label class="blind-label-filter-field"><span>开始日期</span><input class="inp" type="date" v-model="blindLabeling.overview.filters.dateFrom"></label>
+          <label class="blind-label-filter-field"><span>结束日期</span><input class="inp" type="date" v-model="blindLabeling.overview.filters.dateTo"></label>
+          <label class="blind-label-filter-field"><span>工单状态</span><select class="inp" v-model="blindLabeling.overview.filters.status"><option value="">全部状态</option><option value="pending">待标注</option><option value="in_progress">进行中</option><option value="partial">部分完成</option><option value="completed">已完成</option><option value="disputed">待仲裁</option></select></label>
+          <label class="blind-label-filter-field"><span>标注维度</span><select class="inp" v-model="blindLabeling.overview.filters.dimension"><option value="">全部维度</option><option value="helpful">可参考</option><option value="unhelpful">不可参考</option><option value="consensus">已达成共识</option><option value="disputed">存在分歧</option></select></label>
+          <label class="blind-label-filter-field"><span>标注员</span><select class="inp" v-model="blindLabeling.overview.filters.annotator"><option value="">全部标注员</option><option v-for="person in blindLabeling.overview.people" :key="person.user_id || person.username" :value="person.user_id || person.username">{{person.username || person.user_id}}</option></select></label>
+          <label class="blind-label-filter-field wide"><span>工单 / 问题关键词</span><input class="inp" v-model.trim="blindLabeling.overview.filters.keyword" placeholder="输入工单 ID 或问题关键词" @keyup.enter="applyBlindLabelOverviewFilters"></label>
+        </div>
+        <div class="blind-label-filter-actions"><span class="hint">支持按标注活动时间筛选；候选只保留业务沉淀 TOP 3</span><button class="btn bp" type="button" @click="applyBlindLabelOverviewFilters" :disabled="blindLabeling.overview.loading">{{blindLabeling.overview.loading?'查询中...':'应用筛选'}}</button></div>
+      </section>
+      <div class="blind-label-section-head"><div><h3>按人员统计</h3><p>每人独立完成量、可参考比例和平均耗时</p></div><span class="hint">{{blindLabeling.overview.people.length}} 人</span></div>
+      <div class="tw"><table class="blind-label-person-table"><thead><tr><th>标注员</th><th style="width:100px">已分配</th><th style="width:100px">已完成</th><th style="width:170px">完成进度</th><th style="width:110px">总标注数</th><th style="width:115px">可参考率</th><th style="width:120px">平均耗时</th><th style="width:145px">最后活动</th></tr></thead><tbody><tr v-for="person in blindLabeling.overview.people" :key="person.user_id || person.username"><td><div class="blind-label-user-label"><span class="blind-label-avatar">{{blindLabelInitial(person.username || person.user_id)}}</span><span>{{person.username || person.user_id || '-'}}</span></div></td><td>{{person.assigned || person.assigned_count || person.total_assigned || 0}}</td><td>{{person.completed || person.completed_count || person.total_completed || 0}}</td><td><div class="blind-label-progress-cell"><span class="blind-label-mini-track"><i :style="{width:blindLabelProgress(person.completed || person.completed_count || person.total_completed,person.assigned || person.assigned_count || person.total_assigned)+'%'}"></i></span><span>{{blindLabelProgress(person.completed || person.completed_count || person.total_completed,person.assigned || person.assigned_count || person.total_assigned)}}%</span></div></td><td>{{person.annotations || person.annotation_count || person.total_annotations || 0}}</td><td>{{blindLabelPersonHelpfulRate(person)}}</td><td>{{blindLabelDuration(person.average_duration_seconds || person.average_duration_ms || person.avg_duration_ms)}}</td><td>{{formatDate(person.last_activity_at || person.updated_at)}}</td></tr><tr v-if="!blindLabeling.overview.people.length"><td colspan="8" class="blind-label-empty">暂无人员统计数据。</td></tr></tbody></table></div>
+      <div class="blind-label-section-head"><div><h3>已标注工单总览</h3><p>点击详情查看三名标注员的独立结果与共识</p></div><span class="hint">共 {{blindLabeling.overview.workOrders.length}} 条</span></div>
+      <div class="tw" :class="{'blind-label-loading':blindLabeling.overview.loading}"><table class="blind-label-order-table"><thead><tr><th style="width:145px">工单 ID</th><th>问题摘要</th><th style="width:120px">标注进度</th><th style="width:150px">标注结论</th><th style="width:145px">一致性</th><th style="width:160px">最后标注时间</th><th style="width:90px;text-align:right">操作</th></tr></thead><tbody><tr v-for="workOrder in blindLabeling.overview.workOrders" :key="workOrder.id || workOrder.work_order_id || workOrder.conversation_id"><td>{{blindLabelWorkOrderId(workOrder)}}</td><td><div class="blind-label-query" :title="blindLabelQuery(workOrder)">{{blindLabelQuery(workOrder)}}</div><div class="blind-label-subline">业务沉淀 · {{blindLabelCategory(workOrder) || '未分类'}}</div></td><td><div class="blind-label-progress-cell"><span>{{blindLabelCompletedCount(workOrder)}} / {{blindLabelMaxAnnotators(workOrder)}}</span><span class="blind-label-status" :class="blindLabelStatusClass(workOrder.status)">{{blindLabelStatusLabel(workOrder.status)}}</span></div></td><td><div class="blind-label-dimension"><b>{{blindLabelConsensusLabel(workOrder)}}</b><span v-if="blindLabelDimensionText(workOrder)" class="blind-label-choice" :class="blindLabelDimensionClass(workOrder)">{{blindLabelDimensionText(workOrder)}}</span></div></td><td><span class="blind-label-status" :class="blindLabelConsensusClass(workOrder)">{{blindLabelConsensusLabel(workOrder)}}</span></td><td>{{formatDate(workOrder.last_annotated_at || workOrder.updated_at || workOrder.created_at)}}</td><td style="text-align:right"><button class="btn bd bsm" type="button" @click="openBlindLabelWorkOrder(workOrder)">查看详情</button></td></tr><tr v-if="!blindLabeling.overview.workOrders.length"><td colspan="7" class="blind-label-empty">当前筛选下暂无已标注工单。</td></tr></tbody></table></div>
+      <div v-if="blindLabeling.overview.pagination.totalPages > 1" class="blind-label-pagination"><button class="btn bd bsm" type="button" @click="changeBlindLabelOverviewPage(-1)" :disabled="blindLabeling.overview.loading || blindLabeling.overview.pagination.page <= 1">上一页</button><span>第 {{blindLabeling.overview.pagination.page}} / {{blindLabeling.overview.pagination.totalPages}} 页 · 共 {{blindLabeling.overview.pagination.total}} 条</span><button class="btn bd bsm" type="button" @click="changeBlindLabelOverviewPage(1)" :disabled="blindLabeling.overview.loading || blindLabeling.overview.pagination.page >= blindLabeling.overview.pagination.totalPages">下一页</button></div>
+    </template>
   </div>
   <div class="mn" v-if="view==='users' && isSuperAdmin()">
     <div class="user-form">
@@ -1965,6 +2047,49 @@
       </div>
     </div>
   </div>
+  <!-- 召回盲标详情：标注员视图不暴露来源、知识 ID、分数或其他标注结果。 -->
+  <div class="mask" v-if="blindLabeling.current.open" @click.self="closeBlindLabelDialog">
+    <div class="dlg blind-label-dialog" role="dialog" aria-modal="true" aria-labelledby="blind-label-dialog-title">
+      <div class="dlg-h"><div><h3 id="blind-label-dialog-title">{{blindLabeling.current.readOnly?'已标注工单':'盲标工单'}}</h3><span class="hint" v-if="blindLabeling.current.assignment">{{blindLabelWorkOrderId(blindLabeling.current.assignment)}}</span></div><button class="dlg-x" type="button" aria-label="关闭盲标详情" @click="closeBlindLabelDialog" :disabled="blindLabeling.saving || blindLabeling.releasing">&times;</button></div>
+      <div class="dlg-b" :class="{'blind-label-loading':blindLabeling.detailLoading}">
+        <div v-if="blindLabeling.detailLoading" class="blind-label-empty">正在加载工单和候选内容...</div>
+        <div v-else-if="blindLabeling.current.error" class="blind-label-error" role="alert">{{blindLabeling.current.error}}</div>
+        <template v-else>
+          <section class="blind-label-work-order">
+            <div class="blind-label-work-order-top"><div><div class="blind-label-work-order-id">工单 {{blindLabelWorkOrderId(blindLabeling.current.detail || blindLabeling.current.assignment)}}</div><h4>{{blindLabelQuery(blindLabeling.current.detail || blindLabeling.current.assignment) || '未提供问题摘要'}}</h4></div><span class="blind-label-status" :class="blindLabelStatusClass(blindLabeling.current.assignment && blindLabeling.current.assignment.status)">{{blindLabelStatusLabel(blindLabeling.current.assignment && blindLabeling.current.assignment.status)}}</span></div>
+            <div class="blind-label-work-order-meta"><span v-if="blindLabelCategory(blindLabeling.current.detail || blindLabeling.current.assignment)">{{blindLabelCategory(blindLabeling.current.detail || blindLabeling.current.assignment)}}</span><span v-if="blindLabeling.current.detail && (blindLabeling.current.detail.created_at || blindLabeling.current.detail.submitted_at)">· {{formatDate(blindLabeling.current.detail.submitted_at || blindLabeling.current.detail.created_at)}}</span><span>· 仅展示前三条候选</span></div>
+          </section>
+          <section class="blind-label-candidate-section">
+            <div class="blind-label-candidate-head"><div><h4>候选内容</h4><p>请逐条判断候选是否可用于回答当前工单。候选顺序固定，提交后不可修改。</p></div><span class="hint">{{blindLabeling.current.candidates.length}} 条</span></div>
+            <div class="blind-label-candidate-list">
+              <article class="blind-label-candidate" v-for="(candidate,index) in blindLabeling.current.candidates" :key="blindLabelCandidateKey(candidate,index)">
+                <div class="blind-label-candidate-headline"><span class="blind-label-candidate-rank">候选{{index+1}}</span><div class="blind-label-candidate-main"><strong>{{blindLabelCandidateTitle(candidate,index)}}</strong></div><div class="blind-label-choice-buttons" v-if="!blindLabeling.current.readOnly"><button type="button" class="btn bd bsm" :class="{'on-helpful':blindLabelCandidateLabel(candidate)==='helpful'}" @click="setBlindLabelCandidateLabel(candidate,'helpful')">可参考</button><button type="button" class="btn bd bsm" :class="{'on-unhelpful':blindLabelCandidateLabel(candidate)==='unhelpful'}" @click="setBlindLabelCandidateLabel(candidate,'unhelpful')">不可参考</button></div><span v-else class="blind-label-choice" :class="blindLabelCandidateLabel(candidate)">{{blindLabelChoiceLabel(blindLabelCandidateLabel(candidate))}}</span></div>
+                <div class="blind-label-candidate-body">{{blindLabelCandidateText(candidate)}}<div class="blind-label-candidate-media" v-if="blindLabelCandidateMedia(candidate).length"><button v-for="(media,mediaIndex) in blindLabelCandidateMedia(candidate)" :key="blindLabelCandidateKey(media,mediaIndex)+'-media'" type="button" class="blind-label-media" @click="showFull(childMediaUrl(media),media.type==='video')"><img v-if="media.type==='image'" :src="childMediaUrl(media)" alt="候选图片" loading="lazy" referrerpolicy="no-referrer"><video v-else :src="childMediaUrl(media)" muted preload="metadata" playsinline></video><span>{{mediaPreviewActionLabel(childMediaUrl(media),media.type)}}</span></button></div></div>
+              </article>
+              <div v-if="!blindLabeling.current.candidates.length" class="blind-label-empty">此工单没有可供标注的候选内容。</div>
+            </div>
+          </section>
+          <section class="blind-label-note" v-if="!blindLabeling.current.readOnly"><label for="blind-label-note-input">标注说明（选填）</label><textarea id="blind-label-note-input" class="fi" rows="3" v-model.trim="blindLabeling.current.note" placeholder="如有必要，可说明判断依据"></textarea></section>
+          <div v-if="blindLabeling.current.readOnly && blindLabeling.current.detail" class="blind-label-note"><label>提交说明</label><div class="hint">{{blindLabeling.current.detail.note || blindLabeling.current.detail.reason || '未填写说明'}}</div></div>
+        </template>
+      </div>
+      <div class="dlg-f"><span class="blind-label-dialog-foot-note" v-if="!blindLabeling.current.readOnly">未完成的任务可以释放，释放后会重新进入可分配队列。</span><button class="btn bd" type="button" @click="closeBlindLabelDialog" :disabled="blindLabeling.saving || blindLabeling.releasing">关闭</button><button v-if="!blindLabeling.current.readOnly" class="btn bw" type="button" @click="releaseBlindLabelAssignment" :disabled="blindLabeling.saving || blindLabeling.releasing">{{blindLabeling.releasing?'释放中...':'释放任务'}}</button><button v-if="!blindLabeling.current.readOnly" class="btn bp" type="button" @click="submitBlindLabelAssignment" :disabled="blindLabeling.saving || blindLabeling.releasing || blindLabelMissingLabels()">{{blindLabeling.saving?'提交中...':'提交标注'}}</button></div>
+    </div>
+  </div>
+
+  <!-- 管理员盲标详情：只展示业务沉淀候选及 A/B/C 独立结果。 -->
+  <div class="mask" v-if="blindLabeling.adminDetail.open" @click.self="closeBlindLabelAdminDetail">
+    <div class="dlg blind-label-dialog" role="dialog" aria-modal="true" aria-labelledby="blind-label-admin-detail-title">
+      <div class="dlg-h"><h3 id="blind-label-admin-detail-title">盲标工单详情</h3><button class="dlg-x" type="button" aria-label="关闭盲标工单详情" @click="closeBlindLabelAdminDetail">&times;</button></div>
+      <div class="dlg-b"><div v-if="blindLabeling.adminDetail.loading" class="blind-label-empty">正在加载独立标注结果...</div><div v-else-if="blindLabeling.adminDetail.error" class="blind-label-error">{{blindLabeling.adminDetail.error}}</div><template v-else-if="blindLabeling.adminDetail.workOrder">
+        <div class="blind-label-admin-detail">
+          <section><div class="blind-label-work-order"><div class="blind-label-work-order-id">工单 {{blindLabelWorkOrderId(blindLabeling.adminDetail.workOrder)}}</div><h4>{{blindLabelQuery(blindLabeling.adminDetail.workOrder) || '未提供问题摘要'}}</h4><div class="blind-label-work-order-meta"><span v-if="blindLabelCategory(blindLabeling.adminDetail.workOrder)">{{blindLabelCategory(blindLabeling.adminDetail.workOrder)}}</span><span>· 业务沉淀</span></div></div><section class="blind-label-candidate-section"><div class="blind-label-candidate-head"><div><h4>业务沉淀候选</h4><p>管理员可查看候选内容与独立标注，不显示总部标准候选。</p></div></div><div class="blind-label-candidate-list"><article class="blind-label-candidate" v-for="(candidate,index) in blindLabeling.adminDetail.candidates" :key="blindLabelCandidateKey(candidate,index)"><div class="blind-label-candidate-headline"><span class="blind-label-candidate-rank">候选{{index+1}}</span><div class="blind-label-candidate-main"><strong>{{blindLabelCandidateTitle(candidate,index)}}</strong></div><span class="blind-label-choice" :class="blindLabelConsensusClass(candidate)">{{blindLabelConsensusLabel(candidate)}}</span></div><div class="blind-label-candidate-body">{{blindLabelCandidateText(candidate)}}<div class="blind-label-annotator-results" v-if="blindLabelAdminCandidateAnnotations(candidate).length" style="margin-top:10px"><div class="blind-label-annotator-row" v-for="(annotation,annotationIndex) in blindLabelAdminCandidateAnnotations(candidate)" :key="(annotation.id || annotation.annotation_id || annotationIndex)+'-candidate'"><span class="blind-label-avatar">{{blindLabelInitial(annotation.username || annotation.annotator)}}</span><div><b>{{annotation.username || annotation.annotator || '标注员'}}</b><small>{{annotation.reason || '未填写说明'}}</small></div><span class="blind-label-choice" :class="blindLabelAnnotationClass(annotation)">{{blindLabelAnnotationLabel(annotation)}}</span></div></div><div v-if="blindLabelAdminCandidateNeedsArbitration(candidate)" class="blind-label-arbitration-box"><div class="hint">三人结果存在分歧，请选择管理员结论：</div><div class="blind-label-choice-buttons"><button type="button" class="btn bd bsm" :class="{'on-helpful':blindLabelAdminArbitrationValue(candidate)==='referable'}" @click="setBlindLabelAdminArbitration(candidate,'referable')">可参考</button><button type="button" class="btn bd bsm" :class="{'on-unhelpful':blindLabelAdminArbitrationValue(candidate)==='not_referable'}" @click="setBlindLabelAdminArbitration(candidate,'not_referable')">不可参考</button></div></div></div></article><div v-if="!blindLabeling.adminDetail.candidates.length" class="blind-label-empty">没有业务沉淀候选。</div></div></section></section>
+          <aside class="blind-label-admin-detail-side"><section class="blind-label-detail-card"><h4>共识结论</h4><div class="blind-label-detail-consensus" :class="{disputed:blindLabeling.adminDetail.consensus && blindLabeling.adminDetail.consensus.status==='majority'}">{{blindLabelAdminConsensusText()}}</div><div v-if="blindLabelAdminArbitrationPendingCount()" class="blind-label-arbitration-summary"><div class="hint">待仲裁候选 {{blindLabelAdminArbitrationPendingCount()}} 条</div><textarea class="fi" rows="3" v-model.trim="blindLabeling.adminDetail.arbitrationReason" placeholder="可填写本次仲裁说明（选填）"></textarea><button type="button" class="btn bp bsm" @click="submitBlindLabelArbitration" :disabled="blindLabeling.adminDetail.arbitrating || !blindLabelAdminArbitrationReady()">{{blindLabeling.adminDetail.arbitrating?'提交中...':'提交仲裁结论'}}</button></div></section><section class="blind-label-detail-card"><h4>独立标注结果</h4><div class="blind-label-annotator-results"><div class="blind-label-annotator-row" v-for="(annotation,index) in blindLabeling.adminDetail.annotations" :key="annotation.id || annotation.annotation_id || index"><span class="blind-label-avatar">{{blindLabelInitial(annotation.username || annotation.annotator || ('标注员'+(index+1)))}}</span><div><b>{{annotation.username || annotation.annotator || ('标注员'+(index+1))}}</b><small>{{blindLabelAnnotationSummary(annotation)}}</small></div><span class="blind-label-choice" :class="blindLabelAnnotationClass(annotation)">{{blindLabelAnnotationLabel(annotation)}}</span></div><div v-if="!blindLabeling.adminDetail.annotations.length" class="hint">暂无独立标注结果。</div></div></section></aside>
+        </div>
+      </template></div>
+      <div class="dlg-f"><button class="btn bd" type="button" @click="closeBlindLabelAdminDetail">关闭</button></div>
+    </div>
+  </div>
     <!-- 点击全屏预览 -->
     <div v-if="full.show" class="full-preview" role="dialog" aria-modal="true" :aria-label="full.isVideo?'视频预览':'原图预览'" @click.self="closeFullPreview">
       <div class="full-preview-stage" @click.stop>
@@ -2024,6 +2149,23 @@ Vue.createApp({
         error:'',
         requestSeq:0,
         updatedAt:'-'
+      },
+      blindLabeling: {
+        tab:'mine',
+        loading:false,
+        claiming:false,
+        detailLoading:false,
+        saving:false,
+        releasing:false,
+        error:'',
+        updatedAt:'-',
+        batch:{id:'',status:'',total:50,completed:0,pending:0,in_progress:0,started_at:'',completed_at:''},
+        assignments:[],
+        completed:[],
+        pagination:{page:1,size:50,total:0,totalPages:1},
+        current:{open:false,readOnly:false,assignment:null,detail:null,candidates:[],labels:{},note:'',error:''},
+        overview:{loading:false,error:'',summary:{total:0,pending:0,in_progress:0,partial:0,completed:0,disputed:0,annotations:0,consensus_rate:0,active_annotators:0},cards:[],people:[],workOrders:[],updatedAt:'-',filters:{dateFrom:'',dateTo:'',status:'',dimension:'',annotator:'',keyword:''},pagination:{page:1,size:20,total:0,totalPages:1}},
+        adminDetail:{open:false,loading:false,error:'',item:null,workOrder:null,candidates:[],annotations:[],consensus:null,arbitration:{},arbitrationReason:'',arbitrating:false}
       },
       retrievalPeriodOptions:[
         {value:'today',label:'当日'},
@@ -2167,7 +2309,7 @@ Vue.createApp({
           self.load();
           self.loadStats();
           self.loadCandidateReviewDashboard();
-          self.loadSearchAnalysis();
+          if (self.isSuperAdmin()) self.loadSearchAnalysis();
           self.loadKnowledgeOrigins();
           self.loadBusinessTypes();
           self.loadCats();
@@ -2179,6 +2321,12 @@ Vue.createApp({
     },
     isSuperAdmin: function() {
       return this.currentUser && this.currentUser.role === 'super_admin';
+    },
+    canAccessBlindLabeling: function() {
+      return this.can('retrieval:blind_label') || this.can('retrieval:label_overview');
+    },
+    isBlindLabelAdmin: function() {
+      return this.can('retrieval:label_overview');
     },
     can: function(permission) {
       var perms = (this.currentUser && this.currentUser.permissions) || [];
@@ -2196,7 +2344,7 @@ Vue.createApp({
         embeddingModel:'向量模型',
         changeLogs:'变更日志',
         users:'账号管理',
-        retrievalReview:'召回标注'
+        retrievalReview:'召回盲标'
       }[this.view] || '运营总览';
     },
     viewSubtitle: function() {
@@ -2208,7 +2356,7 @@ Vue.createApp({
         embeddingModel:'召回分析、上传查重、纠错与离线训练',
         changeLogs:'已发布知识变更追溯',
         users:'创建和查看后台账号',
-        retrievalReview:'待标注召回请求'
+        retrievalReview:'按批次领取工单并完成业务候选盲标'
       }[this.view] || '知识运营工作台';
     },
     canEditKnowledge: function(item) {
@@ -7483,14 +7631,459 @@ Vue.createApp({
       }
       this.full = {show:true, src:safeSrc, isVideo:!!isVideo, error:false, zoom:1};
     },
+    /* 盲标工作台：接口采用独立命名空间，不复用旧的 retrieval-analytics 全量数据。 */
+    blindLabelApi: function(path, options) {
+      var self = this;
+      options = options || {};
+      var requestOptions = Object.assign({}, options, {headers:self.authHeaders(Object.assign({'Accept':'application/json'}, options.headers || {}))});
+      return fetch(API + path, requestOptions).then(function(response) {
+        return response.json().catch(function() { return {}; }).then(function(data) {
+          if (!response.ok) {
+            var detail = data && data.detail;
+            if (typeof detail === 'object') detail = detail.message || detail.error;
+            throw new Error(detail || '盲标接口请求失败');
+          }
+          return data;
+        });
+      });
+    },
+    blindLabelValue: function(source, keys, fallback) {
+      source = source || {};
+      keys = Array.isArray(keys) ? keys : [keys];
+      for (var i = 0; i < keys.length; i += 1) {
+        var key = keys[i];
+        var value = source[key];
+        if (value !== undefined && value !== null && value !== '') return value;
+      }
+      return fallback;
+    },
+    blindLabelListFromResponse: function(data, keys) {
+      if (Array.isArray(data)) return data;
+      data = data || {};
+      keys = keys || ['items','assignments','work_orders','results','data'];
+      for (var i = 0; i < keys.length; i += 1) {
+        if (Array.isArray(data[keys[i]])) return data[keys[i]];
+      }
+      if (data.data && typeof data.data === 'object') return this.blindLabelListFromResponse(data.data, keys);
+      return [];
+    },
+    blindLabelBatchFromResponse: function(data) {
+      data = data || {};
+      var batch = data.batch || data.current_batch || data.my_batch || {};
+      if (!batch.id && data.batch_id) batch = Object.assign({}, batch, {id:data.batch_id});
+      var total = Number(this.blindLabelValue(batch, ['total','total_count','target_count','targetCount','size'], this.blindLabelValue(data, ['total','batch_size'], 50))) || 50;
+      var completed = Number(this.blindLabelValue(batch, ['completed','completed_count','done_count'], 0)) || 0;
+      var assigned = Number(this.blindLabelValue(batch, ['assigned_count','assignedCount','assigned'], 0)) || 0;
+      var pending = Number(this.blindLabelValue(batch, ['pending','pending_count','remaining'], Math.max(0, total - assigned))) || 0;
+      var inProgress = Number(this.blindLabelValue(batch, ['in_progress','in_progress_count','active_count'], 0)) || 0;
+      return {id:String(batch.id || batch.batch_id || ''),status:String(batch.status || (completed >= total && total ? 'completed' : 'active')),total:total,completed:completed,pending:pending,in_progress:inProgress,assigned:assigned,started_at:batch.started_at || batch.created_at || '',completed_at:batch.completed_at || ''};
+    },
+    blindLabelNormalizeAssignment: function(item) {
+      item = item || {};
+      var workOrder = item.work_order && typeof item.work_order === 'object' ? item.work_order : {};
+      var assignment = Object.assign({}, workOrder, item);
+      if (!assignment.work_order_id) assignment.work_order_id = assignment.conversation_id || workOrder.id || '';
+      if (!assignment.query) assignment.query = this.blindLabelValue(workOrder, ['query','question','query_text','title'], '');
+      return assignment;
+    },
+    blindLabelNormalizeCandidate: function(candidate, index) {
+      candidate = candidate || {};
+      var content = candidate.content !== undefined ? candidate.content : (candidate.content_payload !== undefined ? candidate.content_payload : (candidate.content_text || candidate.text || ''));
+      return Object.assign({}, candidate, {content:content,_blind_rank:index + 1});
+    },
+    blindLabelRawCandidates: function(detail) {
+      detail = detail || {};
+      var snapshot = detail.snapshot && typeof detail.snapshot === 'object' ? detail.snapshot : {};
+      var candidates = this.blindLabelValue(detail, ['business_candidates','business_accumulation_candidates','candidates','candidate_snapshot'], null);
+      if (!Array.isArray(candidates)) candidates = this.blindLabelValue(snapshot, ['business_candidates','business_accumulation_candidates','candidates','candidate_snapshot'], []);
+      if (!Array.isArray(candidates) && detail.assignment) candidates = this.blindLabelRawCandidates(detail.assignment);
+      return Array.isArray(candidates) ? candidates : [];
+    },
+    blindLabelCandidates: function(detail) {
+      return this.blindLabelRawCandidates(detail).filter(function(candidate) {
+        return !candidate || candidate.knowledge_origin !== 'headquarters_standard';
+      }).slice(0, 3).map(this.blindLabelNormalizeCandidate.bind(this));
+    },
+    blindLabelExtractMyLabels: function(detail, candidates) {
+      detail = detail || {};
+      var source = detail.annotations || detail.my_annotation || detail.my_label || detail.annotation || detail.labels || detail.candidate_labels || {};
+      if (source && typeof source === 'object' && source.labels) source = source.labels;
+      var labels = {};
+      if (Array.isArray(source)) {
+        source.forEach(function(item, index) {
+          if (!item) return;
+          var key = String(item.candidate_ref || item.candidateRef || item.candidate_id || item.knowledge_id || item.id || ('rank:' + (Number(item.rank || index + 1))));
+          labels[key] = item.label || item.result || item.annotation || item.judgement || item.verdict || '';
+        });
+      } else if (source && typeof source === 'object') {
+        Object.keys(source).forEach(function(key) {
+          var value = source[key];
+          labels[String(key)] = typeof value === 'string' ? value : (value && (value.label || value.result || value.judgement || value.verdict) || '');
+        });
+      }
+      (candidates || []).forEach(function(candidate, index) {
+        var key = this.blindLabelCandidateKey(candidate, index);
+        if (!labels[key]) {
+          var rankKey = 'rank:' + (index + 1);
+          if (labels[rankKey]) labels[key] = labels[rankKey];
+        }
+      }, this);
+      return labels;
+    },
+    blindLabelAssignmentId: function(item) {
+      item = item || {};
+      return String(item.assignment_id || item.id || item.work_order_assignment_id || item.work_order_id || item.conversation_id || '');
+    },
     openRetrievalReviewPage: function() {
+      if (!this.canAccessBlindLabeling()) return;
       this.view = 'retrievalReview';
-      this.loadRetrievalReviewPage();
+      this.blindLabeling.tab = this.isBlindLabelAdmin() ? 'overview' : 'mine';
+      if (this.blindLabeling.tab === 'overview') this.loadBlindLabelOverview();
+      else if (this.blindLabeling.tab === 'mine') this.claimBlindLabelBatch();
+      else this.loadBlindLabelAssignments(false);
     },
-    loadRetrievalReviewPage: function() {
-      this.analysis.pagination.page = 1;
-      return this.loadSearchAnalysis({pendingOnly:true});
+    setBlindLabelTab: function(tab) {
+      if (tab === 'overview' && !this.isBlindLabelAdmin()) return;
+      if (tab !== 'overview' && this.isBlindLabelAdmin()) return;
+      if (tab !== 'overview' && !this.can('retrieval:blind_label') && !this.isSuperAdmin()) return;
+      this.blindLabeling.tab = tab;
+      if (tab === 'overview') this.loadBlindLabelOverview();
+      else this.loadBlindLabelAssignments(false);
     },
+    loadBlindLabelAssignments: function(autoClaim) {
+      var self = this;
+      if (!this.can('retrieval:blind_label') && !this.isSuperAdmin()) return Promise.resolve(null);
+      if (this.blindLabeling.loading) return Promise.resolve(null);
+      this.blindLabeling.loading = true;
+      this.blindLabeling.error = '';
+      var query = this.blindLabeling.tab === 'completed' ? '?status=completed' : '';
+      return this.blindLabelApi('/blind-labeling/my-assignments' + query, {method:'GET'})
+        .then(function(data) {
+          var all = self.blindLabelListFromResponse(data, ['items','assignments','results']);
+          var normalized = all.map(function(item) { return self.blindLabelNormalizeAssignment(item); });
+          var completed = normalized.filter(function(item) { return self.blindLabelIsDone(item); });
+          var active = normalized.filter(function(item) { return !self.blindLabelIsDone(item) && item.status !== 'released'; });
+          self.blindLabeling.assignments = self.blindLabeling.tab === 'completed' ? completed : active;
+          self.blindLabeling.completed = completed;
+          if (data.batch || data.current_batch || data.my_batch) self.blindLabeling.batch = self.blindLabelBatchFromResponse(data);
+          self.blindLabeling.pagination.total = self.blindLabeling.assignments.length;
+          self.blindLabeling.updatedAt = self.formatDate(new Date());
+          return data;
+        })
+        .catch(function(error) {
+          self.blindLabeling.error = error.message || '加载盲标任务失败';
+          if (autoClaim) console.error(error);
+          return null;
+        })
+        .finally(function() { self.blindLabeling.loading = false; });
+    },
+    claimBlindLabelBatch: function() {
+      var self = this;
+      if (self.blindLabeling.claiming) return Promise.resolve(null);
+      self.blindLabeling.claiming = true;
+      self.blindLabeling.error = '';
+      return self.blindLabelApi('/blind-labeling/my-batch?target_count=50', {method:'GET'})
+        .then(function(data) {
+          self.blindLabeling.batch = self.blindLabelBatchFromResponse(data);
+          var items = self.blindLabelListFromResponse(data, ['items','assignments','results']);
+          if (items.length) self.blindLabeling.assignments = items.map(function(item) { return self.blindLabelNormalizeAssignment(item); }).filter(function(item) { return !self.blindLabelIsDone(item); });
+          return self.loadBlindLabelAssignments(false);
+        })
+        .catch(function(error) { self.blindLabeling.error = error.message || '领取盲标批次失败'; return null; })
+        .finally(function() { self.blindLabeling.claiming = false; });
+    },
+    openBlindLabelAssignment: function(assignment) {
+      var self = this;
+      assignment = self.blindLabelNormalizeAssignment(assignment);
+      var readOnly = self.blindLabeling.tab === 'completed' || self.blindLabelIsDone(assignment);
+      self.blindLabeling.current = {open:true,readOnly:readOnly,assignment:assignment,detail:null,candidates:[],labels:{},note:'',error:''};
+      self.blindLabeling.detailLoading = true;
+      var id = self.blindLabelAssignmentId(assignment);
+      if (!id) { self.blindLabeling.detailLoading = false; self.blindLabeling.current.error = '任务缺少分配 ID'; return; }
+      return self.blindLabelApi('/blind-labeling/assignments/' + encodeURIComponent(id), {method:'GET'})
+        .then(function(data) {
+          var detail = data.assignment || data.detail || data.work_order || data;
+          detail = self.blindLabelNormalizeAssignment(Object.assign({}, assignment, detail));
+          var candidates = self.blindLabelCandidates(data);
+          self.blindLabeling.current.assignment = detail;
+          self.blindLabeling.current.detail = data;
+          self.blindLabeling.current.candidates = candidates;
+          self.blindLabeling.current.labels = self.blindLabelExtractMyLabels(data, candidates);
+          self.blindLabeling.current.note = String(self.blindLabelValue(data, ['note','reason','my_note'], '') || '');
+          return data;
+        })
+        .catch(function(error) { self.blindLabeling.current.error = error.message || '加载盲标详情失败'; return null; })
+        .finally(function() { self.blindLabeling.detailLoading = false; });
+    },
+    closeBlindLabelDialog: function() {
+      if (this.blindLabeling.saving || this.blindLabeling.releasing) return;
+      this.blindLabeling.current.open = false;
+    },
+    releaseBlindLabelAssignment: function() {
+      var self = this, current = self.blindLabeling.current;
+      if (!current.assignment || self.blindLabeling.releasing) return Promise.resolve(false);
+      var id = self.blindLabelAssignmentId(current.assignment);
+      if (!id) return Promise.resolve(false);
+      if (!confirm('确定释放这条未完成任务吗？释放后会重新进入可分配队列。')) return Promise.resolve(false);
+      self.blindLabeling.releasing = true;
+      return self.blindLabelApi('/blind-labeling/assignments/' + encodeURIComponent(id) + '/release', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:'标注员主动释放未完成任务'})})
+        .then(function(data) { if (data && data.batch) self.blindLabeling.batch = self.blindLabelBatchFromResponse(data); current.open = false; return self.loadBlindLabelAssignments(false); })
+        .catch(function(error) { alert(error.message || '释放任务失败'); return false; })
+        .finally(function() { self.blindLabeling.releasing = false; });
+    },
+    submitBlindLabelAssignment: function() {
+      var self = this, current = self.blindLabeling.current;
+      if (!current.assignment || self.blindLabeling.saving) return Promise.resolve(false);
+      if (self.blindLabelMissingLabels()) { alert('请先完成所有候选的标注'); return Promise.resolve(false); }
+      var id = self.blindLabelAssignmentId(current.assignment);
+      var annotations = (current.candidates || []).map(function(candidate, index) {
+        var value = self.blindLabelCandidateLabel(candidate);
+        return {candidateRef:self.blindLabelCandidateKey(candidate, index),verdict:value === 'helpful' ? 'referable' : 'not_referable',reason:String(current.note || '').trim()};
+      });
+      self.blindLabeling.saving = true;
+      return self.blindLabelApi('/blind-labeling/assignments/' + encodeURIComponent(id) + '/submit', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({annotations:annotations})})
+        .then(function() { current.open = false; return self.loadBlindLabelAssignments(false); })
+        .catch(function(error) { alert(error.message || '提交盲标失败'); return false; })
+        .finally(function() { self.blindLabeling.saving = false; });
+    },
+    blindLabelCandidateKey: function(candidate, index) {
+      candidate = candidate || {};
+      return String(candidate.candidate_ref || candidate.candidateRef || candidate.candidate_id || candidate.knowledge_id || candidate.id || ('rank:' + (Number(candidate.rank || candidate._blind_rank || index + 1))));
+    },
+    blindLabelCandidateTitle: function(candidate, index) {
+      var title = this.blindLabelValue(candidate, ['title','knowledge_title','name'], '');
+      return String(title || ('候选内容 ' + (index + 1))).replace(/^知识ID[:：]\s*/i, '') || ('候选内容 ' + (index + 1));
+    },
+    blindLabelCandidateText: function(candidate) {
+      candidate = candidate || {};
+      var content = candidate.content !== undefined ? candidate.content : (candidate.content_text || candidate.text || candidate.body || '');
+      return this.contentPreview(content);
+    },
+    blindLabelCandidateMedia: function(candidate) {
+      candidate = candidate || {};
+      var content = candidate.content && typeof candidate.content === 'object' ? candidate.content : {};
+      var blocks = Array.isArray(content.blocks) ? content.blocks : [];
+      var media = blocks.filter(function(block) { return block && (block.type === 'image' || block.type === 'video'); });
+      if (!media.length && Array.isArray(candidate.media)) media = candidate.media;
+      return media.map(function(block) { return Object.assign({}, block, {type:block.type === 'video' ? 'video' : 'image'}); }).filter(function(block) { return !!this.childMediaUrl(block); }, this);
+    },
+    blindLabelCandidateLabel: function(candidate) {
+      var key = this.blindLabelCandidateKey(candidate, candidate && candidate._blind_rank ? candidate._blind_rank - 1 : 0);
+      var value = (this.blindLabeling.current.labels || {})[key] || '';
+      return value === 'referable' ? 'helpful' : (value === 'not_referable' ? 'unhelpful' : value);
+    },
+    setBlindLabelCandidateLabel: function(candidate, label) {
+      if (!candidate) return;
+      var index = Math.max(0, Number(candidate._blind_rank || 1) - 1);
+      var key = this.blindLabelCandidateKey(candidate, index);
+      if (!this.blindLabeling.current.labels) this.blindLabeling.current.labels = {};
+      this.blindLabeling.current.labels[key] = label;
+    },
+    blindLabelChoiceLabel: function(value) { return {helpful:'可参考',referable:'可参考','可参考':'可参考',unhelpful:'不可参考',not_referable:'不可参考','不可参考':'不可参考'}[String(value || '').toLowerCase()] || '未标注'; },
+    blindLabelMissingLabels: function() {
+      var self = this;
+      return (this.blindLabeling.current.candidates || []).some(function(candidate) { return !self.blindLabelCandidateLabel(candidate); });
+    },
+    blindLabelQuery: function(item) {
+      item = item || {};
+      var nested = item.assignment && typeof item.assignment === 'object' ? item.assignment : (item.work_order && typeof item.work_order === 'object' ? item.work_order : (item.detail && typeof item.detail === 'object' ? item.detail : {}));
+      var workOrder = nested.work_order && typeof nested.work_order === 'object' ? nested.work_order : nested;
+      return String(this.blindLabelValue(item, ['query','question','query_text','problem_text','summary','title'], this.blindLabelValue(workOrder, ['query','question','query_text','summary','title'], '')) || '').trim();
+    },
+    blindLabelWorkOrderId: function(item) {
+      item = item || {};
+      var nested = item.assignment && typeof item.assignment === 'object' ? item.assignment : (item.work_order && typeof item.work_order === 'object' ? item.work_order : (item.detail && typeof item.detail === 'object' ? item.detail : {}));
+      var workOrder = nested.work_order && typeof nested.work_order === 'object' ? nested.work_order : nested;
+      return String(this.blindLabelValue(item, ['conversation_id','ticket_id','work_order_id'], this.blindLabelValue(workOrder, ['conversation_id','ticket_id','work_order_id','id'], this.blindLabelValue(item, ['id'], '-'))) || '-');
+    },
+    blindLabelCategory: function(item) {
+      item = item || {};
+      return String(this.blindLabelValue(item, ['category_name','product_category','category','product_category_name'], '') || '').trim();
+    },
+    blindLabelCandidateCount: function(item) {
+      var count = Number(this.blindLabelValue(item, ['candidate_count','business_candidate_count'], NaN));
+      if (!isNaN(count)) return Math.min(3, count);
+      return Math.min(3, this.blindLabelRawCandidates(item).filter(function(candidate) { return !candidate || candidate.knowledge_origin !== 'headquarters_standard'; }).length);
+    },
+    blindLabelIsDone: function(item) {
+      var status = String(item && (item.status || item.assignment_status || item.annotation_status) || '').toLowerCase();
+      return ['completed','submitted','done','confirmed','consensus'].indexOf(status) !== -1 || !!(item && (item.submitted_at || item.completed_at));
+    },
+    blindLabelStatusLabel: function(value) {
+      return {pending:'待标注',assigned:'待标注',active:'待标注',in_progress:'进行中',partial:'部分完成',completed:'已完成',submitted:'已完成',done:'已完成',consensus:'已达成共识',disputed:'待仲裁',needs_arbitration:'待仲裁',arbitrated:'已仲裁',released:'已释放',expired:'已过期',failed:'异常'}[String(value || '').toLowerCase()] || (value || '待标注');
+    },
+    blindLabelStatusClass: function(value) {
+      var status = String(value || '').toLowerCase();
+      if (['completed','submitted','done','consensus'].indexOf(status) !== -1) return 'completed';
+      if (['in_progress','partial'].indexOf(status) !== -1) return status;
+      if (['disputed','needs_arbitration','failed'].indexOf(status) !== -1) return status === 'needs_arbitration' ? 'disputed' : status;
+      if (['released','expired'].indexOf(status) !== -1) return status;
+      return 'assigned';
+    },
+    blindLabelBatchStatusLabel: function(value) { return {active:'进行中',in_progress:'进行中',completed:'已完成',pending:'待领取',empty:'待领取'}[String(value || '').toLowerCase()] || '进行中'; },
+    blindLabelBatchPercent: function() { var total = Number(this.blindLabeling.batch.total) || 50; var done = Number(this.blindLabeling.batch.completed) || 0; return Math.min(100, Math.max(0, Math.round(done / total * 100))); },
+    blindLabelCountByStatus: function(status) { return (this.blindLabeling.assignments || []).filter(function(item) { return String(item.status || '').toLowerCase() === status; }).length; },
+    blindLabelProgress: function(done, total) { done = Number(done) || 0; total = Number(total) || 0; return total ? Math.min(100, Math.max(0, Math.round(done / total * 100))) : 0; },
+    blindLabelPercent: function(value) { var number = Number(value); if (isNaN(number)) return '0%'; if (number <= 1) number *= 100; return (Math.round(number * 10) / 10) + '%'; },
+    blindLabelDuration: function(value) { var number = Number(value); if (!number || isNaN(number)) return '-'; if (number > 3600000) number = number / 1000; if (number > 3600) return (number / 3600).toFixed(1) + ' 小时'; if (number > 60) return (number / 60).toFixed(1) + ' 分钟'; return Math.round(number) + ' 秒'; },
+    blindLabelPersonHelpfulRate: function(person) { person = person || {}; var total = Number(person.annotation_count || person.annotations || person.total_annotations || 0) || 0; var helpful = Number(person.referable_count || person.helpful_count || 0) || 0; return total ? this.blindLabelPercent(helpful / total) : '0%'; },
+    blindLabelInitial: function(value) { var text = String(value || '?').trim(); return text ? text.slice(0, 1).toUpperCase() : '?'; },
+    blindLabelCompletedCount: function(item) { return Number(this.blindLabelValue(item, ['completed_count','completed_assignments','annotation_count','annotated_count'], 0)) || ((item && Array.isArray(item.assignments)) ? item.assignments.filter(function(assignment) { return assignment && assignment.status === 'completed'; }).length : 0); },
+    blindLabelMaxAnnotators: function(item) { return Math.min(3, Math.max(1, Number(this.blindLabelValue(item, ['max_annotators','assignment_limit'], 3)) || 3)); },
+    blindLabelConsensusLabel: function(item) { var value = item && (item.blind_consensus || item.consensus || item.consensus_status || item.status); if (value && typeof value === 'object') value = value.status || value.result || value.label || value.preliminary_verdict || value.arbitrated_verdict; return {consensus:'已达成共识',agreed:'已达成共识',unanimous:'全员一致',majority:'多数意见',arbitrated:'管理员已仲裁',helpful:'可参考',referable:'可参考',unhelpful:'不可参考',not_referable:'不可参考',disputed:'存在分歧',needs_arbitration:'待仲裁',pending:'待标注',partial:'部分完成'}[String(value || '').toLowerCase()] || (value || '待确认'); },
+    blindLabelConsensusClass: function(item) { var value = item && (item.blind_consensus || item.consensus || item.consensus_status || item.status); if (value && typeof value === 'object') value = value.status || value.result || value.label || value.preliminary_verdict || value.arbitrated_verdict; value = String(value || '').toLowerCase(); return ['disputed','needs_arbitration','majority'].indexOf(value) !== -1 ? 'disputed' : (['consensus','agreed','unanimous','arbitrated','helpful','referable','unhelpful','not_referable'].indexOf(value) !== -1 ? 'consensus' : 'assigned'); },
+    blindLabelDimensionText: function(item) { var value = item && (item.dimension || item.label || item.result || item.consensus_label || item.preliminary_verdict); if (value && typeof value === 'object') value = value.label || value.result || value.preliminary_verdict; return value ? this.blindLabelChoiceLabel(value) : ''; },
+    blindLabelDimensionClass: function(item) { var value = item && (item.dimension || item.label || item.result || item.consensus_label); return String(value || '').toLowerCase() === 'unhelpful' ? 'unhelpful' : 'helpful'; },
+    blindLabelAnnotationLabel: function(annotation) { return this.blindLabelChoiceLabel(annotation && (annotation.label || annotation.result || annotation.judgement || annotation.consensus || annotation.verdict)); },
+    blindLabelAnnotationClass: function(annotation) { var value = String(annotation && (annotation.label || annotation.result || annotation.judgement || annotation.consensus || annotation.verdict) || '').toLowerCase(); return ['unhelpful','not_referable','不可参考'].indexOf(value) !== -1 ? 'unhelpful' : (['helpful','referable','可参考'].indexOf(value) !== -1 ? 'helpful' : 'pending'); },
+    blindLabelAnnotationSummary: function(annotation) { var ref = annotation && (annotation.candidate_ref || annotation.candidateRef) ? ('候选 ' + String(annotation.candidate_ref || annotation.candidateRef).slice(-6)) : ''; var text = annotation && (annotation.note || annotation.reason || annotation.updated_at || annotation.submitted_at); return (ref ? ref + ' · ' : '') + (text ? String(text) : '未填写说明'); },
+    blindLabelAdminCandidateAnnotations: function(candidate) { var ref = String(candidate && (candidate.candidate_ref || candidate.candidateRef) || ''); return (this.blindLabeling.adminDetail.annotations || []).filter(function(annotation) { return String(annotation && (annotation.candidate_ref || annotation.candidateRef) || '') === ref; }); },
+    blindLabelAdminCandidateNeedsArbitration: function(candidate) {
+      var result = candidate && candidate.blind_consensus;
+      if (!result) return false;
+      return !!(result.needs_arbitration || result.status === 'needs_arbitration' || (
+        Number(result.referable_count || 0) > 0
+        && Number(result.not_referable_count || 0) > 0
+        && !result.arbitrated
+      ));
+    },
+    blindLabelAdminArbitrationValue: function(candidate) {
+      var ref = String(candidate && (candidate.candidate_ref || candidate.candidateRef) || '');
+      return (this.blindLabeling.adminDetail.arbitration || {})[ref] || '';
+    },
+    setBlindLabelAdminArbitration: function(candidate, value) {
+      var ref = String(candidate && (candidate.candidate_ref || candidate.candidateRef) || '');
+      if (!ref) return;
+      var values = Object.assign({}, this.blindLabeling.adminDetail.arbitration || {});
+      values[ref] = value;
+      this.blindLabeling.adminDetail.arbitration = values;
+    },
+    blindLabelAdminArbitrationPendingCount: function() {
+      var self = this;
+      return (this.blindLabeling.adminDetail.candidates || []).filter(function(candidate) {
+        return self.blindLabelAdminCandidateNeedsArbitration(candidate);
+      }).length;
+    },
+    blindLabelAdminArbitrationReady: function() {
+      var self = this;
+      var pending = (this.blindLabeling.adminDetail.candidates || []).filter(function(candidate) {
+        return self.blindLabelAdminCandidateNeedsArbitration(candidate);
+      });
+      return pending.length > 0 && pending.every(function(candidate) {
+        return !!self.blindLabelAdminArbitrationValue(candidate);
+      });
+    },
+    submitBlindLabelArbitration: function() {
+      var self = this;
+      var detail = self.blindLabeling.adminDetail;
+      if (detail.arbitrating || !self.blindLabelAdminArbitrationReady()) return Promise.resolve(false);
+      var workOrderId = detail.workOrder && (detail.workOrder.id || detail.workOrder.work_order_id);
+      if (!workOrderId) return Promise.resolve(false);
+      var decisions = (detail.candidates || []).filter(function(candidate) {
+        return self.blindLabelAdminCandidateNeedsArbitration(candidate);
+      }).map(function(candidate) {
+        var ref = String(candidate.candidate_ref || candidate.candidateRef || '');
+        return {
+          candidateRef: ref,
+          verdict: self.blindLabelAdminArbitrationValue(candidate),
+          reason: String(detail.arbitrationReason || '').trim()
+        };
+      });
+      detail.arbitrating = true;
+      return self.blindLabelApi('/blind-labeling/work-orders/' + encodeURIComponent(workOrderId) + '/arbitrate', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({decisions:decisions})
+      }).then(function() {
+        detail.arbitration = {};
+        detail.arbitrationReason = '';
+        return self.openBlindLabelWorkOrder(detail.item || {id:workOrderId});
+      }).then(function() {
+        if (self.blindLabeling.tab === 'overview') return self.loadBlindLabelOverview();
+        return null;
+      }).catch(function(error) {
+        alert(error.message || '提交仲裁结论失败');
+        return false;
+      }).finally(function() {
+        detail.arbitrating = false;
+      });
+    },
+    blindLabelAdminConsensusText: function() { var consensus = this.blindLabeling.adminDetail.consensus || {}; var label = consensus.label || consensus.result || consensus.status; var count = consensus.count || consensus.completed_annotators || consensus.completedAnnotators; if (!label) return '待完成三人独立标注后计算共识。'; var text = {pending:'待完成标注',majority:'多数意见，存在分歧',unanimous:'全员一致',arbitrated:'管理员已仲裁'}[String(label).toLowerCase()] || this.blindLabelChoiceLabel(label); return text + (count ? ' · 已完成 ' + count + ' 人' : ''); },
+    openBlindLabelWorkOrder: function(item) {
+      var self = this;
+      var id = String(item && (item.id || item.work_order_id || item.workOrderId || '') || '');
+      if (!id) id = self.blindLabelWorkOrderId(item);
+      self.blindLabeling.adminDetail = {open:true,loading:true,error:'',item:item,workOrder:null,candidates:[],annotations:[],consensus:null,arbitration:{},arbitrationReason:'',arbitrating:false};
+      return self.blindLabelApi('/blind-labeling/work-orders/' + encodeURIComponent(id), {method:'GET'})
+        .then(function(data) {
+          var workOrder = data.work_order || data.detail || data;
+          self.blindLabeling.adminDetail.workOrder = self.blindLabelNormalizeAssignment(Object.assign({}, item, workOrder));
+          self.blindLabeling.adminDetail.candidates = self.blindLabelCandidates(data);
+          var assignments = Array.isArray(data.assignments) ? data.assignments : [];
+          self.blindLabeling.adminDetail.annotations = [];
+          assignments.forEach(function(assignment) {
+            (assignment.annotations || []).forEach(function(annotation) {
+              self.blindLabeling.adminDetail.annotations.push(Object.assign({}, annotation, {username:assignment.username || assignment.user_id || '标注员',assignment_id:assignment.id,status:assignment.status}));
+            });
+          });
+          self.blindLabeling.adminDetail.consensus = data.consensus || data.consensus_result || workOrder.consensus || null;
+          var resultMap = {};
+          ((self.blindLabeling.adminDetail.consensus && self.blindLabeling.adminDetail.consensus.candidate_results) || []).forEach(function(result) { resultMap[String(result.candidate_ref || result.candidateRef || '')] = result; });
+          self.blindLabeling.adminDetail.candidates = self.blindLabeling.adminDetail.candidates.map(function(candidate, index) { var ref = self.blindLabelCandidateKey(candidate, index); return Object.assign({}, candidate, {blind_consensus:resultMap[ref] || null}); });
+          return data;
+        })
+        .catch(function(error) { self.blindLabeling.adminDetail.error = error.message || '加载盲标详情失败'; return null; })
+        .finally(function() { self.blindLabeling.adminDetail.loading = false; });
+    },
+    closeBlindLabelAdminDetail: function() { this.blindLabeling.adminDetail.open = false; },
+    resetBlindLabelOverviewFilters: function() { this.blindLabeling.overview.filters = {dateFrom:'',dateTo:'',status:'',dimension:'',annotator:'',keyword:''}; this.blindLabeling.overview.pagination.page = 1; this.loadBlindLabelOverview(); },
+    applyBlindLabelOverviewFilters: function() { this.blindLabeling.overview.pagination.page = 1; return this.loadBlindLabelOverview(); },
+    changeBlindLabelOverviewPage: function(delta) {
+      var pagination = this.blindLabeling.overview.pagination;
+      var target = Math.max(1, Math.min(Number(pagination.totalPages || 1), Number(pagination.page || 1) + Number(delta || 0)));
+      if (target === Number(pagination.page || 1)) return;
+      pagination.page = target;
+      this.loadBlindLabelOverview();
+    },
+    loadBlindLabelOverview: function() {
+      var self = this;
+      if (!self.isBlindLabelAdmin()) return Promise.resolve(null);
+      var overview = self.blindLabeling.overview;
+      if (overview.loading) return Promise.resolve(null);
+      overview.loading = true; overview.error = '';
+      var filters = overview.filters || {}; var params = new URLSearchParams();
+      if (filters.dateFrom) params.set('start_date', filters.dateFrom);
+      if (filters.dateTo) params.set('end_date', filters.dateTo);
+      if (filters.status) params.set('status', filters.status);
+      if (filters.dimension === 'helpful') params.set('dimension', 'referable');
+      else if (filters.dimension === 'unhelpful') params.set('dimension', 'not_referable');
+      else if (filters.dimension === 'consensus' && !filters.status) params.set('status', 'completed');
+      else if (filters.dimension === 'disputed' && !filters.status) params.set('status', 'disputed');
+      if (filters.annotator) params.set('user_id', filters.annotator);
+      if (filters.keyword) {
+        var keywordValue = String(filters.keyword).trim();
+        params.set('keyword', keywordValue);
+        if (/^\d{8,}$/.test(keywordValue)) params.set('conversation_id', keywordValue);
+      }
+      params.set('page', String(overview.pagination.page || 1)); params.set('page_size', String(overview.pagination.size || 20));
+      return self.blindLabelApi('/blind-labeling/overview?' + params.toString(), {method:'GET'})
+        .then(function(data) {
+          var summary = data.summary || data.metrics || {};
+          overview.summary = Object.assign(overview.summary, summary);
+          overview.people = self.blindLabelListFromResponse(data, ['people','annotators','by_annotator','users']);
+          overview.workOrders = self.blindLabelListFromResponse(data, ['work_orders','items','assignments','results']);
+          if (filters.keyword && !/^\d{8,}$/.test(String(filters.keyword).trim())) {
+            var keyword = String(filters.keyword).trim().toLowerCase();
+            overview.workOrders = overview.workOrders.filter(function(item) { return (self.blindLabelWorkOrderId(item) + ' ' + self.blindLabelQuery(item)).toLowerCase().indexOf(keyword) !== -1; });
+          }
+          overview.cards = data.cards || [];
+          var pagination = data.pagination || {}; overview.pagination.total = Number(pagination.total || data.total || overview.workOrders.length) || 0; overview.pagination.totalPages = Number(pagination.total_pages || Math.max(1, Math.ceil(overview.pagination.total / overview.pagination.size))); overview.updatedAt = self.formatDate(new Date());
+          return data;
+        })
+        .catch(function(error) { overview.error = error.message || '加载盲标总览失败'; return null; })
+        .finally(function() { overview.loading = false; });
+    },
+    loadRetrievalReviewPage: function() { return this.openRetrievalReviewPage(); },
     setFullPreviewZoom: function(zoom) {
       if (!this.full || this.full.isVideo) return;
       var value = Math.round(Number(zoom || 1) * 100) / 100;

@@ -16,6 +16,7 @@ from app.routes import (
     answer_hub,
     automation_monitor,
     auth,
+    blind_labeling,
     business_type,
     category,
     embedding_admin,
@@ -125,6 +126,7 @@ app.include_router(category.router, prefix=settings.API_V1_PREFIX)
 app.include_router(tag.router, prefix=settings.API_V1_PREFIX)
 app.include_router(manhattan.router, prefix=settings.API_V1_PREFIX)
 app.include_router(auth.router, prefix=settings.API_V1_PREFIX)
+app.include_router(blind_labeling.router, prefix=settings.API_V1_PREFIX)
 app.include_router(answer_hub.router, prefix=settings.API_V1_PREFIX)
 app.include_router(automation_monitor.router, prefix=settings.API_V1_PREFIX)
 app.include_router(integration.router, prefix=settings.API_V1_PREFIX)
