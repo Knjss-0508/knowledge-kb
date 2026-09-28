@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,6 +95,15 @@ def _text(value: Any) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value).strip()
+
+
+def _identity_text(value: Any) -> str:
+    """清除品牌、型号和外部 ID 中不可见的 Unicode 格式字符。"""
+    return "".join(
+        character
+        for character in _text(value)
+        if unicodedata.category(character) != "Cf"
+    ).strip()
 
 
 def _safe_message(value: Any, *, spreadsheet_token: str = "") -> str:
@@ -413,8 +423,14 @@ def build_payload(
                 + "、".join(missing)
             )
 
-        brand_id = required["品牌ID"]
-        model_id = required["型号ID"]
+        brand_id = _identity_text(required["品牌ID"])
+        brand_name = _identity_text(required["品牌"])
+        model_id = _identity_text(required["型号ID"])
+        model_name = _identity_text(required["型号"])
+        if not all((brand_id, brand_name, model_id, model_name)):
+            raise SyncSchedulerError(
+                f"飞书表格第 {source_row_number} 行的品牌或型号包含无效格式字符。"
+            )
         key = (DEFAULT_CATEGORY_ID, brand_id, model_id)
         if key in seen_keys:
             raise SyncSchedulerError(
@@ -432,7 +448,9 @@ def build_payload(
                 source_fields[header] = value
         source_record_id = ""
         for source_id_header in ("来源知识ID", "知识ID", "记录ID"):
-            source_record_id = _row_value(row, headers, source_id_header)
+            source_record_id = _identity_text(
+                _row_value(row, headers, source_id_header)
+            )
             if source_record_id:
                 break
         source_fields.update(
@@ -442,9 +460,9 @@ def build_payload(
                 "品类ID": DEFAULT_CATEGORY_ID,
                 "品类": DEFAULT_CATEGORY_NAME,
                 "品牌ID": brand_id,
-                "品牌": required["品牌"],
+                "品牌": brand_name,
                 "型号ID": model_id,
-                "型号": required["型号"],
+                "型号": model_name,
                 "标题": required["标题"],
                 "综合内容": required["综合内容"],
             }
@@ -456,9 +474,9 @@ def build_payload(
                 "category_id": DEFAULT_CATEGORY_ID,
                 "category_name": DEFAULT_CATEGORY_NAME,
                 "brand_id": brand_id,
-                "brand_name": required["品牌"],
+                "brand_name": brand_name,
                 "model_id": model_id,
-                "model_name": required["型号"],
+                "model_name": model_name,
                 "content": required["综合内容"],
                 "source_fields": source_fields,
             }
@@ -627,7 +645,7 @@ def _sync_backend(config: SchedulerConfig, payload: Mapping[str, Any]) -> Mappin
             raise SyncSchedulerError("SSH 用户名包含非法字符。")
         if not re.fullmatch(r"[A-Za-z0-9_.:@-]+", config.ssh_host):
             raise SyncSchedulerError("SSH 主机地址包含非法字符。")
-        remote_command = shlex.join(docker_args)
+        remote_command = shlex.join([config.docker_cli, *docker_args])
         command = [
             config.ssh_cli,
             "-i",
@@ -904,4 +922,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
