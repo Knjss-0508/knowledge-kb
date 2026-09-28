@@ -11,7 +11,7 @@ from answer_hub.automation_queue import (
     read_queue_job_metadata,
 )
 from answer_hub.cli import main
-from answer_hub.excel_io import read_workbook_rows
+from answer_hub.excel_io import read_workbook_rows, write_rows_to_workbook
 from answer_hub.second_part_pull import (
     SecondPartPullError,
     SecondPartPullProfile,
@@ -233,6 +233,97 @@ def test_pull_advances_only_through_successfully_queued_pages(tmp_path: Path) ->
     assert json.loads(state_path.read_text(encoding="utf-8"))["cursor"] == "cursor-2"
 
 
+def test_pull_with_zero_max_pages_reads_until_api_completion(
+    tmp_path: Path,
+) -> None:
+    profile = _write_profile(tmp_path / "profile.json")
+    fetcher = FakeFetcher(
+        {
+            "": {
+                "data": {
+                    "items": [
+                        {
+                            "work_order_id": "WO-001",
+                            "conversation": "第一页",
+                            "product_type": "手机",
+                        }
+                    ],
+                    "next_cursor": "cursor-2",
+                    "has_more": True,
+                }
+            },
+            "cursor-2": {
+                "data": {
+                    "items": [
+                        {
+                            "work_order_id": "WO-002",
+                            "conversation": "第二页",
+                            "product_type": "手机",
+                        }
+                    ],
+                    "next_cursor": "",
+                    "has_more": False,
+                }
+            },
+        }
+    )
+
+    summary = pull_second_part_to_queue(
+        profile,
+        queue_root=tmp_path / "queue",
+        output_root=tmp_path / "runs",
+        state_path=tmp_path / "pull-state.json",
+        max_pages=0,
+        fetcher=fetcher,
+    )
+
+    assert summary["fetched_pages"] == 2
+    assert summary["fetched_records"] == 2
+    assert summary["queued_jobs"] == 2
+
+
+def test_pull_excludes_records_already_in_queue(tmp_path: Path) -> None:
+    profile = _write_profile(tmp_path / "profile.json")
+    queue = AutomationQueue(tmp_path / "queue")
+    queue.ensure()
+    existing_workbook = tmp_path / "existing.xlsx"
+    write_rows_to_workbook(
+        {"共享数据汇总": (["工单ID", "聊天内容", "产品类型"], [{
+            "工单ID": "WO-001",
+            "聊天内容": "已在当前任务中",
+            "产品类型": "手机",
+        }])},
+        existing_workbook,
+    )
+    existing_workbook.replace(queue.processing / "existing.xlsx")
+
+    fetcher = FakeFetcher({
+        "": {
+            "data": {
+                "items": [
+                    {"work_order_id": "WO-001", "conversation": "重复", "product_type": "手机"},
+                    {"work_order_id": "WO-002", "conversation": "补充", "product_type": "手机"},
+                ],
+                "next_cursor": "",
+                "has_more": False,
+            }
+        }
+    })
+
+    summary = pull_second_part_to_queue(
+        profile,
+        queue_root=tmp_path / "queue",
+        output_root=tmp_path / "runs",
+        state_path=tmp_path / "pull-state.json",
+        exclude_existing_records=True,
+        fetcher=fetcher,
+    )
+
+    assert summary["skipped_existing_records"] == 1
+    assert summary["fetched_records"] == 2
+    assert summary["queued_jobs"] == 1
+
+
 def test_pull_rejects_records_missing_profile_required_fields(
     tmp_path: Path,
 ) -> None:
@@ -428,6 +519,41 @@ def test_powerzhuan_profile_uses_documented_query_contract(
     assert "limit=1000" in request.full_url
     assert request.get_header("Authorization") == "Bearer private-test-token"
     assert captured["timeout"] == 30.0
+
+
+def test_scheduler_limit_override_allows_full_date_window_fetch(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SECOND_PART_API_TOKEN", "private-test-token")
+    monkeypatch.setenv("SECOND_PART_QUERY_FROM_DATE", "2026-09-13")
+    monkeypatch.setenv("SECOND_PART_QUERY_TO_DATE", "2026-09-14")
+    monkeypatch.setenv("SECOND_PART_QUERY_LIMIT", "3000")
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"records":[]}'
+
+    def fake_urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(second_part_pull_module, "urlopen", fake_urlopen)
+    profile = SecondPartPullProfile.load(
+        PROJECT_ROOT
+        / "config"
+        / "second-part-pull.powerzhuan.example.json"
+    )
+    UrllibSecondPartPageFetcher().fetch_page(profile, "")
+
+    assert "limit=3000" in captured["request"].full_url
 
 
 def test_powerzhuan_profile_maps_observed_record_fields(

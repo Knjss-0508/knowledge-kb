@@ -3,8 +3,6 @@ from __future__ import annotations
 from io import BytesIO
 import json
 from pathlib import Path
-import threading
-import time
 
 import answer_hub.automation_queue as automation_queue
 from answer_hub.automation import AutomationRunStore
@@ -109,7 +107,8 @@ def test_automation_api_lists_runs_and_persists_operator_feedback(
     assert payload["count"] == 1
     assert payload["items"][0]["record_id"] == job_id
     assert payload["items"][0]["health_status"] == "active"
-    assert payload["items"][0]["feedback"]["status"] == "unhandled"
+    assert payload["items"][0]["feedback"]["status"] == "not_required"
+    assert payload["items"][0]["feedback"]["automatic"] is True
     assert payload["items"][0]["artifact_names"] == ["summary"]
     assert "artifacts" not in payload["items"][0]
     assert payload["items"][0]["summary"] == {"topic_rows": 1}
@@ -128,14 +127,15 @@ def test_automation_api_lists_runs_and_persists_operator_feedback(
         },
     )
 
-    assert updated.status_code == 200
-    assert updated.get_json()["feedback"]["status_label"] == "处理中"
+    assert updated.status_code == 409
+    assert "自动化运行结果生成" in updated.get_json()["error"]
     reloaded = client.get(
         "/api/v1/automation/jobs",
         headers=HEADERS,
     ).get_json()
-    assert reloaded["items"][0]["feedback"]["owner"] == "小张"
-    assert len(reloaded["items"][0]["feedback"]["history"]) == 1
+    assert reloaded["items"][0]["feedback"]["status"] == "not_required"
+    assert reloaded["items"][0]["feedback"]["owner"] == ""
+    assert reloaded["items"][0]["feedback"]["history"] == []
 
 
 def test_automation_api_defaults_candidate_sync_to_disabled(tmp_path: Path) -> None:
@@ -470,8 +470,8 @@ def test_automation_api_reports_corrupt_feedback_store(
         headers=HEADERS,
     )
 
-    assert response.status_code == 503
-    assert "无法读取监管反馈存储" in response.get_json()["error"]
+    assert response.status_code == 200
+    assert response.get_json()["items"][0]["feedback"]["automatic"] is True
 
 
 def test_automation_api_retries_failed_job(tmp_path: Path) -> None:
@@ -487,13 +487,6 @@ def test_automation_api_retries_failed_job(tmp_path: Path) -> None:
     metadata["error"] = "temporary failure"
     write_queue_job_metadata(failed, metadata)
 
-    enabled = client.patch(
-        "/api/v1/automation/control",
-        headers=HEADERS,
-        json={"enabled": True},
-    )
-    assert enabled.status_code == 200
-
     response = client.post(
         f"/api/v1/automation/jobs/{created['job_id']}/retry",
         headers=HEADERS,
@@ -504,113 +497,6 @@ def test_automation_api_retries_failed_job(tmp_path: Path) -> None:
     assert retried["status"] == "pending"
     assert retried["error"] == ""
     assert len(list(queue.pending.glob("*.xlsx"))) == 1
-
-
-def test_automation_control_gates_manual_runs_and_prevents_duplicates(
-    tmp_path: Path,
-) -> None:
-    started = threading.Event()
-    release = threading.Event()
-
-    def fake_run_worker(actor: str) -> dict[str, object]:
-        assert actor == "管理员"
-        started.set()
-        assert release.wait(timeout=2)
-        return {"status": "completed", "fetched_records": 2, "queued_jobs": 1}
-
-    app = create_automation_api_app(
-        api_key=API_KEY,
-        queue_root=tmp_path / "queue",
-        output_root=tmp_path / "runs",
-        run_worker=fake_run_worker,
-    )
-    app.config["TESTING"] = True
-    client = app.test_client()
-
-    control = client.get("/api/v1/automation/control", headers=HEADERS)
-
-    assert control.status_code == 200
-    assert control.get_json()["enabled"] is False
-    assert control.get_json()["timezone"] == "Asia/Shanghai"
-
-    disabled_run = client.post(
-        "/api/v1/automation/runs",
-        headers=HEADERS,
-        json={"actor": "管理员"},
-    )
-
-    assert disabled_run.status_code == 409
-    assert "总开关" in disabled_run.get_json()["error"]
-
-    updated = client.patch(
-        "/api/v1/automation/control",
-        headers=HEADERS,
-        json={"enabled": True, "schedule_enabled": True, "schedule_time": "02:30"},
-    )
-
-    assert updated.status_code == 200
-    assert updated.get_json()["enabled"] is True
-    assert updated.get_json()["schedule_enabled"] is True
-    assert updated.get_json()["schedule_time"] == "02:30"
-
-    launched = client.post(
-        "/api/v1/automation/runs",
-        headers=HEADERS,
-        json={"actor": "管理员"},
-    )
-
-    assert launched.status_code == 202
-    assert started.wait(timeout=1)
-
-    duplicate = client.post(
-        "/api/v1/automation/runs",
-        headers=HEADERS,
-        json={"actor": "管理员"},
-    )
-    assert duplicate.status_code == 409
-    assert "运行" in duplicate.get_json()["error"]
-
-    release.set()
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        status = client.get("/api/v1/automation/control", headers=HEADERS).get_json()
-        if not status["running"]:
-            break
-        time.sleep(0.02)
-
-    assert status["running"] is False
-    assert status["last_run"]["status"] == "completed"
-
-
-def test_automation_manual_run_refuses_an_already_processing_queue_job(
-    tmp_path: Path,
-) -> None:
-    app = _app(tmp_path)
-    client = app.test_client()
-    created = _create_job(client).get_json()
-    queue = AutomationQueue(tmp_path / "queue")
-    pending_source = next(queue.pending.glob("*.xlsx"))
-    processing_source = queue.claim(pending_source)
-    metadata = read_queue_job_metadata(processing_source)
-    metadata["job_id"] = created["job_id"]
-    metadata["status"] = "processing"
-    write_queue_job_metadata(processing_source, metadata)
-
-    enabled = client.patch(
-        "/api/v1/automation/control",
-        headers=HEADERS,
-        json={"enabled": True},
-    )
-    assert enabled.status_code == 200
-
-    response = client.post(
-        "/api/v1/automation/runs",
-        headers=HEADERS,
-        json={"actor": "管理员"},
-    )
-
-    assert response.status_code == 409
-    assert "运行" in response.get_json()["error"]
 
 
 def test_automation_api_downloads_run_artifact(tmp_path: Path) -> None:

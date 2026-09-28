@@ -93,6 +93,7 @@ from .product_taxonomy import (
 )
 from .terminology import ensure_terminology_loaded
 from .topic_registry import TopicRegistry, TopicResolution
+from .topic_transcription import audit_topic_draft
 
 
 FLOW_STATUSES = [
@@ -525,6 +526,13 @@ TOPIC_MODEL_INITIAL_REVIEW_COLUMNS = [
     "自动审核状态",
     "自动审核原因",
     "自动审核策略版本",
+    "转写质量审计",
+    "转写逻辑门禁状态",
+    "转写逻辑门禁原因",
+    "转写事实支持状态",
+    "转写历史标准关联状态",
+    "转写重试次数",
+    "转写重试原因",
 ]
 
 TOPIC_STAGE_CLASSIFICATION_COLUMNS = [
@@ -11989,11 +11997,29 @@ def _topic_source_fact(
     score += 2 if judgment_basis else 0
     score += 2 if image_urls else 0
     score += 1 if len(conversation) >= 40 else 0
+    object_value = _clean_text(row.get("对象/部位"))
+    observation_value = _clean_text(row.get("异常现象"))
     return {
         "fact_id": f"F{index:02d}",
         "source_record_id": source_id,
         "work_order_id": _original_work_order_id_for_row(row),
         "atomic_question": _clean_text(row.get("核心问题")),
+        # Keep the normalized topic dimensions alongside the original
+        # excerpts.  The transcription seam can consume these structured
+        # slots without changing the legacy source-claim checker.
+        "object": object_value,
+        "condition": _clean_text(
+            row.get("判定目标") or row.get("问题意图")
+        ),
+        "observation": observation_value,
+        "action": _clean_text(row.get("解题方式")),
+        "result": human_judgment,
+        "boundary": source_supported_threshold,
+        "fact_type": (
+            "manual_judgment"
+            if human_judgment
+            else "source_conversation"
+        ),
         "human_core_problem": human_core_problem,
         "human_judgment_conclusion": human_judgment,
         "judgment_basis": judgment_basis,
@@ -12852,7 +12878,8 @@ def _compact_standard_rule_points(
     # 先清理图片 URL，再做编号和分段识别，避免 URL 被拆成半截文本。
     text = re.sub(r"\[img:[^\]]+\]", "", text, flags=re.IGNORECASE)
     text = re.sub(r"https?://\S+", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"(?<!\n)\s*(?=\d+[.、]\s*)", "\n", text)
+    # 仅在真正的编号前换行；不能把 0.5mm 之类的小数阈值拆开。
+    text = re.sub(r"(?<!\n)\s*(?=\d+[.、]\s+\S)", "\n", text)
     points: list[str] = []
     for raw_line in text.splitlines():
         line = _clean_text(raw_line)
@@ -12927,6 +12954,77 @@ def _is_incomplete_standard_rule_point(value: Any) -> bool:
     return (
         point.count("（") > point.count("）")
         or point.count("(") > point.count(")")
+    )
+
+
+_STANDARD_PATH_NOISE_LINE_PATTERNS = (
+    re.compile(
+        r"^\s*(?:匹配标准为|对应标准为|标准路径为|关联标准为|引用标准为)"
+        r"[^。；;\n]*"
+        r"(?:。|；|;)?\s*$"
+    ),
+    re.compile(
+        r"^\s*(?:请在|应在|需要在|在)"
+        r"[^。；;\n]{0,180}"
+        r"(?:中选择|选择对应(?:项|路径)?|勾选(?:对应)?(?:项|路径)?)"
+        r"[^。；;\n]*"
+        r"(?:。|；|;)?\s*$"
+    ),
+)
+
+
+def _filter_standard_path_noise(value: Any) -> str:
+    """Remove model/source narration of a standard path, not the facts around it.
+
+    Standard paths remain available through the dedicated standard-reference
+    fields.  This filter is intentionally applied only to AI/source text; the
+    authoritative standard body is never passed through it.
+    """
+    text = _normalize_lines(value)
+    if not text:
+        return ""
+    kept: list[str] = []
+    for raw_line in text.splitlines():
+        line = _clean_text(raw_line)
+        if not line:
+            continue
+        if any(pattern.match(line) for pattern in _STANDARD_PATH_NOISE_LINE_PATTERNS):
+            continue
+        # A model may append the path narration after a useful fact in the
+        # same line.  Remove only the path sentence and keep the useful prefix.
+        line = re.sub(
+            r"(?:匹配标准为|对应标准为|标准路径为|关联标准为|引用标准为)"
+            r"[^。；;\n]*(?:。|；|;)",
+            "",
+            line,
+        )
+        line = re.sub(
+            r"(?:请在|应在|需要在|在)[^。；;\n]{0,180}"
+            r"(?:中选择|选择对应(?:项|路径)?|勾选(?:对应)?(?:项|路径)?)"
+            r"[^。；;\n]*(?:。|；|;)",
+            "",
+            line,
+        )
+        line = _clean_text(line).strip("；;，, ")
+        if line and line not in kept:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def _merge_standard_and_source_content(
+    standard_content: Any,
+    source_content: Any,
+    content_type: str,
+) -> str:
+    """Combine authoritative rules with source facts without path narration."""
+    points: list[str] = []
+    for value in (standard_content, _filter_standard_path_noise(source_content)):
+        for point in _compact_standard_rule_points(value, content_type):
+            if point not in points:
+                points.append(point)
+    return "\n".join(
+        f"{index}. {point}"
+        for index, point in enumerate(points, start=1)
     )
 
 
@@ -13038,11 +13136,11 @@ def _build_compact_standard_content(
                 "再在候选项/处理项中选择对应档位。"
             )
     if option_path and len(option_paths) == 1 and rule_points:
-        return "\n\n".join(
-            [
-                f"1. 满足以下任一条件时，勾选{option_path}：",
-                *rule_points,
-            ]
+        # 选项路径属于“关联标准项/处理选项”元数据，不是知识正文。
+        # 正文只保留可复用的规则，避免把“请在某路径中选择”当成知识点。
+        return "\n".join(
+            f"{index}. {point}"
+            for index, point in enumerate(rule_points, start=1)
         )
     return "\n".join(
         f"{index}. {point}"
@@ -16032,6 +16130,8 @@ def _topic_candidate_row(
     min_confidence: float,
     use_standard_references: bool = True,
     standard_basis_source: str = "",
+    transcription_retry_count: int = 0,
+    transcription_retry_reasons: Iterable[str] = (),
 ) -> dict[str, Any]:
     evidence_package = _topic_evidence_package(rows)
     query = _retarget_battery_user_judgment_query(
@@ -16193,10 +16293,21 @@ def _topic_candidate_row(
         content_type,
         query=query,
     )
-    if compact_standard and standard and not matched_existing:
-        content = compact_standard
+    if compact_standard and standard:
+        source_fact_content = _build_topic_source_fact_content(
+            query,
+            use_standard_references=use_standard_references,
+        )
+        content = _merge_standard_and_source_content(
+            compact_standard,
+            source_fact_content,
+            content_type,
+        ) or compact_standard
         content_rebuild_note = _safe_join(
-            [content_rebuild_note, "已按引用标准重建为简洁编号正文。"],
+            [
+                content_rebuild_note,
+                "已按引用标准重建正文，并合并AI/会话中的有效对象、现象和边界。",
+            ],
             "；",
         )
     elif content:
@@ -16515,7 +16626,20 @@ def _topic_candidate_row(
         evidence_package,
         matches if use_standard_references else [],
     )
-    if unsupported_claims:
+    draft_audit = audit_topic_draft(
+        content=content,
+        recommended_reply=recommended_reply,
+        evidence_package=evidence_package,
+        topic=query,
+        existing_unsupported_claims=unsupported_claims,
+        use_standard_references=use_standard_references,
+        active_standard_refs=model_standard_refs,
+        preserved_standard_refs=preserved_standard_refs,
+    )
+    logic_gate_failed = bool(
+        draft_audit.logic_conflicts or draft_audit.scope_expansion
+    )
+    if unsupported_claims or logic_gate_failed:
         needs_review = True
     quality_issues = list(
         dict.fromkeys(
@@ -16524,6 +16648,7 @@ def _topic_candidate_row(
                 *(["标题为空"] if not title else []),
                 *(["图片证据不足"] if image_measurement_gate["status"] in {"required_missing", "unusable"} else []),
                 *(["来源事实不支持"] if unsupported_claims else []),
+                *(["逻辑关系门禁失败"] if logic_gate_failed else []),
             ]
         )
     )
@@ -16715,6 +16840,9 @@ def _topic_candidate_row(
                 content_rebuild_note,
                 content_type_note,
                 "；".join(content_structure_issues),
+                "；".join(
+                    [*draft_audit.logic_conflicts, *draft_audit.scope_expansion]
+                ),
                 specific_model_note,
                 model_error,
             ],
@@ -16727,6 +16855,31 @@ def _topic_candidate_row(
         "问题反馈": "",
         **{field: "" for field in TOPIC_MODEL_INITIAL_REVIEW_COLUMNS},
         **{field: "" for field in TOPIC_REVIEW_COLUMNS},
+        "转写质量审计": json.dumps(
+            draft_audit.to_dict(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        "转写逻辑门禁状态": (
+            "failed"
+            if draft_audit.logic_conflicts or draft_audit.scope_expansion
+            else "passed"
+        ),
+        "转写逻辑门禁原因": "；".join(
+            [*draft_audit.logic_conflicts, *draft_audit.scope_expansion]
+        ),
+        "转写事实支持状态": (
+            "failed" if draft_audit.unsupported_claims else "passed"
+        ),
+        "转写历史标准关联状态": (
+            draft_audit.historical_standard_reference_status
+        ),
+        "转写重试次数": str(max(0, int(transcription_retry_count))),
+        "转写重试原因": "；".join(
+            str(reason).strip()
+            for reason in transcription_retry_reasons
+            if str(reason).strip()
+        ),
         "模型调用状态": model_call_status,
         "模型输出校验状态": model_output_validation_status,
         "模型质量状态": model_quality_status,
@@ -16982,11 +17135,14 @@ def _topic_source_claim_texts(
 ) -> list[str]:
     texts = []
     for fact in evidence_package.get("facts") or []:
-        assertion_text = "\n".join(
-            _topic_source_assertion_segments(fact)
-        )
-        if assertion_text:
-            texts.append(assertion_text)
+        assertion_segments = _topic_source_assertion_segments(fact)
+        if assertion_segments:
+            # Keep both the grouped evidence and each assertion as an
+            # independent comparison unit.  A condition and its conclusion
+            # may be separated by field boundaries; relation checks should not
+            # let unrelated assertions veto a valid exact match.
+            texts.append("\n".join(assertion_segments))
+            texts.extend(assertion_segments)
     for standard, _score in matches or []:
         standard_text = "\n".join(
             value
@@ -17241,11 +17397,6 @@ def _topic_claim_is_source_supported(
     for source_text in source_texts:
         if claim_numbers - _topic_numeric_claim_tokens(source_text):
             continue
-        if not _topic_claim_relations_are_supported(
-            normalized_claim,
-            source_text,
-        ):
-            continue
         source_segments = [
             source_text,
             *[
@@ -17257,9 +17408,50 @@ def _topic_claim_is_source_supported(
                 if _clean_text(segment)
             ],
         ]
+        normalized_sources = [
+            _normalized_topic_claim(segment)
+            for segment in source_segments
+        ]
+        composite_parts = [
+            part
+            for part in re.split(r"[/／]", normalized_claim)
+            if len(part) >= 2
+        ]
+        if (
+            len(composite_parts) >= 2
+            and _topic_claim_relations_are_supported(
+                normalized_claim,
+                source_text,
+            )
+            and all(
+                any(part in normalized_source for normalized_source in normalized_sources)
+                for part in composite_parts
+            )
+        ):
+            return True
         for source in source_segments:
             normalized_source = _normalized_topic_claim(source)
             if len(normalized_source) < 4:
+                continue
+            relation_source = source
+            if not _topic_claim_relations_are_supported(
+                normalized_claim,
+                relation_source,
+            ):
+                # A source assertion is sometimes split into an object line
+                # and a later operation line (for example, "屏幕" followed
+                # by "右上角…复现").  If the only missing relation is the
+                # entity anchor, borrow the grouped fact for relation checks
+                # while keeping lexical similarity against the exact clause.
+                claim_entities = _topic_entity_groups(normalized_claim)
+                if claim_entities and claim_entities.issubset(
+                    _topic_entity_groups(source_text)
+                ):
+                    relation_source = f"{source} {source_text}"
+            if not _topic_claim_relations_are_supported(
+                normalized_claim,
+                relation_source,
+            ):
                 continue
             for claim_variant in _topic_claim_comparison_variants(
                 normalized_claim,
@@ -17575,6 +17767,29 @@ def _rule_topic_initial_review(
             "content_consistency": "部分一致",
             "title_quality": "清晰",
             "confidence": 0.94,
+            "priority_review": True,
+        }
+    logic_gate_reason = _clean_text(topic.get("转写逻辑门禁原因"))
+    if (
+        _clean_text(topic.get("转写逻辑门禁状态")) == "failed"
+        or logic_gate_reason
+    ):
+        return {
+            "decision": "需修改",
+            "knowledge_value": "值得沉淀",
+            "error_type": "场景理解错",
+            "reason": (
+                "转写草稿存在条件、量词或正常/异常极性逻辑冲突："
+                + (
+                    logic_gate_reason
+                    or "需要回到来源事实重新核对判断关系。"
+                )
+            ),
+            "standard_consistency": "一致" if matches else "无可信标准",
+            "evidence_sufficiency": "部分充分",
+            "content_consistency": "不一致",
+            "title_quality": "清晰",
+            "confidence": 0.98,
             "priority_review": True,
         }
     reply_quality_issues = _recommended_reply_quality_issues(
@@ -19937,6 +20152,8 @@ def build_topic_review_rows(
             "standard_retrieval": standard_retrieval_audit,
         }
         response_audit: dict[str, Any] = {}
+        transcription_retry_count = 0
+        transcription_retry_reasons: list[str] = []
         if client and not provisional_singleton and hasattr(client, "label_topic"):
             provider = "mimo"
             model_name = client.config.model
@@ -20000,14 +20217,18 @@ def build_topic_review_rows(
                         ),
                     }
                     label_parameters = inspect.signature(label_topic).parameters
+                    initial_label_kwargs: dict[str, Any] = {}
                     if "use_standard_references" in label_parameters:
-                        result = label_topic(
-                            topic_payload,
-                            matches,
-                            use_standard_references=use_standard_references,
+                        initial_label_kwargs["use_standard_references"] = (
+                            use_standard_references
                         )
-                    else:
-                        result = label_topic(topic_payload, matches)
+                    if "max_attempts" in label_parameters:
+                        initial_label_kwargs["max_attempts"] = 1
+                    result = label_topic(
+                        topic_payload,
+                        matches,
+                        **initial_label_kwargs,
+                    )
                     model_candidate = result.candidate
                     if (
                         not use_standard_references
@@ -20055,6 +20276,8 @@ def build_topic_review_rows(
                             retry_kwargs["use_standard_references"] = (
                                 use_standard_references
                             )
+                        if "max_attempts" in label_parameters:
+                            retry_kwargs["max_attempts"] = 1
                         if reserve_topic_model_call():
                             retry_result = label_topic(
                                 topic_payload,
@@ -20075,6 +20298,8 @@ def build_topic_review_rows(
                                 "standard_retrieval": standard_retrieval_audit,
                             }
                             response_audit = retry_result.response_audit
+                            transcription_retry_count += 1
+                            transcription_retry_reasons.append(retry_reason)
                             stage_status = "topic_model_rewritten_for_evidence"
                         else:
                             topic_model_budget_skipped += 1
@@ -20083,6 +20308,120 @@ def build_topic_review_rows(
                                 f"主题模型调用达到上限 {topic_model_call_limit}，"
                                 "未执行通用草稿重写，转人工优先审核。"
                             )
+                    if (
+                        stage_status
+                        in {
+                            "topic_model_labeled",
+                            "topic_model_rewritten_for_evidence",
+                        }
+                        and "retry_reason" in label_parameters
+                        and not (
+                            (
+                                not use_standard_references
+                                and _topic_draft_is_generic(candidate, rows)
+                            )
+                            or (
+                                use_standard_references
+                                and _topic_draft_is_case_analysis(candidate)
+                            )
+                        )
+                    ):
+                        for _quality_retry in range(
+                            max(0, 2 - transcription_retry_count)
+                        ):
+                            quality_audit = audit_topic_draft(
+                                content=str(candidate.get("content") or ""),
+                                recommended_reply=str(
+                                    candidate.get("recommended_reply") or ""
+                                ),
+                                evidence_package=evidence_package,
+                                topic=query,
+                                use_standard_references=use_standard_references,
+                                active_standard_refs=(
+                                    "、".join(
+                                        str(item)
+                                        for item in candidate.get(
+                                            "standard_refs",
+                                            [],
+                                        )
+                                        if str(item).strip()
+                                    )
+                                    if use_standard_references
+                                    else ""
+                                ),
+                            )
+                            quality_retry_reason = "；".join(
+                                [
+                                    *quality_audit.logic_conflicts,
+                                    *quality_audit.scope_expansion,
+                                    *(
+                                        f"来源事实不支持：{claim}"
+                                        for claim in quality_audit.unsupported_claims
+                                    ),
+                                ]
+                            )
+                            if not quality_retry_reason:
+                                break
+                            transcription_retry_reasons.append(
+                                quality_retry_reason
+                            )
+                            if not reserve_topic_model_call():
+                                topic_model_budget_skipped += 1
+                                model_error = _safe_join(
+                                    [
+                                        model_error,
+                                        (
+                                            f"主题模型调用达到上限 {topic_model_call_limit}，"
+                                            "未执行逻辑关系重写，转人工优先审核。"
+                                        ),
+                                    ],
+                                    "；",
+                                )
+                                break
+                            retry_kwargs: dict[str, Any] = {
+                                "retry_reason": (
+                                    "上一版主题转写未通过确定性质量门禁："
+                                    + quality_retry_reason
+                                    + "。请严格保持来源事实中的对象、"
+                                    "条件组合、量词和正常/异常极性，不得把“同时/全部”"
+                                    "改成“任一/只要一个”，也不得反转处理结论。"
+                                )
+                            }
+                            if "use_standard_references" in label_parameters:
+                                retry_kwargs["use_standard_references"] = (
+                                    use_standard_references
+                                )
+                            if "max_attempts" in label_parameters:
+                                retry_kwargs["max_attempts"] = 1
+                            retry_result = label_topic(
+                                topic_payload,
+                                matches,
+                                **retry_kwargs,
+                            )
+                            retry_candidate = retry_result.candidate
+                            if (
+                                not use_standard_references
+                                and _candidate_contains_standard_reference(
+                                    retry_candidate
+                                )
+                            ):
+                                raise MimoError(
+                                    "无标准引用模式检测到逻辑重写草稿包含标准引用"
+                                )
+                            candidate = retry_candidate
+                            request_audit = {
+                                **retry_result.request_audit,
+                                "standard_retrieval": standard_retrieval_audit,
+                            }
+                            response_audit = retry_result.response_audit
+                            transcription_retry_count += 1
+                            stage_status = "topic_model_rewritten_for_evidence"
+                        request_audit["quality_retry_count"] = (
+                            transcription_retry_count
+                        )
+                        request_audit["quality_retry_reasons"] = list(
+                            transcription_retry_reasons
+                        )
                 except Exception as exc:
                     (
                         stage_status,
@@ -20269,6 +20608,8 @@ def build_topic_review_rows(
             standard_basis_source=_clean_text(
                 standard_retrieval_audit.get("source")
             ),
+            transcription_retry_count=transcription_retry_count,
+            transcription_retry_reasons=transcription_retry_reasons,
         )
         if (
             _clean_text(topic.get("模型调用状态")) == "model_success"

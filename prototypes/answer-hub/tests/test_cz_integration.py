@@ -16,11 +16,19 @@ from answer_hub.cz_integration import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _cz_required_schema_fields(class_name: str) -> set[str]:
-    schema_path = PROJECT_ROOT / "backend" / "app" / "schemas" / "integration.py"
+    schema_path = (
+        PROJECT_ROOT
+        / "cz-knowledge-kb"
+        / "knowledge-kb-master"
+        / "backend"
+        / "app"
+        / "schemas"
+        / "integration.py"
+    )
     module = ast.parse(schema_path.read_text(encoding="utf-8"))
     schema_class = next(
         node

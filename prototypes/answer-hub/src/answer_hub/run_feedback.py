@@ -9,6 +9,7 @@ from .run_history import sanitize_run_text
 
 
 RUN_FEEDBACK_STATUS_LABELS = {
+    "not_required": "无需处理",
     "unhandled": "未处理",
     "acknowledged": "已确认",
     "in_progress": "处理中",
@@ -51,6 +52,80 @@ def default_run_feedback(record_id: str) -> dict[str, Any]:
         "note": "",
         "actor": "",
         "updated_at": "",
+        "history": [],
+    }
+
+
+def automatic_run_feedback(record: dict[str, Any]) -> dict[str, Any]:
+    """Build read-only feedback from the current automation run state.
+
+    Human feedback used to be stored separately from the run lifecycle, which
+    made a queued or failed run remain visible after an operator selected
+    ``resolved``. The run itself is the source of truth now: failures are
+    actionable, retrying failures are in progress, and successful retries are
+    resolved automatically.
+    """
+    record_id = str(record.get("record_id") or "").strip()
+    effective_status = str(record.get("effective_status") or "").strip()
+    health_status = str(record.get("health_status") or "").strip()
+    current_stage = record.get("current_stage")
+    current_stage = current_stage if isinstance(current_stage, dict) else {}
+    cz_sync = record.get("cz_sync")
+    cz_sync = cz_sync if isinstance(cz_sync, dict) else {}
+    cz_failed = int(cz_sync.get("failed") or 0)
+    retry_history = record.get("retry_history")
+    retry_history = retry_history if isinstance(retry_history, list) else []
+    attempt_count = max(1, int(record.get("attempt_count") or 1))
+    has_retry = attempt_count > 1 or bool(retry_history)
+    is_failure = bool(
+        str(record.get("error") or "").strip()
+        or effective_status in {"failed", "needs_confirmation"}
+        or health_status in {"failed", "stalled", "attention"}
+        or cz_failed > 0
+        or str(current_stage.get("status") or "") == "failed"
+    )
+    if is_failure:
+        status = (
+            "in_progress"
+            if effective_status in {"processing", "running"} and has_retry
+            else "unhandled"
+        )
+    elif has_retry and effective_status in {
+        "completed", "done", "review_pending"
+    }:
+        status = "resolved"
+    else:
+        status = "not_required"
+
+    message = str(record.get("error") or "").strip()
+    if not message:
+        message = str(current_stage.get("detail") or "").strip()
+    if not message:
+        alerts = record.get("alerts")
+        if isinstance(alerts, list) and alerts:
+            message = str(alerts[-1] or "").strip()
+    if not message and cz_failed > 0:
+        message = "CZ 候选价值复核同步失败，请查看同步阶段错误。"
+    if status == "resolved" and not message:
+        for attempt in reversed(retry_history):
+            if isinstance(attempt, dict) and str(attempt.get("error") or "").strip():
+                message = f"上次运行异常已恢复：{attempt['error']}"
+                break
+    if not message:
+        message = "任务正常，无失败反馈。"
+
+    return {
+        "record_id": record_id,
+        "status": status,
+        "status_label": RUN_FEEDBACK_STATUS_LABELS[status],
+        "message": sanitize_run_text(message),
+        "automatic": True,
+        "source": "automation",
+        "owner": "",
+        "cause_type": "",
+        "note": "",
+        "actor": "",
+        "updated_at": str(record.get("updated_at") or ""),
         "history": [],
     }
 

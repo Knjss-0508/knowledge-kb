@@ -2,6 +2,7 @@
 .cz_test_venv/
 .env
 config/*.local.json
+config/local-model.json
 .claude/
 .codex_stage/
 .codex_last_*_path

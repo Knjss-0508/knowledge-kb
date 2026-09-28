@@ -28,6 +28,7 @@ from .catalog import StandardCatalogItem
 from .clustering_rules import build_clustering_rules_prompt_block
 from .images import ImageEvidence, split_image_urls
 from .knowledge_categories import SUPPORTED_KNOWLEDGE_CATEGORIES, UNCERTAIN_CATEGORY
+from .local_model_config import LocalModelConfig, resolve_config_path
 from .product_taxonomy import (
     UNKNOWN_PRODUCT_NAME,
     canonical_product_name,
@@ -144,20 +145,30 @@ class MimoConfig:
     @classmethod
     def from_env(cls) -> "MimoConfig | None":
         load_dotenv()
-        api_key = os.getenv("MIMO_API_KEY", "").strip()
-        api_keys = tuple(
-            key
-            for key in (
+        local_path = resolve_config_path()
+        local = LocalModelConfig.from_file(local_path)
+        # An explicitly present local config is authoritative.  Do not fall
+        # back to a personal MIMO_* endpoint when its group key is missing or
+        # the file is invalid; that could unexpectedly spend the old budget.
+        if local_path.is_file() and local is None:
+            return None
+        api_key = local.api_key if local else os.getenv("MIMO_API_KEY", "").strip()
+        api_keys = (
+            tuple(dict.fromkeys((*local.api_keys, *(
                 item.strip()
-                for item in _API_KEY_SEPARATOR_RE.split(
-                    os.getenv("MIMO_API_KEYS", "")
-                )
+                for item in _API_KEY_SEPARATOR_RE.split(os.getenv("MIMO_API_KEYS", ""))
+                if item.strip()
+            ))))
+            if local
+            else tuple(
+                item.strip()
+                for item in _API_KEY_SEPARATOR_RE.split(os.getenv("MIMO_API_KEYS", ""))
+                if item.strip()
             )
-            if key
         )
-        base_url = os.getenv("MIMO_BASE_URL", "").strip()
-        model = os.getenv("MIMO_MODEL", "").strip()
-        media_model = os.getenv("MIMO_MEDIA_MODEL", "").strip()
+        base_url = local.base_url if local else os.getenv("MIMO_BASE_URL", "").strip()
+        model = local.model if local else os.getenv("MIMO_MODEL", "").strip()
+        media_model = local.media_model if local else os.getenv("MIMO_MEDIA_MODEL", "").strip()
         if not (api_key and base_url and model):
             return None
         if not media_model:
@@ -255,6 +266,27 @@ class MimoConfig:
             )
         except ValueError:
             output_cost = 0.0
+        if local:
+            timeout = local.timeout_seconds or timeout
+            response_read_timeout = (
+                local.response_read_timeout_seconds or response_read_timeout
+            )
+            max_completion_tokens = local.max_completion_tokens or max_completion_tokens
+            max_retries = (
+                local.max_retries if local.max_retries is not None else max_retries
+            )
+            max_rps = local.max_requests_per_second or max_rps
+            thinking_type = local.thinking_type or thinking_type
+            input_cost = (
+                local.input_cost_per_million_tokens
+                if local.input_cost_per_million_tokens is not None
+                else input_cost
+            )
+            output_cost = (
+                local.output_cost_per_million_tokens
+                if local.output_cost_per_million_tokens is not None
+                else output_cost
+            )
         return cls(
             api_key=api_key,
             api_keys=api_keys,
@@ -3792,13 +3824,20 @@ class MimoClient:
         matches: list[tuple[StandardCatalogItem, float]],
         use_standard_references: bool = True,
         retry_reason: str = "",
+        max_attempts: int | None = None,
     ) -> MimoLabelResult:
         """Generate a reusable draft after clustering, never from a single case."""
         allowed_refs = {_standard_ref(item) for item, _score in matches if _standard_ref(item)}
         validation_error = retry_reason
         last_response: dict[str, Any] = {}
         request_audit: dict[str, Any] = {}
-        for attempt in range(2):
+        attempts = 2
+        if max_attempts is not None:
+            try:
+                attempts = max(1, min(int(max_attempts), 2))
+            except (TypeError, ValueError):
+                attempts = 1
+        for attempt in range(attempts):
             prompt = _build_topic_prompt(
                 topic,
                 matches,
@@ -3830,8 +3869,11 @@ class MimoClient:
                 return MimoLabelResult(candidate=candidate, request_audit=request_audit, response_audit=raw_response)
             except (json.JSONDecodeError, MimoError) as exc:
                 validation_error = str(exc)
-                if attempt == 1:
-                    raise MimoError(f"MiMo 主题 JSON 校验失败（已重试一次）：{validation_error}") from exc
+                if attempt == attempts - 1:
+                    retry_suffix = "（已重试一次）" if attempts > 1 else ""
+                    raise MimoError(
+                        f"MiMo 主题 JSON 校验失败{retry_suffix}：{validation_error}"
+                    ) from exc
             except Exception as exc:
                 raise MimoError(f"MiMo 主题调用失败：{exc}") from exc
         raise MimoError(f"MiMo 主题调用未产生有效结果：{last_response}")

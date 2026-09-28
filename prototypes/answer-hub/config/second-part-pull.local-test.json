@@ -1,0 +1,43 @@
+{
+  "name": "local-second-part-test-v6",
+  "url": "http://127.0.0.1:8799/records",
+  "method": "GET",
+  "params": {
+    "from": "${SECOND_PART_QUERY_FROM_DATE}",
+    "to": "${SECOND_PART_QUERY_TO_DATE}"
+  },
+  "batch_size": 100,
+  "limit_param": "limit",
+  "timeout_seconds": 10,
+  "response": {
+    "items_path": "data.items",
+    "next_cursor_path": "data.next_cursor",
+    "has_more_path": "data.has_more"
+  },
+  "field_map": {
+    "工单ID": "工单ID",
+    "聊天内容": "聊天内容",
+    "产品类型": "产品类型",
+    "分析时间": "分析时间",
+    "历史实际回复": "历史实际回复",
+    "参考话术": "参考话术",
+    "核心问题": "核心问题",
+    "判定结论": "判定结论",
+    "回收业务层级": "回收业务层级",
+    "上传者": "上传者",
+    "ai_result": "ai_result"
+  },
+  "defaults": {
+    "上传者": "本地第二部分模拟接口"
+  },
+  "required_fields": [
+    "工单ID",
+    "聊天内容",
+    "产品类型"
+  ],
+  "workflow": {
+    "use_mimo": true,
+    "clustering_mode": "direct_mimo",
+    "sync_to_cz_review": true
+  }
+}

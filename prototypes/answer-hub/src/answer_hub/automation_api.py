@@ -30,11 +30,11 @@ from .automation_queue import (
 )
 from .excel_io import write_rows_to_workbook
 from .mimo import load_dotenv
-from .run_feedback import (
-    RunFeedbackStore,
-    RunFeedbackStoreError,
-    default_run_feedback,
+from .local_model_config import (
+    public_local_model_config,
+    write_local_model_config,
 )
+from .run_feedback import automatic_run_feedback
 from .run_history import list_automation_run_records, sanitize_run_text
 from .workflow import SOURCE_COLUMNS
 
@@ -393,6 +393,7 @@ def create_automation_api_app(
     queue_root: str | Path | None = None,
     output_root: str | Path | None = None,
     feedback_path: str | Path | None = None,
+    automation_plan_path: str | Path | None = None,
     task_controller: Any | None = None,
     project_root: str | Path | None = None,
 ) -> Flask:
@@ -414,15 +415,11 @@ def create_automation_api_app(
             "outputs/automation-runs",
         ),
     )
-    feedback_store = RunFeedbackStore(
-        feedback_path
-        or os.getenv("ANSWER_HUB_RUN_FEEDBACK_PATH", "").strip()
-        or (job_store.queue.root / "run_feedback.db")
-    )
     automation_controller = task_controller or AutomationTaskController()
     automation_project_root = Path(project_root or Path(__file__).resolve().parents[2])
     automation_plan_path = Path(
-        os.getenv("ANSWER_HUB_AUTOMATION_PLAN_PATH", "data/automation-plan.json")
+        automation_plan_path
+        or os.getenv("ANSWER_HUB_AUTOMATION_PLAN_PATH", "data/automation-plan.json")
     )
     if not automation_plan_path.is_absolute():
         automation_plan_path = automation_project_root / automation_plan_path
@@ -555,6 +552,31 @@ def create_automation_api_app(
             }
         )
 
+    @app.get("/api/v1/local/model-config")
+    @require_api_key
+    def get_local_model_config():
+        return jsonify(public_local_model_config())
+
+    @app.put("/api/v1/local/model-config")
+    @require_api_key
+    def update_local_model_config():
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "请求体必须是 JSON 对象。"}), 400
+        if "enabled" in body and not isinstance(body["enabled"], bool):
+            return jsonify({"error": "enabled 必须是布尔值。"}), 400
+        try:
+            config_path = write_local_model_config(body)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(
+            {
+                "status": "updated",
+                "config": public_local_model_config(config_path),
+                "effective_from": "next_job",
+            }
+        )
+
     def automation_control_snapshot() -> dict[str, Any]:
         try:
             snapshot = dict(automation_controller.status())
@@ -583,7 +605,14 @@ def create_automation_api_app(
             ),
             "timezone": str(plan.get("timezone") or "Asia/Shanghai"),
         }
-        snapshot["schedule_enabled"] = bool(plan.get("schedule_enabled"))
+        # `enabled` is the logical permission to run automation manually or
+        # through the queue. `schedule_enabled` is only the OS scheduler
+        # switch. They must not be conflated: a user may allow manual runs
+        # while keeping the timer disabled.
+        snapshot["enabled"] = bool(plan.get("enabled", snapshot.get("enabled")))
+        snapshot["schedule_enabled"] = bool(
+            plan.get("schedule_enabled", snapshot.get("enabled"))
+        )
         snapshot["schedule_time"] = str(plan.get("schedule_time") or "02:00")
         return snapshot
 
@@ -617,7 +646,12 @@ def create_automation_api_app(
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time):
             return jsonify({"error": "schedule_time 必须是 HH:MM 格式。"}), 400
         try:
-            result = automation_controller.set_enabled(body["enabled"])
+            schedule_target = (
+                body["schedule_enabled"]
+                if schedule_enabled is not None
+                else body["enabled"]
+            )
+            result = automation_controller.set_enabled(schedule_target)
         except AutomationTaskControlError as exc:
             allow_uninstalled = _bool_value(
                 os.getenv("ANSWER_HUB_AUTOMATION_ALLOW_UNINSTALLED_CONTROL"),
@@ -636,7 +670,12 @@ def create_automation_api_app(
             "second_part_query_to_date": to_date,
             "knowledge_settle_from_date": from_date,
             "knowledge_settle_to_date": to_date,
-            "schedule_enabled": bool(schedule_enabled) if schedule_enabled is not None else bool(plan.get("schedule_enabled")),
+            "enabled": bool(body["enabled"]),
+            # Backward-compatible callers that only send ``enabled`` mean
+            # both logical automation permission and scheduler state. Once a
+            # caller sends ``schedule_enabled`` explicitly, keep the two
+            # switches independent.
+            "schedule_enabled": bool(schedule_enabled) if schedule_enabled is not None else bool(body["enabled"]),
             "schedule_time": schedule_time,
             "timezone": str(body.get("timezone") or plan.get("timezone") or "Asia/Shanghai"),
             "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -931,15 +970,10 @@ def create_automation_api_app(
             str(record.get("record_id") or "")
             for record in records
         ]
-        try:
-            feedback_by_record = feedback_store.get_many(record_ids)
-        except RunFeedbackStoreError as exc:
-            return jsonify({"error": str(exc)}), 503
         items = [
             public_run_record(
                 record,
-                feedback_by_record.get(record_id)
-                or default_run_feedback(record_id),
+                automatic_run_feedback(record),
             )
             for record, record_id in zip(records, record_ids)
         ]
@@ -956,38 +990,14 @@ def create_automation_api_app(
     @app.patch("/api/v1/automation/jobs/<record_id>/feedback")
     @require_api_key
     def update_job_feedback(record_id: str):
-        records = list_automation_run_records(
-            job_store.output_root,
-            job_store.queue.root,
-            limit=500,
-        )
-        if not any(
-            str(record.get("record_id") or "") == record_id
-            for record in records
-        ):
-            return jsonify({"error": "job not found"}), 404
-        body = request.get_json(silent=True) or {}
-        if not isinstance(body, dict):
-            return jsonify({"error": "JSON对象格式不正确"}), 400
-        try:
-            previous = feedback_store.get(record_id) or default_run_feedback(
-                record_id
-            )
-            feedback = feedback_store.update(
-                record_id,
-                status=str(body.get("status") or previous["status"]),
-                owner=str(body.get("owner", previous["owner"]) or ""),
-                cause_type=str(
-                    body.get("cause_type", previous["cause_type"]) or ""
-                ),
-                note=str(body.get("note", previous["note"]) or ""),
-                actor=str(body.get("actor", previous["actor"]) or ""),
-            )
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-        except RunFeedbackStoreError as exc:
-            return jsonify({"error": str(exc)}), 503
-        return jsonify({"record_id": record_id, "feedback": feedback})
+        return jsonify(
+            {
+                "error": (
+                    "任务反馈由自动化运行结果生成，不能人工修改；"
+                    "请使用失败重试，系统会在重试成功后自动标记为已恢复。"
+                )
+            }
+        ), 409
 
     @app.post("/api/v1/automation/jobs/<job_id>/retry")
     @require_api_key
@@ -1039,7 +1049,7 @@ def main() -> None:
         raise RuntimeError(
             "ANSWER_HUB_API_KEY 未配置；请通过环境变量设置 API 鉴权密钥。"
         )
-    host = os.getenv("ANSWER_HUB_API_HOST", "0.0.0.0").strip() or "0.0.0.0"
+    host = os.getenv("ANSWER_HUB_API_HOST", "127.0.0.1").strip() or "127.0.0.1"
     port = _int_value(os.getenv("ANSWER_HUB_API_PORT"), 8780)
     create_automation_api_app(api_key=api_key).run(
         host=host,

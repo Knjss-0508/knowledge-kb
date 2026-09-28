@@ -10159,7 +10159,7 @@ def test_mimo_config_loads_ordered_backup_api_keys(monkeypatch) -> None:
     )
 
 
-def test_env_example_defaults_to_cost_efficient_multimodal_mimo() -> None:
+def test_env_example_defaults_to_group_model_with_mimo_fallback_disabled() -> None:
     env_example = (
         Path(__file__).resolve().parents[1] / ".env.example"
     ).read_text(encoding="utf-8")
@@ -10173,9 +10173,12 @@ def test_env_example_defaults_to_cost_efficient_multimodal_mimo() -> None:
         entries[key] = value
 
     assert entries["MIMO_API_KEY"] == ""
-    assert entries["MIMO_MODEL"] == "mimo-v2.5"
-    assert entries["MIMO_MEDIA_MODEL"] == "mimo-v2.5"
+    # 个人 MiMo 回退通道默认停用：地址与模型名注释掉，改由本地模型配置决定。
+    assert "MIMO_MODEL" not in entries
+    assert "MIMO_MEDIA_MODEL" not in entries
     assert entries["MIMO_THINKING_TYPE"] == "disabled"
+    assert entries["ANSWER_HUB_LOCAL_MODEL_CONFIG"] == "config/local-model.json"
+    assert entries["MIMO_CLUSTER_MEDIA_POLICY"] == "never"
     assert entries["MIMO_MAX_COMPLETION_TOKENS"] == "2048"
     assert entries["ANSWER_HUB_MIMO_MAX_WORKERS"] == "4"
     assert entries["ANSWER_HUB_DIRECT_CLUSTER_MAX_WORKERS"] == "4"
@@ -10188,10 +10191,8 @@ def test_env_example_defaults_to_cost_efficient_multimodal_mimo() -> None:
     assert workflow_module.DEFAULT_DIRECT_MIMO_BATCH_SIZE == 6
     assert entries["MIMO_INPUT_COST_PER_MILLION_TOKENS"] == "0.14"
     assert entries["MIMO_OUTPUT_COST_PER_MILLION_TOKENS"] == "0.28"
-    assert "mimo-v2.5-pro" not in {
-        entries["MIMO_MODEL"],
-        entries["MIMO_MEDIA_MODEL"],
-    }
+    # 个人 MiMo 回退默认停用，模板里不应再出现高价模型配置。
+    assert "mimo-v2.5-pro" not in env_example
 
 
 def test_mimo_v25_text_model_defaults_media_requests_to_same_model(
