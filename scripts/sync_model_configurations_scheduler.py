@@ -316,6 +316,20 @@ def _row_value(row: Sequence[Any], headers: Mapping[str, int], name: str) -> str
     return _cell_value(row[index])
 
 
+def _is_contract_guidance_warning(message: str) -> bool:
+    """识别 cells-get 每次返回的固定读取契约提示，而非真实数据告警。"""
+    normalized = message.casefold()
+    required_markers = (
+        "has_more",
+        "actual_range",
+        "row_indices",
+        "col_indices",
+    )
+    return "ranges[n].cells" in normalized and all(
+        marker in normalized for marker in required_markers
+    )
+
+
 def build_payload(
     *,
     workbook_response: Mapping[str, Any],
@@ -328,7 +342,7 @@ def build_payload(
     if not isinstance(data, Mapping):
         raise SyncSchedulerError("飞书表格读取结果缺少 data 节点，禁止同步。")
     warning_message = _text(data.get("warning_message"))
-    if warning_message:
+    if warning_message and not _is_contract_guidance_warning(warning_message):
         raise SyncSchedulerError(
             "飞书表格读取返回告警，禁止把可能不完整的数据写入知识库："
             + _safe_message(warning_message, spreadsheet_token=spreadsheet_token)

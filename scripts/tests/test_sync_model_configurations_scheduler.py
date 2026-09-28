@@ -191,6 +191,22 @@ class BuildPayloadTests(unittest.TestCase):
                 spreadsheet_token="sheet-token",
             )
 
+    def test_contract_guidance_warning_is_allowed_after_metadata_checks(self):
+        cells = _cells()
+        cells["data"]["warning_message"] = (
+            "Before reading ranges[n].cells, check has_more and each range's "
+            "actual_range / row_indices / col_indices."
+        )
+
+        payload = build_payload(
+            workbook_response=_workbook(),
+            cells_response=cells,
+            sheet_id="w3Caff",
+            spreadsheet_token="sheet-token",
+        )
+
+        self.assertEqual(len(payload["records"]), 1)
+
 
 class ScheduledSyncTests(unittest.TestCase):
     def test_ssh_target_sends_json_to_the_backend_container(self):
