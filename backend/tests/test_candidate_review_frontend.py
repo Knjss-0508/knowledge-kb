@@ -122,9 +122,10 @@ def test_candidate_review_uses_one_human_decision_for_legacy_gate_fields() -> No
     assert "只需选择一次复核结论" in FRONTEND
     assert "复核说明（选填）" in FRONTEND
     assert "知识草稿处理" in FRONTEND
-    assert "draft_disposition" in FRONTEND
-    assert "退回转写修改" in FRONTEND
-    assert "form.knowledge_value === 'worthy' && form.draft_disposition === 'approved'" in FRONTEND
+    assert "reviewModelDraftDispositionLabel" in FRONTEND
+    assert "草稿处理由模型初标决定；人工仅确认是否值得沉淀。" in FRONTEND
+    assert "draft_disposition" not in FRONTEND
+    assert "form.knowledge_value === 'worthy' && form.draft_disposition === 'approved'" not in FRONTEND
     assert '<label class="fl">是否可用</label>' not in FRONTEND
     assert '<label class="fl">人工审核结论</label>' not in FRONTEND
 
