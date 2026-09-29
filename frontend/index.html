@@ -5612,7 +5612,6 @@ Vue.createApp({
         // 定位失败不影响打开；允许用户手动拖动窗口。
       }
       try {
-        chatWindow.opener = null;
         chatWindow.location.replace(url);
       } catch (navigationError) {
         this.closeWorkOrderChatWindow(chatWindow);
