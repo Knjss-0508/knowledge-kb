@@ -164,3 +164,100 @@ test('保存校验失败不预开；被拦截后成功翻页也不重复尝试�
   assert.equal(await app.submitRetrievalReview(1),true);
   assert.equal(opens,1); assert.ok(app.workOrderChatBlockedUrl.includes('questionFormId=second'));
 });
+
+function blindSetup() {
+  const state = setup();
+  const {app, context} = state;
+  app.blindLabeling = {tab:'mine',current:{open:false},saving:false,assignments:[]};
+  app.$refs = {};
+  app.$nextTick = fn => Promise.resolve().then(() => {
+    assert.equal(app.blindLabeling.detailLoading,false);
+    const rects = {'.dlg-h':{bottom:140},'.blind-label-annotator-content':{left:800},'.dlg-f':{top:940}};
+    app.$refs.blindLabelDialog = {
+      getBoundingClientRect:()=>({left:60,top:50}),
+      querySelector:s=>rects[s] ? {getBoundingClientRect:()=>rects[s]} : null
+    };
+    return fn();
+  });
+  app.loadBlindLabelAssignments = async()=>{};
+  context.alert=()=>{};
+  state.requests=[];
+  app.blindLabelApi=(url,options)=>new Promise((resolve,reject)=>state.requests.push({url,options,resolve,reject}));
+  return state;
+}
+const blindAssignment = id => ({id,work_order_id:'210448153289372575'+id,status:'assigned'});
+const blindDetail = id => ({assignment:blindAssignment(id),candidates:[]});
+
+test('真实盲标入口：详情渲染后按盲标 DOM 定位，保留完整工单 ID',async()=>{
+  const {app,calls,requests}=blindSetup();
+  const pending=app.openBlindLabelAssignment(blindAssignment('2'));
+  assert.deepEqual(calls.map(c=>c[0]),['open']);
+  requests[0].resolve(blindDetail('2'));
+  await pending;
+  assert.deepEqual(calls.find(c=>c[0]==='move'),['move',60,220]);
+  assert.deepEqual(calls.find(c=>c[0]==='resize'),['resize',728,800]);
+  assert.ok(calls.find(c=>c[0]==='navigate')[1].includes('questionFormId=2104481532893725752'));
+});
+
+test('真实盲标入口：过期响应与错误不能覆盖新详情或结束新请求的加载态',async()=>{
+  for (const reject of [false,true]) {
+    const {app,calls,requests}=blindSetup();
+    const first=app.openBlindLabelAssignment(blindAssignment('1'));
+    const second=app.openBlindLabelAssignment(blindAssignment('2'));
+    if(reject) requests[0].reject(new Error('超时自动回收'));
+    else requests[0].resolve(blindDetail('1'));
+    await first;
+    assert.equal(app.blindLabeling.detailLoading,true);
+    assert.equal(app.blindLabeling.current.assignment.id,'2');
+    assert.equal(app.blindLabeling.current.error,'');
+    requests[1].resolve(blindDetail('2'));
+    await second;
+    assert.equal(calls.filter(c=>c[0]==='navigate').length,1);
+    assert.equal(app.blindLabeling.current.assignment.id,'2');
+  }
+});
+
+test('真实盲标入口：关闭时立即关闭待加载窗口，迟到响应不再导航',async()=>{
+  const {app,calls,requests}=blindSetup();
+  const pending=app.openBlindLabelAssignment(blindAssignment('1'));
+  app.closeBlindLabelDialog();
+  assert.equal(calls.filter(c=>c[0]==='close').length,1);
+  requests[0].resolve(blindDetail('1')); await pending;
+  assert.equal(calls.filter(c=>c[0]==='navigate').length,0);
+  assert.equal(app.blindLabeling.current.open,false);
+});
+
+test('真实盲标入口：提交失败保留当前聊天，成功下一条才替换，末条提交关闭聊天',async()=>{
+  const {app,calls,requests,context}=blindSetup();
+  const first=app.openBlindLabelAssignment(blindAssignment('1'));
+  requests[0].resolve(blindDetail('1')); await first;
+  app.blindLabeling.assignments=[blindAssignment('1'),blindAssignment('2')];
+  app.blindLabeling.current.candidates=[{candidate_ref:'candidate-a',title:'候选'}];
+  app.blindLabeling.current.labels={'candidate-a':'helpful'};
+  calls.length=0;
+  const failed=app.submitBlindLabelAssignment();
+  requests[1].reject(new Error('保存失败')); await failed;
+  assert.equal(app.blindLabeling.current.open,true);
+  assert.equal(vm.runInContext('workOrderChatWindow.closed',context),false);
+  assert.equal(calls.filter(c=>c[0]==='navigate').length,0);
+  const saved=app.submitBlindLabelAssignment();
+  requests[2].resolve({});
+  for(let i=0;i<8 && requests.length<4;i++) await Promise.resolve();
+  assert.ok(requests[3].url.endsWith('/2'));
+  requests[3].resolve(blindDetail('2')); await saved;
+  assert.ok(calls.filter(c=>c[0]==='navigate').at(-1)[1].endsWith('5752&sceneType=2'));
+  app.blindLabeling.assignments=[blindAssignment('2')];
+  app.blindLabeling.current.candidates=[{candidate_ref:'candidate-a',title:'候选'}];
+  app.blindLabeling.current.labels={'candidate-a':'helpful'};
+  const last=app.submitBlindLabelAssignment();
+  requests[4].resolve({}); await last;
+  assert.equal(vm.runInContext('workOrderChatWindow',context),null);
+});
+
+test('真实盲标入口：弹窗被拦截仍能加载详情并提供对应链接',async()=>{
+  const {app,win,requests}=blindSetup(); win.open=()=>null;
+  const pending=app.openBlindLabelAssignment(blindAssignment('2'));
+  requests[0].resolve(blindDetail('2')); await pending;
+  assert.equal(app.blindLabeling.current.error,'');
+  assert.ok(app.workOrderChatBlockedUrl.includes('questionFormId=2104481532893725752'));
+});

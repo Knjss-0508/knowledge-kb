@@ -65,7 +65,7 @@ def test_blind_label_claim_is_explicit_and_completed_batch_offers_next_batch() -
     assert "{method:'POST'" in FRONTEND
     assert "blindLabeling.batch.status==='completed'?'领取下一批':'领取 50 条任务'" in FRONTEND
     assert "本批 50 条已完成，可点击“领取下一批”。" in FRONTEND
-    assert "return next ? self.openBlindLabelAssignment(next) : null;" in FRONTEND
+    assert "return next ? self.openBlindLabelAssignment(next, null, nextChatWindow) : null;" in FRONTEND
 
 
 def test_blind_label_annotators_cannot_manually_release_tasks() -> None:
