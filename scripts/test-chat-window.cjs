@@ -4,7 +4,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const html = fs.readFileSync(path.join(__dirname, '../frontend/index.html'), 'utf8');
+const html = fs.readFileSync(
+  process.env.CHAT_WINDOW_HTML || path.join(__dirname, '../frontend/index.html'),
+  'utf8'
+);
 const script = html.match(/<script>\s*var API=[\s\S]*?<\/script>/)[0].replace(/^<script>/, '').replace(/<\/script>$/, '');
 function setup(overrides = {}, rectOverrides = {}) {
   const calls = [];
