@@ -9,6 +9,11 @@ USABLE_VALUES = {"usable", "是", "可用", "通过", "yes", "true", "1"}
 UNUSABLE_VALUES = {"unusable", "否", "不可用", "驳回", "no", "false", "0"}
 PASS_DECISIONS = {"approved", "approved_with_changes", "通过", "修改后通过"}
 REJECT_DECISIONS = {"rejected", "bad_case", "驳回", "标记Bad Case"}
+DRAFT_APPROVED_VALUES = {"approved", "合格", "通过", "可送审"}
+DRAFT_REVISION_VALUES = {
+    "revision_required", "revise", "需修改", "退回转写", "退回修改"
+}
+DRAFT_HOLD_VALUES = {"hold_for_evidence", "hold", "待补证据", "待确认"}
 
 
 def _text(value: Any) -> str:
@@ -42,6 +47,27 @@ def normalize_decision(value: Any) -> str:
     return ""
 
 
+def normalize_draft_disposition(
+    value: Any, *, legacy_review: dict[str, Any] | None = None
+) -> str:
+    """Normalize the independent human decision about the transcribed draft."""
+    normalized = _text(value).lower()
+    if normalized in DRAFT_APPROVED_VALUES:
+        return "approved"
+    if normalized in DRAFT_REVISION_VALUES:
+        return "revision_required"
+    if normalized in DRAFT_HOLD_VALUES:
+        return "hold_for_evidence"
+    legacy = dict(legacy_review or {})
+    if normalize_knowledge_value(legacy.get("knowledge_value")) == "worthy" and (
+        normalize_usability(legacy.get("usability")) == "usable"
+        or normalize_decision(legacy.get("decision"))
+        in {"approved", "approved_with_changes"}
+    ):
+        return "approved"
+    return "pending"
+
+
 def normalize_human_review(review: dict[str, Any] | None) -> dict[str, Any]:
     source = dict(review or {})
     return {
@@ -49,6 +75,9 @@ def normalize_human_review(review: dict[str, Any] | None) -> dict[str, Any]:
         "knowledge_value": normalize_knowledge_value(source.get("knowledge_value")),
         "usability": normalize_usability(source.get("usability")),
         "decision": normalize_decision(source.get("decision")),
+        "draft_disposition": normalize_draft_disposition(
+            source.get("draft_disposition"), legacy_review=source
+        ),
         "modification_notes": _text(source.get("modification_notes")),
         "feedback": _text(source.get("feedback")),
         "error_type": _text(source.get("error_type")),
@@ -83,6 +112,7 @@ def build_quick_human_review(
         "knowledge_value": normalized,
         "usability": usability,
         "decision": decision,
+        "draft_disposition": "approved" if normalized == "worthy" else "pending",
         "training_eligible": "是" if include_in_training else "否",
         "notes": _text(notes),
     }
@@ -97,6 +127,7 @@ def evaluate_review_status(
     knowledge_value = review["knowledge_value"]
     usability = review["usability"]
     decision = review["decision"]
+    draft_disposition = review["draft_disposition"]
 
     if knowledge_value == "unworthy":
         return "rejected", False, "人工确认该知识点不值得沉淀"
@@ -104,8 +135,13 @@ def evaluate_review_status(
         return "rejected", False, "人工审核结论为驳回"
     if usability == "unusable":
         return "rejected", False, "人工确认候选内容不可用"
+    if draft_disposition == "revision_required":
+        return "revision_required", False, "人工确认主题有价值，但知识草稿需退回转写修改"
+    if draft_disposition == "hold_for_evidence":
+        return "pending", False, "人工要求补充证据或业务确认后再复核知识草稿"
     if knowledge_value == "worthy" and (
-        usability == "usable" or decision in {"approved", "approved_with_changes"}
+        draft_disposition == "approved"
+        and (usability == "usable" or decision in {"approved", "approved_with_changes"})
     ):
         return "ready", True, "已完成人工验证，可提交发布审核"
     if bool(selection.get("eligible")):

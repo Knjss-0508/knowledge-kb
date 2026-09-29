@@ -6,19 +6,34 @@ FRONTEND = (
 ).read_text(encoding="utf-8")
 
 
-def test_candidate_review_has_fast_batch_annotation_and_update_date_filters() -> None:
+def test_candidate_review_uses_draft_disposition_queue_and_update_date_filters() -> None:
+    assert "基于转写草稿、来源证据和模型标注" in FRONTEND
+    assert "grid-template-columns:repeat(9,minmax(0,1fr))" in FRONTEND
+    assert "退回转写" in FRONTEND
+    assert '<th style="width:175px">人工复核</th>' in FRONTEND
     assert "candidate-reviews:batch-annotate" in FRONTEND
     assert "批量标为不沉淀" in FRONTEND
-    assert "quickAnnotateCandidateReview(item,'unworthy')" in FRONTEND
+    assert "quickAnnotateCandidateReview" not in FRONTEND
+    assert '<th style="width:150px">快速标注</th>' not in FRONTEND
     assert "params.set('updated_from', filter.updatedFrom)" in FRONTEND
     assert "params.set('updated_to', filter.updatedTo)" in FRONTEND
+
+
+def test_candidate_review_can_save_and_continue_without_blocking_success_alert() -> None:
+    assert "saveCandidateReview(false,true)" in FRONTEND
+    assert "保存并下一条" in FRONTEND
+    assert "nextCandidateReviewId: function(currentId)" in FRONTEND
+    assert "candidate-review-toast" in FRONTEND
+    assert "alert('候选审核已保存。')" not in FRONTEND
 
 
 def test_candidate_review_uses_one_human_decision_for_legacy_gate_fields() -> None:
     assert "只需选择一次复核结论" in FRONTEND
     assert "复核说明（选填）" in FRONTEND
-    assert "var usability = form.knowledge_value === 'worthy'" in FRONTEND
-    assert "var decision = form.knowledge_value === 'worthy'" in FRONTEND
+    assert "知识草稿处理" in FRONTEND
+    assert "draft_disposition" in FRONTEND
+    assert "退回转写修改" in FRONTEND
+    assert "form.knowledge_value === 'worthy' && form.draft_disposition === 'approved'" in FRONTEND
     assert '<label class="fl">是否可用</label>' not in FRONTEND
     assert '<label class="fl">人工审核结论</label>' not in FRONTEND
 

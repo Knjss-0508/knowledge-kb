@@ -44,6 +44,20 @@ class CandidateReviewServiceTests(unittest.TestCase):
         self.assertTrue(eligible)
         self.assertIn("可提交", reason)
 
+    def test_valuable_topic_with_revision_required_stays_out_of_submission_queue(self):
+        status, eligible, reason = evaluate_review_status(
+            {"eligible": False},
+            {
+                "knowledge_value": "worthy",
+                "usability": "pending",
+                "draft_disposition": "revision_required",
+            },
+        )
+
+        self.assertEqual(status, "revision_required")
+        self.assertFalse(eligible)
+        self.assertIn("退回转写", reason)
+
     def test_rejection_overrides_upstream_eligible_gate(self):
         status, eligible, reason = evaluate_review_status(
             {"eligible": True},
