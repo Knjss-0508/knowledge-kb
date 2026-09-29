@@ -1,7 +1,7 @@
 {
   "enabled": true,
-  "provider": "group-internal",
-  "base_url": "http://GROUP_LLM_HOST:8000/v1",
+  "provider": "deepseek-internal",
+  "base_url": "http://DEEPSEEK_GROUP_GATEWAY:8000/v1",
   "model": "deepseek-flash",
   "media_model": "deepseek-flash",
   "api_key_env": "GROUP_LLM_API_KEY",

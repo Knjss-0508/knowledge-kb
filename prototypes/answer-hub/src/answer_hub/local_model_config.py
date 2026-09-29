@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 
 DEFAULT_CONFIG_RELATIVE_PATH = Path("config") / "local-model.json"
-DEFAULT_API_KEY_ENV = "MIMO_API_KEY"
+DEFAULT_API_KEY_ENV = "GROUP_LLM_API_KEY"
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
