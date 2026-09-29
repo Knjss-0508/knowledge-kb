@@ -2173,6 +2173,8 @@ var API=window.KB_RUNTIME.apiBase;
 var BASE=window.KB_RUNTIME.baseUrl;
 // 仅保存本页创建的聊天窗口句柄，不进入 Vue 响应式数据。
 var workOrderChatWindow = null;
+var workOrderChatPendingWindow = null;
+var workOrderChatTarget = 'knowledge-kb-workorder-chat';
 
 Vue.createApp({
   data: function() {
@@ -5491,10 +5493,22 @@ Vue.createApp({
       bounds.top = Math.round(Math.max(screenTop, Math.min(bounds.top, screenTop + screenHeight - bounds.height)));
       return bounds;
     },
+    closeWorkOrderChatWindow: function(chatWindow) {
+      var target = chatWindow || workOrderChatWindow;
+      if (!target) return;
+      try {
+        if (!target.closed) target.close();
+      } catch (closeError) {}
+      if (workOrderChatWindow === target) workOrderChatWindow = null;
+      if (workOrderChatPendingWindow === target) workOrderChatPendingWindow = null;
+    },
     prepareWorkOrderChat: function(workOrderId, event) {
       this.workOrderChatBlockedUrl = '';
       var url = this.workOrderChatUrl(workOrderId);
       if (!url) return;
+      if (workOrderChatPendingWindow && workOrderChatPendingWindow !== workOrderChatWindow) {
+        this.closeWorkOrderChatWindow(workOrderChatPendingWindow);
+      }
       var bounds = this.workOrderChatGeometry(event);
       var features = ['popup=yes', 'width=' + bounds.width, 'height=' + bounds.height,
         'left=' + bounds.left, 'top=' + bounds.top, 'resizable=yes', 'scrollbars=yes'].join(',');
@@ -5502,17 +5516,26 @@ Vue.createApp({
       try {
         // 先打开同源空白窗口，再按外框尺寸定位，最后导航到聊天平台。
         // 远程页面加载后会受同源限制，不能靠 resizeTo/moveTo 调整旧窗口。
-        chatWindow = window.open('about:blank', '_blank', features);
+        // 固定窗口名让浏览器优先复用同一个顶层聊天窗口，避免连续切换积累多个窗口。
+        chatWindow = window.open('about:blank', workOrderChatTarget, features);
       } catch (error) {}
       if (!chatWindow) {
         this.workOrderChatBlockedUrl = url;
         return;
       }
+      if (chatWindow === workOrderChatWindow) {
+        workOrderChatPendingWindow = null;
+        return chatWindow;
+      }
+      workOrderChatPendingWindow = chatWindow;
       return chatWindow;
     },
     finishWorkOrderChat: function(workOrderId, chatWindow, event) {
       var url = this.workOrderChatUrl(workOrderId);
       if (!url || !chatWindow || chatWindow.closed) {
+        if (chatWindow && workOrderChatPendingWindow === chatWindow) {
+          this.closeWorkOrderChatWindow(chatWindow);
+        }
         this.workOrderChatBlockedUrl = url;
         return;
       }
@@ -5527,13 +5550,16 @@ Vue.createApp({
         chatWindow.opener = null;
         chatWindow.location.replace(url);
       } catch (navigationError) {
-        chatWindow.close();
+        this.closeWorkOrderChatWindow(chatWindow);
         this.workOrderChatBlockedUrl = url;
         return;
       }
-      // 用户点击重新对齐时替换本页创建的旧窗口，避免跨工单残留或堆积。
-      try { if (workOrderChatWindow && !workOrderChatWindow.closed) workOrderChatWindow.close(); } catch (closeError) {}
+      // 切换成功后关闭旧的当前窗口，只保留刚刚导航的聊天窗口。
+      if (workOrderChatWindow && workOrderChatWindow !== chatWindow) {
+        this.closeWorkOrderChatWindow(workOrderChatWindow);
+      }
       workOrderChatWindow = chatWindow;
+      if (workOrderChatPendingWindow === chatWindow) workOrderChatPendingWindow = null;
       try { chatWindow.focus(); } catch (focusError) {}
     },
     openWorkOrderChat: function(workOrderId, event) {
@@ -5661,7 +5687,9 @@ Vue.createApp({
       var chatWindow = arguments.length > 1 ? preparedChatWindow : self.prepareWorkOrderChat(item.conversation_id);
       self.$nextTick(function() {
         if (!self.embedding.review.open || self.embedding.review.detailRequestId !== detailRequestId) {
-          try { if (chatWindow && !chatWindow.closed) chatWindow.close(); } catch (error) {}
+          if (chatWindow && chatWindow !== workOrderChatWindow) {
+            self.closeWorkOrderChatWindow(chatWindow);
+          }
           return;
         }
         self.finishWorkOrderChat(item.conversation_id, chatWindow);
@@ -5732,8 +5760,8 @@ Vue.createApp({
         .catch(function(error) { alert(error.message); return false; })
         .finally(function() {
           review.saving=false;
-          if (!nextChatHandedOff) {
-            try { if (nextChatWindow && !nextChatWindow.closed) nextChatWindow.close(); } catch (error) {}
+          if (!nextChatHandedOff && nextChatWindow && nextChatWindow !== workOrderChatWindow) {
+            self.closeWorkOrderChatWindow(nextChatWindow);
           }
         });
     },

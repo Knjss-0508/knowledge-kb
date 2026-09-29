@@ -38,7 +38,7 @@ test('窄屏独立窗口限制在可用屏幕内', () => {
 test('先定位同源空白窗口，再断开 opener 并导航，保留完整工单 ID', () => {
   const {app,calls}=setup(); app.openWorkOrderChat('2104481532893725752');
   assert.deepEqual(calls.map(c=>c[0]),['open','resize','move','navigate','focus']);
-  assert.equal(calls[0][1],'about:blank'); assert.equal(calls[0][2],'_blank');
+  assert.equal(calls[0][1],'about:blank'); assert.equal(calls[0][2],'knowledge-kb-workorder-chat');
   assert.equal(calls[3][2],null);
   assert.equal(calls[3][1],'https://zzdy.powerzhuan.cn/#/workorderDetail?questionFormId=2104481532893725752&sceneType=2');
 });
@@ -99,6 +99,16 @@ test('快速切换只导航最新详情；关闭详情后取消预开窗口', as
   await Promise.resolve();
   assert.equal(calls.filter(c=>c[0]==='navigate').length,1);
 });
+test('连续切换时关闭旧的待切换窗口，只保留最后一个窗口', async () => {
+  const {app,calls}=reviewSetup();
+  app.openRetrievalReview({id:'a',conversation_id:'first'});
+  app.openRetrievalReview({id:'b',conversation_id:'second'});
+  app.openRetrievalReview({id:'c',conversation_id:'third'});
+  await Promise.resolve();
+  assert.equal(calls.filter(c=>c[0]==='navigate').length,1);
+  assert.ok(calls.find(c=>c[0]==='navigate')[1].includes('questionFormId=third'));
+  assert.equal(calls.filter(c=>c[0]==='close').length,2);
+});
 test('保存并下一条在请求前预开，成功后才导航', async () => {
   const {app,calls,context}=reviewSetup();
   app.analysis.risks=[{id:'a',conversation_id:'first'},{id:'b',conversation_id:'second'}];
@@ -121,6 +131,23 @@ test('保存失败关闭预开窗口并保留当前工单和聊天', async () =>
   assert.equal(calls.filter(c=>c[0]==='navigate').length,0);
   assert.equal(app.embedding.review.item.id,'a');
   assert.equal(vm.runInContext('workOrderChatWindow.closed',context),false);
+});
+test('保存失败且浏览器复用同一个聊天窗口时不关闭当前聊天', async () => {
+  const {app,win,calls,context}=reviewSetup();
+  app.analysis.risks=[{id:'a',conversation_id:'first'},{id:'b',conversation_id:'second'}];
+  let popup;
+  win.open=(url,target,features)=>{
+    calls.push(['open',url,target,features]);
+    if (popup) return popup;
+    popup={closed:false,opener:{},resizeTo(){},moveTo(){},location:{replace(url){calls.push(['navigate',url,popup.opener]);}},close(){popup.closed=true;calls.push(['close']);},focus(){}};
+    return popup;
+  };
+  app.openRetrievalReview(app.analysis.risks[0]); await Promise.resolve(); calls.length=0;
+  context.fetch=async()=>({ok:false,json:async()=>({detail:'保存失败'})});
+  assert.equal(await app.submitRetrievalReview(1),false);
+  assert.equal(calls.filter(c=>c[0]==='close').length,0);
+  assert.equal(popup.closed,false);
+  assert.equal(app.embedding.review.item.id,'a');
 });
 test('保存校验失败不预开；被拦截后成功翻页也不重复尝试弹窗', async () => {
   const {app,win,calls,context}=reviewSetup();
