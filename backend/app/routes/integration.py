@@ -2951,7 +2951,14 @@ def annotate_candidate_reviews(
         human_review = normalize_human_review(human_review)
 
         selection = dict(payload.get("selection") or item.selection_metadata or {})
-        review_status, eligible, reason = evaluate_review_status(selection, human_review)
+        model_review = dict(
+            payload.get("model_review")
+            or review_metadata.get("model_review")
+            or {}
+        )
+        review_status, eligible, reason = evaluate_review_status(
+            selection, human_review, model_review
+        )
         selection["eligible"] = eligible
         selection["review_reason"] = reason
         payload["selection"] = selection
@@ -3081,7 +3088,14 @@ def update_candidate_review(
     human_review = normalize_human_review(human_review)
 
     selection = dict(payload.get("selection") or item.selection_metadata or {})
-    review_status, eligible, reason = evaluate_review_status(selection, human_review)
+    model_review = dict(
+        payload.get("model_review")
+        or review_metadata.get("model_review")
+        or {}
+    )
+    review_status, eligible, reason = evaluate_review_status(
+        selection, human_review, model_review
+    )
     selection["eligible"] = eligible
     selection["review_reason"] = reason
     payload["selection"] = selection

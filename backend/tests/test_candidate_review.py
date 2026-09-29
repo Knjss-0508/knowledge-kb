@@ -38,6 +38,7 @@ class CandidateReviewServiceTests(unittest.TestCase):
         status, eligible, reason = evaluate_review_status(
             {"eligible": False},
             {"knowledge_value": "是", "usability": "可用"},
+            {"suggested_action": "submit_for_human_review"},
         )
 
         self.assertEqual(status, "ready")
@@ -50,13 +51,27 @@ class CandidateReviewServiceTests(unittest.TestCase):
             {
                 "knowledge_value": "worthy",
                 "usability": "pending",
-                "draft_disposition": "revision_required",
             },
+            {"suggested_action": "return_for_revision"},
         )
 
         self.assertEqual(status, "revision_required")
         self.assertFalse(eligible)
         self.assertIn("退回转写", reason)
+
+    def test_model_draft_action_controls_gate_without_human_draft_field(self):
+        for action, expected_status in (
+            ("submit_for_human_review", "ready"),
+            ("return_for_revision", "revision_required"),
+            ("hold_for_evidence", "pending"),
+        ):
+            status, eligible, _ = evaluate_review_status(
+                {"eligible": False},
+                {"knowledge_value": "worthy", "usability": "usable"},
+                {"suggested_action": action},
+            )
+            self.assertEqual(status, expected_status)
+            self.assertEqual(eligible, expected_status == "ready")
 
     def test_rejection_overrides_upstream_eligible_gate(self):
         status, eligible, reason = evaluate_review_status(

@@ -871,8 +871,8 @@
             <td><span class="tg tg-l">{{knowledgeOriginLabel(item.knowledge_origin)}}</span></td>
             <td><span class="tg tg-l">{{businessTypeLabel(item.business_type)}}</span></td>
             <td><span class="review-badge" :class="reviewStatusClass(item.review_status)">{{reviewStatusLabel(item.review_status)}}</span><div class="review-error" v-if="item.error_message" :title="item.error_message">{{item.error_code || '送审失败'}}</div></td>
-            <td><div class="review-model-summary"><b>{{reviewKnowledgeValueLabel(item.model_review && item.model_review.knowledge_value)}}</b><br>{{reviewDraftQualityLabel(item.model_review && item.model_review.draft_quality)}} · {{reviewConfidence(item.model_review && item.model_review.confidence)}}</div></td>
-            <td><div class="review-human-summary"><b>{{reviewKnowledgeValueLabel(item.human_review && item.human_review.knowledge_value)}}</b> · {{reviewDraftDispositionLabel(item.human_review && item.human_review.draft_disposition)}}<br>{{reviewDecisionLabel(item.human_review && item.human_review.decision)}}</div></td>
+            <td><div class="review-model-summary"><b>{{reviewKnowledgeValueLabel(item.model_review && item.model_review.knowledge_value)}}</b><br>{{reviewModelDraftDispositionLabel(item.model_review)}} · {{reviewConfidence(item.model_review && item.model_review.confidence)}}</div></td>
+            <td><div class="review-human-summary"><b>{{reviewKnowledgeValueLabel(item.human_review && item.human_review.knowledge_value)}}</b><br>{{reviewDecisionLabel(item.human_review && item.human_review.decision)}}</div></td>
             <td><span class="priority-flag" v-if="item.priority_review">重点复核</span><span v-else style="color:#98a2b3">常规</span></td>
             <td><div class="review-source"><a v-if="item.source_conversation_url" :href="item.source_conversation_url" target="_blank" rel="noopener noreferrer">{{item.source_system}} · {{item.source_conversation_id}}</a><span v-else>{{item.source_system}} · {{item.source_conversation_id}}</span></div></td>
             <td>{{formatDate(item.updated_at)}}</td>
@@ -1553,7 +1553,7 @@
                 <div class="review-model-item"><span>错误类型</span><b>{{candidateReviews.current.model_review.error_type || '-'}}</b></div>
                 <div class="review-model-item"><span>证据充分性</span><b>{{candidateReviews.current.model_review.evidence_sufficiency || '-'}}</b></div>
                 <div class="review-model-item"><span>内容一致性</span><b>{{candidateReviews.current.model_review.content_consistency || '-'}}</b></div>
-                <div class="review-model-item"><span>草稿质量</span><b>{{reviewDraftQualityLabel(candidateReviews.current.model_review.draft_quality)}}</b></div>
+                <div class="review-model-item"><span>知识草稿处理</span><b>{{reviewModelDraftDispositionLabel(candidateReviews.current.model_review)}}</b></div>
                 <div class="review-model-item"><span>标题质量</span><b>{{candidateReviews.current.model_review.title_quality || '-'}}</b></div>
                 <div class="review-model-item"><span>模型</span><b>{{candidateReviews.current.model_review.model_name || candidateReviews.current.model_review.provider || '-'}}</b></div>
               </div>
@@ -1580,8 +1580,7 @@
               <div class="fg span-2"><label class="fl"><span class="req">*</span> 知识来源</label><select class="fi" v-model="candidateReviews.form.knowledge_origin" :disabled="reviewReadonly()"><option value="" disabled>请选择知识来源</option><option v-for="origin in assignableKnowledgeOrigins(candidateReviews.form.knowledge_origin)" :key="origin.value" :value="origin.value">{{origin.label}}</option></select></div>
               <div class="fg"><label class="fl"><span class="req">*</span> 业务类型</label><select class="fi" v-model="candidateReviews.form.business_type" :disabled="reviewReadonly()" @change="onCandidateBusinessTypeChange"><option value="" disabled>请选择业务类型</option><option v-for="businessType in businessTypes" :key="businessType.value" :value="businessType.value">{{businessType.label}}</option></select></div>
               <div class="fg"><label class="fl"><span class="req">*</span> 所属分类</label><select class="fi" v-model="candidateReviews.form.category_id" :disabled="reviewReadonly() || !candidateReviews.form.business_type"><option value="" disabled>{{candidateReviews.form.business_type?'请选择分类':'请先选择业务类型'}}</option><option v-for="cat in cats" :key="cat.id" :value="cat.id">{{cat.name}}</option></select></div>
-              <div class="fg"><label class="fl">沉淀价值</label><select class="fi" v-model="candidateReviews.form.knowledge_value" :disabled="reviewReadonly()"><option value="pending">待确认</option><option value="worthy">值得沉淀</option><option value="unworthy">不沉淀</option></select></div>
-              <div class="fg"><label class="fl">知识草稿处理</label><select class="fi" v-model="candidateReviews.form.draft_disposition" :disabled="reviewReadonly()"><option value="pending">待确认</option><option value="approved">草稿合格，可送审</option><option value="revision_required">退回转写修改</option><option value="hold_for_evidence">待补证据 / 业务确认</option></select><div class="hint">“退回转写”不会等同于“不沉淀”。</div></div>
+              <div class="fg span-2"><label class="fl">沉淀价值</label><select class="fi" v-model="candidateReviews.form.knowledge_value" :disabled="reviewReadonly()"><option value="pending">待确认</option><option value="worthy">值得沉淀</option><option value="unworthy">不沉淀</option></select><div class="hint">草稿处理由模型初标决定；人工仅确认是否值得沉淀。</div></div>
               <div class="fg span-2"><label class="fl">训练用途</label><label class="candidate-training-toggle" style="min-height:40px"><input type="checkbox" v-model="candidateReviews.form.includeInTraining" :disabled="reviewReadonly() || candidateReviews.form.knowledge_value==='pending'"> 作为人工标注样本</label><div class="hint">训练候选由人工价值结论、草稿处理动作、来源与后续样本质检共同决定。</div></div>
               <div class="fg span-2"><label class="fl">知识正文</label><textarea class="fi" rows="8" v-model="candidateReviews.form.contentText" :disabled="reviewReadonly()" placeholder="候选知识正文"></textarea><div class="hint">正文和案例媒体独立保存；修改正文不会再覆盖图片或视频。</div></div>
               <div class="fg span-2"><label class="fl">推荐回复</label><textarea class="fi" rows="3" v-model="candidateReviews.form.recommended_reply" :disabled="reviewReadonly()" placeholder="供答疑人员直接使用的推荐回复"></textarea></div>
@@ -2330,7 +2329,7 @@ Vue.createApp({
         form: {
           title:'', knowledge_origin:'', business_type:'', category_id:'', contentText:'', originalContentText:'', recommended_reply:'',
           applicableCategories:[], brands:[], models:[],
-          knowledge_value:'pending', draft_disposition:'pending', usability:'pending', modification_notes:'', feedback:'',
+          knowledge_value:'pending', usability:'pending', modification_notes:'', feedback:'',
           decision:'', error_type:'', training_eligible:'', notes:'', confirmDedupReview:false
         },
         saving: false,
@@ -4657,8 +4656,13 @@ Vue.createApp({
     reviewDraftQualityLabel: function(value) {
       return {合格:'草稿合格',需修改:'需修改',待补证据:'待补证据',不合格:'不合格'}[value] || '草稿待评估';
     },
-    reviewDraftDispositionLabel: function(value) {
-      return {approved:'草稿合格',revision_required:'退回转写',hold_for_evidence:'待补证据',pending:'待确认'}[value] || '待确认';
+    reviewModelDraftDispositionLabel: function(modelReview) {
+      var model = modelReview || {};
+      var action = String(model.suggested_action || '');
+      if (action === 'submit_for_human_review') return '草稿合格';
+      if (action === 'return_for_revision') return '退回转写';
+      if (action === 'hold_for_evidence') return '待补证据';
+      return {approved:'草稿合格',revision_required:'退回转写',hold_for_evidence:'待补证据',合格:'草稿合格',需修改:'退回转写',待补证据:'待补证据'}[model.draft_quality] || '草稿待评估';
     },
     reviewDecisionLabel: function(value) {
       return {
@@ -4750,7 +4754,6 @@ Vue.createApp({
         brands: Array.isArray(current.applicable_brands) ? current.applicable_brands.slice() : [],
         models: Array.isArray(current.applicable_models) ? current.applicable_models.slice() : [],
         knowledge_value: current.human_review.knowledge_value || 'pending',
-        draft_disposition: current.human_review.draft_disposition || 'pending',
         includeInTraining: current.human_review.training_eligible !== '否',
         review_note: current.human_review.notes || current.human_review.feedback || current.human_review.modification_notes || '',
         confirmDedupReview: !!current.deduplication_confirmed
@@ -4842,8 +4845,8 @@ Vue.createApp({
           && !self.normalizeExternalMediaUrl(media.external_url, media.type);
       });
       if (invalidMedia) { alert('案例图片和视频只接受有效的 HTTPS 地址，请修改或删除无效媒体。'); return; }
-      var usability = form.knowledge_value === 'worthy' && form.draft_disposition === 'approved' ? 'usable' : (form.knowledge_value === 'unworthy' ? 'unusable' : 'pending');
-      var decision = form.knowledge_value === 'worthy' && form.draft_disposition === 'approved' ? 'approved' : (form.knowledge_value === 'unworthy' ? 'rejected' : '');
+      var usability = form.knowledge_value === 'worthy' ? 'usable' : (form.knowledge_value === 'unworthy' ? 'unusable' : 'pending');
+      var decision = form.knowledge_value === 'worthy' ? 'approved' : (form.knowledge_value === 'unworthy' ? 'rejected' : '');
       var body = {
         title: form.title.trim(),
         knowledge_origin: form.knowledge_origin,
@@ -4854,7 +4857,6 @@ Vue.createApp({
         applicable_models: form.models,
         recommended_reply: form.recommended_reply,
         knowledge_value: form.knowledge_value,
-        draft_disposition: form.draft_disposition,
         usability: usability,
         decision: decision,
         training_eligible: form.includeInTraining ? '是' : '否',

@@ -47,24 +47,23 @@ def normalize_decision(value: Any) -> str:
     return ""
 
 
-def normalize_draft_disposition(
-    value: Any, *, legacy_review: dict[str, Any] | None = None
-) -> str:
-    """Normalize the independent human decision about the transcribed draft."""
-    normalized = _text(value).lower()
-    if normalized in DRAFT_APPROVED_VALUES:
+def model_draft_disposition(model_review: dict[str, Any] | None) -> str:
+    """Map model-produced draft quality to the candidate queue state."""
+    model = dict(model_review or {})
+    action = _text(model.get("suggested_action"))
+    if action == "submit_for_human_review":
         return "approved"
-    if normalized in DRAFT_REVISION_VALUES:
+    if action == "return_for_revision":
         return "revision_required"
-    if normalized in DRAFT_HOLD_VALUES:
+    if action == "hold_for_evidence":
         return "hold_for_evidence"
-    legacy = dict(legacy_review or {})
-    if normalize_knowledge_value(legacy.get("knowledge_value")) == "worthy" and (
-        normalize_usability(legacy.get("usability")) == "usable"
-        or normalize_decision(legacy.get("decision"))
-        in {"approved", "approved_with_changes"}
-    ):
+    quality = _text(model.get("draft_quality")).lower()
+    if quality in DRAFT_APPROVED_VALUES:
         return "approved"
+    if quality in DRAFT_REVISION_VALUES:
+        return "revision_required"
+    if quality in DRAFT_HOLD_VALUES:
+        return "hold_for_evidence"
     return "pending"
 
 
@@ -75,9 +74,6 @@ def normalize_human_review(review: dict[str, Any] | None) -> dict[str, Any]:
         "knowledge_value": normalize_knowledge_value(source.get("knowledge_value")),
         "usability": normalize_usability(source.get("usability")),
         "decision": normalize_decision(source.get("decision")),
-        "draft_disposition": normalize_draft_disposition(
-            source.get("draft_disposition"), legacy_review=source
-        ),
         "modification_notes": _text(source.get("modification_notes")),
         "feedback": _text(source.get("feedback")),
         "error_type": _text(source.get("error_type")),
@@ -112,7 +108,6 @@ def build_quick_human_review(
         "knowledge_value": normalized,
         "usability": usability,
         "decision": decision,
-        "draft_disposition": "approved" if normalized == "worthy" else "pending",
         "training_eligible": "是" if include_in_training else "否",
         "notes": _text(notes),
     }
@@ -121,13 +116,14 @@ def build_quick_human_review(
 def evaluate_review_status(
     selection: dict[str, Any] | None,
     human_review: dict[str, Any] | None,
+    model_review: dict[str, Any] | None = None,
 ) -> tuple[str, bool, str]:
     selection = dict(selection or {})
     review = normalize_human_review(human_review)
     knowledge_value = review["knowledge_value"]
     usability = review["usability"]
     decision = review["decision"]
-    draft_disposition = review["draft_disposition"]
+    draft_disposition = model_draft_disposition(model_review)
 
     if knowledge_value == "unworthy":
         return "rejected", False, "人工确认该知识点不值得沉淀"
@@ -136,14 +132,14 @@ def evaluate_review_status(
     if usability == "unusable":
         return "rejected", False, "人工确认候选内容不可用"
     if draft_disposition == "revision_required":
-        return "revision_required", False, "人工确认主题有价值，但知识草稿需退回转写修改"
+        return "revision_required", False, "模型判断知识草稿需退回转写修改"
     if draft_disposition == "hold_for_evidence":
-        return "pending", False, "人工要求补充证据或业务确认后再复核知识草稿"
+        return "pending", False, "模型判断需要补充证据或业务确认后再复核知识草稿"
     if knowledge_value == "worthy" and (
         draft_disposition == "approved"
         and (usability == "usable" or decision in {"approved", "approved_with_changes"})
     ):
-        return "ready", True, "已完成人工验证，可提交发布审核"
+        return "ready", True, "人工确认值得沉淀且模型判断草稿合格，可提交发布审核"
     if bool(selection.get("eligible")):
         return "ready", True, "上游模型或人工门禁已通过"
     return "pending", False, "等待人工确认沉淀价值和可用性"
