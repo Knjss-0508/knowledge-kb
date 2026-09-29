@@ -89,7 +89,7 @@ def test_start_and_stop_automation_keep_logical_and_scheduled_switches_aligned()
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
-def test_date_range_waits_for_both_dates_before_saving() -> None:
+def test_cursor_plan_save_keeps_cursor_fields_in_request() -> None:
     node = shutil.which("node")
     assert node, "Node.js is required for the automation monitor behavior test"
     frontend_path = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
@@ -122,33 +122,32 @@ def test_date_range_waits_for_both_dates_before_saving() -> None:
         }};
         vm.createContext(sandbox);
         vm.runInContext(appSource, sandbox);
+        let requestBody = null;
         const context = {{
           answerHubMonitor: {{
-            control: {{
-              plan: {{
-                knowledge_settle_from_date: '2026-09-13',
-                knowledge_settle_to_date: ''
-              }}
-            }}
-          }},
-          saveCalls: 0,
-          saveAutomationMonitorControl: null
+            control: {{enabled: true, schedule_enabled: true, schedule_time: '02:00', plan: {{
+              cursor_date: '2026-09-17', window_days: 3, schedule_frequency: 'daily',
+              schedule_weekday: 0, catchup_enabled: true, max_catchup_days: 7,
+              timezone: 'Asia/Shanghai'
+            }}}}
+          }}
         }};
         Object.keys(appOptions.methods).forEach(function(name) {{
           if (typeof appOptions.methods[name] === 'function') {{
             context[name] = appOptions.methods[name].bind(context);
           }}
         }});
-        context.saveAutomationMonitorControl = function() {{ this.saveCalls += 1; }};
-        context.saveAutomationMonitorDateRange();
-        assert.strictEqual(context.saveCalls, 0);
-        assert.strictEqual(
-          context.answerHubMonitor.control.plan.knowledge_settle_from_date,
-          '2026-09-13'
-        );
-        context.answerHubMonitor.control.plan.knowledge_settle_to_date = '2026-09-14';
-        context.saveAutomationMonitorDateRange();
-        assert.strictEqual(context.saveCalls, 1);
+        sandbox.fetch = function(_url, options) {{
+          requestBody = JSON.parse(options.body);
+          return Promise.resolve({{ok:true, json:function() {{ return Promise.resolve({{control:context.answerHubMonitor.control}}); }}}});
+        }};
+        context.saveAutomationMonitorControl();
+        setTimeout(function() {{
+          assert.strictEqual(requestBody.cursor_date, '2026-09-17');
+          assert.strictEqual(requestBody.window_days, 3);
+          assert.strictEqual(requestBody.schedule_frequency, 'daily');
+          process.exit(0);
+        }}, 0);
         """
     )
     completed = subprocess.run(
@@ -159,3 +158,13 @@ def test_date_range_waits_for_both_dates_before_saving() -> None:
         check=False,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_cursor_plan_is_exposed_without_requiring_legacy_date_fields() -> None:
+    assert "起始游标日期" in FRONTEND
+    assert "当前待处理" in FRONTEND
+    assert "本批结束" in FRONTEND
+    assert "最近成功" in FRONTEND
+    assert "失败时日期游标不会移动" in FRONTEND
+    assert "cursor_date:plan.cursor_date||''" in FRONTEND
+    assert "window_days:Number(plan.window_days||1)" in FRONTEND
