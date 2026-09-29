@@ -2029,9 +2029,9 @@
               <template v-if="workOrderChatUrl(embedding.review.item.conversation_id)">
                 <div class="retrieval-review-chat-popout-icon" aria-hidden="true">↗</div>
                 <strong>聊天平台将在独立窗口打开</strong>
-                <span>聊天窗口对齐左侧，右侧继续标注。切换工单后，点击按钮打开对应聊天。</span>
+                <span>进入详情或切换工单时自动打开对应聊天，右侧继续标注。</span>
                 <button type="button" class="btn bp" @click="openWorkOrderChat(embedding.review.item.conversation_id, $event)">打开聊天记录</button>
-                <a v-if="workOrderChatBlockedUrl" class="retrieval-review-chat-fallback" :href="workOrderChatBlockedUrl" target="_blank" rel="noopener noreferrer">弹窗被浏览器拦截，改为新标签页打开</a>
+                <a v-if="workOrderChatBlockedUrl" class="retrieval-review-chat-fallback" :href="workOrderChatBlockedUrl" target="_blank" rel="noopener noreferrer">自动打开失败，请允许本站弹出窗口，或点击此处查看聊天</a>
               </template>
               <div v-else class="retrieval-review-chat-empty">当前工单没有可用的工单 ID，暂时无法打开聊天记录。</div>
             </div>
@@ -5491,7 +5491,7 @@ Vue.createApp({
       bounds.top = Math.round(Math.max(screenTop, Math.min(bounds.top, screenTop + screenHeight - bounds.height)));
       return bounds;
     },
-    openWorkOrderChat: function(workOrderId, event) {
+    prepareWorkOrderChat: function(workOrderId, event) {
       this.workOrderChatBlockedUrl = '';
       var url = this.workOrderChatUrl(workOrderId);
       if (!url) return;
@@ -5508,6 +5508,15 @@ Vue.createApp({
         this.workOrderChatBlockedUrl = url;
         return;
       }
+      return chatWindow;
+    },
+    finishWorkOrderChat: function(workOrderId, chatWindow, event) {
+      var url = this.workOrderChatUrl(workOrderId);
+      if (!url || !chatWindow || chatWindow.closed) {
+        this.workOrderChatBlockedUrl = url;
+        return;
+      }
+      var bounds = this.workOrderChatGeometry(event);
       try {
         chatWindow.resizeTo(bounds.width, bounds.height);
         chatWindow.moveTo(bounds.left, bounds.top);
@@ -5526,6 +5535,10 @@ Vue.createApp({
       try { if (workOrderChatWindow && !workOrderChatWindow.closed) workOrderChatWindow.close(); } catch (closeError) {}
       workOrderChatWindow = chatWindow;
       try { chatWindow.focus(); } catch (focusError) {}
+    },
+    openWorkOrderChat: function(workOrderId, event) {
+      var chatWindow = this.prepareWorkOrderChat(workOrderId, event);
+      this.finishWorkOrderChat(workOrderId, chatWindow, event);
     },
     retrievalReviewIndex: function() {
       var items = Array.isArray(this.analysis.risks) ? this.analysis.risks : [];
@@ -5608,7 +5621,7 @@ Vue.createApp({
         this.canNavigateRetrievalReview(1) ? 1 : 0
       );
     },
-    openRetrievalReview: function(item) {
+    openRetrievalReview: function(item, preparedChatWindow) {
       var self = this;
       self.workOrderChatBlockedUrl = '';
       var candidates = (item.candidates || []).map(function(candidate) {
@@ -5643,6 +5656,16 @@ Vue.createApp({
           candidate_labels:(item.event_metadata && item.event_metadata.candidate_labels) || {}
         }
       };
+      // 在点击调用栈中预开窗口；等 Vue 更新详情布局后再定位、加载聊天。
+      // 保存并下一条会传入提前创建的窗口（包括被拦截时的 null），避免请求结束后再次弹窗。
+      var chatWindow = arguments.length > 1 ? preparedChatWindow : self.prepareWorkOrderChat(item.conversation_id);
+      self.$nextTick(function() {
+        if (!self.embedding.review.open || self.embedding.review.detailRequestId !== detailRequestId) {
+          try { if (chatWindow && !chatWindow.closed) chatWindow.close(); } catch (error) {}
+          return;
+        }
+        self.finishWorkOrderChat(item.conversation_id, chatWindow);
+      });
       if (!candidates.length) return;
       Promise.all(candidates.map(function(candidate) {
         if (!candidate._detail_loading) return Promise.resolve();
@@ -5686,6 +5709,9 @@ Vue.createApp({
       var feedbackType = 'none';
       var failureReason = '';
       var trainingEligible = false;
+      // 必须在保存请求前、仍处于点击事件中创建下一条的窗口；校验失败不会弹窗。
+      var nextChatWindow = navigationTarget ? self.prepareWorkOrderChat(navigationTarget.conversation_id) : null;
+      var nextChatHandedOff = false;
       review.saving = true;
       return fetch(API + '/embedding-model/retrieval-events/' + encodeURIComponent(review.item.id) + '/review', {
         method:'POST',
@@ -5699,11 +5725,17 @@ Vue.createApp({
           var refreshedTarget = (self.analysis.risks || []).filter(function(item) {
             return item && item.id === navigationTarget.id;
           })[0];
-          self.openRetrievalReview(refreshedTarget || navigationTarget);
+          self.openRetrievalReview(refreshedTarget || navigationTarget, nextChatWindow);
+          nextChatHandedOff = true;
           return true;
         })
         .catch(function(error) { alert(error.message); return false; })
-        .finally(function() { review.saving=false; });
+        .finally(function() {
+          review.saving=false;
+          if (!nextChatHandedOff) {
+            try { if (nextChatWindow && !nextChatWindow.closed) nextChatWindow.close(); } catch (error) {}
+          }
+        });
     },
     formatSimilarity: function(value) {
       return typeof value === 'number' ? (value * 100).toFixed(2) + '%' : '-';

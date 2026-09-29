@@ -57,3 +57,80 @@ test('重新对齐成功后替换旧窗口；弹窗拦截不关闭旧窗口', ()
 test('没有工单 ID 时不打开窗口', () => {
   const {app,calls}=setup(); app.openWorkOrderChat(' '); app.openWorkOrderChat('-'); app.openWorkOrderChat(null); assert.equal(calls.length,0);
 });
+
+function reviewSetup() {
+  const state = setup();
+  state.app.embedding = {review:{saving:false}};
+  state.app.analysis = {risks:[]};
+  state.app.$nextTick = fn => Promise.resolve().then(fn);
+  state.app.retrievalHumanJudgement = () => '';
+  state.app.retrievalCandidatePools = () => [];
+  state.app.authHeaders = () => ({});
+  state.app.loadSearchAnalysis = () => Promise.resolve();
+  state.app.loadEmbeddingOverview = () => Promise.resolve();
+  state.context.alert = () => {};
+  return state;
+}
+test('进入空候选详情时同步预开，布局更新后自动导航聊天', async () => {
+  const {app,calls}=reviewSetup();
+  app.openRetrievalReview({id:'a',conversation_id:'2104481532893725752',candidates:[]});
+  assert.deepEqual(calls.map(c=>c[0]),['open']);
+  await Promise.resolve();
+  assert.deepEqual(calls.map(c=>c[0]),['open','resize','move','navigate','focus']);
+});
+test('上一条下一条自动对应新工单且替换旧聊天', async () => {
+  const {app,calls}=reviewSetup();
+  app.analysis.risks=[{id:'a',conversation_id:'first'},{id:'b',conversation_id:'second'}];
+  app.openRetrievalReview(app.analysis.risks[0]); await Promise.resolve();
+  app.navigateRetrievalReview(1); await Promise.resolve();
+  assert.ok(calls.filter(c=>c[0]==='navigate').at(-1)[1].includes('questionFormId=second'));
+  app.navigateRetrievalReview(-1); await Promise.resolve();
+  assert.ok(calls.filter(c=>c[0]==='navigate').at(-1)[1].includes('questionFormId=first'));
+  assert.equal(calls.filter(c=>c[0]==='close').length,2);
+});
+test('快速切换只导航最新详情；关闭详情后取消预开窗口', async () => {
+  const {app,calls}=reviewSetup();
+  app.openRetrievalReview({id:'a',conversation_id:'first'});
+  app.openRetrievalReview({id:'b',conversation_id:'second'});
+  await Promise.resolve();
+  assert.equal(calls.filter(c=>c[0]==='navigate').length,1);
+  assert.ok(calls.find(c=>c[0]==='navigate')[1].includes('questionFormId=second'));
+  app.openRetrievalReview({id:'c',conversation_id:'third'}); app.embedding.review.open=false;
+  await Promise.resolve();
+  assert.equal(calls.filter(c=>c[0]==='navigate').length,1);
+});
+test('保存并下一条在请求前预开，成功后才导航', async () => {
+  const {app,calls,context}=reviewSetup();
+  app.analysis.risks=[{id:'a',conversation_id:'first'},{id:'b',conversation_id:'second'}];
+  app.openRetrievalReview(app.analysis.risks[0]); await Promise.resolve(); calls.length=0;
+  let resolveFetch;
+  context.fetch=()=>{calls.push(['fetch']);return new Promise(r=>{resolveFetch=r;});};
+  const save=app.submitRetrievalReview(1);
+  assert.deepEqual(calls.map(c=>c[0]),['open','fetch']);
+  resolveFetch({ok:true,json:async()=>({})}); await save;
+  assert.equal(calls.filter(c=>c[0]==='open').length,1);
+  assert.ok(calls.find(c=>c[0]==='navigate')[1].includes('questionFormId=second'));
+});
+test('保存失败关闭预开窗口并保留当前工单和聊天', async () => {
+  const {app,calls,context}=reviewSetup();
+  app.analysis.risks=[{id:'a',conversation_id:'first'},{id:'b',conversation_id:'second'}];
+  app.openRetrievalReview(app.analysis.risks[0]); await Promise.resolve(); calls.length=0;
+  context.fetch=async()=>({ok:false,json:async()=>({detail:'保存失败'})});
+  assert.equal(await app.submitRetrievalReview(1),false);
+  assert.equal(calls.filter(c=>c[0]==='close').length,1);
+  assert.equal(calls.filter(c=>c[0]==='navigate').length,0);
+  assert.equal(app.embedding.review.item.id,'a');
+  assert.equal(vm.runInContext('workOrderChatWindow.closed',context),false);
+});
+test('保存校验失败不预开；被拦截后成功翻页也不重复尝试弹窗', async () => {
+  const {app,win,calls,context}=reviewSetup();
+  app.analysis.risks=[{id:'a',conversation_id:'first'},{id:'b',conversation_id:'second'}];
+  app.openRetrievalReview(app.analysis.risks[0]); await Promise.resolve(); calls.length=0;
+  app.retrievalCandidatePools=()=>[{items:[{knowledge_id:'unlabelled'}]}];
+  assert.equal(await app.submitRetrievalReview(1),false); assert.equal(calls.length,0);
+  app.retrievalCandidatePools=()=>[];
+  let opens=0; win.open=()=>{opens++;return null;};
+  context.fetch=async()=>({ok:true,json:async()=>({})});
+  assert.equal(await app.submitRetrievalReview(1),true);
+  assert.equal(opens,1); assert.ok(app.workOrderChatBlockedUrl.includes('questionFormId=second'));
+});
