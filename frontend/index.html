@@ -427,7 +427,7 @@
     .candidate-review-page .overview h2{font-size:26px;font-weight:750;letter-spacing:-.02em;color:#172b4d}
     .candidate-review-page .overview p{margin-top:7px;color:#7b8794;font-size:13px}
     .candidate-review-page .overview-status{font-size:12px;color:#98a2b3}.candidate-review-page .overview-status b{color:#0b9f88;font-weight:750}
-    .candidate-review-page .review-metric-cards{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:18px;margin-bottom:22px}
+    .candidate-review-page .review-metric-cards{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:18px;margin-bottom:22px}
     .candidate-review-page .review-metric-cards .card{min-width:0;min-height:156px;padding:18px 17px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;box-shadow:0 2px 5px rgba(16,24,40,.035);cursor:pointer}
     .candidate-review-page .review-metric-cards .card.active{border-color:#14b89e;box-shadow:0 0 0 2px rgba(20,184,158,.10)}
     .candidate-review-page .review-metric-cards .card .lb{font-size:13px;color:#667085;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -462,6 +462,7 @@
     @media(max-width:1500px){.candidate-review-page .review-metric-cards{grid-template-columns:repeat(4,minmax(0,1fr))}.candidate-review-page .candidate-filter-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.candidate-review-page .candidate-filter-field.keyword{grid-column:span 2}.candidate-review-page .candidate-filter-field.date-range{grid-column:span 2}}
     @media(max-width:900px){.candidate-review-page{padding-left:22px;padding-right:22px}.candidate-review-page .candidate-filter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.candidate-review-page .candidate-filter-field.keyword,.candidate-review-page .candidate-filter-field.date-range{grid-column:span 2}}
     @media(max-width:760px){.candidate-review-page{padding:22px 16px 32px}.candidate-review-page .review-metric-cards{grid-template-columns:1fr 1fr;gap:10px}.candidate-review-page .review-metric-cards .card{min-height:132px}.candidate-review-page .candidate-filter-head{padding:0 16px}.candidate-review-page .candidate-filter-grid{display:flex;flex-direction:column;gap:14px;padding:0 16px 18px}.candidate-review-page .candidate-filter-field.keyword,.candidate-review-page .candidate-filter-field.date-range{grid-column:auto}.candidate-review-page .candidate-filter-actions{padding:14px 16px;justify-content:flex-start}.candidate-review-page .candidate-filter-actions .review-selected-note{width:100%;margin-right:0}.candidate-review-page .candidate-filter-actions .candidate-training-toggle{margin-right:0}.candidate-review-page .candidate-filter-actions .btn{flex:1 1 140px}.candidate-review-page .candidate-filter-field.date-range .candidate-date-inputs{grid-template-columns:1fr}.candidate-date-separator{display:none}}
+    .candidate-review-toast{position:fixed;top:68px;right:24px;z-index:1200;display:flex;align-items:flex-start;gap:9px;max-width:min(420px,calc(100vw - 32px));padding:12px 14px;border:1px solid #bce8de;border-radius:8px;background:#fff;color:#176b5c;box-shadow:0 10px 28px rgba(16,24,40,.16);font-size:13px;line-height:1.5}.candidate-review-toast:before{content:'✓';display:inline-flex;align-items:center;justify-content:center;flex:0 0 18px;width:18px;height:18px;border-radius:50%;background:#0b9f88;color:#fff;font-size:12px;font-weight:800}.candidate-review-toast.error{border-color:#f4c7c2;color:#a83d33}.candidate-review-toast.error:before{content:'!';background:#d94841}
 
     /* 召回盲标：标注员只可查看自己被派发的工单；总览仅由具备总览权限的账号访问。 */
     .blind-label-shell{display:flex;flex-direction:column;gap:16px}
@@ -812,13 +813,14 @@
     <section class="overview">
       <div>
         <h2>候选知识价值复核</h2>
-        <p>集中查看模型初标与组员验证，只有通过沉淀价值门禁的候选才能进入知识待审核队列。</p>
+        <p>基于转写草稿、来源证据和模型标注，人工一次确认沉淀价值与草稿处理动作；只有草稿合格的候选才能进入知识待审核队列。</p>
       </div>
       <div class="overview-status">数据更新时间：<b>{{candidateReviews.updatedAt}}</b></div>
     </section>
     <div class="cards review-metric-cards">
       <div class="card" :class="{active:!candidateReviews.filter.status&&!candidateReviews.filter.priorityOnly}" @click="setCandidateReviewFilter('',false)"><div class="lb">候选总量</div><div class="vl bl">{{candidateReviews.summary.total}}</div><div class="metric-note"><b>全部</b> 已同步候选</div></div>
       <div class="card" :class="{active:candidateReviews.filter.status==='pending'}" @click="setCandidateReviewFilter('pending',false)"><div class="lb">待人工确认</div><div class="vl og">{{candidateReviews.summary.pending}}</div><div class="metric-note"><b>待处理</b> 尚未通过门禁</div></div>
+      <div class="card" :class="{active:candidateReviews.filter.status==='revision_required'}" @click="setCandidateReviewFilter('revision_required',false)"><div class="lb">退回转写</div><div class="vl og">{{candidateReviews.summary.revision_required}}</div><div class="metric-note"><b>待修改</b> 主题有价值但草稿未合格</div></div>
       <div class="card" :class="{active:candidateReviews.filter.status==='ready'}" @click="setCandidateReviewFilter('ready',false)"><div class="lb">可批量送审</div><div class="vl gn">{{candidateReviews.summary.ready}}</div><div class="metric-note"><b>已通过</b> 可进入知识审核</div></div>
       <div class="card" :class="{active:candidateReviews.filter.status==='rejected'}" @click="setCandidateReviewFilter('rejected',false)"><div class="lb">不沉淀</div><div class="vl" style="color:#ef6d5b!important">{{candidateReviews.summary.rejected}}</div><div class="metric-note"><b style="color:#ef6d5b">已拒绝</b> 人工门禁拦截</div></div>
       <div class="card" :class="{active:candidateReviews.filter.status==='submitted'}" @click="setCandidateReviewFilter('submitted',false)"><div class="lb">已进入发布审核</div><div class="vl bl">{{candidateReviews.summary.submitted}}</div><div class="metric-note"><b>已提交</b> 等待正式发布</div></div>
@@ -830,7 +832,7 @@
       <div class="candidate-filter-head">审核队列 · 筛选条件</div>
       <div class="candidate-filter-grid">
         <label class="candidate-filter-field keyword"><span>关键词（标题 / 事件 ID / 来源会话）</span><input class="inp" v-model="candidateReviews.filter.keyword" placeholder="⌕ 输入后回车搜索" @keyup.enter="loadCandidateReviews(true)"></label>
-        <label class="candidate-filter-field"><span>审核状态</span><select class="inp" v-model="candidateReviews.filter.status" @change="loadCandidateReviews(true)"><option value="">全部状态</option><option value="pending">待人工确认</option><option value="ready">可批量送审</option><option value="rejected">不沉淀</option><option value="submitted">已进入发布审核</option><option value="failed">送审失败</option></select></label>
+        <label class="candidate-filter-field"><span>审核状态</span><select class="inp" v-model="candidateReviews.filter.status" @change="loadCandidateReviews(true)"><option value="">全部状态</option><option value="pending">待人工确认</option><option value="revision_required">退回转写</option><option value="ready">可批量送审</option><option value="rejected">不沉淀</option><option value="submitted">已进入发布审核</option><option value="failed">送审失败</option></select></label>
         <label class="candidate-filter-field"><span>查重状态</span><select class="inp" v-model="candidateReviews.filter.deduplicationRequired" @change="loadCandidateReviews(true)"><option :value="false">全部查重状态</option><option :value="true">疑似重复确认</option></select></label>
         <label class="candidate-filter-field"><span>品类</span><select class="inp" v-model="candidateReviews.filter.productCategory" @change="loadCandidateReviews(true)"><option value="">全部品类</option><option v-for="category in candidateReviews.productCategories" :key="category.value" :value="category.value">{{category.label}}</option></select></label>
         <label class="candidate-filter-field"><span>标注状态</span><select class="inp" v-model="candidateReviews.filter.annotationStatus" @change="loadCandidateReviews(true)"><option value="">全部标注状态</option><option value="annotated">已标注</option><option value="unannotated">未标注</option></select></label>
@@ -851,7 +853,7 @@
     <div class="integration-hint">Answer Hub 同步到本页后，复核人可补充组员验证与修改意见。批量送审只创建“待发布审核”知识，不会直接发布。</div>
     <div class="tw" :class="{'review-loading':candidateReviews.loading}">
       <table class="review-table">
-        <thead><tr><th style="width:42px"><input class="review-checkbox" type="checkbox" :checked="allReviewSelected()" @change="toggleAllReviewSelection($event.target.checked)"></th><th>候选知识</th><th style="width:110px">知识来源</th><th style="width:110px">业务类型</th><th style="width:120px">审核状态</th><th style="width:160px">模型初标</th><th style="width:175px">组员验证</th><th style="width:90px">复核级别</th><th style="width:180px">上游来源</th><th style="width:135px">更新时间</th><th style="width:150px">快速标注</th><th style="width:90px;text-align:right">操作</th></tr></thead>
+        <thead><tr><th style="width:42px"><input class="review-checkbox" type="checkbox" :checked="allReviewSelected()" @change="toggleAllReviewSelection($event.target.checked)"></th><th>候选知识</th><th style="width:110px">知识来源</th><th style="width:110px">业务类型</th><th style="width:120px">审核状态</th><th style="width:160px">模型初标</th><th style="width:175px">人工复核</th><th style="width:90px">复核级别</th><th style="width:180px">上游来源</th><th style="width:135px">更新时间</th><th style="width:90px;text-align:right">操作</th></tr></thead>
         <tbody>
           <tr v-for="item in candidateReviews.items" :key="item.id">
             <td><input class="review-checkbox" type="checkbox" :disabled="!reviewSelectable(item)" :checked="isReviewSelected(item.id)" @change="toggleReviewSelection(item.id)"></td>
@@ -859,15 +861,14 @@
             <td><span class="tg tg-l">{{knowledgeOriginLabel(item.knowledge_origin)}}</span></td>
             <td><span class="tg tg-l">{{businessTypeLabel(item.business_type)}}</span></td>
             <td><span class="review-badge" :class="reviewStatusClass(item.review_status)">{{reviewStatusLabel(item.review_status)}}</span><div class="review-error" v-if="item.error_message" :title="item.error_message">{{item.error_code || '送审失败'}}</div></td>
-            <td><div class="review-model-summary"><b>{{reviewKnowledgeValueLabel(item.model_review && item.model_review.knowledge_value)}}</b><br>置信度 {{reviewConfidence(item.model_review && item.model_review.confidence)}}</div></td>
-            <td><div class="review-human-summary"><b>{{reviewKnowledgeValueLabel(item.human_review && item.human_review.knowledge_value)}}</b> · {{reviewUsabilityLabel(item.human_review && item.human_review.usability)}}<br>{{reviewDecisionLabel(item.human_review && item.human_review.decision)}}</div></td>
+            <td><div class="review-model-summary"><b>{{reviewKnowledgeValueLabel(item.model_review && item.model_review.knowledge_value)}}</b><br>{{reviewDraftQualityLabel(item.model_review && item.model_review.draft_quality)}} · {{reviewConfidence(item.model_review && item.model_review.confidence)}}</div></td>
+            <td><div class="review-human-summary"><b>{{reviewKnowledgeValueLabel(item.human_review && item.human_review.knowledge_value)}}</b> · {{reviewDraftDispositionLabel(item.human_review && item.human_review.draft_disposition)}}<br>{{reviewDecisionLabel(item.human_review && item.human_review.decision)}}</div></td>
             <td><span class="priority-flag" v-if="item.priority_review">重点复核</span><span v-else style="color:#98a2b3">常规</span></td>
             <td><div class="review-source"><a v-if="item.source_conversation_url" :href="item.source_conversation_url" target="_blank" rel="noopener noreferrer">{{item.source_system}} · {{item.source_conversation_id}}</a><span v-else>{{item.source_system}} · {{item.source_conversation_id}}</span></div></td>
             <td>{{formatDate(item.updated_at)}}</td>
-            <td><div class="candidate-quick-actions" v-if="reviewAnnotatable(item)"><button class="btn reject" type="button" @click="quickAnnotateCandidateReview(item,'unworthy')">不沉淀</button><button class="btn accept" type="button" @click="quickAnnotateCandidateReview(item,'worthy')">值得沉淀</button></div><span v-else class="hint">已锁定</span></td>
             <td style="text-align:right"><button class="btn bd bsm" @click="openCandidateReview(item)">{{item.review_status==='submitted'?'查看':'审核'}}</button></td>
           </tr>
-          <tr v-if="!candidateReviews.items.length"><td colspan="12" class="review-empty">{{candidateReviews.loading?'正在加载候选审核队列...':'暂无符合条件的候选知识'}}</td></tr>
+          <tr v-if="!candidateReviews.items.length"><td colspan="11" class="review-empty">{{candidateReviews.loading?'正在加载候选审核队列...':'暂无符合条件的候选知识'}}</td></tr>
         </tbody>
       </table>
     </div>
@@ -1528,6 +1529,7 @@
                 <div class="review-model-item"><span>错误类型</span><b>{{candidateReviews.current.model_review.error_type || '-'}}</b></div>
                 <div class="review-model-item"><span>证据充分性</span><b>{{candidateReviews.current.model_review.evidence_sufficiency || '-'}}</b></div>
                 <div class="review-model-item"><span>内容一致性</span><b>{{candidateReviews.current.model_review.content_consistency || '-'}}</b></div>
+                <div class="review-model-item"><span>草稿质量</span><b>{{reviewDraftQualityLabel(candidateReviews.current.model_review.draft_quality)}}</b></div>
                 <div class="review-model-item"><span>标题质量</span><b>{{candidateReviews.current.model_review.title_quality || '-'}}</b></div>
                 <div class="review-model-item"><span>模型</span><b>{{candidateReviews.current.model_review.model_name || candidateReviews.current.model_review.provider || '-'}}</b></div>
               </div>
@@ -1554,8 +1556,9 @@
               <div class="fg span-2"><label class="fl"><span class="req">*</span> 知识来源</label><select class="fi" v-model="candidateReviews.form.knowledge_origin" :disabled="reviewReadonly()"><option value="" disabled>请选择知识来源</option><option v-for="origin in assignableKnowledgeOrigins(candidateReviews.form.knowledge_origin)" :key="origin.value" :value="origin.value">{{origin.label}}</option></select></div>
               <div class="fg"><label class="fl"><span class="req">*</span> 业务类型</label><select class="fi" v-model="candidateReviews.form.business_type" :disabled="reviewReadonly()" @change="onCandidateBusinessTypeChange"><option value="" disabled>请选择业务类型</option><option v-for="businessType in businessTypes" :key="businessType.value" :value="businessType.value">{{businessType.label}}</option></select></div>
               <div class="fg"><label class="fl"><span class="req">*</span> 所属分类</label><select class="fi" v-model="candidateReviews.form.category_id" :disabled="reviewReadonly() || !candidateReviews.form.business_type"><option value="" disabled>{{candidateReviews.form.business_type?'请选择分类':'请先选择业务类型'}}</option><option v-for="cat in cats" :key="cat.id" :value="cat.id">{{cat.name}}</option></select></div>
-              <div class="fg"><label class="fl">复核结论</label><select class="fi" v-model="candidateReviews.form.knowledge_value" :disabled="reviewReadonly()"><option value="pending">待确认</option><option value="worthy">值得沉淀</option><option value="unworthy">不沉淀</option></select></div>
-              <div class="fg"><label class="fl">训练用途</label><label class="candidate-training-toggle" style="min-height:40px"><input type="checkbox" v-model="candidateReviews.form.includeInTraining" :disabled="reviewReadonly()"> 作为人工标注样本</label></div>
+              <div class="fg"><label class="fl">沉淀价值</label><select class="fi" v-model="candidateReviews.form.knowledge_value" :disabled="reviewReadonly()"><option value="pending">待确认</option><option value="worthy">值得沉淀</option><option value="unworthy">不沉淀</option></select></div>
+              <div class="fg"><label class="fl">知识草稿处理</label><select class="fi" v-model="candidateReviews.form.draft_disposition" :disabled="reviewReadonly()"><option value="pending">待确认</option><option value="approved">草稿合格，可送审</option><option value="revision_required">退回转写修改</option><option value="hold_for_evidence">待补证据 / 业务确认</option></select><div class="hint">“退回转写”不会等同于“不沉淀”。</div></div>
+              <div class="fg span-2"><label class="fl">训练用途</label><label class="candidate-training-toggle" style="min-height:40px"><input type="checkbox" v-model="candidateReviews.form.includeInTraining" :disabled="reviewReadonly() || candidateReviews.form.knowledge_value==='pending'"> 作为人工标注样本</label><div class="hint">训练候选由人工价值结论、草稿处理动作、来源与后续样本质检共同决定。</div></div>
               <div class="fg span-2"><label class="fl">知识正文</label><textarea class="fi" rows="8" v-model="candidateReviews.form.contentText" :disabled="reviewReadonly()" placeholder="候选知识正文"></textarea><div class="hint">正文和案例媒体独立保存；修改正文不会再覆盖图片或视频。</div></div>
               <div class="fg span-2"><label class="fl">推荐回复</label><textarea class="fi" rows="3" v-model="candidateReviews.form.recommended_reply" :disabled="reviewReadonly()" placeholder="供答疑人员直接使用的推荐回复"></textarea></div>
               <div class="fg span-2">
@@ -1596,6 +1599,7 @@
         <div class="review-gate" v-if="candidateReviews.current"><span class="review-badge" :class="reviewStatusClass(candidateReviews.current.review_status)">{{reviewStatusLabel(candidateReviews.current.review_status)}}</span><span>{{candidateReviewGateReason(candidateReviews.current)}}</span></div>
         <button class="btn bd" @click="closeCandidateReview">关闭</button>
         <button class="btn bd" v-if="!reviewReadonly()" @click="saveCandidateReview(false)" :disabled="candidateReviews.saving">{{candidateReviews.saving?'保存中...':'保存审核'}}</button>
+        <button class="btn bp" v-if="!reviewReadonly()" @click="saveCandidateReview(false,true)" :disabled="candidateReviews.saving">{{candidateReviews.saving?'保存中...':'保存并下一条'}}</button>
         <button class="btn bp" v-if="!reviewReadonly()" @click="saveCandidateReview(true)" :disabled="candidateReviews.saving||candidateReviews.submitting">{{candidateReviews.submitting?'送审中...':'保存并送审'}}</button>
       </div>
     </div>
@@ -2166,6 +2170,7 @@
       </div>
     </div>
   </div>
+  <div v-if="candidateReviewNotice.visible" class="candidate-review-toast" :class="candidateReviewNotice.type" role="status" aria-live="polite">{{candidateReviewNotice.message}}</div>
   <script src="lib/vue.global.prod.js"></script>
   <script src="lib/kb-runtime.js"></script>
 <script>
@@ -2199,7 +2204,7 @@ Vue.createApp({
       stats: {total:0, published:0, review:0},
       dashboard: {pending:[], recentUpdates:[], updatedAt:'-'},
       candidateDashboard: {
-        summary: {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
+        summary: {total:0, pending:0, revision_required:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
         pending: [],
         loading: false,
         available: false,
@@ -2290,13 +2295,14 @@ Vue.createApp({
         form: {
           title:'', knowledge_origin:'', business_type:'', category_id:'', contentText:'', originalContentText:'', recommended_reply:'',
           applicableCategories:[], brands:[], models:[],
-          knowledge_value:'pending', usability:'pending', modification_notes:'', feedback:'',
+          knowledge_value:'pending', draft_disposition:'pending', usability:'pending', modification_notes:'', feedback:'',
           decision:'', error_type:'', training_eligible:'', notes:'', confirmDedupReview:false
         },
         saving: false,
         submitting: false,
         updatedAt: '-'
       },
+      candidateReviewNotice: {visible:false, message:'', type:'success', timer:null},
       answerHubMonitor: {loading:false,logsLoading:false,actionLoading:false,updatedAt:'-',page:1,pageSize:20,service:{status:'unknown',message:''},control:{enabled:false,schedule_enabled:false,schedule_time:'02:00',running:false,plan:{knowledge_settle_from_date:'',knowledge_settle_to_date:'',second_part_query_from_date:'',second_part_query_to_date:'',timezone:'Asia/Shanghai'}},summary:{pending:0,running:0,attention:0,completed:0,cz_sync_failed:0},jobs:[],filter:{status:'',keyword:''},log:{name:'',content:''}},
       confidenceTraining: {tab:'candidates',loading:false,connectionTesting:false,jobCreating:false,candidatePage:1,candidatePageSize:20,items:[],jobs:[],settings:{training_candidate_collection_enabled:true,training_snapshot_enabled:false,auto_training_job_enabled:false,production_auto_review_enabled:false},overview:{total:0,scored:0,training_candidate_count:0,model:'deepseek-flash'}},
       legacyAnswerHubPaths: {overview:'/answer-hub/overview',control:'/answer-hub/control',runs:'/answer-hub/runs'},
@@ -4542,7 +4548,7 @@ Vue.createApp({
         })
         .then(function(data) {
           self.candidateDashboard.summary = Object.assign(
-            {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
+            {total:0, pending:0, revision_required:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
             data.summary || {}
           );
           self.candidateDashboard.pending = Array.isArray(data.items) ? data.items : [];
@@ -4604,6 +4610,7 @@ Vue.createApp({
     reviewStatusLabel: function(value) {
       return {
         pending:'待人工确认',
+        revision_required:'退回转写',
         ready:'可批量送审',
         rejected:'不沉淀',
         submitted:'已进入发布审核',
@@ -4611,13 +4618,19 @@ Vue.createApp({
       }[value] || value || '未知状态';
     },
     reviewStatusClass: function(value) {
-      return 'review-status-' + (['pending','ready','rejected','submitted','failed'].indexOf(value) !== -1 ? value : 'unknown');
+      return 'review-status-' + (['pending','revision_required','ready','rejected','submitted','failed'].indexOf(value) !== -1 ? value : 'unknown');
     },
     reviewKnowledgeValueLabel: function(value) {
       return {worthy:'值得沉淀', unworthy:'不沉淀', pending:'待确认', '是':'值得沉淀', '否':'不沉淀'}[value] || '待确认';
     },
     reviewUsabilityLabel: function(value) {
       return {usable:'可用', unusable:'不可用', pending:'待确认', '是':'可用', '否':'不可用'}[value] || '待确认';
+    },
+    reviewDraftQualityLabel: function(value) {
+      return {合格:'草稿合格',需修改:'需修改',待补证据:'待补证据',不合格:'不合格'}[value] || '草稿待评估';
+    },
+    reviewDraftDispositionLabel: function(value) {
+      return {approved:'草稿合格',revision_required:'退回转写',hold_for_evidence:'待补证据',pending:'待确认'}[value] || '待确认';
     },
     reviewDecisionLabel: function(value) {
       return {
@@ -4709,6 +4722,7 @@ Vue.createApp({
         brands: Array.isArray(current.applicable_brands) ? current.applicable_brands.slice() : [],
         models: Array.isArray(current.applicable_models) ? current.applicable_models.slice() : [],
         knowledge_value: current.human_review.knowledge_value || 'pending',
+        draft_disposition: current.human_review.draft_disposition || 'pending',
         includeInTraining: current.human_review.training_eligible !== '否',
         review_note: current.human_review.notes || current.human_review.feedback || current.human_review.modification_notes || '',
         confirmDedupReview: !!current.deduplication_confirmed
@@ -4747,6 +4761,24 @@ Vue.createApp({
       this.candidateReviews.dlg = false;
       this.candidateReviews.current = null;
     },
+    showCandidateReviewNotice: function(message, type) {
+      var notice = this.candidateReviewNotice;
+      if (notice.timer) clearTimeout(notice.timer);
+      notice.message = message;
+      notice.type = type || 'success';
+      notice.visible = true;
+      notice.timer = setTimeout(function() { notice.visible = false; notice.timer = null; }, 3200);
+    },
+    nextCandidateReviewId: function(currentId) {
+      var items = this.candidateReviews.items || [];
+      var index = items.findIndex(function(item) { return item.id === currentId; });
+      return index >= 0 && items[index + 1] ? items[index + 1].id : '';
+    },
+    openCandidateReviewById: function(id) {
+      var item = (this.candidateReviews.items || []).find(function(row) { return row.id === id; });
+      if (item) this.openCandidateReview(item);
+      return !!item;
+    },
     reviewReadonly: function() {
       return !this.candidateReviews.current || this.candidateReviews.current.review_status === 'submitted';
     },
@@ -4757,18 +4789,20 @@ Vue.createApp({
       }
       if (item.error_message) return item.error_message;
       return (item.selection && item.selection.review_reason) || {
-        pending:'等待组员确认沉淀价值和可用性。',
+        pending:'等待人工确认沉淀价值与知识草稿处理动作。',
+        revision_required:'人工确认主题有价值，但知识草稿需要退回转写修改。',
         ready:'门禁已通过，可以送入知识发布审核队列。',
         rejected:'该候选已被人工判定为不沉淀。',
         submitted:'已生成待发布审核知识，后续在知识库管理中完成发布审核。',
         failed:'送审失败，请修正分类或内容后重新保存复核。'
       }[item.review_status] || '';
     },
-    saveCandidateReview: function(submitAfter) {
+    saveCandidateReview: function(submitAfter, openNext) {
       var self = this;
       var current = self.candidateReviews.current;
       var form = self.candidateReviews.form;
       if (!current || self.reviewReadonly()) return;
+      var nextReviewId = openNext ? self.nextCandidateReviewId(current.id) : '';
       if (form.knowledge_value === 'worthy') {
         if (!form.title.trim()) { alert('请输入知识标题'); return; }
         if (!form.knowledge_origin) { alert('请选择知识来源'); return; }
@@ -4780,8 +4814,8 @@ Vue.createApp({
           && !self.normalizeExternalMediaUrl(media.external_url, media.type);
       });
       if (invalidMedia) { alert('案例图片和视频只接受有效的 HTTPS 地址，请修改或删除无效媒体。'); return; }
-      var usability = form.knowledge_value === 'worthy' ? 'usable' : (form.knowledge_value === 'unworthy' ? 'unusable' : 'pending');
-      var decision = form.knowledge_value === 'worthy' ? 'approved' : (form.knowledge_value === 'unworthy' ? 'rejected' : '');
+      var usability = form.knowledge_value === 'worthy' && form.draft_disposition === 'approved' ? 'usable' : (form.knowledge_value === 'unworthy' ? 'unusable' : 'pending');
+      var decision = form.knowledge_value === 'worthy' && form.draft_disposition === 'approved' ? 'approved' : (form.knowledge_value === 'unworthy' ? 'rejected' : '');
       var body = {
         title: form.title.trim(),
         knowledge_origin: form.knowledge_origin,
@@ -4792,6 +4826,7 @@ Vue.createApp({
         applicable_models: form.models,
         recommended_reply: form.recommended_reply,
         knowledge_value: form.knowledge_value,
+        draft_disposition: form.draft_disposition,
         usability: usability,
         decision: decision,
         training_eligible: form.includeInTraining ? '是' : '否',
@@ -4822,22 +4857,27 @@ Vue.createApp({
           self.loadCandidateReviewDashboard();
           if (submitAfter) {
             if (data.review_status !== 'ready') {
-              alert('审核已保存，但候选尚未通过送审门禁。请确认“值得沉淀”且“可用”，或给出通过结论。');
+              self.showCandidateReviewNotice('审核已保存，但候选尚未通过送审门禁。请确认“值得沉淀”且草稿合格，或补充复核结论。', 'error');
               self.loadCandidateReviews();
               return null;
             }
             if (data.deduplication && data.deduplication.action === 'review_duplicate' && !data.deduplication_confirmed) {
-              alert('检测到疑似重复，请先核对命中知识并勾选“内容确实不同”。');
+              self.showCandidateReviewNotice('审核已保存；检测到疑似重复，请先核对命中知识并勾选“内容确实不同”。', 'error');
               self.loadCandidateReviews();
               return null;
             }
             return self.submitCandidateReviewIds([data.id], true);
           }
-          self.loadCandidateReviews();
-          alert('候选审核已保存。');
-          return null;
+          return self.loadCandidateReviews().then(function() {
+            if (openNext && nextReviewId && self.openCandidateReviewById(nextReviewId)) {
+              self.showCandidateReviewNotice('候选审核已保存，已进入下一条。');
+              return null;
+            }
+            self.showCandidateReviewNotice(openNext ? '候选审核已保存，当前页没有下一条可继续复核。' : '候选审核已保存。');
+            return null;
+          });
         })
-        .catch(function(error) { alert(error.message); })
+        .catch(function(error) { self.showCandidateReviewNotice(error.message, 'error'); })
         .finally(function() { self.candidateReviews.saving = false; });
     },
     submitCandidateReviewIds: function(ids, closeAfter) {
@@ -4884,12 +4924,6 @@ Vue.createApp({
       if (!ids.length) return;
       if (!confirm('确认将选中的 ' + ids.length + ' 条候选送入知识待审核队列？')) return;
       this.submitCandidateReviewIds(ids, false);
-    },
-    quickAnnotateCandidateReview: function(item, knowledgeValue) {
-      if (!this.reviewAnnotatable(item)) return;
-      var label=knowledgeValue==='unworthy'?'不沉淀':'值得沉淀';
-      if (!confirm('确认将该候选标为“'+label+'”？')) return;
-      this.annotateCandidateReviewIds([item.id],knowledgeValue);
     },
     batchAnnotateCandidateReviews: function(knowledgeValue) {
       var ids=this.candidateReviews.selected.slice();
