@@ -4593,7 +4593,7 @@ Vue.createApp({
       params.set('limit', String(self.candidateReviews.pageSize));
       params.set('offset', String((self.candidateReviews.page-1)*self.candidateReviews.pageSize));
       self.candidateReviews.loading = true;
-      fetch(API + '/integration/candidate-reviews?' + params.toString(), {headers:self.authHeaders()})
+      return fetch(API + '/integration/candidate-reviews?' + params.toString(), {headers:self.authHeaders()})
         .then(function(response) {
           return response.json().then(function(data) {
             if (!response.ok) throw new Error(data.detail || '加载候选审核队列失败');

@@ -1,4 +1,8 @@
 from pathlib import Path
+import json
+import shutil
+import subprocess
+import textwrap
 
 
 FRONTEND = (
@@ -28,6 +32,90 @@ def test_candidate_review_can_save_and_continue_without_blocking_success_alert()
     toast = FRONTEND.index('class="candidate-review-toast"')
     app_end = FRONTEND.index('  </div>\n  <script src="lib/vue.global.prod.js"></script>')
     assert toast < app_end
+
+
+def test_candidate_review_list_reload_is_awaitable_for_save_and_next() -> None:
+    node = shutil.which("node")
+    assert node, "Node.js is required for the candidate review behavior test"
+    frontend_path = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
+    script = textwrap.dedent(
+        f"""
+        const assert = require('assert');
+        const fs = require('fs');
+        const vm = require('vm');
+        const html = fs.readFileSync({json.dumps(str(frontend_path))}, 'utf8');
+        const scripts = Array.from(
+          html.matchAll(/<script(?:\\s[^>]*)?>([\\s\\S]*?)<\\/script>/gi),
+          function(match) {{ return match[1]; }}
+        );
+        const appSource = scripts.find(function(source) {{
+          return source.indexOf('Vue.createApp({{') !== -1;
+        }});
+        let appOptions = null;
+        const sandbox = {{
+          window: {{KB_RUNTIME: {{apiBase: '', baseUrl: ''}}}},
+          localStorage: {{getItem: function() {{ return ''; }}}},
+          Vue: {{createApp: function(options) {{
+            appOptions = options;
+            return {{mount: function() {{ return null; }}}};
+          }}}},
+          fetch: function() {{
+            return Promise.resolve({{
+              ok: true,
+              json: function() {{
+                return Promise.resolve({{
+                  items: [], total: 0, summary: {{}}, product_categories: []
+                }});
+              }}
+            }});
+          }},
+          console: console,
+          URL: URL,
+          URLSearchParams: URLSearchParams,
+          setTimeout: setTimeout,
+          clearTimeout: clearTimeout,
+          alert: function() {{}}
+        }};
+        vm.createContext(sandbox);
+        vm.runInContext(appSource, sandbox);
+        const context = {{
+          candidateReviews: {{
+            page: 1,
+            pageSize: 20,
+            loading: false,
+            selected: [],
+            items: [],
+            productCategories: [],
+            summary: {{}},
+            filter: {{
+              keyword: '', status: '', priorityOnly: false,
+              deduplicationRequired: false, productCategory: '',
+              annotationStatus: '', modelKnowledgeValue: '',
+              updatedFrom: '', updatedTo: ''
+            }}
+          }},
+          authHeaders: function() {{ return {{}}; }},
+          reviewSelectable: function() {{ return false; }},
+          formatDate: function() {{ return '-'; }}
+        }};
+        const reload = appOptions.methods.loadCandidateReviews.bind(context);
+        const result = reload(false);
+        assert(result && typeof result.then === 'function',
+          '保存并下一条需要等待候选列表刷新，loadCandidateReviews 必须返回 Promise');
+        result.then(function() {{ process.exit(0); }}).catch(function(error) {{
+          console.error(error);
+          process.exit(1);
+        }});
+        """
+    )
+    completed = subprocess.run(
+        [node, "-e", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_candidate_review_uses_one_human_decision_for_legacy_gate_fields() -> None:
