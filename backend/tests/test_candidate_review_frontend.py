@@ -25,6 +25,9 @@ def test_candidate_review_can_save_and_continue_without_blocking_success_alert()
     assert "nextCandidateReviewId: function(currentId)" in FRONTEND
     assert "candidate-review-toast" in FRONTEND
     assert "alert('候选审核已保存。')" not in FRONTEND
+    toast = FRONTEND.index('class="candidate-review-toast"')
+    app_end = FRONTEND.index('  </div>\n  <script src="lib/vue.global.prod.js"></script>')
+    assert toast < app_end
 
 
 def test_candidate_review_uses_one_human_decision_for_legacy_gate_fields() -> None:
