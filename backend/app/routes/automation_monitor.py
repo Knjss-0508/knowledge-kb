@@ -49,6 +49,8 @@ def update_control(
         "enabled", "schedule_enabled", "schedule_time", "timezone",
         "second_part_query_from_date", "second_part_query_to_date",
         "knowledge_settle_from_date", "knowledge_settle_to_date",
+        "run_mode", "schedule_frequency", "schedule_weekday", "window_days",
+        "cursor_date", "catchup_enabled", "max_catchup_days",
     }
     payload = {key: body[key] for key in allowed if key in body}
     if not payload:
@@ -60,6 +62,15 @@ def update_control(
         value = payload["schedule_time"]
         if not isinstance(value, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
             raise HTTPException(400, "schedule_time 必须是 HH:MM 格式。")
+    has_legacy_date_fields = any(
+        key in body
+        for key in (
+            "knowledge_settle_from_date",
+            "knowledge_settle_to_date",
+            "second_part_query_from_date",
+            "second_part_query_to_date",
+        )
+    )
     from_date = payload.get(
         "knowledge_settle_from_date",
         payload.get("second_part_query_from_date", ""),
@@ -78,10 +89,11 @@ def update_control(
         or from_date > to_date
     ):
         raise HTTPException(400, "第二部分采集日期范围无效，请使用 YYYY-MM-DD 且开始日期不晚于结束日期。")
-    payload["knowledge_settle_from_date"] = from_date
-    payload["knowledge_settle_to_date"] = to_date
-    payload["second_part_query_from_date"] = from_date
-    payload["second_part_query_to_date"] = to_date
+    if has_legacy_date_fields:
+        payload["knowledge_settle_from_date"] = from_date
+        payload["knowledge_settle_to_date"] = to_date
+        payload["second_part_query_from_date"] = from_date
+        payload["second_part_query_to_date"] = to_date
     try:
         return _gateway().request("PATCH", "/api/v1/automation/control", payload)
     except AutomationMonitorError as exc:

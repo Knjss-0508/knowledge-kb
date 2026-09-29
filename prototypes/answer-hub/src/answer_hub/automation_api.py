@@ -28,6 +28,7 @@ from .automation_queue import (
     read_queue_job_metadata,
     write_queue_job_metadata,
 )
+from .automation_schedule import normalize_plan
 from .excel_io import write_rows_to_workbook
 from .mimo import load_dotenv
 from .local_model_config import (
@@ -429,9 +430,10 @@ def create_automation_api_app(
             payload = json.loads(automation_plan_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             payload = {}
-        return payload if isinstance(payload, dict) else {}
+        return normalize_plan(payload if isinstance(payload, dict) else {})
 
     def write_automation_plan(payload: dict[str, Any]) -> None:
+        payload = normalize_plan(payload)
         automation_plan_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = automation_plan_path.with_suffix(automation_plan_path.suffix + ".tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -604,6 +606,21 @@ def create_automation_api_app(
                 or ""
             ),
             "timezone": str(plan.get("timezone") or "Asia/Shanghai"),
+            "run_mode": str(plan.get("run_mode") or "backfill"),
+            "schedule_frequency": str(plan.get("schedule_frequency") or "daily"),
+            "schedule_weekday": int(plan.get("schedule_weekday") or 0),
+            "window_days": int(plan.get("window_days") or 1),
+            "cursor_date": str(plan.get("cursor_date") or ""),
+            "next_run_from_date": str(plan.get("next_run_from_date") or ""),
+            "next_run_to_date": str(plan.get("next_run_to_date") or ""),
+            "catchup_enabled": bool(plan.get("catchup_enabled", True)),
+            "max_catchup_days": int(plan.get("max_catchup_days") or 7),
+            "last_successful_from_date": str(plan.get("last_successful_from_date") or ""),
+            "last_successful_to_date": str(plan.get("last_successful_to_date") or ""),
+            "last_failure_date": str(plan.get("last_failure_date") or ""),
+            "last_failure_reason": str(plan.get("last_failure_reason") or ""),
+            "consecutive_failure_count": int(plan.get("consecutive_failure_count") or 0),
+            "auto_advance_paused": bool(plan.get("auto_advance_paused", False)),
         }
         # `enabled` is the logical permission to run automation manually or
         # through the queue. `schedule_enabled` is only the OS scheduler
@@ -627,14 +644,32 @@ def create_automation_api_app(
         body = request.get_json(silent=True)
         if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
             return jsonify({"error": "enabled 必须是布尔值。"}), 400
-        from_date = str(body.get("second_part_query_from_date") or "").strip()
-        to_date = str(body.get("second_part_query_to_date") or "").strip()
-        from_date = str(
-            body.get("knowledge_settle_from_date") or from_date
-        ).strip()
-        to_date = str(
-            body.get("knowledge_settle_to_date") or to_date
-        ).strip()
+        plan = read_automation_plan()
+        has_explicit_date_range = any(
+            key in body
+            for key in (
+                "knowledge_settle_from_date",
+                "knowledge_settle_to_date",
+                "second_part_query_from_date",
+                "second_part_query_to_date",
+            )
+        )
+        if has_explicit_date_range:
+            from_date = str(body.get("second_part_query_from_date") or "").strip()
+            to_date = str(body.get("second_part_query_to_date") or "").strip()
+            from_date = str(body.get("knowledge_settle_from_date") or from_date).strip()
+            to_date = str(body.get("knowledge_settle_to_date") or to_date).strip()
+        else:
+            from_date = str(
+                plan.get("knowledge_settle_from_date")
+                or plan.get("second_part_query_from_date")
+                or ""
+            ).strip()
+            to_date = str(
+                plan.get("knowledge_settle_to_date")
+                or plan.get("second_part_query_to_date")
+                or ""
+            ).strip()
         if bool(from_date) != bool(to_date):
             return jsonify({"error": "第二部分采集开始日期和结束日期必须同时填写。"}), 400
         if from_date and (not re.fullmatch(r"\d{4}-\d{2}-\d{2}", from_date) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", to_date) or from_date > to_date):
@@ -645,6 +680,30 @@ def create_automation_api_app(
         schedule_time = str(body.get("schedule_time") or "02:00").strip()
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time):
             return jsonify({"error": "schedule_time 必须是 HH:MM 格式。"}), 400
+        schedule_frequency = str(body.get("schedule_frequency") or plan.get("schedule_frequency") or "daily").strip().lower()
+        if schedule_frequency not in {"daily", "weekly"}:
+            return jsonify({"error": "schedule_frequency 只能是 daily 或 weekly。"}), 400
+        try:
+            window_days = int(body.get("window_days", plan.get("window_days", 1)))
+            schedule_weekday = int(body.get("schedule_weekday", plan.get("schedule_weekday", 0)))
+            max_catchup_days = int(body.get("max_catchup_days", plan.get("max_catchup_days", 7)))
+        except (TypeError, ValueError):
+            return jsonify({"error": "window_days、schedule_weekday、max_catchup_days 必须是整数。"}), 400
+        if not 1 <= window_days <= 31:
+            return jsonify({"error": "window_days 必须在 1 到 31 之间。"}), 400
+        if not 0 <= schedule_weekday <= 6:
+            return jsonify({"error": "schedule_weekday 必须在 0 到 6 之间，0 表示周一。"}), 400
+        if not 1 <= max_catchup_days <= 31:
+            return jsonify({"error": "max_catchup_days 必须在 1 到 31 之间。"}), 400
+        run_mode = str(body.get("run_mode") or plan.get("run_mode") or "backfill").strip().lower()
+        if run_mode not in {"backfill", "incremental", "manual"}:
+            return jsonify({"error": "run_mode 只能是 backfill、incremental 或 manual。"}), 400
+        cursor_date = str(body.get("cursor_date") or plan.get("cursor_date") or from_date).strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cursor_date):
+            return jsonify({"error": "cursor_date 必须使用 YYYY-MM-DD。"}), 400
+        catchup_enabled = body.get("catchup_enabled", plan.get("catchup_enabled", True))
+        if not isinstance(catchup_enabled, bool):
+            return jsonify({"error": "catchup_enabled 必须是布尔值。"}), 400
         try:
             schedule_target = (
                 body["schedule_enabled"]
@@ -664,7 +723,6 @@ def create_automation_api_app(
                 "message": "本地测试模式：未安装 Windows 计划任务，仅保存控制状态和采集范围。",
                 "installed": False,
             }
-        plan = read_automation_plan()
         plan.update({
             "second_part_query_from_date": from_date,
             "second_part_query_to_date": to_date,
@@ -678,6 +736,13 @@ def create_automation_api_app(
             "schedule_enabled": bool(schedule_enabled) if schedule_enabled is not None else bool(body["enabled"]),
             "schedule_time": schedule_time,
             "timezone": str(body.get("timezone") or plan.get("timezone") or "Asia/Shanghai"),
+            "run_mode": run_mode,
+            "schedule_frequency": schedule_frequency,
+            "schedule_weekday": schedule_weekday,
+            "window_days": window_days,
+            "cursor_date": cursor_date,
+            "catchup_enabled": catchup_enabled,
+            "max_catchup_days": max_catchup_days,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         })
         write_automation_plan(plan)
