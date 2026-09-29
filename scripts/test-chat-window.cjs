@@ -38,11 +38,11 @@ test('窄屏独立窗口限制在可用屏幕内', () => {
   const {app}=setup({screen:{availLeft:0,availTop:0,availWidth:375,availHeight:667}}, {'.retrieval-review-detail':{left:100}});
   const b=app.workOrderChatGeometry(); assert.equal(b.width,375); assert.equal(b.height,667); assert.equal(b.left,0); assert.equal(b.top,0);
 });
-test('先定位同源空白窗口，再断开 opener 并导航，保留完整工单 ID', () => {
+test('先定位同源空白窗口，再导航并保留可回收句柄，保留完整工单 ID', () => {
   const {app,calls}=setup(); app.openWorkOrderChat('2104481532893725752');
   assert.deepEqual(calls.map(c=>c[0]),['open','resize','move','navigate','focus']);
   assert.equal(calls[0][1],'about:blank'); assert.equal(calls[0][2],'knowledge-kb-workorder-chat');
-  assert.equal(calls[3][2],null);
+  assert.ok(calls[3][2]);
   assert.equal(calls[3][1],'https://zzdy.powerzhuan.cn/#/workorderDetail?questionFormId=2104481532893725752&sceneType=2');
 });
 test('定位 API 被浏览器拒绝也能打开聊天', () => {
@@ -224,6 +224,18 @@ test('真实盲标入口：关闭时立即关闭待加载窗口，迟到响应�
   assert.equal(calls.filter(c=>c[0]==='close').length,1);
   requests[0].resolve(blindDetail('1')); await pending;
   assert.equal(calls.filter(c=>c[0]==='navigate').length,0);
+  assert.equal(app.blindLabeling.current.open,false);
+});
+
+test('真实盲标入口：聊天完成导航后关闭盲标详情也会关闭聊天窗口',async()=>{
+  const {app,calls,requests,context}=blindSetup();
+  const pending=app.openBlindLabelAssignment(blindAssignment('1'));
+  requests[0].resolve(blindDetail('1')); await pending;
+  assert.equal(calls.filter(c=>c[0]==='navigate').length,1);
+  assert.equal(vm.runInContext('workOrderChatWindow.closed',context),false);
+  app.closeBlindLabelDialog();
+  assert.equal(calls.filter(c=>c[0]==='close').length,1);
+  assert.equal(vm.runInContext('workOrderChatWindow',context),null);
   assert.equal(app.blindLabeling.current.open,false);
 });
 
