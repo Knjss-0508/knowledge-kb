@@ -1,6 +1,6 @@
 # Answer Hub 旧服务停用方案
 
-> 状态：**待执行**。生产切换尚未进行，本方案在「切换成功且稳定运行」之后才启用。
+> 状态：**待执行**（**生产切换已于 2026-09-30 15:14 完成并验证通过**，观察期自该时刻起算）。本方案在「切换成功且稳定运行」之后才启用。
 > 适用范围：停用**旧服务器**上那份 Answer Hub（`answer-hub-api.service`）。
 > 前置文档：[`answer-hub-本机迁移运行手册.md`](./answer-hub-本机迁移运行手册.md)（下称「运行手册」）。
 
@@ -91,6 +91,37 @@ Get-Item E:\answer-hub-runtime\observation.log | Select-Object LastWriteTime
 | 时间戳**连续无跳空** | 相邻两行间隔应约 10 分钟。出现数小时空档 = 本机曾经休眠/重启/任务停摆，那段时间**没有任何观测**，不能计入观察期 |
 
 > ⚠️ **`observation.log` 只能证明「本机 API 在与否」，证明不了「服务器在调它」。** 判据 4（`api-access.log`）才是有流量经过的证据。两者必须同时看。
+
+##### `observation.log` 字段含义（2026-09-30 生产切换后修订）
+
+每行字段固定、顺序固定：
+
+| 字段 | 实际探测目标 | 生产判据？ |
+|---|---|---|
+| `local=<code>(<ms>ms)` | 本机 Answer Hub 自检（`100.72.97.89:8780`） | 是（新路径的本机端点，但**单独看它证明不了「生产在用」**，见本节末尾 ⚠️） |
+| `rollback=<code>` | **服务器本地旧服务**（`127.0.0.1:8780`） | ❌ **不是**。它红了只说明**退路**没了，生产可能完全正常 |
+| `tunnel=<code>` | 服务器 `127.0.0.1:18780`（SSH 反向隧道回环）= 新生产路径入口 | 是 |
+| `e2e=<code>` | `kb-backend` **容器内**真实调用本机 `/health` + `/api/v1/automation/control`（两个都 200 才记 `200`） | 是，**最接近「生产是否真的通」的字段** |
+| `apiTask=` / `tunTask=` | 本机 `AnswerHub-API-Local` / `AnswerHub-Tunnel` 计划任务状态 | 是 |
+
+> ⚠️ **历史行（2026-09-30 15:22 及之前）该位置字段名是 `prod=`，它探的同样是服务器本地旧服务 `:8780`** —— 只是当时被错误地当成了「生产」。读老行时请一律把 `prod=` 按 `rollback=` 理解；**不要**因为老行写着 `prod=200` 就以为生产走的是服务器本地。
+>
+> **改名原因**：旧服务停用后 `:8780` 必然不可达（见 4.1）。若继续把它当生产判据，观察期会**从停用那一刻起永久 FAIL，而生产其实完全正常**。这是最难排查的一类误判 —— 监控喊着「生产挂了」，实际挂的只是一条已经不该被使用的退路。
+>
+> **字段契约如何保证不错位**：`observation.log` 由 `_watch.ps1`（仓库内镜像：`scripts/local-migration/observation-watch.ps1`）写入，由 `_smoke.ps1`（仓库内镜像：`scripts/local-migration/smoke-test.ps1`）第【H】节读取校验。两者已同步为**双格式兼容**：含 `rollback=` 的新行按 `local=200 + rollback=200 + tunnel=200 + e2e=200` 校验，含 `prod=` 的历史行按旧字段名 `local=200 + prod=200 + tunnel=200` 校验。**因此历史行不会因改名被静默漏检，新行也不会因为读旧字段名而被误判为异常。**
+
+```powershell
+# 字段分布自检：期望「历史行 prod= 若干 + 新行 rollback=/e2e= 若干」，两者都不应为 0
+Select-String -Path E:\answer-hub-runtime\observation.log -Pattern 'rollback=' | Measure-Object | Select-Object -ExpandProperty Count
+Select-String -Path E:\answer-hub-runtime\observation.log -Pattern 'prod='     | Measure-Object | Select-Object -ExpandProperty Count
+```
+
+```powershell
+# 新格式行的健康自检：期望无输出
+Select-String -Path E:\answer-hub-runtime\observation.log -Pattern 'rollback=' |
+  Where-Object { $_.Line -notmatch 'local=200' -or $_.Line -notmatch 'rollback=200' -or `
+                 $_.Line -notmatch 'tunnel=200' -or $_.Line -notmatch 'e2e=200' }
+```
 
 #### 1.3.2 四类接口探测（判据 2、3）——在服务器上执行
 
@@ -703,6 +734,15 @@ Get-NetTCPConnection -LocalPort 8780 -State Listen | Select-Object LocalAddress,
 ```
 
 **告警处理**：若存在针对服务器 `127.0.0.1:8780` 的监控/告警，停用后它会**持续报警**。处置方式按你的监控体系来（暂停该规则 / 改判据为 18780），但 ⚠️ **必须在记录里写明做了哪种处置** —— 否则将来没人知道「8780 一直红」是预期还是真故障。
+
+> ⚠️ **停用后必须区分「两种红了」**（字段含义见 1.3.1）：
+>
+> | 现象 | 含义 | 处置 |
+> |---|---|---|
+> | `observation.log` 的 `rollback=` 变成 `ERR`；`_smoke.ps1` 的「回滚目标（服务器本地旧服务 :8780）」变 `[FAIL]` | **预期现象** —— 停用后 `:8780` 必然不可达，这两个判据只是用来盯住**退路**是否还在 | ❌ **不要据此回滚**。在停用记录里登记为「退路已按计划停用」 |
+> | `tunnel=` 或 `e2e=` 非 `200`（即 `_smoke.ps1` 的「容器内 e2e 生产路径」变 `[FAIL]`） | ⚠️ **真故障** —— **新生产路径**断了 | ✅ **立即按第 3.4 节应急路径处置** |
+>
+> **一句话**：判断生产是否健康只看 `tunnel=` 与 `e2e=`；`prod=`（历史行）/ `rollback=` 字段与生产无关。
 
 ### 4.2 哪些保留不动（全部）
 

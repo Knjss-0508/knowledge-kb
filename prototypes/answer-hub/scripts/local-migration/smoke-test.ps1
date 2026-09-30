@@ -27,6 +27,12 @@ function HttpProbe($url, $headers = @{}, $timeout = 15) {
     }
 }
 
+# 从容器内 e2e 探针输出里取某个接口的状态码/错误码；用 [regex] 显式匹配，避免依赖 $Matches 残留值
+function E2EStatus($txt, $path) {
+    $m = [regex]::Match($txt, 'E2E_(?:OK|FAIL) ' + [regex]::Escape($path) + ' (\S+)')
+    if ($m.Success) { return $m.Groups[1].Value } else { return '?' }
+}
+
 Write-Host "=" * 78
 Write-Host "Answer Hub 迁移冒烟测试   $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "=" * 78
@@ -125,16 +131,47 @@ if ($tunTimes.Count -gt 0) {
 }
 
 Write-Host ""
-Write-Host "【G】服务器生产（必须全程不受影响）"
-$p = & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes $SRV "curl -s -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:8780/health" 2>&1
-Res "生产 Answer Hub" (("$p").Trim() -eq '200') "HTTP $(("$p").Trim())"
-$svc = & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes $SRV "systemctl is-active answer-hub-api" 2>&1
-Res "answer-hub-api 服务" (("$svc").Trim() -eq 'active') "$(("$svc").Trim())"
+Write-Host "【G】生产路径（新路径：kb-backend 容器 → 隧道 :18780 → 本机 Answer Hub）"
+# 真正的生产检查：容器内没有 curl，用 python 探针；地址与密钥都读容器内环境变量，不硬编码、不打印
+# 上传方式：本机临时文件 → Get-Content -Raw → 管道给 ssh "cat >"，避免 ssh 内联引号问题
+$E2E_PY = @'
+import os, urllib.request
+u = os.environ.get("ANSWER_HUB_API_BASE_URL") or ""
+k = os.environ.get("ANSWER_HUB_API_KEY") or ""
+if not u:
+    print("E2E_FAIL base-url-missing")
+    raise SystemExit(1)
+print("E2E_BASE " + u.split("@")[-1])
+for path in ["/health", "/api/v1/automation/control"]:
+    try:
+        req = urllib.request.Request(u + path, headers={"X-Answer-Hub-Key": k})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            print("E2E_OK %s %s" % (path, r.status))
+    except Exception as e:
+        print("E2E_FAIL %s %s %s" % (path, getattr(e, "code", "ERR"), type(e).__name__))
+'@
+$e2ePy = "$RT\_smoke_e2e.py"
+Set-Content -LiteralPath $e2ePy -Value $E2E_PY -Encoding ascii
+Get-Content -Raw -Encoding ascii $e2ePy |
+    & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes -o LogLevel=ERROR $SRV "cat > /tmp/_smoke_e2e.py" 2>&1 | Out-Null
+$e2eRaw = & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 -o BatchMode=yes -o LogLevel=ERROR $SRV "docker cp /tmp/_smoke_e2e.py kb-backend:/tmp/_smoke_e2e.py && docker exec kb-backend python /tmp/_smoke_e2e.py" 2>&1
+$e2eTxt = ($e2eRaw | Out-String)
+$e2eBase = if ([regex]::Match($e2eTxt, 'E2E_BASE (\S+)').Success) { [regex]::Match($e2eTxt, 'E2E_BASE (\S+)').Groups[1].Value } else { '?' }
+$e2eH = E2EStatus $e2eTxt "/health"
+$e2eC = E2EStatus $e2eTxt "/api/v1/automation/control"
+Res "容器内 e2e 生产路径（容器→隧道→本机）" ($e2eH -eq '200' -and $e2eC -eq '200') "目标=$e2eBase  /health=$e2eH  /automation/control=$e2eC"
 $cnt = & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes $SRV "docker ps --filter health=healthy --format '{{.Names}}' | wc -l; docker ps --format '{{.Names}}' | wc -l" 2>&1
 $cn = @($cnt | Where-Object { $_ -match '^\d+$' })
 if ($cn.Count -ge 2) { Res "服务器容器" ([int]$cn[0] -ge 6) "healthy=$($cn[0]) / total=$($cn[1])" } else { Res "服务器容器" $false "无法读取" }
 $web = & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes $SRV "curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://knowledgekb.powerzhuan.cn/" 2>&1
 Res "公网站点" (("$web").Trim() -eq '200') "HTTP $(("$web").Trim())"
+
+Write-Host ""
+Write-Host "【G2】回滚退路（服务器本地旧服务，停用前应保留；⚠️ 已不是生产路径）"
+$p = & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes $SRV "curl -s -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:8780/health" 2>&1
+Res "回滚目标（服务器本地旧服务 :8780）" (("$p").Trim() -eq '200') "HTTP $(("$p").Trim())"
+$svc = & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes $SRV "systemctl is-active answer-hub-api" 2>&1
+Res "answer-hub-api 服务（回滚退路，停用前应为 active）" (("$svc").Trim() -eq 'active') "$(("$svc").Trim())"
 
 Write-Host ""
 Write-Host "【H】观察日志"
@@ -146,8 +183,21 @@ if (-not (Test-Path -LiteralPath $logf)) {
     $lines = @($all | Where-Object { $_ -match '^\d{4}-\d{2}-\d{2} ' })
     Res "巡检记录" ($lines.Count -ge 1) ("$($lines.Count) 条  文件 $((Get-Item -LiteralPath $logf).Length) 字节")
     if ($lines.Count -gt 0) {
-        $bad = @($lines | Where-Object { $_ -notmatch 'local=200' -or $_ -notmatch 'prod=200' -or $_ -notmatch 'tunnel=200' })
-        Res "全部记录健康" ($bad.Count -eq 0) $(if ($bad.Count -eq 0) { "无异常" } else { "$($bad.Count) 条异常（含历史自愈测试）" }) ($bad.Count -gt 0)
+        # 字段契约（与 _watch.ps1 对齐）：
+        #   新格式（2026-09-30 起）：local= | rollback= | tunnel= | e2e=
+        #   历史格式：local= | prod= | tunnel=   —— 其中 prod= 探的就是服务器本地旧服务，
+        #             与新格式的 rollback= 含义相同，只是当时被误称为「生产」。
+        #   两种格式分别按各自的字段名校验，保证历史行不会因为改名而被静默漏检。
+        $newLines = @($lines | Where-Object { $_ -match 'rollback=' })
+        $oldLines = @($lines | Where-Object { $_ -match 'prod=' })
+        $bad = @($lines | Where-Object {
+            if ($_ -match 'rollback=') {
+                $_ -notmatch 'local=200' -or $_ -notmatch 'rollback=200' -or $_ -notmatch 'tunnel=200' -or $_ -notmatch 'e2e=200'
+            } else {
+                $_ -notmatch 'local=200' -or $_ -notmatch 'prod=200' -or $_ -notmatch 'tunnel=200'
+            }
+        })
+        Res "全部记录健康" ($bad.Count -eq 0) $(if ($bad.Count -eq 0) { "无异常（新格式 $($newLines.Count) 条 / 历史格式 $($oldLines.Count) 条）" } else { "$($bad.Count) 条异常（含历史自愈测试）" }) ($bad.Count -gt 0)
         $lines | Select-Object -Last 3 | ForEach-Object { Write-Host "        $_" }
     }
 }
