@@ -45,6 +45,17 @@ class CandidateReviewServiceTests(unittest.TestCase):
         self.assertTrue(eligible)
         self.assertIn("可提交", reason)
 
+    def test_worthy_and_usable_review_is_ready_without_model_annotation(self):
+        status, eligible, reason = evaluate_review_status(
+            {"eligible": False},
+            {"knowledge_value": "值得沉淀", "usability": "可用"},
+            {},
+        )
+
+        self.assertEqual(status, "ready")
+        self.assertTrue(eligible)
+        self.assertIn("可提交", reason)
+
     def test_valuable_topic_with_revision_required_stays_out_of_submission_queue(self):
         status, eligible, reason = evaluate_review_status(
             {"eligible": False},
