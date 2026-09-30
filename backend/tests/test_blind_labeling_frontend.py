@@ -36,14 +36,14 @@ def test_blind_label_date_filter_formats_dates_and_chains_selection() -> None:
     assert '@click="openBlindLabelDatePicker(\'end\')"' in FRONTEND
     assert 'id="blind-label-start-date-native"' in FRONTEND
     assert 'id="blind-label-end-date-native"' in FRONTEND
-    assert 'placeholder="YYYY/MM/DD"' in FRONTEND
+    assert 'placeholder="年/月/日"' in FRONTEND
     assert "blindLabelDateDisplay: function(value)" in FRONTEND
     assert "handleBlindLabelDateChange: function(kind, event)" in FRONTEND
     assert "clearBlindLabelDate: function(kind)" in FRONTEND
-    assert "self.openBlindLabelDatePicker('end')" in FRONTEND
+    assert "self.openBlindLabelDatePicker('end', {auto:true})" in FRONTEND
     assert "typeof this.$nextTick === 'function'" in FRONTEND
     assert "this.applyBlindLabelOverviewFilters()" in FRONTEND
-    assert "input.showPicker()" in FRONTEND
+    assert "current.showPicker()" in FRONTEND
 
 
 def test_blind_label_date_filter_has_loading_transition_and_reduced_motion_fallback() -> None:
