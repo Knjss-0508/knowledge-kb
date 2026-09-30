@@ -1,0 +1,22 @@
+# Injects the DeepSeek-flash gateway settings into the backend container.
+#
+# Why an overlay instead of editing docker-compose.yml:
+#   the base compose file declares container environment variables explicitly
+#   (a whitelist), so simply appending DEEPSEEK_* to .env would NOT reach the
+#   container.  Editing the base file would also diverge it from the repository.
+#
+# What the server actually receives:
+#   DEEPSEEK_BASE_URL  plain HTTP on the host side of an SSH reverse tunnel that
+#                      terminates on a developer machine.  host.docker.internal
+#                      is required because 127.0.0.1 inside the container is the
+#                      container itself.
+#   DEEPSEEK_API_KEY   the tunnel access token, not a model credential. It must be
+#                      non-empty because backend/app/services/model_annotation.py
+#                      refuses to run with an empty key; the real gateway key is
+#                      held by the local proxy and never leaves that machine.
+services:
+  backend:
+    environment:
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
