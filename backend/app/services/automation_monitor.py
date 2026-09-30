@@ -50,6 +50,9 @@ _STRUCTURED_CONFLICT_KINDS = {
     "task_not_installed": "scheduler_unavailable",
     "scheduler_not_installed": "scheduler_unavailable",
     "not_installed": "scheduler_unavailable",
+    "task_disabled": "task_disabled",
+    "scheduler_task_disabled": "task_disabled",
+    "disabled": "task_disabled",
 }
 # 原实现用 "running" 子串判定 already_running，这里刻意保留同样的容错度。
 _ALREADY_RUNNING_MARKERS = ("running", "正在运行", "并发", "已有自动化任务")
@@ -69,6 +72,26 @@ _SCHEDULER_CONTEXT_MARKERS = (
     "answerhubautomationqueue", "answer-hub-queue.timer", "answer-hub-queue.service",
     "schtasks", "systemctl", "计划任务", "任务计划程序",
 )
+# 「计划任务被禁用」的判定。
+#
+# 计划任务存在但处于 Disabled 时，Answer Hub 执行 schtasks /Run 会被系统拒绝，报错原文
+# 放进 409 的 error 字段（英文系统实测为
+# `ERROR: The scheduled task "<任务名>" could not run because it is disabled.`；
+# 中文系统上是本地化文案，形如「错误: 计划任务 "<任务名>" 无法运行，因为它已被禁用。」）。
+# 旧实现没有这一类，于是页面只显示「当前自动化状态不允许这个操作」——用户看不出真实原因。
+# 强特征（整句短语）直接命中；弱特征（只出现 disabled / 已禁用）必须同时出现计划任务
+# 上下文，避免把「账号已禁用」之类无关报错误判成计划任务问题。
+_TASK_DISABLED_STRONG_MARKERS = (
+    "could not run because it is disabled",
+    "cannot run because it is disabled",
+    "because it is disabled",
+    "因为它已被禁用",
+    "因为它已禁用",
+    "任务已禁用，无法运行",
+    "已禁用，无法运行",
+)
+_TASK_DISABLED_WEAK_MARKERS = ("disabled", "已禁用", "被禁用", "已停用")
+_TASK_DISABLED_CONTEXT_MARKERS = ("scheduled task",) + _SCHEDULER_CONTEXT_MARKERS
 _REPLACEMENT_CHAR = "\ufffd"
 _MAX_DETAIL_LENGTH = 2000
 
@@ -148,6 +171,16 @@ def _collect_conflict_fields(payload: Any) -> tuple[str, str]:
     return " ".join(kinds), " | ".join(texts)
 
 
+def _is_task_disabled(haystack: str) -> bool:
+    """Recognise "the scheduled task is disabled" refusals (see the markers above)."""
+
+    if any(marker in haystack for marker in _TASK_DISABLED_STRONG_MARKERS):
+        return True
+    if any(marker in haystack for marker in _TASK_DISABLED_WEAK_MARKERS):
+        return any(marker in haystack for marker in _TASK_DISABLED_CONTEXT_MARKERS)
+    return False
+
+
 def classify_conflict(payload: Any, raw_body: str = "") -> tuple[str, str]:
     """Classify an Answer Hub HTTP 409 into a user-understandable error kind.
 
@@ -163,6 +196,10 @@ def classify_conflict(payload: Any, raw_body: str = "") -> tuple[str, str]:
         return mapped, detail
 
     haystack = " ".join(_text_variants(detail)).lower()
+    # 「计划任务被禁用」放在最前：它的报错原文（schtasks "could not run because it is
+    # disabled"）既不匹配其它类别，又最容易被下面的兜底吞成 rejected。
+    if _is_task_disabled(haystack):
+        return "task_disabled", detail
     if any(marker in haystack for marker in _ALREADY_RUNNING_MARKERS):
         return "already_running", detail
     if any(marker in haystack for marker in _QUEUE_BLOCKED_MARKERS):
@@ -199,6 +236,10 @@ def monitor_error_message(kind: str) -> str:
             "请联系管理员在该电脑上确认自动化计划任务后再试。"
         ),
         "paused": "自动化当前是「已停止」状态，请先点「开始自动化流程」，再执行这个操作。",
+        "task_disabled": (
+            "自动化计划任务当前是「已禁用」状态，系统不允许立即执行；"
+            "请先点「开始自动化流程」恢复定时任务，或联系管理员在运行 Answer Hub 的电脑上启用它。"
+        ),
     }.get(kind, "运行监管服务暂不可用，请稍后刷新。")
 
 
