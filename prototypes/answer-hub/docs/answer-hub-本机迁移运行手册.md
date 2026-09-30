@@ -46,13 +46,53 @@ SSH 反向隧道复用已验证机制，延迟 52ms，快 19.5 倍。
 
 ## 三、本机服务组成
 
-三个 Windows 计划任务（开机自启 + 每分钟周期自愈）：
+四个 Windows 计划任务（开机自启 + 周期自愈）：
 
 | 任务名 | 作用 | 说明 |
 |---|---|---|
 | `AnswerHub-API-Local` | 本机 Answer Hub API | 监听 `100.72.97.89:8780` |
 | `AnswerHub-Tunnel` | SSH 反向隧道 | 服务器 `0.0.0.0:18780` → 本机 `8780` |
 | `AnswerHub-Watch` | 每 10 分钟巡检 | 写 `observation.log` |
+| `Docker-Embedding-Watchdog` | Docker/GPU 容器守护 | 开机 + 登录 + 每 5 分钟检查 |
+
+### ⚠️ 本机不只是「GPU 节点」—— 它已在承载服务器生产
+
+排查出的完整依赖关系：
+
+```
+本机
+├─ Docker: kb-embedding-qwen (Qwen3-Embedding-0.6B, 127.0.0.1:8080)
+│   └─ kb-embedding-tunnel (alpine, while-loop 5 秒重连 + unless-stopped)
+│        └─→ 服务器 :18080 → kb-backend 的 EMBEDDING_BASE_URL
+│             ★ 服务器生产正在使用这条链路（迁移前就存在）
+│
+└─ 计划任务: Answer Hub API (100.72.97.89:8780)
+    └─ AnswerHub-Tunnel → 服务器 :18780
+         └─→ kb-backend 的 ANSWER_HUB_BASE_URL（切换后启用）
+```
+
+验证证据：
+
+```bash
+docker exec kb-backend python -c "..."   # 容器内真实调用本机 GPU：成功，1024 维，51ms
+```
+
+**降级退路**：服务器本地 `kb-embedding-qwen` 容器（CPU 嵌入）保留，万一本机不可用可切回。
+
+### ⚠️ Docker Desktop 自启链曾经不可靠
+
+```
+Docker Desktop 配置 AutoStart = False                      ⚠️ 信号矛盾
+注册表 HKCU\...\Run\Docker Desktop = E:\DockerDesktop\...  ✅
+```
+
+原有三层启动链（重启 → 自动登录 → Docker Desktop → 容器）中间一环不确定。故新增 `Docker-Embedding-Watchdog`：Docker 不在就启动，生产容器不在就 `docker start` 拉起。**这一环缺失时，本机重启会导致服务器 `kb-backend` 嵌入检索直接失败。**
+
+### 未验证的路径：本机重启
+
+`Boot` 触发从未被验证 —— 建任务后本机未重启过（GPU 容器连续运行 21 小时可佐证）。
+
+**注意**：重启本机会**短暂中断服务器生产的嵌入能力**，必须选低峰时段并由人工确认，不可随意测试。
 
 ### ⚠️ 自愈必须用「周期触发」，不能用「失败后重启」
 
