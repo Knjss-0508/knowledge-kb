@@ -24,10 +24,32 @@ def test_admin_blind_labeling_defaults_to_people_and_keeps_shared_filters() -> N
     assert "changeBlindLabelOverviewPage(-1)" in FRONTEND
 
 
-def test_blind_label_date_inputs_open_the_native_picker_on_input_click() -> None:
-    assert FRONTEND.count('@click="openBlindLabelDatePicker"') == 2
-    assert "openBlindLabelDatePicker: function(event)" in FRONTEND
+def test_blind_label_people_panel_only_shows_name_completed_annotations_and_last_activity() -> None:
+    assert "查看每位标注员的完成标注量和最近活动" in FRONTEND
+    assert "<th>标注员</th><th>总完成标注数</th><th>最后活动时间</th>" in FRONTEND
+    assert "person.annotation_count || person.annotations || person.total_annotations || 0" in FRONTEND
+    assert '<td colspan="3" class="blind-label-empty">' in FRONTEND
+    assert ".blind-label-person-table{min-width:520px;table-layout:fixed}" in FRONTEND
+
+def test_blind_label_date_filter_formats_dates_and_chains_selection() -> None:
+    assert '@click="openBlindLabelDatePicker(\'start\')"' in FRONTEND
+    assert '@click="openBlindLabelDatePicker(\'end\')"' in FRONTEND
+    assert 'id="blind-label-start-date-native"' in FRONTEND
+    assert 'id="blind-label-end-date-native"' in FRONTEND
+    assert 'placeholder="YYYY/MM/DD"' in FRONTEND
+    assert "blindLabelDateDisplay: function(value)" in FRONTEND
+    assert "handleBlindLabelDateChange: function(kind, event)" in FRONTEND
+    assert "clearBlindLabelDate: function(kind)" in FRONTEND
+    assert "self.openBlindLabelDatePicker('end')" in FRONTEND
+    assert "typeof this.$nextTick === 'function'" in FRONTEND
+    assert "this.applyBlindLabelOverviewFilters()" in FRONTEND
     assert "input.showPicker()" in FRONTEND
+
+
+def test_blind_label_date_filter_has_loading_transition_and_reduced_motion_fallback() -> None:
+    assert ':class="{applying:blindLabeling.overview.loading}"' in FRONTEND
+    assert 'class="blind-label-filter-state"' in FRONTEND
+    assert '@media(prefers-reduced-motion:reduce)' in FRONTEND
 
 
 def test_blind_label_accepts_one_referable_candidate_without_labeling_the_other_two() -> None:
