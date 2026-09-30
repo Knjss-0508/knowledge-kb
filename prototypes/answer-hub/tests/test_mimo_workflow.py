@@ -2356,6 +2356,252 @@ def test_cluster_unit_validation_enforces_atomic_topic_count_by_conversation_typ
         mimo_module._validate_cluster_units(payload)
 
 
+def _retry_probe_topic() -> dict[str, object]:
+    """回归测试用：一个能通过 _validate_cluster_units 的合法原子问题单元。"""
+    return {
+        "normalized_issue": "手机｜包装｜塑封状态｜判断是否全新",
+        "product_category": "手机",
+        "scope_type": "品类专用",
+        "platform": "通用",
+        "brand": "通用",
+        "model_scope": "通用",
+        "category_l1": "基本信息",
+        "category_l2": "全新机判定",
+        "intent": "标准判定",
+        "subject": "包装",
+        "phenomenon": "存在塑封",
+        "judgment_target": "判断是否为全新机",
+        "resolution_mode": "根据包装状态判断",
+        "standard_path": "全新机判定",
+        "threshold_or_exception": "无明确阈值",
+        "evidence_summary": "聊天明确询问塑封机器是否为全新机。",
+        "confidence": 0.8,
+        "requires_review": False,
+    }
+
+
+def _valid_atomic_topic_cluster() -> dict[str, object]:
+    """回归测试用：一个能通过 _validate_atomic_topic_clusters 的合法主题簇。"""
+    return {
+        "cluster_id": "C001",
+        "theme_name": "全新机包装状态判定",
+        "member_atomic_ids": ["U-1", "U-2"],
+        "scope_consistent": True,
+        "object_consistent": True,
+        "judgment_target_consistent": True,
+        "standard_path_consistent": True,
+        "threshold_exception_consistent": True,
+        "shared_knowledge_definition": "按包装状态判断是否属于全新机。",
+        "merge_basis": "两条原子问题对象与判定目标一致，可共用一条知识。",
+        "confidence": 0.86,
+        "requires_review": False,
+    }
+
+
+def _chat_completion_response(candidate: dict[str, object]) -> dict[str, object]:
+    """把模型候选结果包装成 chat.completions 响应，避免真实调用模型。"""
+    return {
+        "choices": [
+            {"message": {"content": json.dumps(candidate, ensure_ascii=False)}}
+        ]
+    }
+
+
+def _request_prompt_text(payload: dict[str, object]) -> str:
+    """取出请求里真正发给模型的 user 提示词文本。"""
+    content = payload["messages"][1]["content"]  # type: ignore[index]
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
+        )
+    return str(content)
+
+
+def _retry_probe_client() -> MimoClient:
+    """桩客户端：_post 由各用例替换，不会发出任何真实请求。"""
+    return MimoClient(
+        MimoConfig(
+            api_key="test",
+            base_url="https://example.com/v1",
+            model="mimo-v2.5",
+        )
+    )
+
+
+def test_cluster_unit_retry_feeds_back_multi_topic_count_error() -> None:
+    """标签与 topics 数量不自洽时：重试必须回传该错误，且提示词给出可执行的修正规则。"""
+    client = _retry_probe_client()
+    responses = iter(
+        [
+            _chat_completion_response(
+                {
+                    "conversation_type": "multi_topic",
+                    "reason": "判断为多主题，但只保留了一个原子问题。",
+                    "topics": [_retry_probe_topic()],
+                }
+            ),
+            _chat_completion_response(
+                {
+                    "conversation_type": "single_topic",
+                    "reason": "只保留一个原子问题，标签改为单主题。",
+                    "topics": [_retry_probe_topic()],
+                }
+            ),
+        ]
+    )
+    prompts: list[str] = []
+
+    def fake_post(payload):
+        prompts.append(_request_prompt_text(payload))
+        return next(responses)
+
+    client._post = fake_post  # type: ignore[method-assign]
+    result = client.analyze_cluster_units(
+        {
+            "工单ID": "RETRY-MULTI-TOPIC-001",
+            "产品类型": "手机",
+            "聊天内容": "这台机器是塑封的，算全新机吗？",
+        }
+    )
+
+    assert result.candidate["conversation_type"] == "single_topic"
+    assert len(prompts) == 2
+    # 第一次请求没有反馈；第二次必须把上一次的校验失败原因回传给模型
+    assert "上次输出不合格原因" not in prompts[0]
+    assert "上次输出不合格原因" in prompts[1]
+    assert "multi_topic 必须包含 2 到 3 个问题单元" in prompts[1]
+    # 修复点：提示词必须写清“数量与标签自洽”，否则模型没有可执行的修正方向
+    assert (
+        "如果最终只保留 1 个原子问题，必须把 conversation_type 写成 single_topic"
+        in prompts[1]
+    )
+
+
+def test_cluster_unit_retry_feeds_back_missing_normalized_issue_error() -> None:
+    """缺失 normalized_issue 时：重试必须回传该错误，且提示词给出非空占位要求。"""
+    client = _retry_probe_client()
+    broken_topic = {**_retry_probe_topic(), "normalized_issue": ""}
+    responses = iter(
+        [
+            _chat_completion_response(
+                {
+                    "conversation_type": "single_topic",
+                    "reason": "证据不足，未写问题文本。",
+                    "topics": [broken_topic],
+                }
+            ),
+            _chat_completion_response(
+                {
+                    "conversation_type": "single_topic",
+                    "reason": "补上待确认占位问题文本。",
+                    "topics": [_retry_probe_topic()],
+                }
+            ),
+        ]
+    )
+    prompts: list[str] = []
+
+    def fake_post(payload):
+        prompts.append(_request_prompt_text(payload))
+        return next(responses)
+
+    client._post = fake_post  # type: ignore[method-assign]
+    result = client.analyze_cluster_units(
+        {
+            "工单ID": "RETRY-NORMALIZED-ISSUE-001",
+            "产品类型": "手机",
+            "聊天内容": "这个怎么判？",
+        }
+    )
+
+    assert result.candidate["topics"][0]["normalized_issue"] == (
+        "手机｜包装｜塑封状态｜判断是否全新"
+    )
+    assert len(prompts) == 2
+    assert "上次输出不合格原因" not in prompts[0]
+    assert "上次输出不合格原因" in prompts[1]
+    assert "聚类问题单元缺少必要文本字段：normalized_issue" in prompts[1]
+    # 修复点：提示词必须说明该字段不得留空，并给出“待确认问题”占位写法
+    assert "normalized_issue 必须是非空字符串" in prompts[1]
+    assert "normalized_issue 统一填“待确认问题”" in prompts[1]
+
+
+def test_atomic_cluster_retry_reports_duplicate_atomic_id_location() -> None:
+    """atomic_id 重复分配时：重试必须说明重复位置，并重申 review_requests 是独占通道。"""
+    client = _retry_probe_client()
+    units = [
+        {
+            "unit_id": "U-1",
+            "normalized_issue": "手机｜包装｜塑封状态｜判断是否全新",
+            "source_core_problem": "塑封机器是否为全新机",
+            "product_category": "手机",
+            "category_l1": "成色与回收标准",
+            "category_l2": "全新机判定",
+            "subject": "包装",
+            "phenomenon": "存在塑封",
+            "judgment_target": "判断是否为全新机",
+            "requires_review": False,
+        },
+        {
+            "unit_id": "U-2",
+            "normalized_issue": "手机｜包装｜防拆标签｜判断是否全新",
+            "source_core_problem": "防拆标签是否影响全新判定",
+            "product_category": "手机",
+            "category_l1": "成色与回收标准",
+            "category_l2": "全新机判定",
+            "subject": "包装",
+            "phenomenon": "防拆标签完整",
+            "judgment_target": "判断是否为全新机",
+            "requires_review": False,
+        },
+    ]
+    responses = iter(
+        [
+            _chat_completion_response(
+                {
+                    "clusters": [_valid_atomic_topic_cluster()],
+                    "split_requests": [],
+                    "review_requests": [
+                        {
+                            "atomic_id": "U-1",
+                            "review_type": "其他",
+                            "reason": "字段仍有疑虑，需要人工确认。",
+                        }
+                    ],
+                }
+            ),
+            _chat_completion_response(
+                {
+                    "clusters": [_valid_atomic_topic_cluster()],
+                    "split_requests": [],
+                    "review_requests": [],
+                }
+            ),
+        ]
+    )
+    prompts: list[str] = []
+
+    def fake_post(payload):
+        prompts.append(_request_prompt_text(payload))
+        return next(responses)
+
+    client._post = fake_post  # type: ignore[method-assign]
+    result = client.cluster_atomic_units(units)
+
+    assert [
+        cluster["member_atomic_ids"] for cluster in result.candidate["clusters"]
+    ] == [["U-1", "U-2"]]
+    assert result.candidate["review_requests"] == []
+    assert len(prompts) == 2
+    assert "上次输出不合格原因" not in prompts[0]
+    assert "上次输出不合格原因" in prompts[1]
+    assert "atomic_id 重复分配：U-1" in prompts[1]
+    # 修复点：错误必须说明重复位置，模型才知道该删哪一处
+    assert "已出现在主题簇 C001 的 member_atomic_ids" in prompts[1]
+    # 修复点：提示词必须明确 review_requests 是独占通道，不能与簇并存
+    assert "review_requests 是“独占”通道" in prompts[1]
+
+
 def test_cluster_fusion_guardrail_keeps_explicit_text_multi_topics() -> None:
     text_candidate = {
         "conversation_type": "multi_topic",

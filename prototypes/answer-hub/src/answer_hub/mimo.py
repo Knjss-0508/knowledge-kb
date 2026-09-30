@@ -1503,6 +1503,10 @@ def _build_cluster_unit_prompt(
    single_topic 必须只输出 1 个原子问题，不得把同一主题重复拆写。
    只有明确命中多主题信号时才标记 multi_topic，并拆成 2～3 个原子问题。
    uncertain 最多保留 1 个暂定原子问题，不得为了凑数量拆分。
+   conversation_type 必须与 topics 的实际数量严格自洽：single_topic 恰好 1 个原子问题，multi_topic 恰好 2 到 3 个，uncertain 最多 1 个。
+   三者中任一与 topics 数量不一致，整条输出都会被系统拒绝并要求重做，因此必须先定数量、再写标签。
+   如果最终只保留 1 个原子问题，必须把 conversation_type 写成 single_topic，不得继续写 multi_topic。
+   如果识别出 4 个及以上独立问题，只保留证据最明确的 3 个并写 multi_topic，其余在 reason 中说明。
     2. 拆分判断：默认不拆。只有命中以下任一必须拆分信号时才拆，且命中任一信号就优先拆分，不要被“同属外观问题”“同一个会话”“同一类质检问题”等宽泛词带偏。
     以下信号可支持拆分：
 
@@ -1557,6 +1561,9 @@ def _build_cluster_unit_prompt(
 
 每个原子知识点的 normalized_issue 应尽量遵循：
 “适用范围｜对象/部位｜异常现象或查询目标｜判定目标/处理动作”。
+normalized_issue 必须是非空字符串，任何情况下都不得省略该字段、留空、写成 null 或空数组。
+证据不足、无法确定具体问题时，normalized_issue 统一填“待确认问题”，其余无法确认的字段填“待确认”，并设置 requires_review=true。
+缺失 normalized_issue 会导致整条输出被系统拒绝并要求重做。
 
 只返回一个 JSON 对象，不要 Markdown。输出结构：
 {output_schema}
@@ -1868,6 +1875,8 @@ def _build_atomic_topic_cluster_prompt(
 3. 同业务层级、同品类内优先比较已固化的标准族、现象值、核心对象和最终判定目标。
 4. 二级分类或标准路径的文字不同，不是绝对拆分条件；先判断它们是否只是同一口径的不同表述。
 5. requires_review 或 review_requests 不等于必须单独成簇。主题本身清晰且能与同业务层级、同品类、同标准族成员共用一条知识时，应正常聚类；只有输入证据不足或字段冲突到无法判断时才进入 review_requests。
+   如果该知识点已经进入某个主题簇，但你希望它在人工审核时被重点查看，请设该簇的 requires_review=true，不要把它再写进 review_requests。
+   review_requests 是“独占”通道：凡写入 review_requests 的 atomic_id，不得再出现在 clusters 或 split_requests 中；反之，已进入 clusters 或 split_requests 的 atomic_id 也不得再写进 review_requests。同一个 atomic_id 同时出现在两处会被系统判为重复分配并整条拒绝。
 
 只有同时满足以下条件才能合并：
 1. 适用范围一致；
@@ -2890,7 +2899,23 @@ def _validate_atomic_topic_clusters(
         raise MimoError("原子知识主题聚类 review_requests 必须为数组")
 
     seen_atomic_ids: set[str] = set()
+    seen_atomic_locations: dict[str, str] = {}
     seen_cluster_ids: set[str] = set()
+
+    def claim_atomic_id(atomic_id: str, location: str) -> None:
+        """保证每个 atomic_id 只被 clusters / split_requests / review_requests 之一占用。
+
+        重试时这条错误会回传给模型，因此必须说明重复的位置，否则模型无法定位要删哪一处。
+        """
+        if atomic_id in seen_atomic_ids:
+            raise MimoError(
+                f"atomic_id 重复分配：{atomic_id}"
+                f"（已出现在{seen_atomic_locations[atomic_id]}；"
+                "每个 atomic_id 必须且只能出现在 clusters、split_requests、"
+                "review_requests 三者之一，请删除多余的一处）"
+            )
+        seen_atomic_ids.add(atomic_id)
+        seen_atomic_locations[atomic_id] = location
     consistency_fields = (
         "scope_consistent",
         "object_consistent",
@@ -2950,9 +2975,7 @@ def _validate_atomic_topic_clusters(
         for atomic_id in normalized_member_ids:
             if atomic_id not in allowed_atomic_ids:
                 raise MimoError(f"输出包含输入中不存在的 atomic_id：{atomic_id}")
-            if atomic_id in seen_atomic_ids:
-                raise MimoError(f"atomic_id 重复分配：{atomic_id}")
-            seen_atomic_ids.add(atomic_id)
+            claim_atomic_id(atomic_id, f"主题簇 {cluster_id} 的 member_atomic_ids")
         normalized_clusters.append(
             {
                 "cluster_id": cluster_id,
@@ -2982,9 +3005,7 @@ def _validate_atomic_topic_clusters(
             raise MimoError("split_requests 缺少 atomic_id、reason 或 suggested_splits")
         if atomic_id not in allowed_atomic_ids:
             raise MimoError(f"split_requests 包含输入中不存在的 atomic_id：{atomic_id}")
-        if atomic_id in seen_atomic_ids:
-            raise MimoError(f"atomic_id 重复分配：{atomic_id}")
-        seen_atomic_ids.add(atomic_id)
+        claim_atomic_id(atomic_id, "split_requests")
         normalized_splits.append(
             {
                 "atomic_id": atomic_id,
@@ -3008,9 +3029,7 @@ def _validate_atomic_topic_clusters(
             raise MimoError("review_requests 缺少 atomic_id、review_type 或 reason")
         if atomic_id not in allowed_atomic_ids:
             raise MimoError(f"review_requests 包含输入中不存在的 atomic_id：{atomic_id}")
-        if atomic_id in seen_atomic_ids:
-            raise MimoError(f"atomic_id 重复分配：{atomic_id}")
-        seen_atomic_ids.add(atomic_id)
+        claim_atomic_id(atomic_id, "review_requests")
         normalized_reviews.append(
             {
                 "atomic_id": atomic_id,
