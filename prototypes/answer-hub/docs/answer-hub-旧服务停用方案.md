@@ -1,6 +1,9 @@
 # Answer Hub 旧服务停用方案
 
-> 状态：**待执行**（**生产切换已于 2026-09-30 15:14 完成并验证通过**，观察期自该时刻起算）。本方案在「切换成功且稳定运行」之后才启用。
+> 状态：**已执行 —— 旧服务已于 2026-09-30 15:51 停用**（生产切换于 2026-09-30 15:14 完成并验证通过）。
+> **停用后的实测终态**（全部已验证）：`systemctl is-active answer-hub-api` = `inactive`；`systemctl is-enabled answer-hub-api` = `enabled`；服务器 `:8780` 无监听；`curl http://127.0.0.1:8780/health` = `000`；隧道 `:18780` = `200`；容器内 `e2e`（`/health` + `/api/v1/automation/control`）= `200`；公网 `/ready` = `200`；6 个生产容器全部 `Up/healthy`。
+> ⚠️ **只 `stop`、未 `disable`、文件未删** → 单元仍是 `enabled`，随时 `systemctl start answer-hub-api` 即可恢复退路（见 2.1）。
+> ⚠️ **本节门槛与本次执行的偏差（如实记录）**：第 1 节要求的「连续 ≥ 7 天观察期」与第 1.7 节第 16 项「回滚演练」（第 3.5 节）**在本次停用时都未满足** —— 切换 15:14 完成、15:51 即停用，间隔约 37 分钟，演练至停用时点尚未执行。本次停用系按用户明确指令提前执行，**此处不改写门槛**：这些门槛对**下一次**同类操作（例如第 4.3 节的清理）依然全部有效。
 > 适用范围：停用**旧服务器**上那份 Answer Hub（`answer-hub-api.service`）。
 > 前置文档：[`answer-hub-本机迁移运行手册.md`](./answer-hub-本机迁移运行手册.md)（下称「运行手册」）。
 
@@ -24,7 +27,7 @@
 
 | 对象 | 位置 | 本方案中的角色 |
 |---|---|---|
-| `answer-hub-api.service` | 服务器 systemd | **被停用对象**（当前 `active`，监听 `0.0.0.0:8780`） |
+| `answer-hub-api.service` | 服务器 systemd | **被停用对象**（已停用：`inactive`、`:8780` 无监听；单元仍 `enabled`，随时可启） |
 | `answer-hub-queue.service` | 服务器 systemd | ⚠️ **不碰**（当前 `failed`，属另一待决事项，见第六节） |
 | `AnswerHub-API-Local` | 本机计划任务 | 切换后的生产 API，**停用期间必须持续健康** |
 | `AnswerHub-Tunnel` | 本机计划任务 | 服务器 `0.0.0.0:18780` → 本机 `8780`，**停用期间必须持续健康** |
@@ -40,9 +43,11 @@
 
 ---
 
-## 一、停用前的稳定观察门槛
+## 一、停用前的稳定观察门槛（⚠️ 已完成/已作废为历史门槛：停用已于 2026-09-30 15:51 执行，偏差见文首状态）
 
 > **原则**：旧服务是唯一能立刻接管的退路。**只有在新路径被证明稳定之后，才允许把退路从「运行中」降级为「已停止」。** 观察期不达标就往后推，没有例外。
+>
+> ⚠️ **本次执行的实际情况**：停用已于 **2026-09-30 15:51** 落地，而本节要求的 7 天连续观察与 1.7 第 16 项的回滚演练**都未满足**（切换 15:14 → 停用 15:51，间隔约 37 分钟）。本节以下内容因此**不再作为本次操作的依据，保留为「下一次同类操作必须遵守的门槛」**，也作为「门槛被提前越过」这一事实的记录。
 
 ### 1.1 观察起点与时长
 
@@ -92,35 +97,53 @@ Get-Item E:\answer-hub-runtime\observation.log | Select-Object LastWriteTime
 
 > ⚠️ **`observation.log` 只能证明「本机 API 在与否」，证明不了「服务器在调它」。** 判据 4（`api-access.log`）才是有流量经过的证据。两者必须同时看。
 
-##### `observation.log` 字段含义（2026-09-30 生产切换后修订）
+##### `observation.log` 字段含义（2026-09-30 生产切换 + 15:51 旧服务停用后修订）
 
 每行字段固定、顺序固定：
 
 | 字段 | 实际探测目标 | 生产判据？ |
 |---|---|---|
 | `local=<code>(<ms>ms)` | 本机 Answer Hub 自检（`100.72.97.89:8780`） | 是（新路径的本机端点，但**单独看它证明不了「生产在用」**，见本节末尾 ⚠️） |
-| `rollback=<code>` | **服务器本地旧服务**（`127.0.0.1:8780`） | ❌ **不是**。它红了只说明**退路**没了，生产可能完全正常 |
+| `rollback=<code>` | **服务器本地旧服务**（`127.0.0.1:8780`） | ❌ **不是**。⚠️ 旧服务已于 **2026-09-30 15:51 停用** → 该字段**从 15:51 起预期恒为 `000`**，这是「已按计划停用」的正常值，**不是异常**（停用前的行仍会是 `200`） |
 | `tunnel=<code>` | 服务器 `127.0.0.1:18780`（SSH 反向隧道回环）= 新生产路径入口 | 是 |
 | `e2e=<code>` | `kb-backend` **容器内**真实调用本机 `/health` + `/api/v1/automation/control`（两个都 200 才记 `200`） | 是，**最接近「生产是否真的通」的字段** |
 | `apiTask=` / `tunTask=` | 本机 `AnswerHub-API-Local` / `AnswerHub-Tunnel` 计划任务状态 | 是 |
 
 > ⚠️ **历史行（2026-09-30 15:22 及之前）该位置字段名是 `prod=`，它探的同样是服务器本地旧服务 `:8780`** —— 只是当时被错误地当成了「生产」。读老行时请一律把 `prod=` 按 `rollback=` 理解；**不要**因为老行写着 `prod=200` 就以为生产走的是服务器本地。
 >
-> **改名原因**：旧服务停用后 `:8780` 必然不可达（见 4.1）。若继续把它当生产判据，观察期会**从停用那一刻起永久 FAIL，而生产其实完全正常**。这是最难排查的一类误判 —— 监控喊着「生产挂了」，实际挂的只是一条已经不该被使用的退路。
+> **改名原因**：旧服务停用后 `:8780` 必然不可达（见 4.1）。若继续把它当生产判据，观察期会**从停用那一刻起永久 FAIL，而生产其实完全正常**。这是最难排查的一类误判 —— 监控喊着「生产挂了」，实际挂的只是一条已经不该被使用的退路。⚠️ **这次误判已经真实发生过**：停用当天 `_smoke.ps1` 就因此固定报 `FAIL=2`（详见 4.1 的说明），已于 2026-09-30 按下列新契约修正。
 >
-> **字段契约如何保证不错位**：`observation.log` 由 `_watch.ps1`（仓库内镜像：`scripts/local-migration/observation-watch.ps1`）写入，由 `_smoke.ps1`（仓库内镜像：`scripts/local-migration/smoke-test.ps1`）第【H】节读取校验。两者已同步为**双格式兼容**：含 `rollback=` 的新行按 `local=200 + rollback=200 + tunnel=200 + e2e=200` 校验，含 `prod=` 的历史行按旧字段名 `local=200 + prod=200 + tunnel=200` 校验。**因此历史行不会因改名被静默漏检，新行也不会因为读旧字段名而被误判为异常。**
+> **字段契约如何保证不错位**（2026-09-30 停用后再次修订）：`observation.log` 由 `_watch.ps1`（仓库内镜像：`scripts/local-migration/observation-watch.ps1`）写入，由 `_smoke.ps1`（仓库内镜像：`scripts/local-migration/smoke-test.ps1`）第【H】节读取校验。**双格式兼容 + 只按生产字段判定**：
+> - 含 `rollback=` 的新格式行 → 判据是 **`local=200 + tunnel=200 + e2e=200`**；`rollback=` **只统计不判定**（停用前 200、停用后 000，两者都正常）。
+> - 含 `prod=` 的历史行 → 判据保留当时的字段名 **`local=200 + prod=200 + tunnel=200`**（那时旧服务确实还是生产，不改写历史结论）。
+>
+> **因此**：历史行不会因改名被静默漏检；新行不会因为「退路按计划停用」被误判为异常；而真正的生产故障（`tunnel=` / `e2e=` / `local=` 非 200）仍然会被抓出来 —— 日志里 2026-09-30 12:12:49 那条真实瞬时中断（`local=FAIL`、`tunnel=000`）在新判据下**依然是异常**，可以据此验证「异常检测没有被改瞎」。
 
 ```powershell
 # 字段分布自检：期望「历史行 prod= 若干 + 新行 rollback=/e2e= 若干」，两者都不应为 0
+# ⚠️ 日志文件里有三种行：① 表头注释行（`# ...`，不计入）② 历史格式行（含 prod=）③ 新格式行（含 rollback=/e2e=）
 Select-String -Path E:\answer-hub-runtime\observation.log -Pattern 'rollback=' | Measure-Object | Select-Object -ExpandProperty Count
 Select-String -Path E:\answer-hub-runtime\observation.log -Pattern 'prod='     | Measure-Object | Select-Object -ExpandProperty Count
 ```
 
 ```powershell
-# 新格式行的健康自检：期望无输出
+# 新格式行的生产字段自检：只看 local / tunnel / e2e，期望无输出
+# ⚠️ 不要把 rollback= 放进判据：旧服务已于 2026-09-30 15:51 停用，停用后的行 rollback= 必然是 000
 Select-String -Path E:\answer-hub-runtime\observation.log -Pattern 'rollback=' |
-  Where-Object { $_.Line -notmatch 'local=200' -or $_.Line -notmatch 'rollback=200' -or `
-                 $_.Line -notmatch 'tunnel=200' -or $_.Line -notmatch 'e2e=200' }
+  Where-Object { $_.Line -notmatch 'local=200' -or $_.Line -notmatch 'tunnel=200' -or `
+                 $_.Line -notmatch 'e2e=200' }
+```
+
+```powershell
+# rollback= 只统计不判定：停用前应为若干条 200，停用后（2026-09-30 15:51 起）预期 000
+Select-String -Path E:\answer-hub-runtime\observation.log -Pattern 'rollback=000' | Measure-Object | Select-Object -ExpandProperty Count
+```
+
+```powershell
+# 历史格式行的健康自检：保留当时的判据（那时旧服务仍是生产 → prod= 必须 200），期望无输出
+Select-String -Path E:\answer-hub-runtime\observation.log -Pattern 'prod=' |
+  Where-Object { $_.Line -notmatch 'local=200' -or $_.Line -notmatch 'prod=200' -or `
+                 $_.Line -notmatch 'tunnel=200' }
 ```
 
 #### 1.3.2 四类接口探测（判据 2、3）——在服务器上执行
@@ -336,6 +359,7 @@ curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 http://127.0.0.1:8780/heal
 | 服务单元文件仍存在 | `ls -l /etc/systemd/system/answer-hub-api.service` 有文件 | 文件不在 → 被删了，**立即停止后续步骤并上报** |
 
 > ⚠️ **`curl http://127.0.0.1:8780/health` 返回 `000` 是「停用成功」的证据，不是故障。**
+> ⚠️ **本机 `_smoke.ps1` 的【G2】正是按上面这三条判据判定的**（`is-active=inactive` + `:8780` = `000` + 单元 `enabled`）→ 判为 **`[PASS]`**，并在 detail 里写明「000 = 已按计划停用，端口无监听」「已停用、随时可启」。只有当**旧服务又变回 `active`**（可能是重启后 `enabled` 自启，或人工回滚）或 **`:8780` 被别的进程占用**时，才会转成 `[WARN]` / `[FAIL]`。
 > ⚠️ **服务器侧对 8780 的监控告警（若有）从此刻起会持续报警 —— 这是预期行为**，应在停用记录里登记，并按第 4.1 节处理告警抑制。**不要把「8780 报警」当成回滚信号。**
 
 ### 2.4 停用后必须复验的七项
@@ -739,10 +763,11 @@ Get-NetTCPConnection -LocalPort 8780 -State Listen | Select-Object LocalAddress,
 >
 > | 现象 | 含义 | 处置 |
 > |---|---|---|
-> | `observation.log` 的 `rollback=` 变成 `ERR`；`_smoke.ps1` 的「回滚目标（服务器本地旧服务 :8780）」变 `[FAIL]` | **预期现象** —— 停用后 `:8780` 必然不可达，这两个判据只是用来盯住**退路**是否还在 | ❌ **不要据此回滚**。在停用记录里登记为「退路已按计划停用」 |
-> | `tunnel=` 或 `e2e=` 非 `200`（即 `_smoke.ps1` 的「容器内 e2e 生产路径」变 `[FAIL]`） | ⚠️ **真故障** —— **新生产路径**断了 | ✅ **立即按第 3.4 节应急路径处置** |
+> | `observation.log` 的 `rollback=` 变为 `000`；`_smoke.ps1` 的【G2】「回滚退路」判为 `[PASS]`（detail：`000 = 已按计划停用` / `inactive / enabled（已停用、随时可启）`） | ✅ **预期终态** —— 停用后 `:8780` 必然不可达，这两处现在只用来记录「退路还在不在」（单元仍在且 `enabled` 就是「随时可启」） | ❌ **不要据此回滚**。在停用记录里登记为「退路已按计划停用」 |
+> | `_smoke.ps1` 的【G2】出现 `[WARN]/[FAIL]`：旧服务又变成 `active`，或 `:8780` 返回 `200`（有别的进程在听），或单元 `is-enabled` 不再是 `enabled` | ⚠️ **退路状态偏离预期** —— 可能是服务器重启后 `enabled` 单元自启、人工回滚，或 `disable` 被误用 | 先确认是否有人有意为之；若不是，按 2.3 的期望值复位（`systemctl stop` / `systemctl enable`） |
+> | `tunnel=` 或 `e2e=` 非 `200`（即 `_smoke.ps1` 的【G】「容器内 e2e 生产路径」变 `[FAIL]`） | ⚠️ **真故障** —— **新生产路径**断了 | ✅ **立即按第 3.4 节应急路径处置** |
 >
-> **一句话**：判断生产是否健康只看 `tunnel=` 与 `e2e=`；`prod=`（历史行）/ `rollback=` 字段与生产无关。
+> **一句话**：判断生产是否健康只看 `tunnel=` 与 `e2e=`；`prod=`（历史行）/ `rollback=` 字段与生产无关，`rollback=000` 是停用后的正常值。
 
 ### 4.2 哪些保留不动（全部）
 
@@ -1030,15 +1055,17 @@ Get-Process -Id (Get-NetTCPConnection -LocalPort 8780 -State Listen).OwningProce
 
 > ⚠️ **若发现阈值导致观察期无法达标，应先怀疑阈值本身，而不是放宽它。** 运行手册第七节明确写过这条教训：「任何异常信号在下结论前必须用独立方式复验，并优先怀疑测量方法本身」。
 
-### 10. 回滚演练（3.5）尚未执行
+### 10. 回滚演练（3.5）尚未执行 —— ⚠️ 且停用已在演练之前发生
 
-第 3.5 节的演练是**本方案自己提出的硬门槛**（第 1.7 节第 16 项），但**尚未执行过**。这意味着：
+第 3.5 节的演练是**本方案自己提出的硬门槛**（第 1.7 节第 16 项），但**至今尚未执行过**；而**停用已于 2026-09-30 15:51 执行**（见文首状态）。也就是说：**当前的退路从未被实际演练过，回滚能力的第一次真实使用仍可能是故障当下的那一次。** 这意味着：
 
 - 3.2 标准回滚路径的**实际耗时未知**（容器重建 + 等 healthy，可能数分钟）
 - 3.4 应急路径的**前提条件未验证**（SSH 免密是否可用、端口释放是否顺畅）
 - 3.3 第 3 条「验证流量真的换路」的操作方式**未演练**
 
 > ⚠️ **在演练通过之前，不要执行停用。** 这与运行手册第八节第 1 条「脚本的回滚路径从未被执行过」是同一类问题 —— **第一次在真实故障下执行回滚，和演练过再执行，风险完全不同。**
+>
+> ⚠️ **本次停用未遵守这条：** 停用已在演练之前执行（见文首状态）。因此「回滚是否真能用」至今仍是**未验证**状态，回滚演练仍是**待补做的事项**，不能因为「服务停得很干净」就认为退路没问题。
 
 ---
 
@@ -1125,7 +1152,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18780/health   # 200
 
 | 事实 | 值 |
 |---|---|
-| 被停用对象 | 服务器 systemd `answer-hub-api.service`（`active`，监听 `0.0.0.0:8780`） |
+| 被停用对象 | 服务器 systemd `answer-hub-api.service` —— ⚠️ **已于 2026-09-30 15:51 停用**（原 `active`、监听 `0.0.0.0:8780`；现 `inactive`、端口无监听、单元仍 `enabled`） |
 | ⚠️ 停用方式 | **`systemctl stop`；不 `disable`；不删文件** |
 | 隧道端口 | 服务器 `0.0.0.0:18780` → 本机 `8780`，约 52ms |
 | ⚠️ 端口关系 | **8780（旧服务）与 18780（隧道）是两个独立端口，停止 8780 不影响 18780** |
@@ -1139,7 +1166,8 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18780/health   # 200
 | 6 个生产容器 | `kb-backend`、`kb-embedding-qwen`、`kb-redis`、`appeal-exemption-system-api-1`、`appeal-exemption-system-postgres-1`、`voc-workbench-mysql-1` |
 | ⚠️ 禁止触碰 | 任何 `kb-video-demo-*`、任何 `voc-workbench-*` 容器与卷 |
 | ⚠️ Codex 自动部署 | 约 20~40 分钟重建一次 `kb-backend`（实测 11:09 / 11:25 / 11:51）；检查方法见运行手册第五节第 9 项 |
-| 观察门槛 | 连续 ≥ 7 天（推荐 14 天），异常计数 0，接口成功率 100% |
+| 观察门槛 | 连续 ≥ 7 天（推荐 14 天），异常计数 0，接口成功率 100% —— ⚠️ **本次停用未满足**（切换 15:14 → 停用 15:51，且回滚演练未做），见文首状态 |
+| ⚠️ 停用后的监控判据 | 生产看 `tunnel=` / `e2e=`（`_smoke.ps1` 的【G】与【F】）；`rollback=` / 退路状态看【G2】，`rollback=000` 属预期 |
 | 最短保留期 | 停用后 **≥ 30 天**不做任何清理；清理另开变更单 |
 
 ## 附录 D：与运行手册的对应关系

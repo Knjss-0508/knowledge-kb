@@ -2,18 +2,24 @@
 # 并行观察期巡检：每次运行追加一行记录到日志，供后续判断切换时机
 #
 # ── 字段契约（必须与 _smoke.ps1 的【H】解析保持一致）────────────────────
-#   local=<code>(<ms>ms)  本机 Answer Hub（100.72.97.89:8780）自检
+#   ⚠️ 日志文件里同时存在三种行：① 表头注释行；② 历史格式行（含 prod=）；③ 新格式行（含 rollback=/e2e=）。
+#      【H】只统计以时间戳开头的行，两种数据格式各按自己的字段名校验，互不误伤。
+#   local=<code>(<ms>ms)  本机 Answer Hub（100.72.97.89:8780）自检 ── 生产判据
 #   rollback=<code>       服务器本地旧服务（127.0.0.1:8780）
-#                         ⚠️ 它已不是生产路径，只是回滚退路（停用前应保留）
-#                         历史行此处字段名为 prod=，含义相同；
-#                         2026-09-30 生产切换完成后改名，避免把旧服务误读成生产
-#   tunnel=<code>         服务器 127.0.0.1:18780（SSH 反向隧道回环）= 新生产路径入口
-#   e2e=<code>            kb-backend 容器内真实调用本机 Answer Hub 业务接口
+#                         ⚠️ 它已不是生产路径，只是回滚退路
+#                         ⚠️ 该服务已于 2026-09-30 15:51 按用户指令 systemctl stop 停用
+#                            （只 stop、未 disable，单元文件仍在，随时可 start）
+#                            → 停用之后的 rollback= 预期恒为 000：这是「已按计划停用」的
+#                              正常值，不是异常，也不参与生产判定
+#                         历史行此处字段名为 prod=，含义相同（那时旧服务确实还在跑）
+#   tunnel=<code>         服务器 127.0.0.1:18780（SSH 反向隧道回环）= 新生产路径入口 ── 生产判据
+#   e2e=<code>            kb-backend 容器内真实调用本机 Answer Hub 业务接口 ── 生产判据
 #                         200 = /health 与 /api/v1/automation/control 均 200
 #                         FAIL = 缺环境变量、容器/ssh 不可达，或任一接口非 200
-#   apiTask= / tunTask=   本机计划任务状态
+#   apiTask= / tunTask=   本机计划任务状态（Running / Ready 均为正常）
 #
-# 判断生产是否健康请看 tunnel= 与 e2e=；rollback= 只反映退路是否还在。
+# 判断生产是否健康只看 tunnel= 与 e2e=（本机端点另看 local=）；
+# rollback= 只反映「退路还在不在」，为 000 属预期，绝不能据此判断生产故障。
 $ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 

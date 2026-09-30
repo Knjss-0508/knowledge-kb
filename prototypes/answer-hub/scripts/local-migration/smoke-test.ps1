@@ -167,11 +167,52 @@ $web = & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes $
 Res "公网站点" (("$web").Trim() -eq '200') "HTTP $(("$web").Trim())"
 
 Write-Host ""
-Write-Host "【G2】回滚退路（服务器本地旧服务，停用前应保留；⚠️ 已不是生产路径）"
+Write-Host "【G2】回滚退路（服务器本地旧服务，已于 2026-09-30 15:51 停用；⚠️ 不是生产路径）"
+# ⚠️ 判据已于 2026-09-30 按「停用后的终态」修订（旧判据要求 active + 200，停用后会永久 FAIL）：
+#   预期终态 = 服务 inactive + :8780 返回 000 + 单元仍 enabled
+#              → 这正是「已按计划停用、随时可 systemctl start 拉回」的正常样子 = PASS
+#   只有「偏离终态」才报警（判据与第 2.3 节「确认停用成功」一致）：
+#     服务 active 且 :8780 = 200 → 旧服务被启动了（人工回滚，或服务器重启后 enabled 单元自启）→ WARN 人工确认
+#     inactive 但 :8780 = 200   → 8780 被别的进程占用，将来回滚会失败 → FAIL
+#     active 但 :8780 非 200    → 服务在跑却不服务，退路已损坏 → FAIL
+#     inactive 但 is-enabled 非 enabled → 自启配置被误 disable，服务器重启后退路不会自动接回 → WARN
+#   ⚠️ 这一组与生产健康无关：生产是否健康只看【G】的 tunnel / e2e 与公网站点。
 $p = & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes $SRV "curl -s -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:8780/health" 2>&1
-Res "回滚目标（服务器本地旧服务 :8780）" (("$p").Trim() -eq '200') "HTTP $(("$p").Trim())"
+$pCode = ("$p").Trim()
 $svc = & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes $SRV "systemctl is-active answer-hub-api" 2>&1
-Res "answer-hub-api 服务（回滚退路，停用前应为 active）" (("$svc").Trim() -eq 'active') "$(("$svc").Trim())"
+$svcState = ("$svc").Trim()
+$svcEn = & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes $SRV "systemctl is-enabled answer-hub-api" 2>&1
+$svcEnabled = ("$svcEn").Trim()
+$portOk = ($pCode -eq '000')      # 停用成功：端口无监听
+$portUp = ($pCode -eq '200')      # 旧服务（或别的进程）在 8780 上应答
+$svcUp  = ($svcState -eq 'active')
+$probed = ($pCode -match '^\d{3}$') -and ($svcState -ne '')
+
+if (-not $probed) {
+    Res "回滚退路 :8780（已停用，预期 000）" $false "无法判定：HTTP='$pCode' 服务='$svcState'（SSH 或探测失败）"
+} elseif ($portUp -and $svcUp) {
+    Res "回滚退路 :8780（已停用，预期 000）" $false "HTTP 200 —— ⚠️ 旧服务被启动了，请确认是否有意回滚" $true
+} elseif ($portUp) {
+    Res "回滚退路 :8780（已停用，预期 000）" $false "HTTP 200 但服务 inactive —— ⚠️ 8780 被别的进程占用，回滚会失败"
+} elseif ($portOk -and -not $svcUp) {
+    Res "回滚退路 :8780（已停用，预期 000）" $true "HTTP $pCode  （000 = 已按计划停用，端口无监听）"
+} else {
+    Res "回滚退路 :8780（已停用，预期 000）" $false "HTTP $pCode 但 is-active=$svcState —— ⚠️ 端口状态与服务状态自相矛盾，退路已损坏，需人工查看"
+}
+
+if (-not $probed) {
+    Res "answer-hub-api 单元（预期 inactive + enabled）" $false "无法判定：is-active='$svcState'"
+} elseif ($svcUp -and $portUp) {
+    Res "answer-hub-api 单元（预期 inactive + enabled）" $false "is-active=active —— ⚠️ 旧服务在跑（人工回滚？还是服务器重启后 enabled 单元自启？）请确认" $true
+} elseif ($svcUp) {
+    Res "answer-hub-api 单元（预期 inactive + enabled）" $false "is-active=active 但 :8780 非 200 —— 服务在跑却不服务，退路已损坏"
+} elseif ($svcState -ne 'inactive') {
+    Res "answer-hub-api 单元（预期 inactive + enabled）" $false "is-active=$svcState —— 既不是预期终态 inactive，也不是 active，需人工查看"
+} elseif ($svcEnabled -ne 'enabled') {
+    Res "answer-hub-api 单元（预期 inactive + enabled）" $false "inactive 但 is-enabled=$svcEnabled —— ⚠️ 自启配置被误 disable，需 systemctl enable 补回" $true
+} else {
+    Res "answer-hub-api 单元（预期 inactive + enabled）" $true "is-active=inactive / is-enabled=enabled（已停用、随时可启）"
+}
 
 Write-Host ""
 Write-Host "【H】观察日志"
@@ -184,21 +225,31 @@ if (-not (Test-Path -LiteralPath $logf)) {
     Res "巡检记录" ($lines.Count -ge 1) ("$($lines.Count) 条  文件 $((Get-Item -LiteralPath $logf).Length) 字节")
     if ($lines.Count -gt 0) {
         # 字段契约（与 _watch.ps1 对齐）：
-        #   新格式（2026-09-30 起）：local= | rollback= | tunnel= | e2e=
-        #   历史格式：local= | prod= | tunnel=   —— 其中 prod= 探的就是服务器本地旧服务，
-        #             与新格式的 rollback= 含义相同，只是当时被误称为「生产」。
-        #   两种格式分别按各自的字段名校验，保证历史行不会因为改名而被静默漏检。
+        #   新格式（2026-09-30 15:27 起）：local= | rollback= | tunnel= | e2e=
+        #   历史格式（2026-09-30 15:22 及之前）：local= | prod= | tunnel=
+        #   ⚠️ rollback= 与 prod= 探的都是「服务器本地旧服务 :8780」，**都不参与生产健康判定**：
+        #      · 历史行：当时旧服务仍是生产 → prod= 必须 200（保留当时的判据，不改写历史结论）；
+        #      · 新格式行：旧服务已于 2026-09-30 15:51 停用 → rollback= 预期 000（停用前的行仍会是 200）
+        #        → rollback= 一律只统计、不判定，不再把「已按计划停用」当成异常。
+        #   生产判据：新格式行 = local= / tunnel= / e2e=；历史行 = local= / tunnel= / prod=。
         $newLines = @($lines | Where-Object { $_ -match 'rollback=' })
-        $oldLines = @($lines | Where-Object { $_ -match 'prod=' })
+        $oldLines = @($lines | Where-Object { $_ -match 'prod=' -and $_ -notmatch 'rollback=' })
         $bad = @($lines | Where-Object {
             if ($_ -match 'rollback=') {
-                $_ -notmatch 'local=200' -or $_ -notmatch 'rollback=200' -or $_ -notmatch 'tunnel=200' -or $_ -notmatch 'e2e=200'
+                $_ -notmatch 'local=200' -or $_ -notmatch 'tunnel=200' -or $_ -notmatch 'e2e=200'
             } else {
-                $_ -notmatch 'local=200' -or $_ -notmatch 'prod=200' -or $_ -notmatch 'tunnel=200'
+                $_ -notmatch 'local=200' -or $_ -notmatch 'tunnel=200' -or $_ -notmatch 'prod=200'
             }
         })
-        Res "全部记录健康" ($bad.Count -eq 0) $(if ($bad.Count -eq 0) { "无异常（新格式 $($newLines.Count) 条 / 历史格式 $($oldLines.Count) 条）" } else { "$($bad.Count) 条异常（含历史自愈测试）" }) ($bad.Count -gt 0)
-        $lines | Select-Object -Last 3 | ForEach-Object { Write-Host "        $_" }
+        $rb200 = @($newLines | Where-Object { $_ -match 'rollback=200' })
+        $rb000 = @($newLines | Where-Object { $_ -match 'rollback=000' })
+        $detail = if ($bad.Count -eq 0) { "无异常（新格式 $($newLines.Count) 条 / 历史格式 $($oldLines.Count) 条）" } else { "$($bad.Count) 条生产字段异常（历史瞬时事件，不可修复；当前故障请看【G】）" }
+        Res "记录生产字段健康（local/tunnel/e2e）" ($bad.Count -eq 0) $detail ($bad.Count -gt 0)
+        Write-Host ("        rollback= 只统计不判定：200 x {0}（停用前）/ 000 x {1}（停用后，预期）" -f $rb200.Count, $rb000.Count)
+        if ($bad.Count -gt 0) {
+            $bad | Select-Object -First 3 | ForEach-Object { Write-Host "        异常行: $_" }
+        }
+        $lines | Select-Object -Last 3 | ForEach-Object { Write-Host "        最近行: $_" }
     }
 }
 
