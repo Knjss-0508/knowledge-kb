@@ -1386,8 +1386,8 @@
       <section class="blind-label-filter-card" :class="{applying:blindLabeling.overview.loading}" :aria-busy="blindLabeling.overview.loading ? 'true' : 'false'">
         <div class="blind-label-filter-head"><div><h3>总览筛选</h3><p>按时间、状态、标注维度、人员和工单关键词定位结果</p></div><button class="btn bd bsm" type="button" @click="resetBlindLabelOverviewFilters">重置</button></div>
         <div class="blind-label-filter-grid">
-          <label class="blind-label-filter-field"><span>开始日期</span><div class="blind-label-date-control"><input class="inp blind-label-date-display" type="text" readonly :value="blindLabelDateDisplay(blindLabeling.overview.filters.dateFrom)" placeholder="YYYY/MM/DD" aria-label="开始日期" @click="openBlindLabelDatePicker('start')"><button v-if="blindLabeling.overview.filters.dateFrom" class="blind-label-date-clear" type="button" aria-label="清除开始日期" @click.stop="clearBlindLabelDate('start')">×</button><span class="blind-label-date-icon" aria-hidden="true">▣</span><input id="blind-label-start-date-native" class="blind-label-date-native" type="date" tabindex="-1" :max="blindLabeling.overview.filters.dateTo || undefined" v-model="blindLabeling.overview.filters.dateFrom" aria-label="选择开始日期" @change="handleBlindLabelDateChange('start', $event)"></div></label>
-          <label class="blind-label-filter-field"><span>结束日期</span><div class="blind-label-date-control"><input class="inp blind-label-date-display" type="text" readonly :value="blindLabelDateDisplay(blindLabeling.overview.filters.dateTo)" placeholder="YYYY/MM/DD" aria-label="结束日期" :disabled="!blindLabeling.overview.filters.dateFrom" @click="openBlindLabelDatePicker('end')"><button v-if="blindLabeling.overview.filters.dateTo" class="blind-label-date-clear" type="button" aria-label="清除结束日期" @click.stop="clearBlindLabelDate('end')">×</button><span class="blind-label-date-icon" aria-hidden="true">▣</span><input id="blind-label-end-date-native" class="blind-label-date-native" type="date" tabindex="-1" :min="blindLabeling.overview.filters.dateFrom || undefined" v-model="blindLabeling.overview.filters.dateTo" aria-label="选择结束日期" :disabled="!blindLabeling.overview.filters.dateFrom" @change="handleBlindLabelDateChange('end', $event)"></div></label>
+          <label class="blind-label-filter-field"><span>开始日期</span><div class="blind-label-date-control"><input class="inp blind-label-date-display" type="text" readonly :value="blindLabelDateDisplay(blindLabeling.overview.filters.dateFrom)" placeholder="年/月/日" aria-label="开始日期" @click="openBlindLabelDatePicker('start')"><button v-if="blindLabeling.overview.filters.dateFrom" class="blind-label-date-clear" type="button" aria-label="清除开始日期" @click.stop="clearBlindLabelDate('start')">×</button><span class="blind-label-date-icon" aria-hidden="true">▣</span><input id="blind-label-start-date-native" class="blind-label-date-native" type="date" tabindex="-1" :max="blindLabeling.overview.filters.dateTo || undefined" v-model="blindLabeling.overview.filters.dateFrom" aria-label="选择开始日期" @change="handleBlindLabelDateChange('start', $event)"></div></label>
+          <label class="blind-label-filter-field"><span>结束日期</span><div class="blind-label-date-control"><input class="inp blind-label-date-display" type="text" readonly :value="blindLabelDateDisplay(blindLabeling.overview.filters.dateTo)" placeholder="年/月/日" aria-label="结束日期" :disabled="!blindLabeling.overview.filters.dateFrom" @click="openBlindLabelDatePicker('end')"><button v-if="blindLabeling.overview.filters.dateTo" class="blind-label-date-clear" type="button" aria-label="清除结束日期" @click.stop="clearBlindLabelDate('end')">×</button><span class="blind-label-date-icon" aria-hidden="true">▣</span><input id="blind-label-end-date-native" class="blind-label-date-native" type="date" tabindex="-1" :min="blindLabeling.overview.filters.dateFrom || undefined" v-model="blindLabeling.overview.filters.dateTo" aria-label="选择结束日期" :disabled="!blindLabeling.overview.filters.dateFrom" @change="handleBlindLabelDateChange('end', $event)"></div></label>
           <label class="blind-label-filter-field"><span>工单状态</span><select class="inp" v-model="blindLabeling.overview.filters.status"><option value="">全部状态</option><option value="pending">待标注</option><option value="in_progress">进行中</option><option value="partial">部分完成</option><option value="completed">已完成</option><option value="disputed">待仲裁</option></select></label>
           <label class="blind-label-filter-field"><span>标注维度</span><select class="inp" v-model="blindLabeling.overview.filters.dimension"><option value="">全部维度</option><option value="helpful">可参考</option><option value="unhelpful">不可参考</option><option value="consensus">已达成共识</option><option value="disputed">存在分歧</option></select></label>
           <label class="blind-label-filter-field"><span>标注员</span><select class="inp" v-model="blindLabeling.overview.filters.annotator"><option value="">全部标注员</option><option v-for="person in blindLabeling.overview.people" :key="person.user_id || person.username" :value="person.user_id || person.username">{{person.username || person.user_id}}</option></select></label>
@@ -1397,7 +1397,7 @@
       </section>
       <template v-if="blindLabeling.tab==='people'">
         <div class="blind-label-section-head"><div><h3>按人员统计</h3><p>查看每位标注员的完成标注量和最近活动</p></div><span class="hint">{{blindLabeling.overview.people.length}} 人</span></div>
-        <div id="blind-label-people-panel" role="tabpanel" aria-labelledby="blind-label-people-tab" class="tw" :class="{'blind-label-loading':blindLabeling.overview.loading}"><table class="blind-label-person-table"><thead><tr><th>标注员</th><th>总完成标注数</th><th>最后活动时间</th></tr></thead><tbody><tr v-for="person in blindLabeling.overview.people" :key="person.user_id || person.username"><td><div class="blind-label-user-label"><span class="blind-label-avatar">{{blindLabelInitial(person.username || person.user_id)}}</span><span>{{person.username || person.user_id || '-'}}</span></div></td><td>{{person.annotation_count || person.annotations || person.total_annotations || 0}}</td><td>{{formatDate(person.last_activity_at || person.updated_at)}}</td></tr><tr v-if="!blindLabeling.overview.people.length"><td colspan="3" class="blind-label-empty">暂无人员统计数据。</td></tr></tbody></table></div>
+        <div id="blind-label-people-panel" role="tabpanel" aria-labelledby="blind-label-people-tab" class="tw" :class="{'blind-label-loading':blindLabeling.overview.loading}"><table class="blind-label-person-table"><thead><tr><th>标注员</th><th>总完成标注数</th><th>最后活动时间</th></tr></thead><tbody><tr v-for="person in blindLabeling.overview.people" :key="person.user_id || person.username"><td><div class="blind-label-user-label"><span class="blind-label-avatar">{{blindLabelInitial(person.username || person.user_id)}}</span><span>{{person.username || person.user_id || '-'}}</span></div></td><td>{{blindLabelPersonCompletedCount(person)}}</td><td>{{formatDate(person.last_activity_at || person.updated_at)}}</td></tr><tr v-if="!blindLabeling.overview.people.length"><td colspan="3" class="blind-label-empty">暂无人员统计数据。</td></tr></tbody></table></div>
       </template>
       <template v-if="blindLabeling.tab==='workOrders'">
         <div class="blind-label-section-head"><div><h3>已标注工单总览</h3><p>点击详情查看三名标注员的独立结果与共识</p></div><span class="hint">共 {{blindLabeling.overview.workOrders.length}} 条</span></div>
@@ -2301,7 +2301,7 @@ Vue.createApp({
         completed:[],
         pagination:{page:1,size:50,total:0,totalPages:1},
         current:{open:false,readOnly:false,assignment:null,detail:null,candidates:[],labels:{},reasonCodes:{},reasonNotes:{},allNotReferable:false,taskReasonCode:'',note:'',error:''},
-        overview:{loading:false,error:'',summary:{total:0,pending:0,in_progress:0,partial:0,completed:0,disputed:0,annotations:0,consensus_rate:0,active_annotators:0},cards:[],people:[],workOrders:[],updatedAt:'-',filters:{dateFrom:'',dateTo:'',status:'',dimension:'',annotator:'',keyword:''},pagination:{page:1,size:20,total:0,totalPages:1}},
+        overview:{loading:false,error:'',summary:{total:0,pending:0,in_progress:0,partial:0,completed:0,disputed:0,annotations:0,consensus_rate:0,active_annotators:0},cards:[],people:[],workOrders:[],updatedAt:'-',filters:{dateFrom:'',dateTo:'',status:'',dimension:'',annotator:'',keyword:''},datePicker:{kind:'',opening:false,openTimer:null,releaseTimer:null,startedAt:0},pagination:{page:1,size:20,total:0,totalPages:1}},
         adminDetail:{open:false,loading:false,error:'',item:null,workOrder:null,candidates:[],annotations:[],taskReasons:[],consensus:null,arbitration:{},arbitrationReason:'',arbitrating:false}
       },
       retrievalPeriodOptions:[
@@ -2476,20 +2476,49 @@ Vue.createApp({
       var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
       return match ? (match[1] + '/' + match[2] + '/' + match[3]) : text.replace(/-/g, '/');
     },
-    openBlindLabelDatePicker: function(kind) {
+    openBlindLabelDatePicker: function(kind, options) {
+      options = options || {};
+      var overview = this.blindLabeling.overview;
+      var state = overview.datePicker || (overview.datePicker = {kind:'',opening:false,openTimer:null,releaseTimer:null,startedAt:0});
       var inputId = kind === 'end' ? 'blind-label-end-date-native' : 'blind-label-start-date-native';
       var input = document.getElementById(inputId);
       if (!input || input.disabled) return;
-      try { input.focus({preventScroll:true}); } catch (error) { input.focus(); }
-      if (typeof input.showPicker === 'function') {
-        try {
-          input.showPicker();
-          return;
-        } catch (error) {
-          // Some engines reject showPicker for an invisible native control; focus remains as a safe fallback.
+      var now = Date.now();
+      if (state.opening && state.kind === kind && now - Number(state.startedAt || 0) < 320) return;
+      if (state.openTimer) { clearTimeout(state.openTimer); state.openTimer = null; }
+      if (state.releaseTimer) { clearTimeout(state.releaseTimer); state.releaseTimer = null; }
+      state.kind = kind;
+      state.opening = true;
+      state.startedAt = now;
+      var open = function() {
+        state.openTimer = null;
+        var current = document.getElementById(inputId);
+        if (!current || current.disabled) { state.opening = false; return; }
+        var opened = false;
+        if (typeof current.showPicker === 'function') {
+          try { current.showPicker(); opened = true; } catch (error) {}
         }
-      }
-      try { input.click(); } catch (error) {}
+        if (!opened) {
+          try { current.focus({preventScroll:true}); } catch (error) { try { current.focus(); } catch (ignored) {} }
+          try { current.click(); } catch (error) {}
+        }
+        state.releaseTimer = setTimeout(function() {
+          state.opening = false;
+          state.releaseTimer = null;
+        }, 260);
+      };
+      if (options.auto) state.openTimer = setTimeout(open, 120);
+      else open();
+    },
+    finishBlindLabelDatePicker: function() {
+      var state = this.blindLabeling.overview.datePicker;
+      if (!state) return;
+      if (state.openTimer) clearTimeout(state.openTimer);
+      if (state.releaseTimer) clearTimeout(state.releaseTimer);
+      state.openTimer = null;
+      state.releaseTimer = null;
+      state.opening = false;
+      state.kind = '';
     },
     handleBlindLabelDateChange: function(kind, event) {
       var overview = this.blindLabeling.overview;
@@ -2497,15 +2526,18 @@ Vue.createApp({
       var value = event && event.target ? String(event.target.value || '') : '';
       if (kind === 'start') {
         filters.dateFrom = value;
+        this.finishBlindLabelDatePicker();
         if (filters.dateTo && value && filters.dateTo < value) filters.dateTo = '';
         if (value) {
           var self = this;
-          var openEndPicker = function() { self.openBlindLabelDatePicker('end'); };
-          if (typeof this.$nextTick === 'function') this.$nextTick(openEndPicker);
-          else setTimeout(openEndPicker, 0);
+          var openEndPicker = function() { self.openBlindLabelDatePicker('end', {auto:true}); };
+          var scheduleEndPicker = function() { setTimeout(openEndPicker, 120); };
+          if (typeof this.$nextTick === 'function') this.$nextTick(scheduleEndPicker);
+          else scheduleEndPicker();
         }
         return;
       }
+      this.finishBlindLabelDatePicker();
       filters.dateTo = value;
       if (filters.dateFrom && filters.dateTo) {
         this.applyBlindLabelOverviewFilters();
@@ -2514,6 +2546,7 @@ Vue.createApp({
       }
     },
     clearBlindLabelDate: function(kind) {
+      this.finishBlindLabelDatePicker();
       var filters = this.blindLabeling.overview.filters;
       if (!filters) return;
       if (kind === 'start') {
@@ -8639,6 +8672,13 @@ Vue.createApp({
     blindLabelPercent: function(value) { var number = Number(value); if (isNaN(number)) return '0%'; if (number <= 1) number *= 100; return (Math.round(number * 10) / 10) + '%'; },
     blindLabelDuration: function(value) { var number = Number(value); if (!number || isNaN(number)) return '-'; if (number > 3600000) number = number / 1000; if (number > 3600) return (number / 3600).toFixed(1) + ' 小时'; if (number > 60) return (number / 60).toFixed(1) + ' 分钟'; return Math.round(number) + ' 秒'; },
     blindLabelPersonHelpfulRate: function(person) { person = person || {}; var total = Number(person.annotation_count || person.annotations || person.total_annotations || 0) || 0; var helpful = Number(person.referable_count || person.helpful_count || 0) || 0; return total ? this.blindLabelPercent(helpful / total) : '0%'; },
+    blindLabelPersonCompletedCount: function(person) {
+      person = person || {};
+      var value = person.completed_count;
+      if (value === undefined || value === null) value = person.total_completed;
+      if (value === undefined || value === null) value = person.completed;
+      return Number(value) || 0;
+    },
     blindLabelInitial: function(value) { var text = String(value || '?').trim(); return text ? text.slice(0, 1).toUpperCase() : '?'; },
     blindLabelCompletedCount: function(item) { return Number(this.blindLabelValue(item, ['completed_count','completed_assignments','annotation_count','annotated_count'], 0)) || ((item && Array.isArray(item.assignments)) ? item.assignments.filter(function(assignment) { return assignment && assignment.status === 'completed'; }).length : 0); },
     blindLabelMaxAnnotators: function(item) { return Math.min(3, Math.max(1, Number(this.blindLabelValue(item, ['max_annotators','assignment_limit'], 3)) || 3)); },
