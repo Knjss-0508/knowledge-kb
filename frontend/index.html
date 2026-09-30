@@ -493,6 +493,8 @@
     .blind-label-annotator-content{min-width:0;min-height:0;overflow-y:auto;padding:14px;border:1px solid #dfe6ea;border-radius:9px;background:#fff;overscroll-behavior:contain;scrollbar-gutter:stable}
     .blind-label-annotator-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;font-size:13px;color:#344054}
     @media(max-width:900px){.blind-label-annotator-dialog .dlg-b{overflow:auto}.blind-label-annotator-split{display:flex;flex-direction:column;height:auto}.blind-label-chat-slot{padding:12px}.blind-label-annotator-content{overflow:visible}.blind-label-annotator-heading{flex-wrap:wrap}}
+    /* 盲标：聊天记录嵌入左栏，标注操作始终保留在右栏。 */
+    .blind-label-chat-panel{display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden;border:1px solid #dfe6ea;border-radius:9px;background:#fff}.blind-label-chat-head{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:58px;padding:10px 12px;border-bottom:1px solid #edf0f2;background:#fbfcfd}.blind-label-chat-head strong{display:block;color:#1d2939;font-size:13px}.blind-label-chat-head small{display:block;margin-top:3px;color:#98a2b3;font-size:10px;line-height:1.45}.blind-label-chat-frame{position:relative;display:flex;min-height:0;flex:1;background:#f5f7f8}.blind-label-chat-frame iframe{display:block;width:100%;height:100%;border:0;background:#fff}.blind-label-chat-empty{display:grid;place-items:center;width:100%;padding:24px;color:#98a2b3;font-size:12px;text-align:center;line-height:1.7}.blind-label-chat-hint{padding:8px 12px;border-top:1px solid #edf0f2;background:#fafbfc;color:#7b8794;font-size:10px;line-height:1.55}@media(max-width:900px){.blind-label-chat-panel{min-height:420px}.blind-label-chat-head{padding:10px 12px}}
     /* 盲标候选：推荐回复常驻，完整知识正文与媒体按需展开。 */
     .blind-label-candidate-reply{padding:12px 16px;background:#fff;color:#344054;font-size:12px;line-height:1.72;white-space:pre-wrap;overflow-wrap:anywhere}.blind-label-candidate-reply-empty{color:#98a2b3}.blind-label-candidate-details{border-top:1px solid #e8edef;background:#f8fafb}.blind-label-candidate-details>summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 16px;color:#475467;font-size:11px;font-weight:800;cursor:pointer;list-style:none;user-select:none}.blind-label-candidate-details>summary::-webkit-details-marker{display:none}.blind-label-candidate-details>summary:after{content:'⌄';color:#98a2b3;font-size:14px;line-height:1;transition:transform .15s ease}.blind-label-candidate-details[open]>summary:after{transform:rotate(180deg)}.blind-label-candidate-details-toggle{margin-left:auto;color:#98a2b3;font-size:10px;font-weight:500}.blind-label-candidate-details[open] .blind-label-candidate-details-toggle{color:#007f6b;font-size:0}.blind-label-candidate-details[open] .blind-label-candidate-details-toggle:after{content:'收起';font-size:10px}.blind-label-candidate-details .blind-label-candidate-body{border-top:1px solid #edf1f2;padding:12px 16px;background:#fbfcfd}.blind-label-candidate-detail-empty{color:#98a2b3}.blind-label-candidate-headline .blind-label-candidate-rank,.blind-label-annotator-candidate .blind-label-candidate-rank{display:inline-flex!important;align-items:center;justify-content:center;flex:0 0 64px!important;flex-shrink:0!important;width:64px!important;min-width:64px!important;max-width:64px!important;height:32px!important;padding:0 8px!important;white-space:nowrap!important;word-break:keep-all!important;overflow-wrap:normal!important;line-height:1!important}
     .blind-label-candidate-headline .blind-label-candidate-rank,.blind-label-annotator-candidate .blind-label-candidate-rank{flex-basis:52px!important;width:52px!important;min-width:52px!important;max-width:52px!important;height:28px!important;padding:0 6px!important;font-size:11px!important}
@@ -2143,14 +2145,19 @@
         <div v-else-if="blindLabeling.current.error" class="blind-label-error" role="alert">{{blindLabeling.current.error}}</div>
         <template v-else>
           <div class="blind-label-annotator-split">
-            <section class="blind-label-chat-slot" aria-label="聊天记录">
-              <strong>聊天记录</strong>
-              <span v-if="workOrderChatUrl(blindLabelWorkOrderId(blindLabeling.current.assignment))">聊天平台在独立窗口显示，可在右侧继续标注。</span>
-              <span v-else>当前工单没有可用的工单 ID。</span>
-              <a v-if="workOrderChatBlockedUrl" :href="workOrderChatBlockedUrl" target="_blank" rel="noopener noreferrer">自动打开失败，点击查看聊天记录</a>
+            <section class="blind-label-chat-panel" aria-labelledby="blind-label-chat-title">
+              <div class="blind-label-chat-head">
+                <div><strong id="blind-label-chat-title">聊天记录</strong><small>按当前工单 ID 加载答疑平台对话</small></div>
+                <button v-if="blindLabelChatUrl()" type="button" class="btn bd bsm" @click="reloadBlindLabelChat">重新加载</button>
+              </div>
+              <div class="blind-label-chat-frame">
+                <iframe v-if="blindLabelChatUrl()" :key="blindLabeling.current.chatFrameKey" :src="blindLabelChatUrl()" title="答疑平台聊天记录"></iframe>
+                <div v-else class="blind-label-chat-empty">当前工单没有可用的工单 ID，暂时无法加载聊天记录。</div>
+              </div>
+              <div class="blind-label-chat-hint">聊天记录已嵌入左侧，可在右侧直接完成候选判断和标注。</div>
             </section>
             <section class="blind-label-annotator-content" aria-labelledby="blind-label-content-title">
-              <div class="blind-label-annotator-heading"><strong id="blind-label-content-title">盲标工单详情</strong><button type="button" class="btn bd bsm" :disabled="!workOrderChatUrl(blindLabelWorkOrderId(blindLabeling.current.assignment))" @click="openWorkOrderChat(blindLabelWorkOrderId(blindLabeling.current.assignment), $event)">打开 / 重新对齐聊天</button></div>
+              <div class="blind-label-annotator-heading"><strong id="blind-label-content-title">盲标工单详情</strong></div>
               <section class="blind-label-work-order">
                 <div class="blind-label-work-order-top"><div><div class="blind-label-work-order-id">工单 {{blindLabelWorkOrderId(blindLabeling.current.detail || blindLabeling.current.assignment)}}</div><h4>{{blindLabelQuery(blindLabeling.current.detail || blindLabeling.current.assignment) || '未提供问题摘要'}}</h4></div><span class="blind-label-status" :class="blindLabelStatusClass(blindLabeling.current.assignment && blindLabeling.current.assignment.status)">{{blindLabelStatusLabel(blindLabeling.current.assignment && blindLabeling.current.assignment.status)}}</span></div>
                 <div class="blind-label-work-order-meta"><span v-if="blindLabelCategory(blindLabeling.current.detail || blindLabeling.current.assignment)">{{blindLabelCategory(blindLabeling.current.detail || blindLabeling.current.assignment)}}</span><span v-if="blindLabeling.current.detail && (blindLabeling.current.detail.created_at || blindLabeling.current.detail.submitted_at)">· {{formatDate(blindLabeling.current.detail.submitted_at || blindLabeling.current.detail.created_at)}}</span><span>· 仅展示前三条候选</span></div>
@@ -5522,6 +5529,15 @@ Vue.createApp({
       if (!id || id === '-') return '';
       return 'https://zzdy.powerzhuan.cn/#/workorderDetail?questionFormId=' + encodeURIComponent(id) + '&sceneType=2';
     },
+    blindLabelChatUrl: function() {
+      var current = this.blindLabeling && this.blindLabeling.current ? this.blindLabeling.current : {};
+      return this.workOrderChatUrl(this.blindLabelWorkOrderId(current.detail || current.assignment));
+    },
+    reloadBlindLabelChat: function() {
+      var current = this.blindLabeling && this.blindLabeling.current;
+      if (!current || !current.open || !this.blindLabelChatUrl()) return;
+      current.chatFrameKey = Number(current.chatFrameKey || 0) + 1;
+    },
     workOrderChatGeometry: function(event) {
       var display = window.screen || {};
       var screenLeft = Number(display.availLeft) || 0;
@@ -8161,31 +8177,26 @@ Vue.createApp({
         .catch(function(error) { self.blindLabeling.error = error.message || '领取盲标批次失败'; return null; })
         .finally(function() { self.blindLabeling.claiming = false; });
     },
-    openBlindLabelAssignment: function(assignment, event, preparedChatWindow) {
+    openBlindLabelAssignment: function(assignment) {
       var self = this;
       assignment = self.blindLabelNormalizeAssignment(assignment);
       var readOnly = self.blindLabeling.tab === 'completed' || self.blindLabelIsDone(assignment);
       var workOrderId = self.blindLabelWorkOrderId(assignment);
-      var chatWindow = arguments.length > 2 ? preparedChatWindow : self.prepareWorkOrderChat(workOrderId, event);
       var detailRequestId = String(self.blindLabelAssignmentId(assignment) || workOrderId || '') + ':' + Date.now() + ':' + Math.random().toString(36).slice(2, 8);
-      self.blindLabeling.current = {open:true,readOnly:readOnly,assignment:assignment,detail:null,candidates:[],labels:{},reasonCodes:{},reasonNotes:{},allNotReferable:false,taskReasonCode:'',note:'',error:'',detailRequestId:detailRequestId};
+      self.blindLabeling.current = {open:true,readOnly:readOnly,assignment:assignment,detail:null,candidates:[],labels:{},reasonCodes:{},reasonNotes:{},allNotReferable:false,taskReasonCode:'',note:'',error:'',detailRequestId:detailRequestId,chatFrameKey:0};
       self.blindLabeling.detailLoading = true;
       function isCurrentRequest() {
         return self.blindLabeling.current.open && self.blindLabeling.current.detailRequestId === detailRequestId;
-      }
-      function discardPendingChat() {
-        if (chatWindow && chatWindow !== workOrderChatWindow) self.closeWorkOrderChatWindow(chatWindow);
       }
       var id = self.blindLabelAssignmentId(assignment);
       if (!id) {
         self.blindLabeling.detailLoading = false;
         self.blindLabeling.current.error = '任务缺少分配 ID';
-        if (chatWindow && chatWindow !== workOrderChatWindow) self.closeWorkOrderChatWindow(chatWindow);
         return;
       }
       return self.blindLabelApi('/blind-labeling/assignments/' + encodeURIComponent(id), {method:'GET'})
         .then(function(data) {
-          if (!isCurrentRequest()) { discardPendingChat(); return null; }
+          if (!isCurrentRequest()) return null;
           var detail = data.assignment || data.detail || data.work_order || data;
           detail = self.blindLabelNormalizeAssignment(Object.assign({}, assignment, detail));
           var candidates = self.blindLabelCandidates(data);
@@ -8200,21 +8211,17 @@ Vue.createApp({
            self.blindLabeling.current.allNotReferable = !!(data.all_not_referable || data.allNotReferable || detail.all_not_referable || detail.allNotReferable || (loadedAllNotReferable && !loadedHasHelpful));
           self.blindLabeling.current.taskReasonCode = String(self.blindLabelValue(detail, ['task_reason_code','taskReasonCode'], self.blindLabelValue(data, ['task_reason_code','taskReasonCode'], '')) || '');
           self.blindLabeling.current.note = String(self.blindLabelValue(detail, ['note','my_note'], self.blindLabelValue(data, ['note','my_note'], '')) || '');
-          // 详情节点受加载状态控制，必须先渲染左右分栏再测量窗口位置。
+          // 详情节点受加载状态控制；渲染后由左侧 iframe 直接加载同一工单聊天。
           self.blindLabeling.detailLoading = false;
           return self.$nextTick(function() {
-            if (!isCurrentRequest()) { discardPendingChat(); return null; }
-            self.finishWorkOrderChat(self.blindLabelWorkOrderId(detail), chatWindow, event);
-            return data;
+            return isCurrentRequest() ? data : null;
           });
         })
-         .catch(function(error) { discardPendingChat(); if (!isCurrentRequest()) return null; var message = error.message || '加载盲标详情失败'; if (String(message).indexOf('超时自动回收') !== -1) { alert(message); self.closeWorkOrderChatWindow(); self.blindLabeling.current.open = false; self.blindLabeling.detailLoading = false; return self.loadBlindLabelAssignments(false).then(function() { return null; }); } self.blindLabeling.current.error = message; return null; })
+         .catch(function(error) { if (!isCurrentRequest()) return null; var message = error.message || '加载盲标详情失败'; if (String(message).indexOf('超时自动回收') !== -1) { alert(message); self.blindLabeling.current.open = false; self.blindLabeling.detailLoading = false; return self.loadBlindLabelAssignments(false).then(function() { return null; }); } self.blindLabeling.current.error = message; return null; })
          .finally(function() { if (isCurrentRequest()) self.blindLabeling.detailLoading = false; });
     },
     closeBlindLabelDialog: function() {
       if (this.blindLabeling.saving) return;
-      if (workOrderChatPendingWindow) this.closeWorkOrderChatWindow(workOrderChatPendingWindow);
-      this.closeWorkOrderChatWindow();
       this.blindLabeling.current.open = false;
       this.blindLabeling.detailLoading = false;
     },
@@ -8233,21 +8240,18 @@ Vue.createApp({
          return items;
        }, []);
        var next = null;
-       var nextChatWindow = null;
-       if (self.blindLabeling.tab === 'mine') {
-         next = (self.blindLabeling.assignments || []).find(function(item) { return self.blindLabelAssignmentId(item) !== id && !self.blindLabelIsDone(item); }) || null;
-         if (next) nextChatWindow = self.prepareWorkOrderChat(self.blindLabelWorkOrderId(next));
-       }
+      if (self.blindLabeling.tab === 'mine') {
+        next = (self.blindLabeling.assignments || []).find(function(item) { return self.blindLabelAssignmentId(item) !== id && !self.blindLabelIsDone(item); }) || null;
+      }
        self.blindLabeling.saving = true;
        return self.blindLabelApi('/blind-labeling/assignments/' + encodeURIComponent(id) + '/submit', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({annotations:annotations,note:String(current.note || '').trim(),taskReasonCode:String(current.taskReasonCode || '').trim()})})
          .then(function() {
-           if (!next) self.closeWorkOrderChatWindow();
-           current.open = false;
-           return self.loadBlindLabelAssignments(false).then(function() {
-             return next ? self.openBlindLabelAssignment(next, null, nextChatWindow) : null;
-           });
-         })
-         .catch(function(error) { var message = error.message || '提交盲标失败'; if (nextChatWindow && nextChatWindow !== workOrderChatWindow) self.closeWorkOrderChatWindow(nextChatWindow); if (String(message).indexOf('超时自动回收') !== -1) { alert(message); current.open = false; return self.loadBlindLabelAssignments(false); } alert(message); return false; })
+          current.open = false;
+          return self.loadBlindLabelAssignments(false).then(function() {
+            return next ? self.openBlindLabelAssignment(next) : null;
+          });
+        })
+        .catch(function(error) { var message = error.message || '提交盲标失败'; if (String(message).indexOf('超时自动回收') !== -1) { alert(message); current.open = false; return self.loadBlindLabelAssignments(false); } alert(message); return false; })
          .finally(function() { self.blindLabeling.saving = false; });
     },
     blindLabelCandidateKey: function(candidate, index) {

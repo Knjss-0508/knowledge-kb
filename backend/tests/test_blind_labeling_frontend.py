@@ -65,7 +65,7 @@ def test_blind_label_claim_is_explicit_and_completed_batch_offers_next_batch() -
     assert "{method:'POST'" in FRONTEND
     assert "blindLabeling.batch.status==='completed'?'领取下一批':'领取 50 条任务'" in FRONTEND
     assert "本批 50 条已完成，可点击“领取下一批”。" in FRONTEND
-    assert "return next ? self.openBlindLabelAssignment(next, null, nextChatWindow) : null;" in FRONTEND
+    assert "return next ? self.openBlindLabelAssignment(next) : null;" in FRONTEND
 
 
 def test_blind_label_annotators_cannot_manually_release_tasks() -> None:
@@ -94,3 +94,22 @@ def test_blind_label_candidates_separate_reply_and_collapsible_detail() -> None:
     assert "blind-label-candidate-detail-text" in FRONTEND
     assert ".blind-label-candidate-headline .blind-label-candidate-rank" in FRONTEND
     assert "white-space:nowrap!important" in FRONTEND
+
+
+def test_blind_label_embeds_the_work_order_chat_in_the_left_panel() -> None:
+    assert '<section class="blind-label-chat-panel"' in FRONTEND
+    assert '<iframe v-if="blindLabelChatUrl()"' in FRONTEND
+    assert ':src="blindLabelChatUrl()"' in FRONTEND
+    assert 'title="答疑平台聊天记录"' in FRONTEND
+    assert "blindLabelChatUrl: function()" in FRONTEND
+    assert "reloadBlindLabelChat: function()" in FRONTEND
+    assert "chatFrameKey:0" in FRONTEND
+
+
+def test_blind_label_does_not_open_or_position_a_separate_chat_window() -> None:
+    start = FRONTEND.index("openBlindLabelAssignment: function(")
+    end = FRONTEND.index("    closeBlindLabelDialog: function()", start)
+    assignment_flow = FRONTEND[start:end]
+    assert "prepareWorkOrderChat" not in assignment_flow
+    assert "finishWorkOrderChat" not in assignment_flow
+    assert "closeWorkOrderChatWindow" not in assignment_flow
