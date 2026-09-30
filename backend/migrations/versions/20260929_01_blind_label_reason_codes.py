@@ -1,15 +1,15 @@
 """Add structured diagnostic reasons to blind labeling.
 
-Revision ID: 20260928_01
-Revises: 20260924_01
+Revision ID: 20260929_01_blind_reason_codes
+Revises: 20260928_05
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 
-revision = "20260928_01"
-down_revision = "20260924_01"
+revision = "20260929_01_blind_reason_codes"
+down_revision = "20260928_05"
 branch_labels = None
 depends_on = None
 
