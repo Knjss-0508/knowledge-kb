@@ -21,6 +21,11 @@ services:
       - --auto-truncate
     expose:
       - "80"
+    # Answer Hub 直接跑在 Windows 宿主上（E:\answer-hub-runtime\venv），
+    # 不在 Docker 网络内，因此需要把嵌入端口发布到宿主回环地址才能访问。
+    # 仅绑定 127.0.0.1，不对局域网或公网暴露；容器内服务仍走 expose 的 80。
+    ports:
+      - "127.0.0.1:8080:80"
     volumes:
       - embedding_model_cache:/data
     healthcheck:
