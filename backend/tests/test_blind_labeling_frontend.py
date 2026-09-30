@@ -113,3 +113,13 @@ def test_blind_label_does_not_open_or_position_a_separate_chat_window() -> None:
     assert "prepareWorkOrderChat" not in assignment_flow
     assert "finishWorkOrderChat" not in assignment_flow
     assert "closeWorkOrderChatWindow" not in assignment_flow
+
+
+def test_blind_label_candidate_cards_and_actions_have_visual_hierarchy() -> None:
+    assert ".blind-label-candidate-section{padding:12px" in FRONTEND
+    assert ".blind-label-candidate{border-color:#cfe3de" in FRONTEND
+    assert ".blind-label-candidate-headline{background:#f1faf7" in FRONTEND
+    assert ".blind-label-candidate-details>summary{background:#edf7f4" in FRONTEND
+    assert ".blind-label-choice-buttons .btn{background:#eef9f6" in FRONTEND
+    assert ".blind-label-mode-actions .btn{background:#fff3f1" in FRONTEND
+    assert ".blind-label-mode-actions .btn.on-unhelpful" in FRONTEND
