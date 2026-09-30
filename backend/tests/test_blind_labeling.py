@@ -32,6 +32,7 @@ from app.schemas.blind_labeling import BlindLabelClaimRequest, BlindLabelRelease
 from app.services.blind_labeling import (
     BLIND_LABEL_AUTO_RELEASE_REASON,
     BLIND_LABEL_BATCH_SIZE,
+    BLIND_LABEL_MIN_TOP1_SCORE,
     _choose_assignments,
     batch_summary,
     claim_batch,
@@ -45,6 +46,35 @@ from app.services.blind_labeling import (
     release_assignment,
     submit_assignment,
 )
+
+
+def _build_threshold_event(
+    *,
+    event_id: str,
+    conversation_id: str,
+    source_kind: str,
+    top_rerank_score: float,
+    candidate_snapshot: list[dict],
+    candidate_origins: list[str],
+) -> RetrievalQualityEvent:
+    return RetrievalQualityEvent(
+        id=event_id,
+        idempotency_key=f"key-{event_id}",
+        source_system="test",
+        conversation_id=conversation_id,
+        request_id=f"request-{event_id}",
+        source_kind=source_kind,
+        query_text="分数门槛测试",
+        candidate_count=len(candidate_snapshot),
+        top_knowledge_id=str(candidate_snapshot[0]["knowledge_id"]),
+        top_rerank_score=top_rerank_score,
+        score_threshold=0.42,
+        outcome="accepted",
+        request_status="success",
+        candidate_snapshot=candidate_snapshot,
+        event_metadata={"candidate_origins": candidate_origins},
+        created_at=datetime.utcnow(),
+    )
 
 
 @pytest.fixture()
@@ -201,6 +231,126 @@ def test_claim_materializes_business_top3_and_reuses_active_batch(db):
     assert [item.id for item in same_assignments] == [assignments[0].id]
 
 
+def test_top1_score_below_sixty_percent_is_not_materialized_but_boundary_passes(db):
+    for event_id, conversation_id, score in (
+        ("event-low-score", "conversation-low-score", 0.59),
+        ("event-boundary-score", "conversation-boundary-score", BLIND_LABEL_MIN_TOP1_SCORE),
+    ):
+        db.add(
+            _build_threshold_event(
+                event_id=event_id,
+                conversation_id=conversation_id,
+                source_kind="reply",
+                top_rerank_score=score,
+                candidate_snapshot=[
+                    {
+                        "knowledge_id": "biz-1",
+                        "rank": 1,
+                        "title": "业务知识",
+                        "final_score": score,
+                        "knowledge_origin": "business_accumulation",
+                    }
+                ],
+                candidate_origins=["business_accumulation"],
+            )
+        )
+    db.add(
+        _build_threshold_event(
+            event_id="event-reply-fallback-score",
+            conversation_id="conversation-reply-fallback-score",
+            source_kind="reply",
+            top_rerank_score=BLIND_LABEL_MIN_TOP1_SCORE,
+            candidate_snapshot=[
+                {
+                    "knowledge_id": "biz-2",
+                    "rank": 1,
+                    "title": "历史业务知识",
+                    "knowledge_origin": "business_accumulation",
+                }
+            ],
+            candidate_origins=["business_accumulation"],
+        )
+    )
+    db.commit()
+
+    assert ensure_work_orders(db, 10) == 3
+    assert db.query(BlindLabelWorkOrder).filter_by(conversation_id="conversation-low-score").count() == 0
+    assert db.query(BlindLabelWorkOrder).filter_by(conversation_id="conversation-boundary-score").count() == 1
+    assert db.query(BlindLabelWorkOrder).filter_by(conversation_id="conversation-reply-fallback-score").count() == 1
+
+
+def test_existing_low_score_work_order_is_not_assigned_to_new_batch(db):
+    db.query(RetrievalQualityEvent).filter_by(id="event-1").update({"source_kind": "standard"})
+    db.add(
+        BlindLabelWorkOrder(
+            id="wo-low-score",
+            conversation_id="conversation-low-work-order",
+            query_text="历史低分工单",
+            candidate_snapshot=[
+                {
+                    "candidate_ref": "candidate-low-score",
+                    "knowledge_id": "biz-1",
+                    "rank": 1,
+                    "title": "低分业务知识",
+                    "content": {"type": "text", "value": "正文"},
+                    "final_score": 0.59,
+                    "knowledge_origin": "business_accumulation",
+                }
+            ],
+        )
+    )
+    db.commit()
+
+    _, assignments = claim_batch(db, "u1", target_count=1)
+
+    assert assignments == []
+
+
+def test_combined_event_does_not_use_global_score_for_business_top1(db):
+    db.add(
+        RetrievalQualityEvent(
+            id="event-combined-missing-business-score",
+            idempotency_key="key-combined-missing-business-score",
+            source_system="test",
+            conversation_id="conversation-combined-missing-business-score",
+            request_id="request-combined-missing-business-score",
+            source_kind="combined",
+            query_text="组合池分数测试",
+            candidate_count=2,
+            top_knowledge_id="std-1",
+            top_rerank_score=0.95,
+            score_threshold=0.42,
+            outcome="accepted",
+            request_status="success",
+            candidate_snapshot=[
+                {
+                    "knowledge_id": "std-1",
+                    "rank": 1,
+                    "title": "总部知识",
+                    "final_score": 0.95,
+                    "knowledge_origin": "headquarters_standard",
+                },
+                {
+                    "knowledge_id": "biz-1",
+                    "rank": 2,
+                    "title": "业务知识",
+                    "knowledge_origin": "business_accumulation",
+                },
+            ],
+            event_metadata={
+                "candidate_origins": ["headquarters_standard", "business_accumulation"]
+            },
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+
+    assert ensure_work_orders(db, 10) == 1
+    assert db.query(BlindLabelWorkOrder).filter_by(
+        conversation_id="conversation-combined-missing-business-score"
+    ).count() == 0
+
+
 def test_ensure_work_orders_materializes_newest_eligible_event_first(db):
     now = datetime.utcnow()
     db.query(RetrievalQualityEvent).filter_by(id="event-1").update(
@@ -260,28 +410,28 @@ def test_choose_assignments_fills_existing_work_orders_before_newest_fresh_items
             id="wo-two-old",
             conversation_id="priority-two-old",
             query_text="已有两人标注的旧工单",
-            candidate_snapshot=[{"candidate_ref": "cand-two-old"}],
+            candidate_snapshot=[{"candidate_ref": "cand-two-old", "final_score": 0.90}],
             source_created_at=now - timedelta(days=3),
         ),
         "one-new": BlindLabelWorkOrder(
             id="wo-one-new",
             conversation_id="priority-one-new",
             query_text="已有一人标注的新工单",
-            candidate_snapshot=[{"candidate_ref": "cand-one-new"}],
+            candidate_snapshot=[{"candidate_ref": "cand-one-new", "final_score": 0.90}],
             source_created_at=now - timedelta(days=1),
         ),
         "one-old": BlindLabelWorkOrder(
             id="wo-one-old",
             conversation_id="priority-one-old",
             query_text="已有一人标注的旧工单",
-            candidate_snapshot=[{"candidate_ref": "cand-one-old"}],
+            candidate_snapshot=[{"candidate_ref": "cand-one-old", "final_score": 0.90}],
             source_created_at=now - timedelta(days=2),
         ),
         "fresh": BlindLabelWorkOrder(
             id="wo-fresh",
             conversation_id="priority-fresh",
             query_text="尚未分配的最新工单",
-            candidate_snapshot=[{"candidate_ref": "cand-fresh"}],
+            candidate_snapshot=[{"candidate_ref": "cand-fresh", "final_score": 0.90}],
             source_created_at=now,
         ),
     }

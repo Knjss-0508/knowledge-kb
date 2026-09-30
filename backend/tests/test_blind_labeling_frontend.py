@@ -84,3 +84,13 @@ def test_blind_label_batch_displays_backend_auto_reclaimed_count() -> None:
     assert "released:released" in FRONTEND
     assert "系统自动回收</span><b>{{blindLabeling.batch.released || 0}}</b>" in FRONTEND
     assert "blindLabelCountByStatus('released')" not in FRONTEND
+
+
+def test_blind_label_candidates_separate_reply_and_collapsible_detail() -> None:
+    assert "blindLabelCandidateRecommendedReply" in FRONTEND
+    assert "blindLabelCandidateDetailText" in FRONTEND
+    assert '<details class="blind-label-candidate-details"' in FRONTEND
+    assert 'aria-expanded="false"' in FRONTEND
+    assert "blind-label-candidate-detail-text" in FRONTEND
+    assert ".blind-label-candidate-headline .blind-label-candidate-rank" in FRONTEND
+    assert "white-space:nowrap!important" in FRONTEND
