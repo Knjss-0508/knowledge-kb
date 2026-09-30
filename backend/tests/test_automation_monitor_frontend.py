@@ -214,10 +214,20 @@ _APP_LOADER = """
       const context = {{
         currentUser: {{permissions: ['*'], role: 'super_admin'}},
         answerHubMonitor: {{
+          loading: false,
+          logsLoading: false,
           actionLoading: false,
+          updatedAt: '-',
+          page: 1,
+          pageSize: 20,
           lastError: '',
+          errorPinned: false,
           controlRollback: null,
           service: {{status: 'online', message: ''}},
+          summary: {{pending: 0, running: 0, attention: 0, completed: 0, cz_sync_failed: 0}},
+          jobs: [],
+          filter: {{status: '', keyword: ''}},
+          log: {{name: '', content: ''}},
           control: {{enabled: false, schedule_enabled: false, running: false, installed: true, available: true, plan: {{}}}}
         }}
       }};
@@ -329,6 +339,57 @@ def test_failed_start_rolls_back_the_optimistic_state_and_shows_the_reason() -> 
           assert.strictEqual(context.reloaded, true, '失败后应重新拉取真实状态');
           process.exit(0);
         }, 10);
+        """
+    )
+
+
+def test_error_message_survives_the_follow_up_status_refresh() -> None:
+    """失败提示不能刚出现就被随后的状态刷新清掉。
+
+    showAutomationMonitorError 写完后端提示后会立刻重新拉取真实状态；
+    如果拉取成功无条件清空 lastError，用户就只能看到提示闪一下 ——
+    后端好不容易说清楚的失败原因等于被前端自己吞了。
+    """
+    _run_node_script(
+        """
+        const context = buildContext({});
+        // 换成真实的 loadAutomationMonitor（buildContext 里那个是桩），
+        // 让状态刷新真的成功一次。
+        Object.keys(appOptions.methods).forEach(function(name) {
+          if (typeof appOptions.methods[name] === 'function') {
+            context[name] = appOptions.methods[name].bind(context);
+          }
+        });
+        context.authHeaders = function() { return {}; };
+        let fetched = 0;
+        sandbox.fetch = function() {
+          fetched += 1;
+          return Promise.resolve({
+            ok: true,
+            json: function() {
+              return Promise.resolve({
+                service: {status: 'online', message: ''},
+                control: {enabled: false, installed: false, available: false, running: false, message: '\\u81ea\\u52a8\\u5316\\u8ba1\\u5212\\u4efb\\u52a1\\u5c1a\\u672a\\u5b89\\u88c5\\u3002'},
+                summary: {},
+                jobs: []
+              });
+            }
+          });
+        };
+        const reason = '\\u8fd0\\u884c Answer Hub \\u7684\\u7535\\u8111\\u4e0a\\u8fd8\\u6ca1\\u6709\\u5b89\\u88c5\\u8fd9\\u4e2a\\u81ea\\u52a8\\u5316\\u8ba1\\u5212\\u4efb\\u52a1';
+        context.showAutomationMonitorError(reason);
+        assert.ok(context.answerHubMonitor.lastError.indexOf(reason) !== -1, '\\u63d0\\u793a\\u8981\\u7acb\\u523b\\u53ef\\u89c1');
+        setTimeout(function() {
+          assert.ok(fetched >= 1, '\\u5fc5\\u987b\\u771f\\u7684\\u91cd\\u65b0\\u62c9\\u53d6\\u72b6\\u6001');
+          assert.ok(context.answerHubMonitor.lastError.indexOf(reason) !== -1, '\\u5237\\u65b0\\u6210\\u529f\\u540e\\u63d0\\u793a\\u4e0d\\u80fd\\u88ab\\u6e05\\u6389');
+          assert.ok(context.automationMonitorAlert().indexOf(reason) !== -1, '\\u544a\\u8b66\\u6761\\u4e0a\\u8981\\u80fd\\u770b\\u5230');
+          // 用户自己再点一次「重新拉取状态」时才允许清掉。
+          context.loadAutomationMonitor();
+          setTimeout(function() {
+            assert.strictEqual(context.answerHubMonitor.lastError, '', '\\u7528\\u6237\\u4e3b\\u52a8\\u5237\\u65b0\\u540e\\u63d0\\u793a\\u624d\\u6d88\\u5931');
+            process.exit(0);
+          }, 20);
+        }, 20);
         """
     )
 

@@ -2367,7 +2367,7 @@ Vue.createApp({
         updatedAt: '-'
       },
       candidateReviewNotice: {visible:false, message:'', type:'success', timer:null},
-      answerHubMonitor: {loading:false,logsLoading:false,actionLoading:false,updatedAt:'-',page:1,pageSize:20,lastError:'',controlRollback:null,service:{status:'unknown',message:''},control:{enabled:false,schedule_enabled:false,schedule_time:'02:00',running:false,plan:{knowledge_settle_from_date:'',knowledge_settle_to_date:'',second_part_query_from_date:'',second_part_query_to_date:'',timezone:'Asia/Shanghai',run_mode:'backfill',schedule_frequency:'daily',schedule_weekday:0,window_days:1,cursor_date:'',next_run_from_date:'',next_run_to_date:'',catchup_enabled:true,max_catchup_days:7,last_successful_to_date:'',last_failure_reason:'',consecutive_failure_count:0,auto_advance_paused:false}},summary:{pending:0,running:0,attention:0,completed:0,cz_sync_failed:0},jobs:[],filter:{status:'',keyword:''},log:{name:'',content:''}},
+      answerHubMonitor: {loading:false,logsLoading:false,actionLoading:false,updatedAt:'-',page:1,pageSize:20,lastError:'',errorPinned:false,controlRollback:null,service:{status:'unknown',message:''},control:{enabled:false,schedule_enabled:false,schedule_time:'02:00',running:false,plan:{knowledge_settle_from_date:'',knowledge_settle_to_date:'',second_part_query_from_date:'',second_part_query_to_date:'',timezone:'Asia/Shanghai',run_mode:'backfill',schedule_frequency:'daily',schedule_weekday:0,window_days:1,cursor_date:'',next_run_from_date:'',next_run_to_date:'',catchup_enabled:true,max_catchup_days:7,last_successful_to_date:'',last_failure_reason:'',consecutive_failure_count:0,auto_advance_paused:false}},summary:{pending:0,running:0,attention:0,completed:0,cz_sync_failed:0},jobs:[],filter:{status:'',keyword:''},log:{name:'',content:''}},
       confidenceTraining: {tab:'candidates',loading:false,connectionTesting:false,jobCreating:false,candidatePage:1,candidatePageSize:20,items:[],jobs:[],settings:{training_candidate_collection_enabled:true,training_snapshot_enabled:false,auto_training_job_enabled:false,production_auto_review_enabled:false},overview:{total:0,scored:0,training_candidate_count:0,model:'deepseek-flash'}},
       legacyAnswerHubPaths: {overview:'/answer-hub/overview',control:'/answer-hub/control',runs:'/answer-hub/runs'},
       changeLogs: {item:null, entries:[]},
@@ -4519,7 +4519,7 @@ Vue.createApp({
       var self=this; self.answerHubMonitor.loading=true;
       fetch(API + '/automation-monitor/overview',{headers:self.authHeaders()})
         .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'加载运行监管失败');return d;});})
-        .then(function(d){self.answerHubMonitor.service=d.service||{};self.answerHubMonitor.control=Object.assign(self.answerHubMonitor.control,d.control||{});self.answerHubMonitor.control.plan=Object.assign(self.answerHubMonitor.control.plan||{},(d.control||{}).plan||{});self.answerHubMonitor.summary=Object.assign(self.answerHubMonitor.summary,d.summary||{});self.answerHubMonitor.jobs=(Array.isArray(d.jobs)?d.jobs:[]).map(function(job){job.feedback=Object.assign({status:'unhandled',status_label:'未处理'},job.feedback||{});return job;});self.answerHubMonitor.lastError='';self.answerHubMonitor.controlRollback=null;self.answerHubMonitor.updatedAt=self.formatDate(new Date());})
+        .then(function(d){self.answerHubMonitor.service=d.service||{};self.answerHubMonitor.control=Object.assign(self.answerHubMonitor.control,d.control||{});self.answerHubMonitor.control.plan=Object.assign(self.answerHubMonitor.control.plan||{},(d.control||{}).plan||{});self.answerHubMonitor.summary=Object.assign(self.answerHubMonitor.summary,d.summary||{});self.answerHubMonitor.jobs=(Array.isArray(d.jobs)?d.jobs:[]).map(function(job){job.feedback=Object.assign({status:'unhandled',status_label:'未处理'},job.feedback||{});return job;});if(!self.answerHubMonitor.errorPinned){self.answerHubMonitor.lastError='';}self.answerHubMonitor.errorPinned=false;self.answerHubMonitor.controlRollback=null;self.answerHubMonitor.updatedAt=self.formatDate(new Date());})
         .catch(function(e){self.answerHubMonitor.service={status:'unavailable',message:e.message};})
         .finally(function(){self.answerHubMonitor.loading=false;});
     },
@@ -4554,7 +4554,11 @@ Vue.createApp({
       m.controlRollback=null;
     },
     showAutomationMonitorError: function(message){
-      this.answerHubMonitor.lastError=String(message||'操作失败，请稍后重试。');
+      var m=this.answerHubMonitor;
+      m.lastError=String(message||'操作失败，请稍后重试。');
+      // 紧接着要重新拉取真实状态（否则界面会停在失败前的旧状态上），
+      // 但拉取成功后不能把刚写进去的提示清掉，否则用户根本看不到原因。
+      m.errorPinned=true;
       this.loadAutomationMonitor();
     },
     startAutomationProcess: function(){
