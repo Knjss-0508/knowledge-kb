@@ -168,3 +168,188 @@ def test_cursor_plan_is_exposed_without_requiring_legacy_date_fields() -> None:
     assert "失败时日期游标不会移动" in FRONTEND
     assert "cursor_date:plan.cursor_date||''" in FRONTEND
     assert "window_days:Number(plan.window_days||1)" in FRONTEND
+
+
+# ---------------------------------------------------------------------------
+# 「自动化流程监管」按钮状态
+#
+# 线上现象：右上角写「自动化已开始」，但「开始自动化流程」看起来还能点、
+# 「停止自动化流程」看起来是灰的。真实原因是两条：
+#   1. 旧的 :disabled 逻辑本身是对的，但禁用态只是把品牌绿按钮降到 50% 透明，
+#      看起来仍然像主按钮；而可点的「停止」是白底描边，看起来才像禁用。
+#   2. 「开始」会在请求发出前就把本地状态改成「已开始」，请求失败后不回滚，
+#      于是状态标签显示了一个并没有生效的状态。
+# 下面这些用例把这两点都钉住。
+# ---------------------------------------------------------------------------
+
+_APP_LOADER = """
+    const assert = require('assert');
+    const fs = require('fs');
+    const vm = require('vm');
+    const html = fs.readFileSync({frontend_path}, 'utf8');
+    const scripts = Array.from(
+      html.matchAll(/<script(?:\\s[^>]*)?>([\\s\\S]*?)<\\/script>/gi),
+      function(match) {{ return match[1]; }}
+    );
+    const appSource = scripts.find(function(source) {{
+      return source.indexOf('Vue.createApp({{') !== -1;
+    }});
+    let appOptions = null;
+    const sandbox = {{
+      window: {{KB_RUNTIME: {{apiBase: '', baseUrl: ''}}}},
+      localStorage: {{getItem: function() {{ return ''; }}}},
+      Vue: {{createApp: function(options) {{
+        appOptions = options;
+        return {{mount: function() {{ return null; }}}};
+      }}}},
+      console: console,
+      URL: URL,
+      URLSearchParams: URLSearchParams,
+      setTimeout: setTimeout,
+      clearTimeout: clearTimeout
+    }};
+    vm.createContext(sandbox);
+    vm.runInContext(appSource, sandbox);
+    function buildContext(overrides) {{
+      const context = {{
+        currentUser: {{permissions: ['*'], role: 'super_admin'}},
+        answerHubMonitor: {{
+          actionLoading: false,
+          lastError: '',
+          controlRollback: null,
+          service: {{status: 'online', message: ''}},
+          control: {{enabled: false, schedule_enabled: false, running: false, installed: true, available: true, plan: {{}}}}
+        }}
+      }};
+      Object.keys(appOptions.methods).forEach(function(name) {{
+        if (typeof appOptions.methods[name] === 'function') {{
+          context[name] = appOptions.methods[name].bind(context);
+        }}
+      }});
+      Object.assign(context.answerHubMonitor, (overrides || {{}}).answerHubMonitor || {{}});
+      Object.assign(context.answerHubMonitor.control, ((overrides || {{}}).answerHubMonitor || {{}}).control || {{}});
+      if ((overrides || {{}}).currentUser) context.currentUser = overrides.currentUser;
+      context.loadAutomationMonitor = function() {{ context.reloaded = true; }};
+      return context;
+    }}
+"""
+
+
+def _run_node_script(body: str) -> None:
+    node = shutil.which("node")
+    assert node, "Node.js is required for the automation monitor behavior test"
+    frontend_path = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
+    script = textwrap.dedent(
+        _APP_LOADER.format(frontend_path=json.dumps(str(frontend_path))) + textwrap.dedent(body)
+    )
+    completed = subprocess.run(
+        [node, "-e", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_start_and_stop_buttons_follow_the_real_automation_state() -> None:
+    _run_node_script(
+        """
+        const stopped = buildContext({});
+        assert.strictEqual(stopped.automationMonitorActionDisabled('start'), false, '已停止时「开始」应可点');
+        assert.strictEqual(stopped.automationMonitorActionDisabled('stop'), true, '已停止时「停止」应禁用');
+
+        const started = buildContext({answerHubMonitor: {control: {enabled: true}}});
+        assert.strictEqual(started.automationMonitorActionDisabled('start'), true, '已开始时「开始」应禁用');
+        assert.strictEqual(started.automationMonitorActionDisabled('stop'), false, '已开始时「停止」应可点');
+
+        const running = buildContext({answerHubMonitor: {control: {enabled: true, running: true}}});
+        assert.strictEqual(running.automationMonitorActionDisabled('stop'), false);
+        assert.strictEqual(running.automationMonitorActionDisabled('run'), true, '运行中不能再次立即执行');
+        assert.strictEqual(running.automationMonitorActionDisabled('retry'), true, '运行中不能重试失败任务');
+        process.exit(0);
+        """
+    )
+
+
+def test_run_and_retry_are_disabled_when_state_or_task_forbids_it() -> None:
+    _run_node_script(
+        """
+        // 已停止：两个会推进队列的按钮都不能点
+        const stopped = buildContext({});
+        assert.strictEqual(stopped.automationMonitorActionDisabled('run'), true);
+        assert.strictEqual(stopped.automationMonitorActionDisabled('retry'), true);
+
+        // 计划任务未安装：即使自动化处于「已开始」，也不能点这两个按钮
+        const missingTask = buildContext({
+          answerHubMonitor: {control: {enabled: true, installed: false, available: false}}
+        });
+        assert.strictEqual(missingTask.automationMonitorActionDisabled('start'), true, '已开始时「开始」禁用');
+        assert.strictEqual(missingTask.automationMonitorActionDisabled('stop'), false, '已开始时「停止」可点');
+        assert.strictEqual(missingTask.automationMonitorActionDisabled('run'), true);
+        assert.strictEqual(missingTask.automationMonitorActionDisabled('retry'), true);
+        assert.ok(missingTask.automationMonitorActionTitle('start').indexOf('未安装') !== -1, '悬停要说明为什么点不了');
+
+        // 服务不可用：状态未知，所有会改状态的按钮都禁用
+        const offline = buildContext({
+          answerHubMonitor: {service: {status: 'unavailable', message: '暂时无法连接 Answer Hub 服务，请检查服务和网络。'}}
+        });
+        ['start', 'stop', 'run', 'retry'].forEach(function(action) {
+          assert.strictEqual(offline.automationMonitorActionDisabled(action), true, action);
+        });
+        assert.ok(offline.automationMonitorAlert().indexOf('Answer Hub') !== -1);
+
+        // 无 account:manage 权限：按钮禁用（后端仍会独立拦截）
+        const noPerm = buildContext({currentUser: {permissions: ['knowledge:view'], role: 'visitor'}});
+        ['start', 'stop', 'run', 'retry'].forEach(function(action) {
+          assert.strictEqual(noPerm.automationMonitorActionDisabled(action), true, action);
+        });
+        assert.ok(noPerm.automationMonitorActionTitle('start').indexOf('管理账号') !== -1);
+        process.exit(0);
+        """
+    )
+
+
+def test_failed_start_rolls_back_the_optimistic_state_and_shows_the_reason() -> None:
+    _run_node_script(
+        """
+        const context = buildContext({});
+        sandbox.fetch = function() {
+          return Promise.reject(new Error('运行 Answer Hub 的电脑上还没有安装这个自动化计划任务，自动化无法开始或停止。'));
+        };
+        context.startAutomationProcess();
+        assert.strictEqual(context.answerHubMonitor.control.enabled, true, '请求发出前是乐观状态');
+        setTimeout(function() {
+          assert.strictEqual(context.answerHubMonitor.control.enabled, false, '失败后必须回滚成真实状态');
+          assert.strictEqual(context.answerHubMonitor.control.schedule_enabled, false);
+          assert.strictEqual(context.answerHubMonitor.controlRollback, null);
+          assert.ok(context.answerHubMonitor.lastError.indexOf('还没有安装这个自动化计划任务') !== -1, '失败原因必须留在页面上');
+          assert.ok(context.automationMonitorAlert().indexOf('还没有安装这个自动化计划任务') !== -1, '告警条必须显示出来');
+          assert.strictEqual(context.automationMonitorActionDisabled('start'), false, '回滚后「开始」应恢复可点');
+          assert.strictEqual(context.reloaded, true, '失败后应重新拉取真实状态');
+          process.exit(0);
+        }, 10);
+        """
+    )
+
+
+def test_disabled_buttons_are_visually_neutralised() -> None:
+    """禁用态不能用品牌绿底色，否则「已禁用」看起来比「可点」还亮。"""
+    assert ".automation-action-group .btn.start:disabled" in FRONTEND
+    assert ".automation-action-group .btn.stop:disabled" in FRONTEND
+    rule_start = FRONTEND.index(".automation-action-group .btn.start:disabled")
+    rule = FRONTEND[rule_start:FRONTEND.index("}", rule_start)]
+    assert "background:#f2f4f7" in rule
+    assert "color:#98a2b3" in rule
+    assert "opacity:1" in rule
+    assert "opacity:.5" not in rule
+    assert "0f9f88" not in rule
+    # 模板必须改用统一的判定方法，而不是各写一套表达式
+    assert ':disabled="automationMonitorActionDisabled(\'start\')"' in FRONTEND
+    assert ':disabled="automationMonitorActionDisabled(\'stop\')"' in FRONTEND
+    assert ':disabled="automationMonitorActionDisabled(\'run\')"' in FRONTEND
+    assert ':disabled="automationMonitorActionDisabled(\'retry\')"' in FRONTEND
+    # 后端返回的提示要能在页面上看到，不能只弹一次 alert
+    assert 'class="automation-alert"' in FRONTEND
+    assert "automationMonitorAlert()" in FRONTEND
+
