@@ -167,7 +167,177 @@ docker compose ... up -d --force-recreate --no-deps backend
 
 **切换后服务器本地 Answer Hub 不停**，保留作为随时可回滚的退路。确认稳定运行一段时间后，再执行 `systemctl stop answer-hub-api`（**停用不删除**）。
 
-## 五、夜间调度器
+## 五、切换前检查清单
+
+> **用途**：动手前 5 分钟内逐项打勾，确认「可以切」而不是「大概能切」。
+> **原则**：能在窗口前发现的问题，绝不留到窗口中途才发现。
+> 下表与 `scripts/local-migration/switch-answer-hub.sh` 的阶段 1 前置检查一一对应，但**人工先跑一遍**，避免脚本在中途 `fatal` 退出。
+
+| # | 检查项 | 期望结果 | 失败则 |
+|---|---|---|---|
+| 1 | 四个计划任务状态 | API/隧道 `Running`，巡检/看门狗 `Ready`；`Ready` 的任务 `LastTaskResult=0` | 先修任务，不切 |
+| 2 | 本机 API 进程在监听 | 8780 端口 LISTENING | 先修 API，不切 |
+| 3 | 隧道 + 业务接口（服务器侧） | `/health` 200 且业务接口 200 | 先修隧道，不切 |
+| 4 | 容器内可达隧道端口 | `172.18.0.1:18780` 返回 200 | 先查网关/隧道绑定，不切 |
+| 5 | 服务器本地 `answer-hub-api` | `active`（回滚目标，**必须可用**） | **禁止切换** |
+| 6 | 当前运行镜像 | 记录并核对，必须带 tag | 记录后由脚本再次防呆 |
+| 7 | 备份目录已生成且 3 个文件在 | 切换脚本阶段 2 的产物 | 不切，先查磁盘 |
+| 8 | `.env` 可写 | `-w` 为真 | 修权限后再切 |
+| 9 | 执行时机 | 低峰窗口，且与同事的部署不重叠 | 改期 |
+
+### 1. 四个计划任务都正常
+
+```powershell
+Get-ScheduledTask -TaskName 'AnswerHub-API-Local','AnswerHub-Tunnel',
+  'AnswerHub-Watch','Docker-Embedding-Watchdog' |
+  Select-Object TaskName,State,@{n='Last';e={($_.LastRunTime)}}
+```
+
+期望：
+
+| 任务 | 期望 State | 说明 |
+|---|---|---|
+| `AnswerHub-API-Local` | `Running` | 每 1 分钟周期触发 + `MultipleInstances=IgnoreNew`，进程活着时新实例被忽略，因此**长期显示 Running 是正常的** |
+| `AnswerHub-Tunnel` | `Running` | 同上 |
+| `AnswerHub-Watch` | `Ready` | 巡检脚本执行完即退出 |
+| `Docker-Embedding-Watchdog` | `Ready` | 同上 |
+
+```powershell
+Get-ScheduledTask -TaskName 'AnswerHub-API-Local','AnswerHub-Tunnel',
+  'AnswerHub-Watch','Docker-Embedding-Watchdog' |
+  Get-ScheduledTaskInfo | Select-Object TaskName,LastRunTime,LastTaskResult
+```
+
+> ⚠️ `LastTaskResult = 2147946720`（即 `0x800710E0` = ERROR_OPERATION_IN_PROGRESS）**是正常值**，含义是「上一实例还在跑，新实例被忽略」，不是报错。因此这个值通常只出现在显示 `Running` 的周期任务上；显示 `Ready` 的任务应当为 `0`。
+
+### 2. 本机 API 在监听
+
+```powershell
+Get-NetTCPConnection -LocalPort 8780 -State Listen |
+  Select-Object LocalAddress,LocalPort,OwningProcess
+```
+
+期望：至少一条 LISTENING。API 计划任务监听 `100.72.97.89:8780`。
+
+（这一项与下面的 HTTP 探测互补：端口在听但不响应，说明进程僵住了。）
+
+### 3. 本机 API 从服务器侧可达（隧道回环 + 业务接口）
+
+在**服务器**上执行：
+
+```bash
+# 3.1 服务器本地回环（先确认 API 自己活着）
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 10 http://127.0.0.1:8780/health
+# 期望 200
+
+# 3.2 经隧道回环（切换后 kb-backend 走的就是这条路）
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 10 http://127.0.0.1:18780/health
+# 期望 200
+
+# 3.3 业务接口（带鉴权，验证的不只是端口通、还包括业务路由和鉴权）
+KEY=$(grep -E '^ANSWER_HUB_API_KEY=' /opt/knowledge-kb/.env | cut -d= -f2-)
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 20 \
+     -H "X-Answer-Hub-Key: $KEY" http://127.0.0.1:18780/api/v1/automation/control
+# 期望 200（401 说明鉴权头没带上；404 先怀疑路径漏了 /api/v1 前缀）
+```
+
+⚠️ 上面第 3.3 条**不要把 `$KEY` 打印出来**：本仓库是 public，任何输出都会进日志。
+
+### 4. `kb-backend` 容器内能访问隧道端口
+
+```bash
+docker exec kb-backend python -c "
+import urllib.request
+r = urllib.request.urlopen('http://172.18.0.1:18780/health', timeout=15)
+print('HTTP', r.status)
+"
+# 期望：HTTP 200
+```
+
+这一项验证的是**切换后的真实路径**：容器经 Docker 网关 `172.18.0.1` 访问宿主机上的隧道端口。前三项都绿而这一项红，说明问题在 Docker 网络侧（网关 IP 变了、隧道只绑定在 `127.0.0.1`、或被防火墙拦了）。
+
+### 5. 服务器本地 `answer-hub-api` 是 active（回滚目标）
+
+```bash
+systemctl is-active answer-hub-api
+# 期望：active
+
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 8 http://127.0.0.1:8780/health
+# 期望 200（这里指的是服务器本地那份 Answer Hub）
+```
+
+⚠️ **这是整个清单里唯一的硬门槛**：回滚目标不可用时**绝对不要切换**。切换后遇到问题想回滚，等于从一个坏状态退回另一个坏状态。
+
+### 6. 当前运行镜像是什么（人工核对）
+
+```bash
+docker inspect kb-backend --format '{{.Config.Image}}'
+# 例：kb-backend:20260930（必须带 tag）
+
+docker inspect kb-backend --format '{{.Image}}'
+# 镜像 ID，形如 sha256:....
+```
+
+把这两个值抄进切换记录。切换脚本会在启动时再读一次 `{{.Config.Image}}` 生成 `compose.pin-image.yml` 钉死它，并做防呆：**读不到镜像名、或缺 tag，直接拒绝执行**。人工核对的目的，是确认「脚本即将钉死的那个镜像」就是你以为的那一个 —— 若镜像名带 `:latest` 这类浮动 tag，说明这里曾被人手动重建过，需要先查清来源再决定是否切换。
+
+### 7. 备份目录是否已生成、`.env` 是否可写
+
+切换脚本的阶段 2 会把备份写到：
+
+```bash
+ls -l /opt/knowledge-kb-runtime/switch-backup-<时间戳>/
+# 期望有 3 个文件：
+#   env.bak                切换前的 .env 完整副本
+#   urls.before.txt        切换前两行 URL 的快照（回滚时的权威副本）
+#   kb-backend.before.json 切换前的容器完整配置
+```
+
+建议在**正式切换前**先跑一次 dry-run（它只做前置检查与备份、不改任何配置），用它的输出确认备份目录真的建得出来：
+
+```bash
+bash /opt/knowledge-kb-runtime/switch-answer-hub.sh --dry-run
+```
+
+`.env` 可写性：
+
+```bash
+test -w /opt/knowledge-kb/.env && echo "可写 OK" || echo "不可写 ❌ 停止切换"
+```
+
+### 8. 建议的执行时机
+
+| 要求 | 原因 |
+|---|---|
+| 低峰时段（建议 22:00 — 次日 06:00） | 切换瞬间有约 5~10 秒的 502（见第七节第 5 条） |
+| 与同事的部署窗口错开 | 见第十节「待决事项」：该环境的部署由同事负责 |
+| 避开夜间队列窗口 | 夜间拉取仍在服务器上跑，队列当前还卡着（见第十节「待决事项」） |
+| 本机 GPU 容器稳定运行 | 服务器生产的嵌入链路经过本机，本机抖动会波及服务器 |
+
+⚠️ 切换过程中**不要动本机**：重启本机会同时中断服务器生产的嵌入能力（原因见第七节第 7 条）。
+
+### 9. 执行命令与 dry-run 命令
+
+```bash
+# 第一步：dry-run（只做前置检查 + 生成备份目录，不改任何配置）
+bash /opt/knowledge-kb-runtime/switch-answer-hub.sh --dry-run
+
+# 第二步：确认 dry-run 全部 ✅ 后，正式切换
+bash /opt/knowledge-kb-runtime/switch-answer-hub.sh
+```
+
+正式切换会依次输出：钉死镜像 → 阶段 1 前置检查 → 阶段 2 备份 → 阶段 3 改 `.env` 两行 → 阶段 4 `--force-recreate --no-deps --no-build` 重建 → 等 `healthy`（最多 300 秒，超时自动回滚）→ 阶段 5 验证（容器内 URL 生效 + `/ready` 200 + 公网入口）→ 阶段 6 提示观察本机请求日志 → 打印回滚所需信息。
+
+同时开一个窗口盯本机收到的请求：
+
+```powershell
+Get-Content E:\answer-hub-runtime\api-access.log -Tail 20 -Wait
+```
+
+期望：出现来自 `kb-backend` 的规律请求（「运行监管」页面走的就是这条路）。
+
+> **关于自动化与人工重复**：脚本自己会重跑上面第 1~7 项，任一项失败即中止。人工先跑一遍的价值在于「提前发现问题」，而不是「替代脚本」。**若切换中途失败，请信任脚本的自动回滚，不要手工抢着改配置** —— 手工与脚本同时动手会把状态搅得更乱。
+
+## 六、夜间调度器
 
 服务器用 systemd（`answer-hub-queue.timer` + `run_scheduled_queue.sh`），本机需要 Windows 等价物。
 
@@ -196,10 +366,15 @@ docker compose ... up -d --force-recreate --no-deps backend
 
 因此本机调度器「已实现但暂不启用」。
 
-## 六、已知陷阱
+## 七、已知陷阱
 
 | 陷阱 | 现象 | 应对 |
 |---|---|---|
+| `docker compose up` 误重新构建镜像 | `/opt/knowledge-kb/docker-compose.yml` 里 `backend` 服务用的是 `build:` 而非 `image:`，重建容器会**顺带把生产代码换成当前 checkout 的版本**。本仓库已因此出过事故（alembic 迁移版本缺失导致 `kb-backend` 起不来） | 切换脚本改为：运行时读当前镜像 → 生成 override 钉死 → 配合 `--no-build`；并加防呆（读不到镜像名或缺 tag 就拒绝执行）。**永远不要在这套 compose 上裸跑 `up`** |
+| `kb-backend` 没有 `/health` 端点 | `curl http://127.0.0.1:8000/health` 返回 **HTTP 000**（连接层面就没有该路由），看起来像「生产挂了」 | 正确的端点是 `/ready`：就绪返回 `{"status":"ready"}`，依赖未就绪返回 503。判断生产是否恢复可服务**必须看 `/ready`**；容器自身 healthcheck 用的也是 `/ready` |
+| 公开仓库里服务器地址必须脱敏 | 本仓库是 public，一旦把服务器公网地址写进脚本或文档就等于对外公开 | 服务器公网地址统一用 `<SERVER_HOST>` 占位；输出日志时不要把密钥值 `echo` 出来 |
+| PowerShell 变量名不区分大小写 | `$rt`（reasoning token 数）静默覆盖了 `$RT`（路径变量）—— 两者是同一个变量 | 变量名不用大小写区分语义；命名时加限定词（如 `$RuntimeRoot`）。此坑曾导致冒烟测试出现两处假失败 |
+| 临时探测工具本身也会出错 | 本会话出现三类自伤：探测路径漏写 `/api/v1` 前缀 → 误报 404；把当前时间估早 10 分钟 → 误判巡检停摆；用 `git show` 提取脚本内容做语法检查 → 内容损坏 → 误报语法错误 | **任何异常信号在下结论前必须用独立方式复验，并优先怀疑测量方法本身**，而不是先怀疑生产 |
 | SSH 管道丢输出 | 管道里最后一条命令的结果丢失，显示成 `HTTP 000`，**误判为生产故障** | 验证关键状态时单独执行；或写入文件后再读 |
 | 硬编码 `\r` | 传给远程的参数带 `\r`，产生名为 `automation-runs\r\n` 的怪异目录、或 `--output-dir` 失效导致「0 runs」 | 远程脚本统一 `-replace "\`r",""` |
 | PowerShell 5.1 解析中文脚本 | `The string is missing the terminator` | 用 `pwsh.exe`（PowerShell 7）执行含中文的 `.ps1` |
@@ -208,7 +383,100 @@ docker compose ... up -d --force-recreate --no-deps backend
 | `ExitOnForwardFailure=yes` | 服务器端口被旧隧道占用时，新隧道直接退出（退出码 255）——**这是正确行为** | 重启隧道前先确认远端端口已释放 |
 | 不要在别人的项目目录跑 compose | 会重建别的项目的生产容器（曾造成约 20 分钟中断） | 显式传全部 `-f`，绝不在其他项目目录裸跑 `docker compose` |
 
-## 七、验证方法
+## 八、尚未覆盖的风险
+
+> **诚实声明**：本节记录本次准备工作中**没有验证过**的部分，供执行人决策。
+> 列出它们不是为了免责，而是为了让执行人预先知道边界在哪里 —— 本手册前面已多处出现「已实现但未验证」的状态。
+
+| # | 未覆盖的风险 | 影响 | 目前状态 |
+|---|---|---|---|
+| 1 | **脚本的回滚路径从未真正执行过** | 第一次执行时，回滚可能也不work | 只走通 dry-run 阶段 2 |
+| 2 | `/ready` 是硬编码假设 | 假失败会误触发回滚 | 未经故障注入 |
+| 3 | `/ready` 200 ≠ 端到端业务可用 | 可能「技术成功、业务不可用」 | 需人工确认 |
+| 4 | 公网入口失败只告警、不回滚 | 公网故障时切换仍宣告成功 | 有意的取舍 |
+| 5 | 切换有约 5~10 秒的 502 | 用户可见短暂失败 | 已实测，需选低峰 |
+| 6 | 本机重启（`Boot` 触发）从未验证 | 自愈能力在重启后是未知数 | 建任务后未重启过 |
+| 7 | 重启本机会中断服务器生产的嵌入 | 影响服务器生产 | 迁移前就存在的依赖 |
+| 8 | 镜像钉死文件在切换过程中无二次校验 | 理论上存在被篡改窗口 | 仅切换前读一次 |
+
+以下逐条展开。
+
+### 1. ⚠️ 脚本的回滚路径从未被执行过
+
+切换脚本（`switch-answer-hub.sh`）含自动回滚，但**真实的切换流程只走到 dry-run 的阶段 2（前置检查 + 备份）**。以下分支**仅经代码审查，未做故障注入验证**：
+
+- `rollback()` 本身（还原 `.env` + 重建容器 + 等 `healthy`）
+- 容器未在 300 秒内健康 → 自动回滚分支
+- `/ready` 未在 120 秒内返回 200 → 自动回滚分支
+- 镜像漂移检测（`Config.Image` 变了 / 同 tag 指向了新构建的 imageID）→ 自动回滚分支
+
+**含义**：第一次执行切换时，**回滚路径也同样是「第一次执行」**。所以「反正有自动回滚」不能当作兜底保证。
+
+**建议**：首次执行选在绝对低峰 + 有人值守的窗口；把「手工回滚」的两条命令单独抄在手边，不依赖脚本。
+
+### 2. ⚠️ `/ready` 端点是硬编码假设
+
+脚本里 `KB_BACKEND_URL=http://127.0.0.1:8000`、路径 `/ready` 都是写死的。
+
+**风险场景**：将来 `kb-backend` 换了容器端口、或改了路由前缀，这个检查会一直返回 `000`/`404`，脚本会**误判为「后端起不来」并回滚**。
+
+**关键认知**：这是**假失败，不是真故障**。排查时先确认 `/ready` 这个假设是否还成立，再去查容器。
+
+**改进方向**：把探测 URL 做成参数，或直接以容器自身的 healthcheck 状态（`docker inspect --format '{{.State.Health.Status}}'`）作为判据。
+
+### 3. `/ready` 返回 200 不等于端到端业务可用
+
+`/ready` 200 只说明**后端自身与依赖就绪**，不代表「运行监管」页面真的能正常用。
+
+端到端还需要：公网入口 2xx（本节第 4 条说明它不参与回滚）、本机 `api-access.log` 出现来自 `kb-backend` 的请求、页面手工操作正常。**后者是唯一能证明「业务可用」的证据，必须人工做。**
+
+### 4. 公网入口检查失败时「只告警、不触发回滚」
+
+这是**有意的取舍**，理由：公网可达性受宝塔 nginx / CDN / 运营商链路影响，可能因与本切换无关的原因短暂失败。如果让它触发回滚，就会出现「回滚一个本身完全正常的切换」。
+
+**代价**：公网入口真的故障时，切换过程**仍会宣告成功**（脚本末尾照样打印「切换完成 ✅」）。执行人必须自己看阶段 5 的公网检查结果，⚠️ 不能只看结尾那一行。
+
+### 5. 切换时约 5~10 秒的短暂 502（已实测）
+
+`--force-recreate` 会让容器重启，期间 nginx 反代会返回 502：
+
+```
+容器启动 → 应用可服务：约 3~5 秒
+import app.main 实测：  1.77 秒
+healthcheck：/ready，Interval 10s / Retries 10 / StartPeriod 0s
+=> 状态机判定 + 重建开销合计，用户可感知的 502 窗口约 5~10 秒
+```
+
+**处置**：选低峰执行；若确认有用户正在使用，提前打招呼。
+
+### 6. ⚠️ 本机重启（`Boot` 触发）从未验证
+
+四个计划任务都配了 `Boot` 触发，但**建任务后本机未重启过**（GPU 容器连续运行 21 小时可佐证）。因此「本机重启后一切自动恢复」这一条**属于假设，不是已验证事实**。
+
+**影响**：本机重启后，若任务没有自动起来，那么：
+
+- 服务器生产的**嵌入**能力会中断（见下一条）
+- 切换后，Answer Hub 的调用链也会中断
+
+### 7. ⚠️ 重启本机会短暂中断「服务器生产的嵌入能力」
+
+这不是本次迁移引入的，而是**迁移前就存在**的依赖：
+
+```
+服务器 kb-backend 的 EMBEDDING_BASE_URL
+  → 本机 GPU 容器 kb-embedding-qwen（经 :18080 隧道）
+```
+
+所以**重启本机 = 短暂影响服务器生产**。禁止在生产时段为了「验证 Boot 触发」而重启本机；必须走低峰窗口 + 人工确认。同理，不要在切换窗口前后安排本机维护。
+
+### 8. 其他已知但未验证的细节
+
+- **镜像钉死文件在切换过程中没有二次校验**：脚本在**切换前**只读一次 `Config.Image` 并生成钉死文件；切换过程中不会再次比对「钉死文件是否被人改过」。→ **首次执行时请先手工抄下镜像名与 imageID，与脚本输出逐一比对。**
+- **首次切换的完整耗时未实测**：只能按各阶段超时上限推算最坏约 7~8 分钟（3010s 健康等待 + 120s `/ready` 等待 + 约 30s 公网轮询）。真实耗时尚无数据。
+- **备份目录的清理策略未明确**：`/opt/knowledge-kb-runtime/switch-backup-<时间戳>/` 会随时间累积，长期可能占用磁盘，但删除时机需人工决定（回滚窗口结束前不能删）。
+- **Windows 端「nightly-scheduler」计划的启用顺序未演练**：见第六节 —— 必须「先停服务器的 `answer-hub-queue.timer`，再启用本机调度任务」，且必须确认不会两台机器同时拉同一批数据（双跑会产生重复处理）。
+
+## 九、验证方法
 
 ### 数据对等性
 
@@ -233,7 +501,7 @@ SELECT COUNT(*) FROM model_runs;        -- 8166
 SELECT COUNT(*) FROM ingestion_records; -- 2781
 ```
 
-## 八、待决事项
+## 十、待决事项
 
 1. **夜间队列阻塞**：`job-20260926-200330-a33725f4` 已成功处理 995 条，仅 6 条 CZ 同步失败，导致整个队列跳过 17 天（`cursor_date` 停在 `2026-09-13`）。处理方式涉及「是否向 CZ 提交 995 条候选」，需业务决策。
 2. **切换窗口**：需与正在部署该环境的同事协调。
