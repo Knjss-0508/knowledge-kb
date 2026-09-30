@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import locale
 import os
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -24,15 +25,76 @@ CommandRunner = Callable[..., CompletedProcess[str]]
 RetryLauncher = Callable[..., Any]
 
 
+def _console_output_encoding() -> str:
+    """Return the Windows console output code page, or an empty string.
+
+    Localised Windows commands (``schtasks.exe`` and friends) print text in the
+    encoding of the console they run on: the console code page on a Chinese
+    system (cp936), or UTF-8 when that code page is 65001.
+    """
+
+    if os.name != "nt":
+        return ""
+    try:
+        import ctypes
+
+        code_page = int(ctypes.windll.kernel32.GetConsoleOutputCP())
+    except (AttributeError, OSError, ValueError):  # pragma: no cover - platform dependent
+        return ""
+    return f"cp{code_page}" if code_page else ""
+
+
+def _native_output_encodings() -> tuple[str, ...]:
+    """Candidate encodings for text printed by localised Windows commands.
+
+    UTF-8 comes first because it validates itself: text that decodes as UTF-8 is
+    UTF-8, and cp936 output fails that check instead of being silently mangled.
+    The console code page and the system preferred encoding follow, so Chinese
+    output printed as cp936 is still read correctly.
+    """
+
+    encodings: list[str] = []
+    seen: set[str] = set()
+    for candidate in (
+        "utf-8",
+        _console_output_encoding(),
+        locale.getpreferredencoding(False),
+    ):
+        if not candidate or candidate.casefold() in seen:
+            continue
+        seen.add(candidate.casefold())
+        encodings.append(candidate)
+    return tuple(encodings)
+
+
+def _decode_native_output(payload: bytes | str | None) -> str:
+    """Decode command output without replacing localised text with U+FFFD.
+
+    A fixed ``encoding="utf-8"`` turns cp936 output into replacement characters,
+    which silently broke field lookups such as ``计划任务状态`` in
+    :meth:`AutomationTaskController.status`. Unknown encodings and undecodable
+    bytes fall back to the system encoding with ``errors="replace"``.
+    """
+
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload
+    for encoding in _native_output_encodings():
+        try:
+            return payload.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return payload.decode(locale.getpreferredencoding(False), errors="replace")
+
+
 def _run_command(command: list[str], **kwargs: Any) -> CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        capture_output=True,
-        check=False,
-        encoding="utf-8",
-        errors="replace",
-        text=True,
-        **kwargs,
+    result = subprocess.run(command, capture_output=True, check=False, **kwargs)
+    return CompletedProcess(
+        result.args,
+        result.returncode,
+        _decode_native_output(result.stdout),
+        _decode_native_output(result.stderr),
     )
 
 
