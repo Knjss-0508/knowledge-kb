@@ -55,6 +55,27 @@ fatal() { log "❌ $*"; exit 1; }
 
 KEY=$(grep -E "^ANSWER_HUB_API_KEY=" "$ENVFILE" | cut -d= -f2-)
 
+# 记录切换前的两行 URL 值，用于结尾打印回滚信息（备份文件 urls.before.txt 才是权威副本）
+URL_BEFORE=$(grep -E "^ANSWER_HUB_(BASE_URL|API_BASE_URL)=" "$ENVFILE")
+
+# 只读探测：输出 HTTP 状态码，失败时输出 000。
+# set -uo pipefail 下 curl 非零退出不会终止脚本，这里显式兜底。
+http_code() {
+  local url="$1" timeout="${2:-10}" extra="${3:-}"
+  local c
+  c=$(curl -s -o /dev/null -w '%{http_code}' --max-time "$timeout" $extra "$url" 2>/dev/null)
+  [ -n "$c" ] || c=000
+  printf '%s' "$c"
+}
+
+# ⚠️ kb-backend 没有 /health 端点（实测 HTTP 000，连接层面无此路由）。
+#    判断它是否真的可对外服务，唯一可靠的端点是 /ready：
+#      - 依赖就绪 → HTTP 200 {"status":"ready"}
+#      - 依赖未就绪 → HTTP 503 {"status":"not_ready","errors":[...]}
+#    容器自身的 healthcheck 用的也是 /ready。
+KB_BACKEND_URL=http://127.0.0.1:8000
+PUBLIC_URL=https://knowledgekb.powerzhuan.cn
+
 log "==================== 阶段 1: 前置检查 ===================="
 # 1.1 本机 API
 c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://100.72.97.89:8780/health)
@@ -134,6 +155,10 @@ for i in $(seq 1 30); do
 done
 
 rollback() {
+  if [ $DRY -eq 1 ]; then
+    log "  [dry-run] 跳过回滚（未改任何生产配置）"
+    return 0
+  fi
   log ""
   log "==================== 回滚 ===================="
   cp "$BAK/env.bak" "$ENVFILE"
@@ -148,8 +173,37 @@ rollback() {
   log "  回滚备份保留在: $BAK"
 }
 
+# 镜像漂移自检：线上可能手动重建过，先报告（不改容器），供人工判断
+NOW_IMAGE=$(docker inspect kb-backend --format '{{.Config.Image}}' 2>/dev/null)
+IMG_WAS=$(docker inspect kb-backend --format '{{.Image}}' 2>/dev/null)
+if [ -n "$NOW_IMAGE" ] && [ "$NOW_IMAGE" != "$CURRENT_IMAGE" ]; then
+  log "  ⚠️ 注意：重启前镜像已与脚本开头钉死值不同（可能有人手动重建过）"
+  log "     脚本开头: $CURRENT_IMAGE"
+  log "     当前容器: $NOW_IMAGE"
+fi
+
 [ $ok -eq 1 ] || { log "  ❌ 容器未在 300 秒内健康"; rollback; exit 1; }
 log "  ✅ kb-backend 已健康"
+
+# ---- 改进 2：区分「容器已重建」与「镜像未变」 ----
+# 重建必须确实发生过（否则改的 .env 不会进容器），但镜像必须与切换前完全一致，
+# 否则说明切换顺带发布了代码 —— 这是最后一道防线，直接回滚。
+NEW_IMAGE=$(docker inspect kb-backend --format '{{.Config.Image}}' 2>/dev/null)
+NEW_IMAGE_ID=$(docker inspect kb-backend --format '{{.Image}}' 2>/dev/null)
+log "  容器已重建：镜像 $NEW_IMAGE / imageID $NEW_IMAGE_ID"
+if [ "$NEW_IMAGE" != "$CURRENT_IMAGE" ]; then
+  log "  ❌ 镜像漂移：当前镜像与切换前钉死的镜像不一致（切换顺带发布了代码？）"
+  log "     切换前: $CURRENT_IMAGE"
+  log "     当前值: $NEW_IMAGE"
+  rollback; exit 1
+fi
+if [ -n "$IMG_WAS" ] && [ "$NEW_IMAGE_ID" != "$IMG_WAS" ]; then
+  log "  ❌ 异常：容器已重建，但镜像 ID 与重建前不同（同 tag 指向了新构建的镜像？）"
+  log "     重建前 imageID: $IMG_WAS"
+  log "     当前   imageID: $NEW_IMAGE_ID"
+  rollback; exit 1
+fi
+log "  ✅ 镜像未变（仍为切换前钉死的 $CURRENT_IMAGE），配置切换未夹带代码发布"
 
 log ""
 log "==================== 阶段 5: 验证 ===================="
@@ -157,8 +211,44 @@ E=$(docker inspect kb-backend --format '{{range .Config.Env}}{{println .}}{{end}
 log "  容器实际生效值:"; echo "$E" | sed 's/^/      /'
 echo "$E" | grep -q ":$NEWPORT" || { log "  ❌ 容器内 URL 未生效"; rollback; exit 1; }
 
-c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://knowledgekb.powerzhuan.cn/ 2>/dev/null)
-log "  公网站点: HTTP $c"
+# ---- 改进 1：kb-backend 可服务性必须看 /ready，不能看 /health ----
+# kb-backend 没有 /health 路由（实测 HTTP 000），/ready 才是它自己的就绪探针。
+log "  等待 kb-backend /ready 返回 200（最多 120s）..."
+ready_ok=0
+for i in $(seq 1 24); do
+  rc=$(http_code "$KB_BACKEND_URL/ready" 8)
+  log "      +$((i*5))s  GET $KB_BACKEND_URL/ready -> HTTP $rc"
+  if [ "$rc" = "200" ]; then ready_ok=1; break; fi
+  sleep 5
+done
+if [ $ready_ok -ne 1 ]; then
+  body=$(curl -s --max-time 8 "$KB_BACKEND_URL/ready" 2>/dev/null | head -c 300)
+  [ -n "$body" ] || body="(无响应体)"
+  log "  ❌ kb-backend /ready 未在 120 秒内返回 200（最后状态 HTTP $rc）"
+  log "     响应: $body"
+  log "     注意：kb-backend 没有 /health 端点，HTTP 000 属预期，不代表可服务性"
+  rollback; exit 1
+fi
+rbody=$(curl -s --max-time 8 "$KB_BACKEND_URL/ready" 2>/dev/null | head -c 200)
+log "  ✅ kb-backend $KB_BACKEND_URL/ready 200  响应: $rbody"
+
+# 公网入口（宝塔 nginx 反代 127.0.0.1:8000），保留检查并轮询等待
+pub_ok=0
+for i in $(seq 1 6); do
+  c=$(http_code "$PUBLIC_URL/ready" 15)
+  log "  公网站点 $PUBLIC_URL/ready: HTTP $c"
+  case "$c" in 2*) pub_ok=1; break ;; esac
+  sleep 5
+done
+c=$(http_code "$PUBLIC_URL/" 15)
+log "  公网站点首页: HTTP $c"
+if [ $pub_ok -eq 1 ]; then
+  log "  ✅ 公网入口可用"
+else
+  log "  ⚠️ 公网 /ready 未返回 2xx（$(http_code "$PUBLIC_URL/ready" 15)）；容器本地已 200，"
+  log "     可能是宝塔 nginx 或 CDN 侧问题，请人工确认后再处置"
+fi
+
 c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 http://127.0.0.1:8780/health)
 log "  服务器本地 Answer Hub（保留未停）: HTTP $c"
 
@@ -171,5 +261,28 @@ log "  确认能看到来自 kb-backend 的请求"
 
 log ""
 log "==================== 切换完成 ✅ ===================="
-log "  备份: $BAK"
-log "  回滚命令: cp $BAK/env.bak $ENVFILE && 重建 backend"
+
+# ---- 改进 3：打印回滚所需信息，供人工处置（不打印任何密钥值） ----
+URL_AFTER=$(grep -E "^ANSWER_HUB_(BASE_URL|API_BASE_URL)=" "$ENVFILE")
+COMPOSE_CMD=""
+for f in "${COMPOSE[@]}"; do
+  COMPOSE_CMD="$COMPOSE_CMD -f $f"
+done
+
+log ""
+log "---- 回滚所需信息（请留存） ----"
+log "  [.env 切换前]"
+printf '%s\n' "$URL_BEFORE" | sed 's/^/      /'
+log "  [.env 切换后]"
+printf '%s\n' "$URL_AFTER" | sed 's/^/      /'
+log "  备份目录:            $BAK"
+log "  备份的 .env:         $BAK/env.bak"
+log "  切换前 URL 快照:     $BAK/urls.before.txt"
+log "  切换前容器配置:      $BAK/kb-backend.before.json"
+log "  镜像（未变）:        $CURRENT_IMAGE"
+log "  回滚方法（把 .env 改回 :8780 后重建；--no-build + 镜像钉死文件保证不重新构建代码）:"
+log "      cp $BAK/env.bak $ENVFILE"
+log "      cd $WORKDIR && docker compose$COMPOSE_CMD \\"
+log "        --env-file $ENVFILE up -d --force-recreate --no-deps --no-build backend"
+log "  说明：以上命令中的 $PINFILE 已钉死镜像 $CURRENT_IMAGE"
+log "  回滚后核验:  curl -s -o /dev/null -w '%{http_code}\\n' $KB_BACKEND_URL/ready   # 期望 200"
