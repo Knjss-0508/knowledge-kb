@@ -499,7 +499,25 @@
     .blind-label-candidate-reply{padding:12px 16px;background:#fff;color:#344054;font-size:12px;line-height:1.72;white-space:pre-wrap;overflow-wrap:anywhere}.blind-label-candidate-reply-empty{color:#98a2b3}.blind-label-candidate-details{border-top:1px solid #e8edef;background:#f8fafb}.blind-label-candidate-details>summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 16px;color:#475467;font-size:11px;font-weight:800;cursor:pointer;list-style:none;user-select:none}.blind-label-candidate-details>summary::-webkit-details-marker{display:none}.blind-label-candidate-details>summary:after{content:'⌄';color:#98a2b3;font-size:14px;line-height:1;transition:transform .15s ease}.blind-label-candidate-details[open]>summary:after{transform:rotate(180deg)}.blind-label-candidate-details-toggle{margin-left:auto;color:#98a2b3;font-size:10px;font-weight:500}.blind-label-candidate-details[open] .blind-label-candidate-details-toggle{color:#007f6b;font-size:0}.blind-label-candidate-details[open] .blind-label-candidate-details-toggle:after{content:'收起';font-size:10px}.blind-label-candidate-details .blind-label-candidate-body{border-top:1px solid #edf1f2;padding:12px 16px;background:#fbfcfd}.blind-label-candidate-detail-empty{color:#98a2b3}.blind-label-candidate-headline .blind-label-candidate-rank,.blind-label-annotator-candidate .blind-label-candidate-rank{display:inline-flex!important;align-items:center;justify-content:center;flex:0 0 64px!important;flex-shrink:0!important;width:64px!important;min-width:64px!important;max-width:64px!important;height:32px!important;padding:0 8px!important;white-space:nowrap!important;word-break:keep-all!important;overflow-wrap:normal!important;line-height:1!important}
     .blind-label-candidate-headline .blind-label-candidate-rank,.blind-label-annotator-candidate .blind-label-candidate-rank{flex-basis:52px!important;width:52px!important;min-width:52px!important;max-width:52px!important;height:28px!important;padding:0 6px!important;font-size:11px!important}
     @media(max-width:760px){.blind-label-candidate-content-head{align-items:flex-start;flex-wrap:wrap;padding:10px 14px 0}.blind-label-candidate-content-head>span:last-child{margin-left:0;text-align:left;white-space:normal}.blind-label-candidate-reply{padding:12px 14px}.blind-label-candidate-details>summary{padding:9px 14px}.blind-label-candidate-details .blind-label-candidate-body{padding:12px 14px}}
-  </style>
+      /* 盲标候选视觉层级：用低饱和背景区分卡片、标题、正文和操作区。 */
+    .blind-label-candidate-section{padding:12px;border:1px solid #e1ece9;border-radius:10px;background:#f8fbfa}
+    .blind-label-candidate{border-color:#cfe3de;box-shadow:0 1px 3px rgba(16,24,40,.045)}
+    .blind-label-candidate-headline{background:#f1faf7;border-bottom:1px solid #dbece7}
+    .blind-label-candidate-content{background:#fff}
+    .blind-label-candidate-details{background:#f5faf8}
+    .blind-label-candidate-details>summary{background:#edf7f4}
+    .blind-label-candidate-details>summary:hover{background:#e7f4f0}
+    .blind-label-candidate-details[open]>summary{background:#e3f3ed;color:#246b5d}
+    .blind-label-choice-buttons .btn{background:#eef9f6;border-color:#abdcd1;color:#087b69}
+    .blind-label-choice-buttons .btn:hover{background:#e2f5f0;border-color:#78c8b7;color:#006d5c}
+    .blind-label-choice-buttons .btn.on-helpful{background:#ccefe5;border-color:#0d9b82;color:#006d5c;box-shadow:0 0 0 2px rgba(13,155,130,.12)}
+    .blind-label-choice-buttons .btn.on-unhelpful{background:#ffe1dc;border-color:#df8173;color:#b42318;box-shadow:0 0 0 2px rgba(223,129,115,.12)}
+    .blind-label-mode-actions .btn{background:#fff3f1;border-color:#efc0b8;color:#b5473a}
+    .blind-label-mode-actions .btn:hover{background:#ffe9e5;border-color:#df8173;color:#a2382c}
+    .blind-label-mode-actions .btn.on-unhelpful{background:#ffdcd6;border-color:#df8173;color:#a2382c;box-shadow:0 0 0 2px rgba(223,129,115,.12)}
+    .blind-label-arbitration-box .blind-label-choice-buttons .btn:last-child{background:#fff3f1;border-color:#efc0b8;color:#b5473a}
+    .blind-label-arbitration-box .blind-label-choice-buttons .btn:last-child:hover{background:#ffe9e5;border-color:#df8173;color:#a2382c}
+</style>
 </head>
 <body>
 <div id="app">
