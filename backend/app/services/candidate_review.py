@@ -136,10 +136,9 @@ def evaluate_review_status(
     if draft_disposition == "hold_for_evidence":
         return "pending", False, "模型判断需要补充证据或业务确认后再复核知识草稿"
     if knowledge_value == "worthy" and (
-        draft_disposition == "approved"
-        and (usability == "usable" or decision in {"approved", "approved_with_changes"})
+        usability == "usable" or decision in {"approved", "approved_with_changes"}
     ):
-        return "ready", True, "人工确认值得沉淀且模型判断草稿合格，可提交发布审核"
+        return "ready", True, "人工确认值得沉淀，可提交发布审核"
     if bool(selection.get("eligible")):
         return "ready", True, "上游模型或人工门禁已通过"
     return "pending", False, "等待人工确认沉淀价值和可用性"
