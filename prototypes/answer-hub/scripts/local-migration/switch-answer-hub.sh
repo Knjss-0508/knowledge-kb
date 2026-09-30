@@ -22,6 +22,34 @@ COMPOSE=(-f $WORKDIR/docker-compose.yml -f $WORKDIR/docker-compose.embedding-cpu
          -f $WORKDIR/.codex-deploy-20260930-layout-7bc/compose.layout.yml \
          -f $WORKDIR/.codex-deploy-20260930-embedded-chat-2e1/compose.embedded-chat.yml)
 
+# ⚠️ 关键安全措施：把 backend 的镜像钉死在「当前正在运行的镜像」上
+#
+# 背景：/opt/knowledge-kb/docker-compose.yml 里 backend 服务用的是 build: 而非 image:，
+#       因此 `docker compose up` 会【重新构建镜像】，把生产代码换成当前 checkout 的版本，
+#       而不是继续使用正在运行的镜像。切换只是改两个环境变量，绝不能顺带发布代码 ——
+#       本仓库今天已因此出过事故（alembic 迁移版本缺失导致 kb-backend 起不来）。
+#
+# 做法：运行时读取 kb-backend 当前镜像，生成 override 文件钉死，并配合 --no-build。
+PINFILE=/opt/knowledge-kb-runtime/compose.pin-image.yml
+CURRENT_IMAGE=$(docker inspect kb-backend --format '{{.Config.Image}}' 2>/dev/null)
+if [ -z "$CURRENT_IMAGE" ]; then
+    echo "❌ 无法读取 kb-backend 当前镜像，拒绝继续（避免误重建）" >&2
+    exit 1
+fi
+case "$CURRENT_IMAGE" in
+    *:*) ;;
+    *) echo "❌ 镜像名缺少 tag（$CURRENT_IMAGE），拒绝继续" >&2; exit 1 ;;
+esac
+cat > "$PINFILE" <<PINEOF
+# 由 switch_answer_hub.sh 自动生成：钉死镜像，避免切换时误重建代码
+services:
+  backend:
+    image: $CURRENT_IMAGE
+PINEOF
+COMPOSE+=(-f "$PINFILE")
+echo "[switch] 已钉死镜像: $CURRENT_IMAGE"
+echo "[switch] override:   $PINFILE"
+
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 fatal() { log "❌ $*"; exit 1; }
 
@@ -93,7 +121,7 @@ grep -nE "^ANSWER_HUB_(BASE_URL|API_BASE_URL)=" "$ENVFILE" | sed 's/^/      /'
 log ""
 log "==================== 阶段 4: 重建 kb-backend ===================="
 cd "$WORKDIR" || fatal "无法进入 $WORKDIR"
-docker compose "${COMPOSE[@]}" --env-file "$ENVFILE" up -d --force-recreate --no-deps backend 2>&1 | tail -8 | sed 's/^/      /'
+docker compose "${COMPOSE[@]}" --env-file "$ENVFILE" up -d --force-recreate --no-deps --no-build backend 2>&1 | tail -8 | sed 's/^/      /'
 
 log "  等待容器健康..."
 ok=0
@@ -110,7 +138,7 @@ rollback() {
   log "==================== 回滚 ===================="
   cp "$BAK/env.bak" "$ENVFILE"
   log "  已还原 .env"
-  docker compose "${COMPOSE[@]}" --env-file "$ENVFILE" up -d --force-recreate --no-deps backend 2>&1 | tail -5 | sed 's/^/      /'
+  docker compose "${COMPOSE[@]}" --env-file "$ENVFILE" up -d --force-recreate --no-deps --no-build backend 2>&1 | tail -5 | sed 's/^/      /'
   for i in $(seq 1 30); do
     sleep 10
     h=$(docker inspect kb-backend --format '{{.State.Health.Status}}' 2>/dev/null)
