@@ -264,10 +264,22 @@ log "==================== 切换完成 ✅ ===================="
 
 # ---- 改进 3：打印回滚所需信息，供人工处置（不打印任何密钥值） ----
 URL_AFTER=$(grep -E "^ANSWER_HUB_(BASE_URL|API_BASE_URL)=" "$ENVFILE")
+# ⚠️ COMPOSE 数组是一串【扁平的 compose 参数】：-f、<路径>、-f、<路径>……（见文件开头的
+#    COMPOSE=(...) 与下面的 COMPOSE+=(-f "$PINFILE")），元素里已经含有 -f 了。
+#    所以这里只能原样拼接，绝不能再补一个 -f —— 之前补了，拼出来的就是
+#    `docker compose -f -f -f <路径> ...`，实测会报
+#    `open /opt/knowledge-kb/-f: no such file or directory`，人工照抄必然失败。
+#    元素之间只用单个空格分隔。用循环拼而不是 ${COMPOSE[*]}，是因为 ${arr[*]} 的分隔符取决于
+#    当前 IFS 的首字符（实测 IFS=':' 时会拼出 `-f:/路径:-f:/路径`），循环拼接则不依赖 IFS。
 COMPOSE_CMD=""
 for f in "${COMPOSE[@]}"; do
-  COMPOSE_CMD="$COMPOSE_CMD -f $f"
+  COMPOSE_CMD="$COMPOSE_CMD $f"
 done
+
+# 自检：这一行是给人抄的，出现连续的 -f 就说明拼装又坏了，明确告警（不打印任何密钥值）。
+case "$COMPOSE_CMD" in
+  *"-f -f"*) log "  ⚠️ 内部错误：回滚命令拼装出现重复的 -f，请勿照抄下面的命令，改用脚本自身的自动回滚" ;;
+esac
 
 log ""
 log "---- 回滚所需信息（请留存） ----"
