@@ -8,6 +8,7 @@ blind-label overview/consensus endpoints.
 from __future__ import annotations
 
 import copy
+import math
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Iterable
@@ -32,6 +33,8 @@ from app.models.knowledge import Category, Knowledge
 BLIND_LABEL_BATCH_SIZE = 50
 BLIND_LABEL_MAX_ASSIGNMENTS = 3
 BLIND_LABEL_MAX_CANDIDATES = 3
+# 盲标只接收 TOP1 候选分数达到 0.60 的请求；分数统一使用 0~1 口径。
+BLIND_LABEL_MIN_TOP1_SCORE = 0.60
 BLIND_LABEL_VERDICTS = {"referable", "not_referable"}
 BLIND_LABEL_ASSIGNMENT_STATUSES = {"assigned", "in_progress", "completed", "released"}
 BLIND_LABEL_ACTIVE_STATUSES = {"assigned", "in_progress", "completed"}
@@ -101,6 +104,42 @@ def _candidate_origins(event: RetrievalQualityEvent) -> list[str | None]:
     return raw if isinstance(raw, list) else []
 
 
+def _numeric_score(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    score = float(value)
+    if not math.isfinite(score) or not 0 <= score <= 1:
+        return None
+    return score
+
+
+def _candidate_score(candidate: dict[str, Any]) -> float | None:
+    for key in ("final_score", "rerank_score", "embedding_score"):
+        score = _numeric_score(candidate.get(key))
+        if score is not None:
+            return score
+    return None
+
+
+def _top1_score(
+    candidates: list[dict[str, Any]],
+    fallback: Any = None,
+) -> float | None:
+    if candidates:
+        score = _candidate_score(candidates[0])
+        if score is not None:
+            return score
+    return _numeric_score(fallback)
+
+
+def _top1_score_is_eligible(
+    candidates: list[dict[str, Any]],
+    fallback: Any = None,
+) -> bool:
+    score = _top1_score(candidates, fallback)
+    return score is not None and score >= BLIND_LABEL_MIN_TOP1_SCORE
+
+
 def _business_candidate_rows(event: RetrievalQualityEvent) -> list[dict[str, Any]]:
     """Return the event's business-accumulation candidates in rank order.
 
@@ -161,6 +200,18 @@ def freeze_work_order_snapshot(db: Session, event: RetrievalQualityEvent) -> dic
     candidates = _business_candidate_rows(event)
     if not candidates:
         return None
+    # 老事件可能只保存 event.top_rerank_score，没有逐候选 final_score；
+    # 将该有效 TOP1 分数补回快照，确保后续分配阶段仍能执行同一门槛。
+    if _candidate_score(candidates[0]) is None:
+        # reply 事件本身就是业务沉淀池；combined 事件的 event 分数可能来自总部
+        # 标准池，不能拿它冒充业务 TOP1 分数。
+        fallback_score = (
+            _numeric_score(event.top_rerank_score)
+            if str(event.source_kind or "").strip().lower() == "reply"
+            else None
+        )
+        if fallback_score is not None:
+            candidates[0]["final_score"] = fallback_score
     knowledge_ids = [item["knowledge_id"] for item in candidates]
     knowledge_rows = {
         item.id: item
@@ -257,6 +308,8 @@ def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
         if not snapshot or not snapshot.get("candidates"):
             continue
         candidates = snapshot["candidates"]
+        if not _top1_score_is_eligible(candidates):
+            continue
         first = candidates[0] if candidates else {}
         work_order = BlindLabelWorkOrder(
             id=_new_id("wo"),
@@ -394,6 +447,11 @@ def _choose_assignments(
             .first()
         )
         if not locked or _work_order_capacity(db, locked.id) <= 0:
+            continue
+        # 二次防线：历史上已物化但尚未分配的低分工单，也不能进入新批次。
+        if not _top1_score_is_eligible(
+            [item for item in (locked.candidate_snapshot or []) if isinstance(item, dict)]
+        ):
             continue
         assignment = BlindLabelAssignment(
             id=_new_id("assign"),
