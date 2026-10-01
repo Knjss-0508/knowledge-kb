@@ -67,6 +67,21 @@ if ($envSubmit -ne "false") { Log "  ❌ 安全闸拦截：.env SUBMIT_TO_CZ 不
 if ($kill -ne "true") { Log "  ❌ 安全闸拦截：AUTO_REVIEW_KILL_SWITCH 不是 true"; exit 9 }
 Log "  ✅ 安全闸通过：本次运行不会向 CZ 推送任何数据"
 
+# ---------- 把 .env 注入子进程环境（与 run_automation_queue.ps1 保持一致） ----------
+# 没有这一步，${SECOND_PART_API_TOKEN} 之类的占位符在子进程里永远展开不了，
+# 拉取会以「引用的环境变量未设置」失败。已存在的进程环境变量优先，不覆盖。
+$envInjected = 0; $envSkippedEmpty = 0; $envKeptExisting = 0
+foreach ($k in $envMap.Keys) {
+    $v = $envMap[$k]
+    if ([string]::IsNullOrWhiteSpace($v)) { $envSkippedEmpty++; continue }
+    if ([Environment]::GetEnvironmentVariable($k, "Process")) { $envKeptExisting++; continue }
+    [Environment]::SetEnvironmentVariable($k, $v, "Process")
+    $envInjected++
+}
+Log ("  [环境] .env 注入 {0} 个键；空值跳过 {1} 个；已存在保留 {2} 个" -f $envInjected, $envSkippedEmpty, $envKeptExisting)
+if (-not $env:SECOND_PART_API_TOKEN) { Log "  ❌ 环境注入后 SECOND_PART_API_TOKEN 仍为空，拉取必然失败，提前退出"; exit 2 }
+Log "  [环境] SECOND_PART_API_TOKEN 已就绪"
+
 # ---------- 1) prepare ----------
 $out = & $PY -m answer_hub.automation_schedule prepare --plan $PLAN 2>&1
 $code = $LASTEXITCODE
