@@ -4549,10 +4549,18 @@ Vue.createApp({
       this.loadAutomationMonitor();
     },
     loadAutomationMonitor: function() {
-      var self=this; self.answerHubMonitor.loading=true;
+      var self=this;
+      // lastError 只允许保留给它后面紧接的这一次状态刷新（失败处理自己发起的那一次），
+      // 否则用户刚写入的失败原因会被立刻清掉。标记在这里、正式发请求之前就消费掉，
+      // 于是那一次刷新无论成功还是失败都不会把标记留在页面上；之后用户再点「刷新」
+      // 或重新进入页面，拿到的都是真实状态，过期的旧提示必须清掉——不然用户会一直
+      // 看到一句和当前状态无关的告警（例如早上那次 409 的文案）。
+      var keepError=self.answerHubMonitor.errorPinned;
+      self.answerHubMonitor.errorPinned=false;
+      self.answerHubMonitor.loading=true;
       fetch(API + '/automation-monitor/overview',{headers:self.authHeaders()})
         .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'加载运行监管失败');return d;});})
-        .then(function(d){self.answerHubMonitor.service=d.service||{};self.answerHubMonitor.control=Object.assign(self.answerHubMonitor.control,d.control||{});self.answerHubMonitor.control.plan=Object.assign(self.answerHubMonitor.control.plan||{},(d.control||{}).plan||{});self.answerHubMonitor.summary=Object.assign(self.answerHubMonitor.summary,d.summary||{});self.answerHubMonitor.jobs=(Array.isArray(d.jobs)?d.jobs:[]).map(function(job){job.feedback=Object.assign({status:'unhandled',status_label:'未处理'},job.feedback||{});return job;});if(!self.answerHubMonitor.errorPinned){self.answerHubMonitor.lastError='';}self.answerHubMonitor.errorPinned=false;self.answerHubMonitor.controlRollback=null;self.answerHubMonitor.updatedAt=self.formatDate(new Date());})
+        .then(function(d){self.answerHubMonitor.service=d.service||{};self.answerHubMonitor.control=Object.assign(self.answerHubMonitor.control,d.control||{});self.answerHubMonitor.control.plan=Object.assign(self.answerHubMonitor.control.plan||{},(d.control||{}).plan||{});self.answerHubMonitor.summary=Object.assign(self.answerHubMonitor.summary,d.summary||{});self.answerHubMonitor.jobs=(Array.isArray(d.jobs)?d.jobs:[]).map(function(job){job.feedback=Object.assign({status:'unhandled',status_label:'未处理'},job.feedback||{});return job;});if(!keepError){self.answerHubMonitor.lastError='';}self.answerHubMonitor.controlRollback=null;self.answerHubMonitor.updatedAt=self.formatDate(new Date());})
         .catch(function(e){self.answerHubMonitor.service={status:'unavailable',message:e.message};})
         .finally(function(){self.answerHubMonitor.loading=false;});
     },
