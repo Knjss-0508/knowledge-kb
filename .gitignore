@@ -39,3 +39,8 @@ frontend/test-vue.html
 frontend/diag.html
 frontend/clean.html
 frontend/minimal.html
+
+# .env 备份/变体（防误提交真实令牌；.env.example 等示例文件不受影响）
+.env.bak*
+.env.*.bak*
+*.env.bak*
