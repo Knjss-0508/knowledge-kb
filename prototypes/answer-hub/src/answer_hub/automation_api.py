@@ -35,6 +35,11 @@ from .local_model_config import (
     public_local_model_config,
     write_local_model_config,
 )
+from .confidence_training_local import (
+    LocalConfidenceTrainingStore,
+    annotate_with_deepseek,
+    revise_prompt_with_deepseek,
+)
 from .run_feedback import automatic_run_feedback
 from .run_history import list_automation_run_records, sanitize_run_text
 from .workflow import SOURCE_COLUMNS
@@ -415,6 +420,9 @@ def create_automation_api_app(
             "ANSWER_HUB_AUTOMATION_OUTPUT",
             "outputs/automation-runs",
         ),
+    )
+    confidence_store = LocalConfidenceTrainingStore(
+        os.getenv("ANSWER_HUB_CONFIDENCE_DB", "data/confidence-training.db")
     )
     automation_controller = task_controller or AutomationTaskController()
     automation_project_root = Path(project_root or Path(__file__).resolve().parents[2])
@@ -1099,6 +1107,126 @@ def create_automation_api_app(
             as_attachment=True,
             download_name=artifact_path.name,
         )
+
+    @app.get("/api/v1/confidence-training/overview")
+    @require_api_key
+    def confidence_training_overview():
+        items = confidence_store.items()
+        labeled = [item for item in items if item.get("human_label")]
+        candidates = [item for item in items if item.get("human_label") in {"worthy", "unworthy"}]
+        return jsonify({
+            "total": len(items),
+            "labeled": len(labeled),
+            "training_candidate_count": len(candidates),
+            "model": "deepseek-internal",
+            "storage": "sqlite",
+            "database": str(confidence_store.path),
+            "jobs": confidence_store.jobs(),
+        })
+
+    @app.get("/api/v1/confidence-training/items")
+    @require_api_key
+    def confidence_training_items():
+        return jsonify(confidence_store.items())
+
+    @app.post("/api/v1/confidence-training/items")
+    @require_api_key
+    def confidence_training_import_items():
+        body = request.get_json(silent=True)
+        items = body.get("items") if isinstance(body, dict) else None
+        if not isinstance(items, list) or not items:
+            return jsonify({"error": "items 必须是非空数组"}), 400
+        if any(not isinstance(item, dict) for item in items):
+            return jsonify({"error": "每个候选必须是 JSON 对象"}), 400
+        return jsonify({"accepted": confidence_store.upsert(items), "items": confidence_store.items()}), 202
+
+    @app.patch("/api/v1/confidence-training/items/<identifier>")
+    @require_api_key
+    def confidence_training_label(identifier: str):
+        body = request.get_json(silent=True) or {}
+        try:
+            return jsonify(confidence_store.label(identifier, str(body.get("human_label") or "")))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/v1/confidence-training/jobs")
+    @require_api_key
+    def confidence_training_create_job():
+        body = request.get_json(silent=True) or {}
+        ids = body.get("candidate_ids")
+        if not isinstance(ids, list) or not ids:
+            ids = [item["id"] for item in confidence_store.items() if item.get("human_label") in {"worthy", "unworthy"}]
+        if not ids:
+            return jsonify({"error": "没有已确认人工真值的候选"}), 409
+        job_id = confidence_store.create_job([str(item) for item in ids])
+        confidence_store.update_job(job_id, "running", "DeepSeek 标注中")
+        completed = 0
+        errors = []
+        for item in confidence_store.items():
+            if item["id"] not in {str(value) for value in ids}:
+                continue
+            try:
+                confidence_store.save_model(item["id"], annotate_with_deepseek(item))
+                completed += 1
+            except Exception as exc:  # noqa: BLE001 - persist per-item failures
+                errors.append({"id": item["id"], "error": str(exc)})
+        result = {"completed": completed, "errors": errors, "provider": "deepseek-internal"}
+        confidence_store.update_job(job_id, "completed" if not errors else "completed_with_errors", "影子评测候选已保存", result)
+        return jsonify({"id": job_id, "status": "completed" if not errors else "completed_with_errors", "result": result}), 202
+
+    @app.get("/api/v1/confidence-training/jobs")
+    @require_api_key
+    def confidence_training_jobs():
+        return jsonify(confidence_store.jobs())
+
+    @app.post("/api/v1/confidence-training/jobs/<job_id>/shadow-rerun")
+    @require_api_key
+    def confidence_training_shadow_rerun(job_id: str):
+        ids = set(confidence_store.job_ids(job_id))
+        completed = 0
+        errors = []
+        for item in confidence_store.items():
+            if item["id"] not in ids:
+                continue
+            try:
+                confidence_store.save_model(item["id"], annotate_with_deepseek(item), shadow=True)
+                completed += 1
+            except Exception as exc:  # noqa: BLE001 - persist per-item failures
+                errors.append({"id": item["id"], "error": str(exc)})
+        result = {"completed": completed, "errors": errors, "shadow": True}
+        confidence_store.update_job(job_id, "shadow_completed" if not errors else "shadow_completed_with_errors", "影子评测已完成", result)
+        return jsonify({"id": job_id, "status": confidence_store.jobs()[0]["status"], "result": result}), 202
+
+    @app.get("/api/v1/confidence-training/jobs/<job_id>/regressions")
+    @require_api_key
+    def confidence_training_regressions(job_id: str):
+        return jsonify(confidence_store.regression_items(job_id))
+
+    @app.patch("/api/v1/confidence-training/jobs/<job_id>/regressions/<identifier>")
+    @require_api_key
+    def confidence_training_regression_review(job_id: str, identifier: str):
+        body = request.get_json(silent=True) or {}
+        try:
+            return jsonify(confidence_store.review_regression(identifier, str(body.get("decision") or "")))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/v1/confidence-training/jobs/<job_id>/prompt-revisions")
+    @require_api_key
+    def confidence_training_prompt_revision(job_id: str):
+        regressions = confidence_store.regression_items(job_id)
+        if not regressions:
+            return jsonify({"error": "没有可用于 Prompt 修订的退化样本"}), 409
+        try:
+            result = revise_prompt_with_deepseek(regressions)
+        except Exception as exc:  # noqa: BLE001 - report model failure without losing job
+            return jsonify({"error": str(exc)}), 503
+        return jsonify({"job_id": job_id, "status": "candidate_only", "result": result}), 202
+
+    @app.get("/api/v1/confidence-training/export")
+    @require_api_key
+    def confidence_training_export():
+        return jsonify({"items": confidence_store.items(), "jobs": confidence_store.jobs(), "provider": "deepseek-internal"})
 
     @app.errorhandler(413)
     def request_too_large(_error):
