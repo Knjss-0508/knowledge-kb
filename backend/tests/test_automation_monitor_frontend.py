@@ -394,6 +394,64 @@ def test_error_message_survives_the_follow_up_status_refresh() -> None:
     )
 
 
+def test_stale_error_is_dropped_by_the_users_own_refresh_even_if_the_reload_failed() -> None:
+    """失败提示后面那次自动刷新如果自己失败了，用户手动刷新也必须能把旧提示清掉。
+
+    线上现象：用户看到一句很早以前的 409 文案，点了「刷新」还是那一句。
+    原因是 errorPinned 只在自动刷新「成功」时被放掉：自动刷新一旦失败或被中断，
+    这个标记就永久留在页面上，之后每一次成功的刷新都会走进
+    `if(!errorPinned){lastError=''}` 的假分支 —— 用户明明刷到了新状态，
+    告警条却还挂着旧文案。标记必须在请求发出前就消费掉，只覆盖它紧接的那一次刷新。
+    """
+    _run_node_script(
+        """
+        const context = buildContext({});
+        // 换成真实的 loadAutomationMonitor（buildContext 里那个是桩）
+        Object.keys(appOptions.methods).forEach(function(name) {
+          if (typeof appOptions.methods[name] === 'function') {
+            context[name] = appOptions.methods[name].bind(context);
+          }
+        });
+        context.authHeaders = function() { return {}; };
+        let reloadShouldFail = true;
+        sandbox.fetch = function() {
+          if (reloadShouldFail) return Promise.reject(new Error('network down'));
+          return Promise.resolve({
+            ok: true,
+            json: function() {
+              return Promise.resolve({
+                service: {status: 'online', message: ''},
+                control: {enabled: true, installed: true, available: true, running: false},
+                summary: {},
+                jobs: []
+              });
+            }
+          });
+        };
+        context.showAutomationMonitorError('STALE-ERROR-MARKER');
+        setTimeout(function() {
+          assert.ok(
+            context.answerHubMonitor.lastError.indexOf('STALE-ERROR-MARKER') !== -1,
+            'reload failed: the reason must still be on screen'
+          );
+          reloadShouldFail = false;
+          context.loadAutomationMonitor();
+          setTimeout(function() {
+            assert.strictEqual(
+              context.answerHubMonitor.lastError, '',
+              'one successful user refresh must drop the stale banner'
+            );
+            assert.strictEqual(
+              context.automationMonitorAlert(), '',
+              'the alert bar must be gone once the state was re-read'
+            );
+            process.exit(0);
+          }, 20);
+        }, 20);
+        """
+    )
+
+
 def test_disabled_buttons_are_visually_neutralised() -> None:
     """禁用态不能用品牌绿底色，否则「已禁用」看起来比「可点」还亮。"""
     assert ".automation-action-group .btn.start:disabled" in FRONTEND
