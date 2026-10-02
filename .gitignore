@@ -44,3 +44,11 @@ frontend/minimal.html
 .env.bak*
 .env.*.bak*
 *.env.bak*
+
+# 环境文件变体（.env.local / .env.production / .env.staging / *.env 等，通常填有真实令牌）。
+# 第 6 行的 `.env` 只覆盖同名文件；这里补齐带后缀的变体与 *.env 实例。
+# 末尾的 !*.example 放在忽略规则之后，保证所有示例文件（.env.example / .env.cloud.example /
+# model-configuration-sync.env.example 等）永远不被忽略。
+.env.*
+*.env
+!*.example
