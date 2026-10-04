@@ -17,6 +17,26 @@ def test_automation_monitor_filters_by_display_status_mapping() -> None:
     assert "self.automationMonitorStatusMatches(j,m.filter.status)" in FRONTEND
 
 
+def test_monitor_run_rows_use_batch_feedback_and_automatic_handling_columns() -> None:
+    assert "运行批次" in FRONTEND
+    assert "运行状态" in FRONTEND
+    assert "任务反馈" in FRONTEND
+    assert "异常状态" in FRONTEND
+    assert "automationMonitorBatchName" in FRONTEND
+    assert "automationMonitorFailureReason" in FRONTEND
+    assert "automationMonitorAutoHandlingLabel" in FRONTEND
+    assert "saveAutomationMonitorFeedback" not in FRONTEND
+
+
+def test_monitor_run_rows_explain_incomplete_history_and_failure_state() -> None:
+    assert "历史批次（未记录沉淀范围）" in FRONTEND
+    assert "任务正常，无失败反馈。" in FRONTEND
+    assert "CZ 候选价值复核同步失败，请查看同步阶段错误。" in FRONTEND
+    assert "无需处理" in FRONTEND
+    assert "处理中" in FRONTEND
+    assert "已恢复" in FRONTEND
+
+
 def test_start_and_stop_automation_keep_logical_and_scheduled_switches_aligned() -> None:
     node = shutil.which("node")
     assert node, "Node.js is required for the automation monitor behavior test"
