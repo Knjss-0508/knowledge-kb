@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from app.services.confidence_training import aggregate, confidence_band, item_payload, settings_snapshot, update_settings
-from app.routes.confidence_training import _manual_training_dataset, _prompt_optimization_snapshot, _shadow_comparison, _revision_preconditions, _prompt_revision_snapshot
+from app.routes.confidence_training import _manual_training_dataset, _prompt_optimization_snapshot, _shadow_comparison, _revision_preconditions, _prompt_revision_snapshot, _shadow_sample_completeness
 
 
 def test_confidence_band_boundaries_are_frozen():
@@ -144,6 +144,8 @@ def test_manual_training_dataset_uses_all_confirmed_truth_and_deterministic_spli
     assert dataset[0]["id"] == "ing-1"
     assert dataset[0]["evaluation_scope"] == "shadow_only"
     assert dataset[0]["not_for_weight_training"] is True
+    assert dataset[0]["evaluation_eligible"] is False
+    assert dataset[0]["input_completeness"] == "not_evaluable"
     assert sum(counts.values()) == 1
 
 
@@ -154,6 +156,26 @@ def test_prompt_optimization_snapshot_is_shadow_only_and_error_first():
     ])
     assert snapshot["evaluation_scope"] == "shadow_only"
     assert snapshot["representative_cases"][0]["id"] == "wrong"
+
+
+def test_shadow_sample_completeness_keeps_partial_data_but_skips_empty_shells():
+    partial = _shadow_sample_completeness({
+        "content": "有效正文",
+        "recommended_reply": "",
+        "evidence_excerpt": None,
+    })
+    assert partial["evaluation_eligible"] is True
+    assert partial["input_completeness"] == "partial"
+    assert partial["missing_fields"] == ["recommended_reply", "evidence_excerpt"]
+
+    empty = _shadow_sample_completeness({
+        "content": {"blocks": []},
+        "recommended_reply": "  ",
+        "evidence_excerpt": [],
+    })
+    assert empty["evaluation_eligible"] is False
+    assert empty["input_completeness"] == "not_evaluable"
+    assert "无法进行新旧 Prompt 对比" in empty["not_evaluable_reason"]
 
 
 def test_shadow_comparison_requires_improvement_and_no_regression():
