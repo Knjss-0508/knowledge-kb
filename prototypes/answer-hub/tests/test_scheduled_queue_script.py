@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -38,3 +39,34 @@ def test_local_nightly_scheduler_matches_the_server_pull_parameters() -> None:
     assert '"--exclude-existing-records"' in WINDOWS_SCRIPT
     # 只允许出现在注释里：绝不作为参数传给 automation-queue。
     assert '"--sync-to-cz-review"' not in WINDOWS_SCRIPT
+
+
+def test_local_nightly_scheduler_does_not_clobber_the_output_dir() -> None:
+    """prepare 的输出不能存进 $out。
+
+    PowerShell 变量名不区分大小写：$out 与 $OUT（输出根目录）是同一个变量。
+    2026-10-04 夜间实测：prepare 的 JSON 覆盖了 $OUT，--output-dir 收到 JSON 字符串，
+    拉取在 AutomationJobStore 的 mkdir 处以 OSError WinError 123 连续失败 3 次，
+    当天一条数据都没拉（调度器只把失败写进计划，不会主动报警）。
+    """
+    assert "$OUT" in WINDOWS_SCRIPT
+    captured = re.findall(
+        r"^\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*& \$PY .*prepare",
+        WINDOWS_SCRIPT,
+        flags=re.MULTILINE,
+    )
+    assert captured, "夜间脚本里应当能找到 prepare 的捕获语句"
+    assert "out" not in {name.lower() for name in captured}
+    assert "$prepareJson" in WINDOWS_SCRIPT
+
+
+def test_local_nightly_scheduler_supports_dry_run() -> None:
+    """-DryRun 只走到第 3 步参数就绪即退出，供冒烟用（不拉取、不消费、不 commit）。"""
+    assert "param([switch]$DryRun)" in WINDOWS_SCRIPT
+    assert "if ($DryRun) {" in WINDOWS_SCRIPT
+
+
+def test_local_nightly_scheduler_is_saved_as_utf8_with_bom() -> None:
+    """PowerShell 5.1 会把无 BOM 的 UTF-8 当 ANSI 读，中文吃引号后整篇语法报错。"""
+    raw = (SCRIPTS / "local-migration" / "nightly-scheduler.ps1").read_bytes()
+    assert raw[:3] == b"\xef\xbb\xbf"

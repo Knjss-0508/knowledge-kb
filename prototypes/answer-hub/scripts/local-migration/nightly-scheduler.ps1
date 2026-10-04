@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 <#
 Answer Hub 本机夜间调度器（Windows 等价于服务器 run_scheduled_queue.sh）
 
@@ -6,9 +6,11 @@ Answer Hub 本机夜间调度器（Windows 等价于服务器 run_scheduled_queu
   1. 第 4 步【不传】--sync-to-cz-review  —— 本机绝不向 CZ 推送
   2. 运行前硬校验配置与 .env 的推 CZ 开关，任一为真即拒绝运行（安全闸）
   3. 数据路径指向 E:\answer-hub-runtime
+  4. 额外提供 -DryRun：只走到第 3 步参数就绪即退出（冒烟用，不拉取、不消费）
 
 退出码：0=成功  1=队列有未解决文件  2=拉取失败  3=队列消费失败  9=安全闸拦截
 #>
+param([switch]$DryRun)
 $ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -93,10 +95,10 @@ if (-not $env:SECOND_PART_QUERY_LIMIT) {
 Log ("  [环境] SECOND_PART_QUERY_LIMIT = {0}" -f $env:SECOND_PART_QUERY_LIMIT)
 
 # ---------- 1) prepare ----------
-$out = & $PY -m answer_hub.automation_schedule prepare --plan $PLAN 2>&1
+$prepareJson = & $PY -m answer_hub.automation_schedule prepare --plan $PLAN 2>&1
 $code = $LASTEXITCODE
-if ($code -ne 0) { Log "  ❌ prepare 失败（退出码 $code）"; $out | ForEach-Object { Log ("     $_") }; exit 3 }
-$win = ("$out" -join "`n") | ConvertFrom-Json
+if ($code -ne 0) { Log "  ❌ prepare 失败（退出码 $code）"; $prepareJson | ForEach-Object { Log ("     $_") }; exit 3 }
+$win = ("$prepareJson" -join "`n") | ConvertFrom-Json
 $from = $win.from_date; $to = $win.to_date
 Log ("  1) 窗口: {0} ~ {1}" -f $from, $to)
 
@@ -117,6 +119,13 @@ $stateFile = "$RT\data\second-part-pull\scheduled-$($from -replace '-','')-$($to
 $env:SECOND_PART_QUERY_FROM_DATE = $from
 $env:SECOND_PART_QUERY_TO_DATE   = $to
 Log ("  3) 拉取 {0} ~ {1}  ->  {2}" -f $from, $to, $stateFile)
+if ($DryRun) {
+    Log ("  [DryRun] output-dir = {0}" -f $OUT)
+    Log ("  [DryRun] queue-dir  = {0}" -f $QUEUE)
+    Log ("  [DryRun] SECOND_PART_QUERY_LIMIT = {0}；页数不限制" -f $env:SECOND_PART_QUERY_LIMIT)
+    Log "  [DryRun] 参数就绪：未拉取、未消费、未 commit"
+    exit 0
+}
 $pullOk = $false
 for ($i = 1; $i -le 3; $i++) {
     $c = RunPy @("-m","answer_hub.cli","second-part-pull","--profile",$CFG,"--queue-dir",$QUEUE,
