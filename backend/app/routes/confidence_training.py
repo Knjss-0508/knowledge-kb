@@ -114,6 +114,11 @@ def _manual_training_dataset(rows: list[IntegrationIngestion]) -> tuple[list[dic
             "human_label": item["human_label"],
             "model_draft_disposition": item["model_draft_disposition"],
             "human_draft_disposition": item["human_draft_disposition"],
+            **_shadow_sample_completeness({
+                "content": knowledge.get("content"),
+                "recommended_reply": knowledge.get("recommended_reply"),
+                "evidence_excerpt": knowledge.get("evidence_excerpt"),
+            }),
             "evaluation_scope": EVALUATION_SCOPE,
             "not_for_weight_training": True,
         })
@@ -171,12 +176,47 @@ draft_disposition 只能是 approved、revision_required、hold_for_evidence、n
 若 knowledge_value=unworthy，draft_disposition 必须为 not_applicable；若 knowledge_value=pending，draft_disposition 必须为 hold_for_evidence；approved 或 revision_required 只能对应 worthy。"""
 
 
+def _has_meaningful_shadow_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(_has_meaningful_shadow_value(item) for item in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return any(_has_meaningful_shadow_value(item) for item in value)
+    return True
+
+
+def _shadow_sample_completeness(sample: dict[str, Any]) -> dict[str, Any]:
+    fields = ("content", "recommended_reply", "evidence_excerpt")
+    missing_fields = [
+        field for field in fields
+        if not _has_meaningful_shadow_value(sample.get(field))
+    ]
+    evaluable = len(missing_fields) < len(fields)
+    return {
+        "evaluation_eligible": evaluable,
+        "input_completeness": (
+            "complete" if not missing_fields
+            else ("partial" if evaluable else "not_evaluable")
+        ),
+        "missing_fields": missing_fields,
+        "not_evaluable_reason": (
+            "缺少知识正文、推荐回复和来源证据，无法进行新旧 Prompt 对比。"
+            if not evaluable else ""
+        ),
+    }
+
+
 def _shadow_candidate(sample: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": sample.get("title"),
         "content": sample.get("content"),
         "recommended_reply": sample.get("recommended_reply"),
         "evidence_excerpt": sample.get("evidence_excerpt"),
+        "input_completeness": sample.get("input_completeness"),
+        "missing_fields": list(sample.get("missing_fields") or []),
     }
 
 
@@ -333,10 +373,41 @@ def _run_shadow_rerun(job_id: str) -> None:
             return
         stored_evaluation = dict(job.shadow_evaluation or {})
         rows: list[dict[str, Any]] = list(stored_evaluation.get("rows") or [])
-        completed_ids = {str(row.get("id")) for row in rows if row.get("id")}
+        skipped_samples: list[dict[str, Any]] = list(stored_evaluation.get("skipped_samples") or [])
+        completed_ids = {
+            str(row.get("id"))
+            for row in [*rows, *skipped_samples]
+            if row.get("id")
+        }
         samples = list(job.dataset_payload or [])
         for index, sample in enumerate(samples, start=1):
             if str(sample.get("id")) in completed_ids:
+                continue
+            completeness = _shadow_sample_completeness(sample)
+            if not completeness["evaluation_eligible"]:
+                skipped_samples.append({
+                    "id": sample.get("id"),
+                    "title": sample.get("title"),
+                    "split": sample.get("split"),
+                    "reason": completeness["not_evaluable_reason"],
+                    "missing_fields": completeness["missing_fields"],
+                })
+                job.shadow_evaluation = {
+                    "status": "running",
+                    "processed_samples": len(rows) + len(skipped_samples),
+                    "evaluated_samples": len(rows),
+                    "skipped_sample_count": len(skipped_samples),
+                    "total_samples": len(samples),
+                    "evaluation_scope": EVALUATION_SCOPE,
+                    "rows": rows,
+                    "skipped_samples": skipped_samples,
+                }
+                job.stage = (
+                    f"影子复跑中：已处理 {len(rows) + len(skipped_samples)}/{len(samples)} 条，"
+                    f"其中跳过 {len(skipped_samples)} 条不完整数据"
+                )
+                db.add(job)
+                db.commit()
                 continue
             candidate = _shadow_candidate(sample)
             def call_with_retry(*, review_prompt: str, prompt_version: str, label: str) -> dict[str, Any]:
@@ -387,6 +458,7 @@ def _run_shadow_rerun(job_id: str) -> None:
                     "error_code": exc.error_code,
                     "error_message": str(exc),
                     "rows": rows,
+                    "skipped_samples": skipped_samples,
                 }
                 db.add(job)
                 db.commit()
@@ -419,12 +491,18 @@ def _run_shadow_rerun(job_id: str) -> None:
             })
             job.shadow_evaluation = {
                 "status": "running",
-                "completed_samples": index,
+                "processed_samples": len(rows) + len(skipped_samples),
+                "evaluated_samples": len(rows),
+                "skipped_sample_count": len(skipped_samples),
                 "total_samples": len(samples),
                 "evaluation_scope": EVALUATION_SCOPE,
                 "rows": rows,
+                "skipped_samples": skipped_samples,
             }
-            job.stage = f"影子复跑中：{index}/{len(samples)} 条"
+            job.stage = (
+                f"影子复跑中：已处理 {len(rows) + len(skipped_samples)}/{len(samples)} 条，"
+                f"其中跳过 {len(skipped_samples)} 条不完整数据"
+            )
             db.add(job)
             db.commit()
         comparison = _shadow_comparison(rows)
@@ -436,6 +514,10 @@ def _run_shadow_rerun(job_id: str) -> None:
             "baseline_prompt_version": CURRENT_REVIEW_PROMPT_VERSION,
             "candidate_prompt_version": "candidate-from-" + job.id,
             "rows": rows,
+            "processed_samples": len(rows) + len(skipped_samples),
+            "evaluated_samples": len(rows),
+            "skipped_sample_count": len(skipped_samples),
+            "skipped_samples": skipped_samples,
             "comparison": comparison,
         }
         job.error_message = (
@@ -788,13 +870,17 @@ def start_confidence_training_shadow_rerun(
     job.status = "shadow_rerun_queued"
     job.stage = "候选 Prompt 影子复跑排队中"
     previous_rows = list((job.shadow_evaluation or {}).get("rows") or [])
+    previous_skipped = list((job.shadow_evaluation or {}).get("skipped_samples") or [])
     job.shadow_evaluation = {
         "status": "queued",
-        "completed_samples": 0,
+        "processed_samples": len(previous_rows) + len(previous_skipped),
+        "evaluated_samples": len(previous_rows),
+        "skipped_sample_count": len(previous_skipped),
         "total_samples": len(job.dataset_payload or []),
         "evaluation_scope": EVALUATION_SCOPE,
         "resumed_rows": len(previous_rows),
         "rows": previous_rows,
+        "skipped_samples": previous_skipped,
     }
     db.add(job)
     db.commit()
