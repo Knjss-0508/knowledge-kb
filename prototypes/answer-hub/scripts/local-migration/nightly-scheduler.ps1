@@ -82,6 +82,16 @@ Log ("  [环境] .env 注入 {0} 个键；空值跳过 {1} 个；已存在保留
 if (-not $env:SECOND_PART_API_TOKEN) { Log "  ❌ 环境注入后 SECOND_PART_API_TOKEN 仍为空，拉取必然失败，提前退出"; exit 2 }
 Log "  [环境] SECOND_PART_API_TOKEN 已就绪"
 
+# ---------- 第二部分全量读取（与服务器 run_scheduled_queue.sh 对齐） ----------
+# 接口不传 limit 时只返回 1000 条（接口硬顶 5000）。不设 SECOND_PART_QUERY_LIMIT 就会
+# 被静默截断到 1000 条/天。.env 里若已设该键，走上面的注入值；否则取
+# ANSWER_HUB_SECOND_PART_QUERY_LIMIT；都没有时兜底 10000，与服务器脚本一致。
+if (-not $env:SECOND_PART_QUERY_LIMIT) {
+    if ($env:ANSWER_HUB_SECOND_PART_QUERY_LIMIT) { $env:SECOND_PART_QUERY_LIMIT = $env:ANSWER_HUB_SECOND_PART_QUERY_LIMIT }
+    else { $env:SECOND_PART_QUERY_LIMIT = "10000" }
+}
+Log ("  [环境] SECOND_PART_QUERY_LIMIT = {0}" -f $env:SECOND_PART_QUERY_LIMIT)
+
 # ---------- 1) prepare ----------
 $out = & $PY -m answer_hub.automation_schedule prepare --plan $PLAN 2>&1
 $code = $LASTEXITCODE
@@ -110,7 +120,8 @@ Log ("  3) 拉取 {0} ~ {1}  ->  {2}" -f $from, $to, $stateFile)
 $pullOk = $false
 for ($i = 1; $i -le 3; $i++) {
     $c = RunPy @("-m","answer_hub.cli","second-part-pull","--profile",$CFG,"--queue-dir",$QUEUE,
-                 "--output-dir",$OUT,"--state-file",$stateFile,"--max-pages","1") "second-part-pull 第 $i/3 次"
+                 "--output-dir",$OUT,"--state-file",$stateFile,
+                 "--max-pages","0","--exclude-existing-records") "second-part-pull 第 $i/3 次"
     if ($c -eq 0) { $pullOk = $true; break }
     if ($i -lt 3) { Log "     等待 60 秒后重试"; Start-Sleep -Seconds 60 }
 }
