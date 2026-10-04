@@ -23,10 +23,14 @@ export SECOND_PART_QUERY_FROM_DATE="$from_date"
 export SECOND_PART_QUERY_TO_DATE="$to_date"
 export PYTHONUTF8=1
 export PYTHONPATH="$project_root/src"
+# 第二部分接口不传 limit 时只返回 1000 条，接口硬顶 5000（见 README「第二部分拉取」）。
+# 不显式设置 SECOND_PART_QUERY_LIMIT 就会被静默截断到 1000 条/天；systemd 单元里没有这个变量，
+# 服务器 .env 里也没有，所以脚本里这一行是服务器唯一的来源，删掉就等于每天丢数据。
+export SECOND_PART_QUERY_LIMIT="${ANSWER_HUB_SECOND_PART_QUERY_LIMIT:-10000}"
 
 pull_succeeded=0
 for attempt in 1 2 3; do
-  if "$python_bin" -m answer_hub.cli second-part-pull --profile config/second-part-pull.powerzhuan.local.json --queue-dir data/automation-queue --output-dir outputs/automation-runs --state-file "$state_file" --max-pages 1; then
+  if "$python_bin" -m answer_hub.cli second-part-pull --profile config/second-part-pull.powerzhuan.local.json --queue-dir data/automation-queue --output-dir outputs/automation-runs --state-file "$state_file" --max-pages 0 --exclude-existing-records; then
     pull_succeeded=1
     break
   fi
