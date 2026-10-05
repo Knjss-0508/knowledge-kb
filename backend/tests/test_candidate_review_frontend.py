@@ -10,6 +10,14 @@ FRONTEND = (
 ).read_text(encoding="utf-8")
 
 
+def test_model_revision_requires_human_apply_and_keeps_original_draft() -> None:
+    assert "让模型修改知识草稿" in FRONTEND
+    assert "只生成修订稿，不直接覆盖原稿" in FRONTEND
+    assert "/model-revise" in FRONTEND
+    assert "/model-revision:apply" in FRONTEND
+    assert "采用模型修改并重新初标" in FRONTEND
+
+
 def test_candidate_review_uses_draft_disposition_queue_and_update_date_filters() -> None:
     assert "基于转写草稿、来源证据和模型标注" in FRONTEND
     assert "grid-template-columns:repeat(9,minmax(0,1fr))" in FRONTEND

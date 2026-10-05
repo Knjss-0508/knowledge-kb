@@ -36,6 +36,7 @@ from app.services.confidence_training import (
 )
 from app.services.model_annotation import (
     ModelAnnotationError,
+    analyze_draft_generation_prompt,
     analyze_confidence_training_prompt,
     correct_with_deepseek_flash,
     revise_confidence_training_prompt,
@@ -45,6 +46,12 @@ from app.services.model_annotation import (
 
 
 router = APIRouter(prefix="/confidence-training", tags=["置信度训练"])
+
+CONFIDENCE_PROMPT_SAMPLE_LIMIT = 200
+CONFIDENCE_PROMPT_DISCOVERY_COUNT = 100
+CONFIDENCE_PROMPT_VALIDATION_COUNT = 50
+CONFIDENCE_PROMPT_TEST_COUNT = 50
+CONFIDENCE_PROMPT_REPRESENTATIVE_CASE_LIMIT = 12
 
 
 def _rows(db: Session) -> list[IntegrationIngestion]:
@@ -84,26 +91,79 @@ def _training_job_payload(job: ConfidenceTrainingJob) -> dict[str, Any]:
     }
 
 
+def _stable_sample_rank(row_id: str) -> str:
+    return hashlib.sha256(f"confidence-prompt-sample-v1:{row_id}".encode("utf-8")).hexdigest()
+
+
+def _stratified_training_rows(
+    rows_with_items: list[tuple[IntegrationIngestion, dict[str, Any]]],
+) -> list[tuple[IntegrationIngestion, dict[str, Any]]]:
+    strata: dict[tuple[bool, str, str], list[tuple[IntegrationIngestion, dict[str, Any]]]] = {}
+    for row, item in rows_with_items:
+        mismatch = (
+            item.get("model_label") != item.get("human_label")
+            or item.get("model_draft_disposition") != item.get("human_draft_disposition")
+        )
+        key = (
+            mismatch,
+            str(item.get("human_label") or "unknown"),
+            str(item.get("confidence_band") or "unscored"),
+        )
+        strata.setdefault(key, []).append((row, item))
+    for group in strata.values():
+        group.sort(key=lambda pair: _stable_sample_rank(str(pair[0].id)))
+
+    selected: list[tuple[IntegrationIngestion, dict[str, Any]]] = []
+    ordered_keys = sorted(strata, key=lambda key: (not key[0], key[1], key[2]))
+    while len(selected) < CONFIDENCE_PROMPT_SAMPLE_LIMIT:
+        added = False
+        for key in ordered_keys:
+            group = strata[key]
+            if group:
+                selected.append(group.pop(0))
+                added = True
+                if len(selected) >= CONFIDENCE_PROMPT_SAMPLE_LIMIT:
+                    break
+        if not added:
+            break
+    return selected
+
+
+def _dataset_split_counts(total: int) -> dict[str, int]:
+    if total >= CONFIDENCE_PROMPT_SAMPLE_LIMIT:
+        return {
+            "train": CONFIDENCE_PROMPT_DISCOVERY_COUNT,
+            "validation": CONFIDENCE_PROMPT_VALIDATION_COUNT,
+            "test": CONFIDENCE_PROMPT_TEST_COUNT,
+        }
+    if total < 3:
+        return {"train": total, "validation": 0, "test": 0}
+    validation_count = max(1, total // 4)
+    test_count = max(1, total // 4)
+    return {
+        "train": total - validation_count - test_count,
+        "validation": validation_count,
+        "test": test_count,
+    }
+
+
 def _manual_training_dataset(rows: list[IntegrationIngestion]) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    confirmed_rows = [
-        row for row in rows
-        if item_payload(row)["truth_status"] == "confirmed"
-    ]
-    confirmed_rows.sort(key=lambda row: row.id)
-    dataset: list[dict[str, Any]] = []
-    counts = {"train": 0, "validation": 0, "test": 0}
-    total = len(confirmed_rows)
-    test_count = max(1, total // 10) if total >= 3 else 0
-    validation_count = max(1, total // 10) if total >= 3 else (1 if total == 2 else 0)
-    train_count = total - validation_count - test_count
-    for index, row in enumerate(confirmed_rows):
+    confirmed_rows = []
+    for row in rows:
         item = item_payload(row)
+        if item["truth_status"] == "confirmed":
+            confirmed_rows.append((row, item))
+    selected_rows = _stratified_training_rows(confirmed_rows)
+    dataset: list[dict[str, Any]] = []
+    counts = _dataset_split_counts(len(selected_rows))
+    train_count = counts["train"]
+    validation_count = counts["validation"]
+    for index, (row, item) in enumerate(selected_rows):
         knowledge = dict((row.candidate_payload or {}).get("knowledge") or {})
         split = (
             "train" if index < train_count
             else ("validation" if index < train_count + validation_count else "test")
         )
-        counts[split] += 1
         dataset.append({
             "id": row.id,
             "split": split,
@@ -137,7 +197,9 @@ def _prompt_optimization_snapshot(dataset: list[dict[str, Any]]) -> dict[str, An
     ]
     # Keep the first real analysis bounded: error-first samples are more useful
     # than sending an oversized snapshot that can time out at the internal API.
-    selected = (mismatches + [item for item in dataset if item not in mismatches])[:8]
+    selected = (
+        mismatches + [item for item in dataset if item not in mismatches]
+    )[:CONFIDENCE_PROMPT_REPRESENTATIVE_CASE_LIMIT]
     return {
         "evaluation_scope": EVALUATION_SCOPE,
         "current_prompt_version": "post-transcription-value-and-content-review-v10",
@@ -282,7 +344,6 @@ def _shadow_comparison(rows: list[dict[str, Any]]) -> dict[str, Any]:
         delta > 0
         and candidate["strict_accuracy_ci95_lower"] is not None
         and candidate["strict_accuracy_ci95_lower"] >= (baseline["strict_accuracy_ci95_lower"] or 0)
-        and regressed == 0
     )
     return {
         "baseline": baseline,
@@ -291,11 +352,79 @@ def _shadow_comparison(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "improved_count": improved,
         "regressed_count": regressed,
         "gate_passed": gate_passed,
+        "regression_review_required": regressed > 0,
         "recommended_action": (
-            "人工审核后可进入下一轮影子运行" if gate_passed
+            (
+                f"总体指标改善；有 {regressed} 条退化，需人工分析后决定是否采用"
+                if regressed
+                else "总体指标改善，可由人工决定是否进入下一阶段"
+            ) if gate_passed
             else "保持当前 Prompt；人工审核错例后继续修改候选 Prompt"
         ),
     }
+
+
+def _draft_prompt_training_dataset(rows: list[IntegrationIngestion]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    samples: list[dict[str, Any]] = []
+    for row in rows:
+        metadata = dict(row.review_metadata or {})
+        history = list(metadata.get("draft_revision_history") or [])
+        payload = dict(row.candidate_payload or {})
+        human_review = dict(payload.get("human_review") or metadata.get("human_review") or {})
+        if not history or human_review.get("knowledge_value") != "worthy":
+            continue
+        first_revision = dict(history[0] or {})
+        before = dict(first_revision.get("before") or {})
+        knowledge = dict(payload.get("knowledge") or {})
+        after = {
+            "title": str(knowledge.get("title") or ""),
+            "content": knowledge.get("content") or {"blocks": []},
+            "recommended_reply": str(knowledge.get("recommended_reply") or ""),
+        }
+        if not before or before == after:
+            continue
+        samples.append({
+            "id": f"{row.id}:human-final-draft",
+            "ingestion_id": row.id,
+            "source": "human_final_draft",
+            "before": before,
+            "after": after,
+            "evidence_excerpt": str(knowledge.get("evidence_excerpt") or "")[:1200],
+            "human_review": human_review,
+            "revision_count": len(history),
+            "evaluation_scope": EVALUATION_SCOPE,
+            "not_for_weight_training": True,
+        })
+    samples.sort(key=lambda item: _stable_sample_rank(str(item["id"])))
+    samples = samples[:CONFIDENCE_PROMPT_SAMPLE_LIMIT]
+    counts = _dataset_split_counts(len(samples))
+    for index, sample in enumerate(samples):
+        sample["split"] = (
+            "train" if index < counts["train"]
+            else ("validation" if index < counts["train"] + counts["validation"] else "test")
+        )
+    return samples, counts
+
+
+def _draft_prompt_optimization_snapshot(dataset: list[dict[str, Any]]) -> dict[str, Any]:
+    discovery = [item for item in dataset if item.get("split") == "train"]
+    return {
+        "optimization_target": "draft_generation",
+        "evaluation_scope": EVALUATION_SCOPE,
+        "population": {"edited_draft_samples": len(dataset)},
+        "representative_edits": discovery[:CONFIDENCE_PROMPT_REPRESENTATIVE_CASE_LIMIT],
+        "requirements": [
+            "只能依据来源证据生成知识正文与推荐回复。",
+            "学习人工真实修改，不得把模型自评当作人工终稿。",
+            "候选 Prompt 不自动启用，必须经过离线回放和人工审核。",
+        ],
+    }
+
+
+def _shadow_rerun_samples(
+    dataset: list[dict[str, Any]], target_split: str,
+) -> list[dict[str, Any]]:
+    return [sample for sample in dataset if sample.get("split") == target_split]
 
 
 def _regressed_rows(job: ConfidenceTrainingJob) -> list[dict[str, Any]]:
@@ -372,6 +501,7 @@ def _run_shadow_rerun(job_id: str) -> None:
         if not job or not job.candidate_prompt:
             return
         stored_evaluation = dict(job.shadow_evaluation or {})
+        phase_results = dict(stored_evaluation.get("phase_results") or {})
         rows: list[dict[str, Any]] = list(stored_evaluation.get("rows") or [])
         skipped_samples: list[dict[str, Any]] = list(stored_evaluation.get("skipped_samples") or [])
         completed_ids = {
@@ -379,7 +509,8 @@ def _run_shadow_rerun(job_id: str) -> None:
             for row in [*rows, *skipped_samples]
             if row.get("id")
         }
-        samples = list(job.dataset_payload or [])
+        target_split = str(stored_evaluation.get("target_split") or "validation")
+        samples = _shadow_rerun_samples(list(job.dataset_payload or []), target_split)
         for index, sample in enumerate(samples, start=1):
             if str(sample.get("id")) in completed_ids:
                 continue
@@ -399,6 +530,8 @@ def _run_shadow_rerun(job_id: str) -> None:
                     "skipped_sample_count": len(skipped_samples),
                     "total_samples": len(samples),
                     "evaluation_scope": EVALUATION_SCOPE,
+                    "target_split": target_split,
+                    "phase_results": phase_results,
                     "rows": rows,
                     "skipped_samples": skipped_samples,
                 }
@@ -496,6 +629,8 @@ def _run_shadow_rerun(job_id: str) -> None:
                 "skipped_sample_count": len(skipped_samples),
                 "total_samples": len(samples),
                 "evaluation_scope": EVALUATION_SCOPE,
+                "target_split": target_split,
+                "phase_results": phase_results,
                 "rows": rows,
                 "skipped_samples": skipped_samples,
             }
@@ -506,11 +641,21 @@ def _run_shadow_rerun(job_id: str) -> None:
             db.add(job)
             db.commit()
         comparison = _shadow_comparison(rows)
-        job.status = "shadow_rerun_review_pending"
-        job.stage = "新旧 Prompt 影子复跑完成，等待人工验收"
+        job.status = (
+            "shadow_validation_review_pending"
+            if target_split == "validation"
+            else "shadow_test_review_pending"
+        )
+        job.stage = (
+            "验证集新旧 Prompt 复跑完成，等待人工判断是否进入测试集"
+            if target_split == "validation"
+            else "测试集新旧 Prompt 复跑完成，等待人工决定是否采用"
+        )
         job.shadow_evaluation = {
             "status": "completed",
             "evaluation_scope": EVALUATION_SCOPE,
+            "target_split": target_split,
+            "phase_results": phase_results,
             "baseline_prompt_version": CURRENT_REVIEW_PROMPT_VERSION,
             "candidate_prompt_version": "candidate-from-" + job.id,
             "rows": rows,
@@ -601,11 +746,23 @@ def _run_prompt_optimization_analysis(job_id: str) -> None:
         if not job:
             return
         try:
-            analysis = analyze_confidence_training_prompt(
-                _prompt_optimization_snapshot(list(job.dataset_payload or []))
-            )
+            existing_analysis = dict(job.analysis_result or {})
+            optimization_target = str(existing_analysis.get("optimization_target") or "review")
+            if optimization_target == "draft_generation":
+                analysis = analyze_draft_generation_prompt(
+                    _draft_prompt_optimization_snapshot(list(job.dataset_payload or []))
+                )
+            else:
+                analysis = analyze_confidence_training_prompt(
+                    _prompt_optimization_snapshot(list(job.dataset_payload or []))
+                )
+            analysis["optimization_target"] = optimization_target
             job.status = "prompt_review_pending"
-            job.stage = "DeepSeek-flash 已完成错误分析，等待人工审核候选提示词"
+            job.stage = (
+                "知识草稿 Prompt 分析完成，等待人工审核候选提示词"
+                if optimization_target == "draft_generation"
+                else "DeepSeek-flash 已完成错误分析，等待人工审核候选提示词"
+            )
             job.analysis_result = analysis
             job.candidate_prompt = str(analysis.get("candidate_prompt") or "")
             job.resolved_model_version = str(
@@ -818,22 +975,36 @@ def list_confidence_training_jobs(
 @router.post("/jobs", response_model=ConfidenceTrainingJobSchema)
 def create_confidence_training_job(
     background_tasks: BackgroundTasks,
+    target: str = Query("review", pattern="^(review|draft_generation)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("knowledge:submit")),
 ):
     if not settings_snapshot(db)["training_candidate_collection_enabled"]:
         raise HTTPException(409, "请先开启“允许收集训练候选”，再人工发起训练任务。")
-    dataset, counts = _manual_training_dataset(_rows(db))
+    source_rows = _rows(db)
+    dataset, counts = (
+        _draft_prompt_training_dataset(source_rows)
+        if target == "draft_generation"
+        else _manual_training_dataset(source_rows)
+    )
     if len(dataset) < 3:
         raise HTTPException(
             422,
-            "至少需要 3 条已确认的人工真值，才能生成独立训练集、验证集和测试集。",
+            (
+                "至少需要 3 条有修改前后版本的知识草稿，才能优化草稿生成 Prompt。"
+                if target == "draft_generation"
+                else "至少需要 3 条已确认的人工真值，才能生成独立训练集、验证集和测试集。"
+            ),
         )
     serialized = json.dumps(dataset, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     job = ConfidenceTrainingJob(
         id=f"ctj-{uuid.uuid4().hex[:16]}",
         status="analyzing_errors",
-        stage="DeepSeek-flash 正在分析人工真值与模型错误",
+        stage=(
+            "DeepSeek-flash 正在分析原始草稿与人工最终稿差异"
+            if target == "draft_generation"
+            else "DeepSeek-flash 正在分析人工真值与模型错误"
+        ),
         model_name=MODEL_NAME,
         evaluation_scope=EVALUATION_SCOPE,
         dataset_hash=hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
@@ -844,6 +1015,7 @@ def create_confidence_training_job(
         test_count=counts["test"],
         requested_by=current_user.username,
         error_message="",
+        analysis_result={"optimization_target": target},
     )
     db.add(job)
     db.commit()
@@ -855,29 +1027,48 @@ def create_confidence_training_job(
 @router.post("/jobs/{job_id}/shadow-rerun", response_model=ConfidenceTrainingJobSchema)
 def start_confidence_training_shadow_rerun(
     job_id: str,
+    split: str = Query("validation", pattern="^(validation|test)$"),
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("knowledge:submit")),
 ):
     job = db.query(ConfidenceTrainingJob).filter(ConfidenceTrainingJob.id == job_id).first()
     if not job:
         raise HTTPException(404, "提示词优化任务不存在。")
-    if job.status not in {
-        "prompt_review_pending",
-        "shadow_rerun_interrupted",
-        "shadow_rerun_failed",
-    } or not job.candidate_prompt:
+    if dict(job.analysis_result or {}).get("optimization_target") == "draft_generation":
+        raise HTTPException(409, "草稿生成 Prompt 需要接入 Answer Hub 离线回放后再做影子验收。")
+    allowed_statuses = {
+        "validation": {
+            "prompt_review_pending",
+            "shadow_rerun_interrupted",
+            "shadow_rerun_failed",
+        },
+        "test": {"shadow_validation_review_pending"},
+    }
+    if job.status not in allowed_statuses[split] or not job.candidate_prompt:
         raise HTTPException(409, "当前任务没有可继续的候选 Prompt 影子复跑。")
+    previous_evaluation = dict(job.shadow_evaluation or {})
+    if split == "test":
+        comparison = dict(previous_evaluation.get("comparison") or {})
+        if not comparison.get("gate_passed"):
+            raise HTTPException(409, "验证集尚未显示总体改善，不能进入测试集。")
     job.status = "shadow_rerun_queued"
-    job.stage = "候选 Prompt 影子复跑排队中"
-    previous_rows = list((job.shadow_evaluation or {}).get("rows") or [])
-    previous_skipped = list((job.shadow_evaluation or {}).get("skipped_samples") or [])
+    job.stage = f"候选 Prompt {split} 集影子复跑排队中"
+    same_split = previous_evaluation.get("target_split") == split
+    previous_rows = list(previous_evaluation.get("rows") or []) if same_split else []
+    previous_skipped = list(previous_evaluation.get("skipped_samples") or []) if same_split else []
+    phase_results = dict(previous_evaluation.get("phase_results") or {})
+    if split == "test" and previous_evaluation.get("status") == "completed":
+        phase_results["validation"] = previous_evaluation
+    total_samples = len(_shadow_rerun_samples(list(job.dataset_payload or []), split))
     job.shadow_evaluation = {
         "status": "queued",
+        "target_split": split,
         "processed_samples": len(previous_rows) + len(previous_skipped),
         "evaluated_samples": len(previous_rows),
         "skipped_sample_count": len(previous_skipped),
-        "total_samples": len(job.dataset_payload or []),
+        "total_samples": total_samples,
         "evaluation_scope": EVALUATION_SCOPE,
+        "phase_results": phase_results,
         "resumed_rows": len(previous_rows),
         "rows": previous_rows,
         "skipped_samples": previous_skipped,
