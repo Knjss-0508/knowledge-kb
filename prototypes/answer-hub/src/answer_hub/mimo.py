@@ -152,27 +152,19 @@ class MimoConfig:
         # the file is invalid; that could unexpectedly spend the old budget.
         if local_path.is_file() and local is None:
             return None
-        api_key = local.api_key if local else os.getenv("MIMO_API_KEY", "").strip()
-        api_keys = (
-            tuple(dict.fromkeys((*local.api_keys, *(
-                item.strip()
-                for item in _API_KEY_SEPARATOR_RE.split(os.getenv("MIMO_API_KEYS", ""))
-                if item.strip()
-            ))))
-            if local
-            else tuple(
-                item.strip()
-                for item in _API_KEY_SEPARATOR_RE.split(os.getenv("MIMO_API_KEYS", ""))
-                if item.strip()
-            )
-        )
-        base_url = local.base_url if local else os.getenv("MIMO_BASE_URL", "").strip()
-        model = local.model if local else os.getenv("MIMO_MODEL", "").strip()
-        media_model = local.media_model if local else os.getenv("MIMO_MEDIA_MODEL", "").strip()
+        # This delivery package is DeepSeek-only. Never spend a personal MiMo
+        # budget as an implicit fallback when the group model is unavailable.
+        if local is None:
+            return None
+        api_key = local.api_key
+        api_keys = tuple(dict.fromkeys((api_key, *local.api_keys)))
+        base_url = local.base_url
+        model = local.model
+        media_model = local.media_model
         if not (api_key and base_url and model):
             return None
         if not media_model:
-            media_model = "mimo-v2.5" if model.startswith("mimo-v2.5") else model
+            media_model = model
         cluster_media_policy = (
             os.getenv("MIMO_CLUSTER_MEDIA_POLICY", "on_demand")
             .strip()
