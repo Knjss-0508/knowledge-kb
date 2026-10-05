@@ -56,5 +56,15 @@ def test_knowledge_flow_order_and_confidence_training_sections():
 def test_training_tab_binds_to_initialized_settings_state():
     assert "v-model=\"confidenceTraining.settings.training_candidate_collection_enabled\"" in FRONTEND
     assert "v-model=\"confidenceTraining.settings.training_snapshot_enabled\"" in FRONTEND
-    assert "confidenceTraining: {tab:'candidates'" in FRONTEND
+    assert "confidenceTraining: {tab:'overview'" in FRONTEND
     assert "settings:{training_candidate_collection_enabled:true" in FRONTEND
+
+
+def test_shadow_sample_inspection_panel_is_wired():
+    assert "confidencePromptRevisionBlocker" in FRONTEND
+    assert "saveConfidenceRegression(job,row," in FRONTEND
+    assert "shadowRegressionDraft" in FRONTEND
+    assert "reopenConfidenceInspection" in FRONTEND
+    assert "changeShadowEvaluationPage" in FRONTEND
+    assert "keep_as_regression_case" in FRONTEND
+    assert "human_truth_correction_required" in FRONTEND
