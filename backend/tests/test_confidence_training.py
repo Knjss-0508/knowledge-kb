@@ -16,11 +16,11 @@ from app.routes.confidence_training import (
 
 def test_confidence_band_boundaries_are_frozen():
     assert confidence_band(0.0) == "B0"
-    assert confidence_band(0.4999) == "B0"
-    assert confidence_band(0.5) == "B1"
-    assert confidence_band(0.9) == "B4"
-    assert confidence_band(0.98) == "B6"
-    assert confidence_band(1.0) == "B6"
+    assert confidence_band(0.6999) == "B0"
+    assert confidence_band(0.7) == "B1"
+    assert confidence_band(0.85) == "B2"
+    assert confidence_band(0.95) == "B3"
+    assert confidence_band(1.0) == "B3"
     assert confidence_band(1.01) is None
 
 

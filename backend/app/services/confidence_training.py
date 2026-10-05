@@ -12,13 +12,10 @@ from app.models.integration import ConfidenceTrainingSettingsRecord
 MODEL_NAME = "deepseek-flash"
 EVALUATION_SCOPE = "shadow_only"
 CONFIDENCE_BANDS = (
-    ("B0", 0.00, 0.50),
-    ("B1", 0.50, 0.70),
-    ("B2", 0.70, 0.80),
-    ("B3", 0.80, 0.90),
-    ("B4", 0.90, 0.95),
-    ("B5", 0.95, 0.98),
-    ("B6", 0.98, 1.00),
+    ("B0", 0.00, 0.70),
+    ("B1", 0.70, 0.85),
+    ("B2", 0.85, 0.95),
+    ("B3", 0.95, 1.00),
 )
 
 SETTINGS_RECORD_ID = "confidence-training-global"
@@ -42,7 +39,7 @@ def confidence_band(value: Any) -> str | None:
     if not 0 <= score <= 1:
         return None
     for name, lower, upper in CONFIDENCE_BANDS:
-        if (lower <= score < upper) or (name == "B6" and score == 1.0):
+        if (lower <= score < upper) or (name == "B3" and score == 1.0):
             return name
     return None
 
@@ -50,7 +47,7 @@ def confidence_band(value: Any) -> str | None:
 def confidence_band_label(name: str) -> str:
     for band, lower, upper in CONFIDENCE_BANDS:
         if band == name:
-            right = "]" if band == "B6" else ")"
+            right = "]" if band == "B3" else ")"
             return f"{band} [{lower:.2f}, {upper:.2f}{right}"
     return name
 
@@ -198,6 +195,34 @@ def _wilson_lower(correct: int, total: int) -> float | None:
     return round(max(0.0, (centre - spread) / denominator), 4)
 
 
+def _accuracy_group(items: list[dict[str, Any]], *, split: str, band: str) -> dict[str, Any]:
+    group = [
+        item for item in items
+        if (item.get("dataset_split") or "unassigned") == split
+        and item.get("confidence_band") == band
+    ]
+    valid = [item for item in group if item.get("truth_status") == "confirmed"]
+    strict = [item for item in valid if item.get("strict_correct") is True]
+    acceptable = [item for item in valid if item.get("acceptable_correct") is True]
+    return {
+        "dataset_split": split,
+        "split_label": {"train": "问题发现集", "validation": "验证集", "test": "测试集", "unassigned": "未分区"}.get(split, split),
+        "band": band,
+        "label": confidence_band_label(band),
+        "n_scored": len(group),
+        "n_valid_truth": len(valid),
+        "strict_correct_count": len(strict),
+        "strict_accuracy": round(len(strict) / len(valid), 4) if valid else None,
+        "acceptable_accuracy": round(len(acceptable) / len(valid), 4) if valid else None,
+        "accuracy_ci95_lower": _wilson_lower(len(strict), len(valid)),
+        "coverage": round(len(valid) / len(group), 4) if group else 0,
+        "not_evaluable_rate": round(sum(item.get("truth_status") != "confirmed" for item in group) / len(group), 4) if group else 0,
+        "fatal_error_rate": round(sum(item.get("error_severity") == "fatal" for item in valid) / len(valid), 4) if valid else 0,
+        "major_error_rate": round(sum(item.get("error_severity") == "major" for item in valid) / len(valid), 4) if valid else 0,
+        "sample_warning": "样本不足，仅供观察" if 0 < len(valid) < 10 else ("暂无样本" if not group else ""),
+    }
+
+
 def aggregate(items: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     scored = [item for item in items if item.get("confidence_band")]
     valid = [item for item in scored if item.get("truth_status") == "confirmed"]
@@ -225,6 +250,28 @@ def aggregate(items: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[st
             "major_error_rate": round(sum(i.get("error_severity") == "major" for i in group_valid) / len(group_valid), 4) if group_valid else 0,
             "recommended_action": "全检（影子评测不放行）",
         })
+    split_names = ("train", "validation", "test", "unassigned")
+    partitioned_bands = [
+        _accuracy_group(items, split=split, band=band)
+        for split in split_names
+        for band, _, _ in CONFIDENCE_BANDS
+    ]
+    split_summary = []
+    for split in split_names:
+        split_items = [item for item in scored if (item.get("dataset_split") or "unassigned") == split]
+        split_valid = [item for item in split_items if item.get("truth_status") == "confirmed"]
+        split_strict = [item for item in split_valid if item.get("strict_correct") is True]
+        split_acceptable = [item for item in split_valid if item.get("acceptable_correct") is True]
+        split_summary.append({
+            "dataset_split": split,
+            "split_label": {"train": "问题发现集", "validation": "验证集", "test": "测试集", "unassigned": "未分区"}[split],
+            "sample_count": len(split_items),
+            "n_valid_truth": len(split_valid),
+            "strict_accuracy": round(len(split_strict) / len(split_valid), 4) if split_valid else None,
+            "acceptable_accuracy": round(len(split_acceptable) / len(split_valid), 4) if split_valid else None,
+            "accuracy_ci95_lower": _wilson_lower(len(split_strict), len(split_valid)),
+            "sample_warning": "样本不足，仅供观察" if 0 < len(split_valid) < 10 else ("暂无样本" if not split_items else ""),
+        })
     overview = {
         "total": len(items),
         "scored": len(scored),
@@ -240,6 +287,8 @@ def aggregate(items: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[st
         "model": MODEL_NAME,
         "evaluation_scope": EVALUATION_SCOPE,
         "production_auto_review_enabled": False,
+        "split_summary": split_summary,
+        "partitioned_bands": partitioned_bands,
     }
     return overview, bands
 
