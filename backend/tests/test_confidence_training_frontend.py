@@ -41,6 +41,16 @@ def test_knowledge_flow_order_and_confidence_training_sections():
     assert "showAllItems" not in FRONTEND
     assert "人工标签（例如 worthy / unworthy）" not in FRONTEND
     assert "系统自动比较沉淀价值和草稿处理动作" in FRONTEND
+    assert "每次最多分层抽取 200 条" in FRONTEND
+    assert "问题发现 100 / 验证 50 / 测试 50" in FRONTEND
+    assert "先跑验证集 {{job.validation_count}} 条" in FRONTEND
+    assert "验证有改善，进入测试集" in FRONTEND
+    assert "有退化不自动否定新版" in FRONTEND
+    assert "?split=" in FRONTEND
+    assert "classification:decision" in FRONTEND
+    assert "优化聚类转写草稿 Prompt" in FRONTEND
+    assert "draft_generation" in FRONTEND
+    assert "草稿 Prompt 来自模型原稿与人工最终稿差异" in FRONTEND
 
 
 def test_training_tab_binds_to_initialized_settings_state():

@@ -1,7 +1,17 @@
 from types import SimpleNamespace
 
 from app.services.confidence_training import aggregate, confidence_band, item_payload, settings_snapshot, update_settings
-from app.routes.confidence_training import _manual_training_dataset, _prompt_optimization_snapshot, _shadow_comparison, _revision_preconditions, _prompt_revision_snapshot, _shadow_sample_completeness
+from app.routes.confidence_training import (
+    CONFIDENCE_PROMPT_SAMPLE_LIMIT,
+    _draft_prompt_training_dataset,
+    _manual_training_dataset,
+    _prompt_optimization_snapshot,
+    _prompt_revision_snapshot,
+    _revision_preconditions,
+    _shadow_comparison,
+    _shadow_rerun_samples,
+    _shadow_sample_completeness,
+)
 
 
 def test_confidence_band_boundaries_are_frozen():
@@ -120,7 +130,7 @@ def test_training_settings_persist_but_never_enable_unavailable_training_task():
     assert restored["training_task_available"] is False
 
 
-def test_manual_training_dataset_uses_all_confirmed_truth_and_deterministic_splits():
+def test_manual_training_dataset_uses_confirmed_truth_and_deterministic_splits():
     candidate = SimpleNamespace(
         id="ing-1",
         event_id="batch-1",
@@ -147,6 +157,85 @@ def test_manual_training_dataset_uses_all_confirmed_truth_and_deterministic_spli
     assert dataset[0]["evaluation_eligible"] is False
     assert dataset[0]["input_completeness"] == "not_evaluable"
     assert sum(counts.values()) == 1
+
+
+def test_manual_training_dataset_caps_snapshot_at_200_with_100_50_50_splits():
+    rows = []
+    for index in range(260):
+        human_value = ("worthy", "unworthy", "pending")[index % 3]
+        human_draft = {
+            "worthy": "approved",
+            "unworthy": "not_applicable",
+            "pending": "hold_for_evidence",
+        }[human_value]
+        model_value = human_value if index % 2 else "worthy"
+        rows.append(SimpleNamespace(
+            id=f"ing-{index:03d}",
+            event_id=f"batch-{index // 20}",
+            review_status="ready",
+            created_at=None,
+            candidate_payload={
+                "knowledge": {
+                    "title": f"样本 {index}",
+                    "content": f"正文 {index}",
+                    "recommended_reply": f"回复 {index}",
+                },
+                "model_review": {
+                    "knowledge_value": model_value,
+                    "confidence": 0.5 + (index % 50) / 100,
+                    "suggested_action": "submit_for_human_review",
+                },
+                "human_review": {
+                    "knowledge_value": human_value,
+                    "draft_disposition": human_draft,
+                    "training_eligible": "是",
+                },
+            },
+            review_metadata={},
+        ))
+
+    first, first_counts = _manual_training_dataset(rows)
+    second, second_counts = _manual_training_dataset(list(reversed(rows)))
+
+    assert CONFIDENCE_PROMPT_SAMPLE_LIMIT == 200
+    assert len(first) == 200
+    assert first_counts == {"train": 100, "validation": 50, "test": 50}
+    assert second_counts == first_counts
+    assert [(row["id"], row["split"]) for row in second] == [
+        (row["id"], row["split"]) for row in first
+    ]
+    assert len({row["id"] for row in first}) == 200
+
+
+def test_shadow_rerun_samples_only_selects_requested_validation_or_test_split():
+    dataset = [
+        {"id": "discover", "split": "train"},
+        {"id": "validate", "split": "validation"},
+        {"id": "final", "split": "test"},
+    ]
+
+    assert [row["id"] for row in _shadow_rerun_samples(dataset, "validation")] == ["validate"]
+    assert [row["id"] for row in _shadow_rerun_samples(dataset, "test")] == ["final"]
+
+
+def test_draft_prompt_dataset_uses_real_before_after_revision_history():
+    rows = [SimpleNamespace(
+        id=f"ing-{index}",
+        candidate_payload={"knowledge": {"content": f"人工正文 {index}", "recommended_reply": "人工回复", "evidence_excerpt": "来源证据"}, "human_review": {"knowledge_value": "worthy"}},
+        review_metadata={"draft_revision_history": [{
+            "revision": 1,
+            "source": "human_edit",
+            "before": {"content": f"原正文 {index}", "recommended_reply": "原回复"},
+            "after": {"content": f"人工正文 {index}", "recommended_reply": "人工回复"},
+        }]},
+    ) for index in range(210)]
+
+    dataset, counts = _draft_prompt_training_dataset(rows)
+
+    assert len(dataset) == 200
+    assert counts == {"train": 100, "validation": 50, "test": 50}
+    assert dataset[0]["before"] != dataset[0]["after"]
+    assert dataset[0]["evidence_excerpt"] == "来源证据"
 
 
 def test_prompt_optimization_snapshot_is_shadow_only_and_error_first():
@@ -178,15 +267,20 @@ def test_shadow_sample_completeness_keeps_partial_data_but_skips_empty_shells():
     assert "无法进行新旧 Prompt 对比" in empty["not_evaluable_reason"]
 
 
-def test_shadow_comparison_requires_improvement_and_no_regression():
+def test_shadow_comparison_keeps_improved_candidate_reviewable_with_regressions():
     rows = [
         {"baseline": {"value_correct": False, "draft_correct": False, "strict_correct": False}, "candidate": {"value_correct": True, "draft_correct": True, "strict_correct": True}},
+        {"baseline": {"value_correct": False, "draft_correct": False, "strict_correct": False}, "candidate": {"value_correct": True, "draft_correct": True, "strict_correct": True}},
+        {"baseline": {"value_correct": True, "draft_correct": True, "strict_correct": True}, "candidate": {"value_correct": False, "draft_correct": False, "strict_correct": False}},
         {"baseline": {"value_correct": True, "draft_correct": True, "strict_correct": True}, "candidate": {"value_correct": True, "draft_correct": True, "strict_correct": True}},
     ]
     comparison = _shadow_comparison(rows)
-    assert comparison["strict_accuracy_delta"] == 0.5
-    assert comparison["improved_count"] == 1
-    assert comparison["regressed_count"] == 0
+    assert comparison["strict_accuracy_delta"] == 0.25
+    assert comparison["improved_count"] == 2
+    assert comparison["regressed_count"] == 1
+    assert comparison["gate_passed"] is True
+    assert comparison["regression_review_required"] is True
+    assert "人工分析" in comparison["recommended_action"]
 
 
 def test_regression_revision_requires_review_and_preserves_truth_boundary():

@@ -65,6 +65,31 @@ def _annotation_prompt(candidate: dict[str, Any]) -> str:
     )
 
 
+def _draft_revision_prompt(candidate: dict[str, Any]) -> str:
+    return (
+        "你是知识转写草稿修订器。只能依据输入中的来源证据和已有草稿修改知识正文与推荐回复，"
+        "不得补造事实、总部标准、阈值、品牌、机型或适用范围。证据不足时必须保留不确定性，"
+        "不能为了写完整而给出确定结论。请只返回 JSON 对象，字段必须包括："
+        "revised_content、revised_recommended_reply、change_summary、evidence_used、limitations。"
+        "revised_content 必须是可保存的知识正文对象或字符串；revised_recommended_reply 必须是可直接发送的简洁回复；"
+        "change_summary、evidence_used、limitations 必须是字符串数组。不得返回人工审核结论。\n\n"
+        + json.dumps(candidate, ensure_ascii=False, indent=2)
+    )
+
+
+def _draft_prompt_optimization_prompt(training_snapshot: dict[str, Any]) -> str:
+    return (
+        "你是知识聚类转写提示词优化教练。请根据冻结样本中的模型原始草稿与人工最终稿差异，"
+        "总结人工对知识正文和推荐回复的真实要求，并生成一份完整的候选知识转写 Prompt。"
+        "不得修改人工最终稿，不得补造来源证据，不得建议自动发布或自动覆盖当前 Prompt。"
+        "只返回 JSON 对象，字段必须包括：analysis_summary、root_causes、prompt_changes、"
+        "candidate_prompt、expected_risks、recommended_next_action。"
+        "root_causes、prompt_changes、expected_risks 必须是数组；"
+        "recommended_next_action 只能是 human_review、collect_more_edits、offline_replay。\n\n"
+        + json.dumps(training_snapshot, ensure_ascii=False, indent=2)
+    )
+
+
 def _prompt_optimization_prompt(training_snapshot: dict[str, Any]) -> str:
     return (
         "你是知识转写后审核提示词的优化教练。你必须只根据冻结的影子评测数据，"
@@ -186,10 +211,21 @@ def annotate_transcribed_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     return _call_deepseek_flash(_annotation_prompt(candidate), purpose="草稿标注")
 
 
+def revise_transcribed_candidate_draft(candidate: dict[str, Any]) -> dict[str, Any]:
+    return _call_deepseek_flash(_draft_revision_prompt(candidate), purpose="草稿修订")
+
+
 def analyze_confidence_training_prompt(training_snapshot: dict[str, Any]) -> dict[str, Any]:
     return _call_deepseek_flash(
         _prompt_optimization_prompt(training_snapshot),
         purpose="提示词优化分析",
+    )
+
+
+def analyze_draft_generation_prompt(training_snapshot: dict[str, Any]) -> dict[str, Any]:
+    return _call_deepseek_flash(
+        _draft_prompt_optimization_prompt(training_snapshot),
+        purpose="知识草稿提示词优化分析",
     )
 
 

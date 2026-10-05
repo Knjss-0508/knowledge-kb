@@ -275,6 +275,7 @@ class CandidateReviewListItem(BaseModel):
     evidence_excerpt: str | None = None
     selection: dict[str, Any] = Field(default_factory=dict)
     model_review: dict[str, Any] = Field(default_factory=dict)
+    model_draft_revision: dict[str, Any] = Field(default_factory=dict)
     human_review: dict[str, Any] = Field(default_factory=dict)
     priority_review: bool = False
     deduplication: IntegrationDedupResponse | None = None

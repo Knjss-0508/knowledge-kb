@@ -1,6 +1,7 @@
 import logging
 import hashlib
 import uuid
+from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
@@ -65,7 +66,11 @@ from app.services.candidate_review import (
     normalize_human_review,
     normalize_knowledge_value,
 )
-from app.services.model_annotation import ModelAnnotationError, annotate_transcribed_candidate
+from app.services.model_annotation import (
+    ModelAnnotationError,
+    annotate_transcribed_candidate,
+    revise_transcribed_candidate_draft,
+)
 from app.services.embedding import EmbeddingServiceUnavailable
 from app.services.embedding_runtime import get_active_runtime_values
 from app.services.knowledge_dedup import (
@@ -197,6 +202,48 @@ def _ensure_candidate_origin_is_writable(knowledge: dict) -> None:
         raise ValueError("KNOWLEDGE_ORIGIN_MANAGED")
 
 
+def _candidate_draft_snapshot(knowledge: dict) -> dict[str, Any]:
+    return {
+        "title": str(knowledge.get("title") or ""),
+        "content": deepcopy(knowledge.get("content") or {"blocks": []}),
+        "recommended_reply": str(knowledge.get("recommended_reply") or ""),
+    }
+
+
+def _content_with_revised_text(original: Any, revised: Any) -> Any:
+    if isinstance(revised, dict):
+        return deepcopy(revised)
+    text_value = str(revised or "").strip()
+    original_blocks = list((original or {}).get("blocks") or []) if isinstance(original, dict) else []
+    media_blocks = [
+        deepcopy(block) for block in original_blocks
+        if isinstance(block, dict) and block.get("type") in {"image", "video"}
+    ]
+    return {"blocks": ([{"type": "text", "value": text_value}] if text_value else []) + media_blocks}
+
+
+def _append_draft_revision_history(
+    metadata: dict[str, Any],
+    *,
+    source: str,
+    before: dict[str, Any],
+    after: dict[str, Any],
+    actor: str,
+) -> None:
+    if before == after:
+        return
+    history = list(metadata.get("draft_revision_history") or [])
+    history.append({
+        "revision": len(history) + 1,
+        "source": source,
+        "before": before,
+        "after": after,
+        "actor": actor,
+        "created_at": datetime.utcnow().isoformat(),
+    })
+    metadata["draft_revision_history"] = history[-20:]
+
+
 def _candidate_review_item(item: IntegrationIngestion) -> CandidateReviewListItem:
     payload, knowledge = _candidate_payload_with_taxonomy_defaults(
         item.candidate_payload
@@ -204,6 +251,7 @@ def _candidate_review_item(item: IntegrationIngestion) -> CandidateReviewListIte
     selection = dict(payload.get("selection") or item.selection_metadata or {})
     review_metadata = dict(item.review_metadata or {})
     model_review = dict(payload.get("model_review") or review_metadata.get("model_review") or {})
+    model_draft_revision = dict(review_metadata.get("model_draft_revision") or {})
     human_review = normalize_human_review(
         payload.get("human_review") or review_metadata.get("human_review") or {}
     )
@@ -241,6 +289,7 @@ def _candidate_review_item(item: IntegrationIngestion) -> CandidateReviewListIte
         evidence_excerpt=knowledge.get("evidence_excerpt"),
         selection=selection,
         model_review=model_review,
+        model_draft_revision=model_draft_revision,
         human_review=human_review,
         priority_review=bool(model_review.get("priority_review")),
         deduplication=deduplication,
@@ -3025,6 +3074,7 @@ def update_candidate_review(
     payload, knowledge = _candidate_payload_with_taxonomy_defaults(
         item.candidate_payload
     )
+    draft_before = _candidate_draft_snapshot(knowledge)
     try:
         _ensure_candidate_origin_is_writable(knowledge)
     except ValueError as exc:
@@ -3057,6 +3107,13 @@ def update_candidate_review(
     payload["knowledge"] = knowledge
 
     review_metadata = dict(item.review_metadata or {})
+    _append_draft_revision_history(
+        review_metadata,
+        source="human_edit",
+        before=draft_before,
+        after=_candidate_draft_snapshot(knowledge),
+        actor=current_user.username,
+    )
     if deduplication_sensitive_changed or confirm_dedup_review is False:
         review_metadata.pop("deduplication_confirmation", None)
     elif confirm_dedup_review is True:
@@ -3179,6 +3236,133 @@ def annotate_candidate_review_draft(
     }
     item.candidate_payload = payload
     item.review_metadata = metadata
+    db.commit()
+    db.refresh(item)
+    return _candidate_review_item(item)
+
+
+@router.post(
+    "/candidate-reviews/{ingestion_id}/model-revise",
+    response_model=CandidateReviewListItem,
+)
+def revise_candidate_review_draft(
+    ingestion_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    item = (
+        db.query(IntegrationIngestion)
+        .filter(
+            IntegrationIngestion.id == ingestion_id,
+            IntegrationIngestion.review_status.isnot(None),
+            IntegrationIngestion.source_system != "excel",
+        )
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="候选复核记录不存在。")
+    if item.review_status == "submitted":
+        raise HTTPException(status_code=409, detail="已送审候选不能生成模型修订稿。")
+    payload, knowledge = _candidate_payload_with_taxonomy_defaults(item.candidate_payload)
+    metadata = dict(item.review_metadata or {})
+    model_review = dict(payload.get("model_review") or metadata.get("model_review") or {})
+    if (
+        model_review.get("suggested_action") != "return_for_revision"
+        and model_review.get("draft_quality") != "revision_required"
+    ):
+        raise HTTPException(status_code=409, detail="当前模型初标未要求修改知识草稿。")
+    original_draft = _candidate_draft_snapshot(knowledge)
+    try:
+        revised = revise_transcribed_candidate_draft({
+            "draft": original_draft,
+            "evidence_excerpt": str(knowledge.get("evidence_excerpt") or ""),
+            "model_review": model_review,
+            "source_conversation_id": item.source_conversation_id,
+        })
+    except ModelAnnotationError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    revised_content = revised.get("revised_content")
+    revised_reply = str(revised.get("revised_recommended_reply") or "").strip()
+    if not revised_content or not revised_reply:
+        raise HTTPException(502, "模型修订结果缺少知识正文或推荐回复。")
+    metadata["model_draft_revision"] = {
+        "status": "pending_human_apply",
+        "original_draft": original_draft,
+        "revised_draft": {
+            "title": original_draft["title"],
+            "content": _content_with_revised_text(original_draft["content"], revised_content),
+            "recommended_reply": revised_reply,
+        },
+        "change_summary": list(revised.get("change_summary") or []),
+        "evidence_used": list(revised.get("evidence_used") or []),
+        "limitations": list(revised.get("limitations") or []),
+        "requested_by": current_user.username,
+        "created_at": datetime.utcnow().isoformat(),
+        "requested_model": revised.get("requested_model"),
+        "resolved_model_version": revised.get("resolved_model_version"),
+        "prompt_version": revised.get("prompt_version"),
+    }
+    item.review_metadata = metadata
+    db.commit()
+    db.refresh(item)
+    return _candidate_review_item(item)
+
+
+@router.post(
+    "/candidate-reviews/{ingestion_id}/model-revision:apply",
+    response_model=CandidateReviewListItem,
+)
+def apply_candidate_review_model_revision(
+    ingestion_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    item = (
+        db.query(IntegrationIngestion)
+        .filter(
+            IntegrationIngestion.id == ingestion_id,
+            IntegrationIngestion.review_status.isnot(None),
+            IntegrationIngestion.source_system != "excel",
+        )
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="候选复核记录不存在。")
+    if item.review_status == "submitted":
+        raise HTTPException(status_code=409, detail="已送审候选不能采用模型修订稿。")
+    payload, knowledge = _candidate_payload_with_taxonomy_defaults(item.candidate_payload)
+    metadata = dict(item.review_metadata or {})
+    revision = dict(metadata.get("model_draft_revision") or {})
+    revised_draft = dict(revision.get("revised_draft") or {})
+    if revision.get("status") != "pending_human_apply" or not revised_draft:
+        raise HTTPException(status_code=409, detail="当前没有待人工采用的模型修订稿。")
+    before = _candidate_draft_snapshot(knowledge)
+    knowledge["content"] = deepcopy(revised_draft.get("content") or knowledge.get("content"))
+    knowledge["recommended_reply"] = str(revised_draft.get("recommended_reply") or "")
+    payload["knowledge"] = knowledge
+    payload.pop("model_review", None)
+    _append_draft_revision_history(
+        metadata,
+        source="model_revision_accepted",
+        before=before,
+        after=_candidate_draft_snapshot(knowledge),
+        actor=current_user.username,
+    )
+    revision.update({
+        "status": "applied",
+        "applied_by": current_user.username,
+        "applied_at": datetime.utcnow().isoformat(),
+    })
+    metadata["model_draft_revision"] = revision
+    metadata["model_review"] = {}
+    metadata["model_annotation"] = {
+        "status": "stale_after_draft_revision",
+        "reason": "模型修订稿已采用，需要重新执行模型初标。",
+    }
+    item.candidate_payload = payload
+    item.review_metadata = metadata
+    item.review_status = "pending"
+    item.status = "candidate_pending"
     db.commit()
     db.refresh(item)
     return _candidate_review_item(item)

@@ -73,6 +73,32 @@ def test_draft_annotation_includes_draft_and_evidence(monkeypatch):
     assert "证据摘要" in captured["prompt"]
 
 
+def test_draft_revision_returns_revised_content_without_overwriting_input(monkeypatch):
+    captured = {}
+    def fake_call(prompt, *, purpose):
+        captured.update(prompt=prompt, purpose=purpose)
+        return {"revised_content": "修改后的正文", "revised_recommended_reply": "修改后的推荐回复", "change_summary": ["收紧结论范围"]}
+    monkeypatch.setattr(model_annotation, "_call_deepseek_flash", fake_call)
+    original = {"draft": {"content": "原正文", "recommended_reply": "原回复"}, "evidence_excerpt": "证据"}
+    result = model_annotation.revise_transcribed_candidate_draft(original)
+    assert result["revised_content"] == "修改后的正文"
+    assert original["draft"]["content"] == "原正文"
+    assert captured["purpose"] == "草稿修订"
+    assert "不得补造" in captured["prompt"]
+
+
+def test_draft_prompt_optimization_uses_human_edit_snapshot(monkeypatch):
+    captured = {}
+    def fake_call(prompt, *, purpose):
+        captured.update(prompt=prompt, purpose=purpose)
+        return {"candidate_prompt": "候选草稿 Prompt"}
+    monkeypatch.setattr(model_annotation, "_call_deepseek_flash", fake_call)
+    result = model_annotation.analyze_draft_generation_prompt({"representative_edits": [{"before": "旧", "after": "新"}]})
+    assert result["candidate_prompt"] == "候选草稿 Prompt"
+    assert captured["purpose"] == "知识草稿提示词优化分析"
+    assert "人工最终稿" in captured["prompt"]
+
+
 def test_prompt_optimization_analysis_uses_shadow_snapshot(monkeypatch):
     captured = {}
     def fake_call(prompt, *, purpose):
