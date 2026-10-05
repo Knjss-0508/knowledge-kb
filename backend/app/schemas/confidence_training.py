@@ -3,7 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-ConfidenceBand = Literal["B0", "B1", "B2", "B3", "B4", "B5", "B6"]
+ConfidenceBand = Literal["B0", "B1", "B2", "B3"]
 TruthStatus = Literal["pending", "confirmed", "needs_adjudication", "not_evaluable"]
 Correctness = Literal[
     "strict_correct",
@@ -131,4 +131,6 @@ class ConfidenceTrainingOverview(BaseModel):
     evaluation_scope: str
     production_auto_review_enabled: bool
     bands: list[dict[str, Any]]
+    split_summary: list[dict[str, Any]] = []
+    partitioned_bands: list[dict[str, Any]] = []
     settings: ConfidenceTrainingSettings
