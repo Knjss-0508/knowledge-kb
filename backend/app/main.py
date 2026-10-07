@@ -150,6 +150,11 @@ def serve_frontend():
     return FileResponse(FRONTEND_DIR / "index.html", headers=HTML_NO_CACHE_HEADERS)
 
 
+@app.get("/knowledge-pitfall/confidence-training")
+def serve_confidence_training_page():
+    return FileResponse(FRONTEND_DIR / "index.html", headers=HTML_NO_CACHE_HEADERS)
+
+
 @app.get("/")
 def serve_root():
     return FileResponse(FRONTEND_DIR / "auth.html", headers=HTML_NO_CACHE_HEADERS)

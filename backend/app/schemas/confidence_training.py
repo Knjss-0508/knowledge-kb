@@ -32,6 +32,10 @@ class ConfidenceTrainingUpdate(BaseModel):
     dataset_split: str | None = Field(None, max_length=32)
 
 
+class ConfidencePromptDecision(BaseModel):
+    decision: Literal["accept", "reject", "defer"]
+
+
 class ConfidenceTrainingSettingsUpdate(BaseModel):
     training_candidate_collection_enabled: bool = True
     training_snapshot_enabled: bool = False

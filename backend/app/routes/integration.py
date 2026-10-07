@@ -24,6 +24,7 @@ from app.schemas.integration import (
     CandidateReviewAnnotateResult,
     CandidateReviewBatchAnnotate,
     CandidateReviewBatchAnnotateResponse,
+    CandidateReviewBatchModelAnnotate,
     CandidateReviewBatchSubmit,
     CandidateReviewBatchSubmitResponse,
     CandidateReviewListItem,
@@ -71,6 +72,7 @@ from app.services.model_annotation import (
     annotate_transcribed_candidate,
     revise_transcribed_candidate_draft,
 )
+from app.services.active_prompt import get_active_confidence_prompt
 from app.services.embedding import EmbeddingServiceUnavailable
 from app.services.embedding_runtime import get_active_runtime_values
 from app.services.knowledge_dedup import (
@@ -3047,6 +3049,58 @@ def annotate_candidate_reviews(
     )
 
 
+@router.post(
+    "/candidate-reviews:batch-model-annotate",
+    response_model=CandidateReviewBatchAnnotateResponse,
+)
+def model_annotate_candidate_reviews(
+    body: CandidateReviewBatchModelAnnotate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    """Apply the currently active Prompt to selected unsubmitted candidates."""
+    updated = failed = 0
+    results: list[CandidateReviewAnnotateResult] = []
+    active_prompt, active_prompt_version = get_active_confidence_prompt()
+    for ingestion_id in list(dict.fromkeys(body.ingestion_ids)):
+        item = db.query(IntegrationIngestion).filter(
+            IntegrationIngestion.id == ingestion_id,
+            IntegrationIngestion.review_status.isnot(None),
+            IntegrationIngestion.source_system != "excel",
+        ).first()
+        if not item:
+            failed += 1
+            results.append(CandidateReviewAnnotateResult(ingestion_id=ingestion_id, status="failed", error_code="CANDIDATE_NOT_FOUND", error_message="候选复核记录不存在。"))
+            continue
+        if item.review_status == "submitted" or item.knowledge_id:
+            failed += 1
+            results.append(CandidateReviewAnnotateResult(ingestion_id=ingestion_id, status="failed", review_status=item.review_status, error_code="CANDIDATE_LOCKED", error_message="该候选已进入知识发布审核，不能再次模型标注。"))
+            continue
+        payload, knowledge = _candidate_payload_with_taxonomy_defaults(item.candidate_payload)
+        draft = {"title": str(knowledge.get("title") or ""), "content": knowledge.get("content"), "recommended_reply": knowledge.get("recommended_reply"), "category_id": knowledge.get("category_id"), "business_type": knowledge.get("business_type")}
+        if not draft["title"] or not draft["content"]:
+            failed += 1
+            results.append(CandidateReviewAnnotateResult(ingestion_id=ingestion_id, status="failed", error_code="DRAFT_MISSING", error_message="请先生成并保存知识转写草稿。"))
+            continue
+        try:
+            model_review = annotate_transcribed_candidate({"event_id": item.event_id, "draft": draft, "evidence_excerpt": str(knowledge.get("evidence_excerpt") or ""), "source_conversation_id": item.source_conversation_id, "previous_model_review": dict(payload.get("model_review") or {})}, review_prompt=active_prompt, prompt_version=active_prompt_version)
+        except ModelAnnotationError as exc:
+            failed += 1
+            results.append(CandidateReviewAnnotateResult(ingestion_id=ingestion_id, status="failed", error_code=exc.error_code, error_message=str(exc)))
+            continue
+        payload["model_review"] = model_review
+        metadata = dict(item.review_metadata or {})
+        metadata["model_review"] = model_review
+        metadata["model_annotation"] = {"status": "completed", "annotated_by": current_user.username, "requested_model": model_review.get("requested_model"), "resolved_model_version": model_review.get("resolved_model_version"), "prompt_version": active_prompt_version, "batch": True, "annotated_at": datetime.utcnow().isoformat()}
+        item.candidate_payload = payload
+        item.review_metadata = metadata
+        db.add(item)
+        updated += 1
+        results.append(CandidateReviewAnnotateResult(ingestion_id=ingestion_id, status="updated", review_status=item.review_status))
+    db.commit()
+    return CandidateReviewBatchAnnotateResponse(updated=updated, failed=failed, results=results)
+
+
 @router.patch(
     "/candidate-reviews/{ingestion_id}",
     response_model=CandidateReviewListItem,
@@ -3221,7 +3275,12 @@ def annotate_candidate_review_draft(
         "previous_model_review": dict(payload.get("model_review") or {}),
     }
     try:
-        model_review = annotate_transcribed_candidate(candidate)
+        active_prompt, active_prompt_version = get_active_confidence_prompt()
+        model_review = annotate_transcribed_candidate(
+            candidate,
+            review_prompt=active_prompt,
+            prompt_version=active_prompt_version,
+        )
     except ModelAnnotationError as exc:
         raise HTTPException(503, str(exc)) from exc
     payload["model_review"] = model_review
