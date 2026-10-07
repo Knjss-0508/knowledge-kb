@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from app.services.confidence_training import aggregate, confidence_band, item_payload, settings_snapshot, update_settings
 from app.routes.confidence_training import (
     CONFIDENCE_PROMPT_SAMPLE_LIMIT,
+    _adoption_preconditions,
     _draft_prompt_training_dataset,
     _manual_training_dataset,
     _prompt_optimization_snapshot,
@@ -318,3 +319,64 @@ def test_truth_correction_blocks_prompt_revision_until_candidate_review():
     )
     ok, reason = _revision_preconditions(job)
     assert not ok and "候选价值复核" in reason
+
+
+def _adoption_job(rows, **overrides):
+    job = SimpleNamespace(
+        status="shadow_test_review_pending",
+        candidate_prompt="候选 Prompt",
+        prompt_versions=[{"version": "v1-candidate", "prompt": "候选 Prompt", "status": "diagnostic_pending"}],
+        regression_reviews={},
+        shadow_evaluation={"status": "completed", "rows": rows, "comparison": _shadow_comparison(rows)},
+    )
+    for key, value in overrides.items():
+        setattr(job, key, value)
+    return job
+
+
+def _shadow_row(row_id, baseline_correct, candidate_correct):
+    return {
+        "id": row_id,
+        "baseline": {"value_correct": baseline_correct, "draft_correct": baseline_correct, "strict_correct": baseline_correct},
+        "candidate": {"value_correct": candidate_correct, "draft_correct": candidate_correct, "strict_correct": candidate_correct},
+    }
+
+
+def test_adoption_gate_passes_when_metrics_improve_without_regressions():
+    # 零退化（regressed_count = 0）时，采用门禁不得再要求「可用于修订的退化样本」。
+    rows = [_shadow_row("ing-1", False, True), _shadow_row("ing-2", False, True)]
+    job = _adoption_job(rows)
+    assert job.shadow_evaluation["comparison"]["gate_passed"] is True
+    assert job.shadow_evaluation["comparison"]["regressed_count"] == 0
+    ok, reason = _adoption_preconditions(job)
+    assert ok and not reason
+    # 修订候选 Prompt 的门禁保持不变：没有退化样本时仍然拒绝。
+    ok, reason = _revision_preconditions(job)
+    assert not ok and "退化样本" in reason
+
+
+def test_adoption_gate_requires_metric_gate_and_candidate_prompt():
+    regressed_rows = [_shadow_row("ing-1", True, False), _shadow_row("ing-2", True, False)]
+    job = _adoption_job(regressed_rows)
+    assert job.shadow_evaluation["comparison"]["gate_passed"] is False
+    ok, reason = _adoption_preconditions(job)
+    assert not ok and "验收指标未改善" in reason
+
+    ok, reason = _adoption_preconditions(_adoption_job([], candidate_prompt=""))
+    assert not ok and "没有可采纳的候选 Prompt" in reason
+
+
+def test_adoption_gate_still_requires_regression_attribution_when_regressions_exist():
+    rows = [
+        _shadow_row("ing-1", False, True),
+        _shadow_row("ing-2", False, True),
+        _shadow_row("ing-3", True, False),
+    ]
+    job = _adoption_job(rows)
+    comparison = job.shadow_evaluation["comparison"]
+    assert comparison["gate_passed"] is True and comparison["regressed_count"] == 1
+    ok, reason = _adoption_preconditions(job)
+    assert not ok and "未完成人工归因" in reason
+    job.regression_reviews = {"ing-3": {"classification": "candidate_prompt_error", "note": "门槛过严", "keep_as_regression_case": True}}
+    ok, reason = _adoption_preconditions(job)
+    assert ok and not reason

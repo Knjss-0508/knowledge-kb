@@ -116,11 +116,9 @@ def decide_confidence_prompt(
         raise HTTPException(422, "人工决定必须是 accept、reject 或 defer。")
     comparison = dict((job.shadow_evaluation or {}).get("comparison") or {})
     if decision == "accept":
-        ok, reason = _revision_preconditions(job)
+        ok, reason = _adoption_preconditions(job)
         if not ok:
-            raise HTTPException(409, "当前任务未通过采用门禁：" + reason)
-        if not job.candidate_prompt:
-            raise HTTPException(409, "当前任务没有可采纳的候选 Prompt。")
+            raise HTTPException(409, reason)
     versions = list(job.prompt_versions or [])
     if decision == "accept":
         for version in versions:
@@ -518,6 +516,25 @@ def _revision_preconditions(job: ConfidenceTrainingJob) -> tuple[bool, str]:
         return False, "存在“人工真值需修正”的退化样本，请先回候选价值复核修正并重新冻结评测。"
     if not any(bool(item.get("keep_as_regression_case")) for item in reviews.values()):
         return False, "至少保留一条退化样本作为回归测试用例。"
+    return True, ""
+
+
+def _adoption_preconditions(job: ConfidenceTrainingJob) -> tuple[bool, str]:
+    """采用门禁：只要求本轮影子复跑的验收指标通过。
+
+    退化样本的人工归因是「生成修订候选 Prompt」的前置条件（见
+    ``_revision_preconditions``），只有在确实存在退化样本时才作为采用门禁的
+    一部分；否则零退化的任务会因为「没有可用于修订的退化样本」被拦住。
+    """
+    if not job.candidate_prompt:
+        return False, "当前任务没有可采纳的候选 Prompt。"
+    comparison = dict((job.shadow_evaluation or {}).get("comparison") or {})
+    if not comparison.get("gate_passed"):
+        return False, "当前任务未通过采用门禁：验收指标未改善或置信下界未达标。"
+    if comparison.get("regressed_count"):
+        ok, reason = _revision_preconditions(job)
+        if not ok:
+            return False, "当前任务未通过采用门禁：" + reason
     return True, ""
 
 
