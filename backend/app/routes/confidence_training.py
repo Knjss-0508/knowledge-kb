@@ -21,6 +21,7 @@ from app.schemas.confidence_training import (
     ConfidenceTrainingItem,
     ConfidenceTrainingJob as ConfidenceTrainingJobSchema,
     ConfidenceTrainingOverview,
+    ConfidencePromptDecision,
     ConfidenceTrainingSettings,
     ConfidenceTrainingSettingsUpdate,
     ConfidenceTrainingUpdate,
@@ -43,6 +44,7 @@ from app.services.model_annotation import (
     shadow_rerun_transcribed_candidate,
     test_deepseek_flash_connection,
 )
+from app.services.active_prompt import get_active_confidence_prompt as resolve_active_confidence_prompt
 
 
 router = APIRouter(prefix="/confidence-training", tags=["置信度训练"])
@@ -89,6 +91,68 @@ def _training_job_payload(job: ConfidenceTrainingJob) -> dict[str, Any]:
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
     }
+
+
+@router.get("/active-prompt")
+def get_active_confidence_prompt_endpoint(
+    _: User = Depends(require_permission("knowledge:submit")),
+):
+    prompt, version = resolve_active_confidence_prompt()
+    return {"prompt_version": version, "prompt": prompt, "source": "manual_activation" if version != CURRENT_REVIEW_PROMPT_VERSION else "default"}
+
+
+@router.post("/jobs/{job_id}/decision", response_model=ConfidenceTrainingJobSchema)
+def decide_confidence_prompt(
+    job_id: str,
+    body: ConfidencePromptDecision,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    job = db.query(ConfidenceTrainingJob).filter(ConfidenceTrainingJob.id == job_id).first()
+    if not job:
+        raise HTTPException(404, "提示词优化任务不存在。")
+    decision = body.decision
+    if decision not in {"accept", "reject", "defer"}:
+        raise HTTPException(422, "人工决定必须是 accept、reject 或 defer。")
+    comparison = dict((job.shadow_evaluation or {}).get("comparison") or {})
+    if decision == "accept":
+        ok, reason = _revision_preconditions(job)
+        if not ok:
+            raise HTTPException(409, "当前任务未通过采用门禁：" + reason)
+        if not job.candidate_prompt:
+            raise HTTPException(409, "当前任务没有可采纳的候选 Prompt。")
+    versions = list(job.prompt_versions or [])
+    if decision == "accept":
+        for version in versions:
+            if version.get("status") == "active":
+                version["status"] = "superseded"
+        active_version = "v" + str(len(versions) + 1) + "-active"
+        versions.append({
+            "version": active_version,
+            "prompt": job.candidate_prompt,
+            "status": "active",
+            "source": "human_decision",
+            "decision": decision,
+            "decided_by": current_user.username,
+            "decided_at": datetime.utcnow().isoformat(),
+            "evaluation_summary": comparison,
+        })
+        job.status = "prompt_accepted"
+        job.stage = f"{active_version} 已由人工采纳，后续模型标注将使用该 Prompt"
+        job.error_message = "人工采纳完成；旧 Prompt 保留为 superseded 历史版本，可在后续增加回滚操作。"
+    else:
+        for version in versions:
+            if version.get("status") in {"candidate", "validation_pending", "diagnostic_pending"}:
+                version["status"] = "rejected" if decision == "reject" else "deferred"
+        job.status = "prompt_rejected" if decision == "reject" else "prompt_decision_deferred"
+        job.stage = "人工决定：" + ("不采纳候选 Prompt" if decision == "reject" else "暂缓采纳候选 Prompt")
+        job.error_message = f"人工决定={decision}；候选 Prompt 未切换为 active。"
+    job.prompt_versions = versions
+    job.analysis_result = {**dict(job.analysis_result or {}), "human_decision": {"decision": decision, "decided_by": current_user.username, "decided_at": datetime.utcnow().isoformat()}}
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return _training_job_payload(job)
 
 
 def _stable_sample_rank(row_id: str) -> str:

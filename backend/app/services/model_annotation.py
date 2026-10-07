@@ -207,8 +207,19 @@ def correct_with_deepseek_flash(candidate: dict[str, Any]) -> dict[str, Any]:
     return _call_deepseek_flash(_correction_prompt(candidate), purpose="纠错")
 
 
-def annotate_transcribed_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
-    return _call_deepseek_flash(_annotation_prompt(candidate), purpose="草稿标注")
+def annotate_transcribed_candidate(
+    candidate: dict[str, Any],
+    *,
+    review_prompt: str | None = None,
+    prompt_version: str | None = None,
+) -> dict[str, Any]:
+    result = _call_deepseek_flash(
+        (review_prompt or _annotation_prompt(candidate)),
+        purpose="草稿标注",
+    ) if review_prompt else _call_deepseek_flash(_annotation_prompt(candidate), purpose="草稿标注")
+    if prompt_version:
+        result["prompt_version"] = prompt_version
+    return result
 
 
 def revise_transcribed_candidate_draft(candidate: dict[str, Any]) -> dict[str, Any]:

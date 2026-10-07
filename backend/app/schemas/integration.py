@@ -322,6 +322,10 @@ class CandidateReviewBatchAnnotateResponse(BaseModel):
     results: list[CandidateReviewAnnotateResult]
 
 
+class CandidateReviewBatchModelAnnotate(BaseModel):
+    ingestion_ids: list[str] = Field(..., min_length=1, max_length=500)
+
+
 class CandidateReviewSubmitResult(BaseModel):
     ingestion_id: str
     status: Literal["submitted", "failed", "reused"]
