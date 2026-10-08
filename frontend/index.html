@@ -494,7 +494,7 @@
     .blind-label-annotator-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;font-size:13px;color:#344054}
     @media(max-width:900px){.blind-label-annotator-dialog .dlg-b{overflow:auto}.blind-label-annotator-split{display:flex;flex-direction:column;height:auto}.blind-label-chat-slot{padding:12px}.blind-label-annotator-content{overflow:visible}.blind-label-annotator-heading{flex-wrap:wrap}}
     /* 盲标：聊天记录嵌入左栏，标注操作始终保留在右栏。 */
-    .blind-label-chat-panel{display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden;border:1px solid #dfe6ea;border-radius:9px;background:#fff}.blind-label-chat-head{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:58px;padding:10px 12px;border-bottom:1px solid #edf0f2;background:#fbfcfd}.blind-label-chat-head strong{display:block;color:#1d2939;font-size:13px}.blind-label-chat-head small{display:block;margin-top:3px;color:#98a2b3;font-size:10px;line-height:1.45}.blind-label-chat-frame{position:relative;display:flex;min-height:0;flex:1;background:#f5f7f8}.blind-label-chat-frame iframe{display:block;width:100%;height:100%;border:0;background:#fff}.blind-label-chat-empty{display:grid;place-items:center;width:100%;padding:24px;color:#98a2b3;font-size:12px;text-align:center;line-height:1.7}.blind-label-chat-hint{padding:8px 12px;border-top:1px solid #edf0f2;background:#fafbfc;color:#7b8794;font-size:10px;line-height:1.55}@media(max-width:900px){.blind-label-chat-panel{min-height:420px}.blind-label-chat-head{padding:10px 12px}}
+    .blind-label-chat-panel{display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden;border:1px solid #dfe6ea;border-radius:9px;background:#fff}.blind-label-chat-head{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:58px;padding:10px 12px;border-bottom:1px solid #edf0f2;background:#fbfcfd}.blind-label-chat-head strong{display:block;color:#1d2939;font-size:13px}.blind-label-chat-head small{display:block;margin-top:3px;color:#98a2b3;font-size:10px;line-height:1.45}.blind-label-chat-frame{position:relative;display:flex;min-height:0;flex:1;background:#f5f7f8}.blind-label-chat-frame iframe{display:block;width:100%;height:100%;border:0;background:#fff}.blind-label-chat-empty{display:grid;place-items:center;width:100%;padding:24px;color:#98a2b3;font-size:12px;text-align:center;line-height:1.7}.blind-label-chat-hint{padding:8px 12px;border-top:1px solid #edf0f2;background:#fafbfc;color:#7b8794;font-size:10px;line-height:1.55}.blind-label-chat-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}.blind-label-chat-actions a.btn{text-decoration:none}@media(max-width:900px){.blind-label-chat-panel{min-height:420px}.blind-label-chat-head{padding:10px 12px}}
     /* 盲标候选：推荐回复常驻，完整知识正文与媒体按需展开。 */
     .blind-label-candidate-reply{padding:12px 16px;background:#fff;color:#344054;font-size:12px;line-height:1.72;white-space:pre-wrap;overflow-wrap:anywhere}.blind-label-candidate-reply-empty{color:#98a2b3}.blind-label-candidate-details{border-top:1px solid #e8edef;background:#f8fafb}.blind-label-candidate-details>summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 16px;color:#475467;font-size:11px;font-weight:800;cursor:pointer;list-style:none;user-select:none}.blind-label-candidate-details>summary::-webkit-details-marker{display:none}.blind-label-candidate-details>summary:after{content:'⌄';color:#98a2b3;font-size:14px;line-height:1;transition:transform .15s ease}.blind-label-candidate-details[open]>summary:after{transform:rotate(180deg)}.blind-label-candidate-details-toggle{margin-left:auto;color:#98a2b3;font-size:10px;font-weight:500}.blind-label-candidate-details[open] .blind-label-candidate-details-toggle{color:#007f6b;font-size:0}.blind-label-candidate-details[open] .blind-label-candidate-details-toggle:after{content:'收起';font-size:10px}.blind-label-candidate-details .blind-label-candidate-body{border-top:1px solid #edf1f2;padding:12px 16px;background:#fbfcfd}.blind-label-candidate-detail-empty{color:#98a2b3}.blind-label-candidate-headline .blind-label-candidate-rank,.blind-label-annotator-candidate .blind-label-candidate-rank{display:inline-flex!important;align-items:center;justify-content:center;flex:0 0 64px!important;flex-shrink:0!important;width:64px!important;min-width:64px!important;max-width:64px!important;height:32px!important;padding:0 8px!important;white-space:nowrap!important;word-break:keep-all!important;overflow-wrap:normal!important;line-height:1!important}
     .blind-label-candidate-headline .blind-label-candidate-rank,.blind-label-annotator-candidate .blind-label-candidate-rank{flex-basis:52px!important;width:52px!important;min-width:52px!important;max-width:52px!important;height:28px!important;padding:0 6px!important;font-size:11px!important}
@@ -2169,7 +2169,7 @@
   <!-- 召回盲标详情：标注员视图不暴露来源、知识 ID、分数或其他标注结果。 -->
   <div class="mask" v-if="blindLabeling.current.open" @click.self="closeBlindLabelDialog">
     <div class="dlg blind-label-dialog blind-label-annotator-dialog" ref="blindLabelDialog" role="dialog" aria-modal="true" aria-labelledby="blind-label-dialog-title">
-      <div class="dlg-h"><div><h3 id="blind-label-dialog-title">{{blindLabeling.current.readOnly?'已标注工单':'盲标工单'}}</h3><span class="hint" v-if="blindLabeling.current.assignment">{{blindLabelWorkOrderId(blindLabeling.current.assignment)}}</span></div><button class="dlg-x" type="button" aria-label="关闭盲标详情" @click="closeBlindLabelDialog" :disabled="blindLabeling.saving">&times;</button></div>
+      <div class="dlg-h"><div><h3 id="blind-label-dialog-title">{{blindLabeling.current.readOnly?'已标注工单':'盲标工单'}}</h3><span class="hint" v-if="blindLabeling.current.assignment">工单 {{blindLabelWorkOrderId(blindLabeling.current.assignment)}}</span></div><button class="dlg-x" type="button" aria-label="关闭盲标详情" @click="closeBlindLabelDialog" :disabled="blindLabeling.saving">&times;</button></div>
       <div class="dlg-b" :class="{'blind-label-loading':blindLabeling.detailLoading}">
         <div v-if="blindLabeling.detailLoading" class="blind-label-empty">正在加载工单和候选内容...</div>
         <div v-else-if="blindLabeling.current.error" class="blind-label-error" role="alert">{{blindLabeling.current.error}}</div>
@@ -2177,20 +2177,20 @@
           <div class="blind-label-annotator-split">
             <section class="blind-label-chat-panel" aria-labelledby="blind-label-chat-title">
               <div class="blind-label-chat-head">
-                <div><strong id="blind-label-chat-title">聊天记录</strong><small>按当前工单 ID 加载答疑平台对话</small></div>
-                <button v-if="blindLabelChatUrl()" type="button" class="btn bd bsm" @click="reloadBlindLabelChat">重新加载</button>
+                <div><strong id="blind-label-chat-title">聊天记录</strong><small>工单 {{blindLabelQuestionFormId(blindLabelCurrentRecord()) || blindLabelConversationId(blindLabelCurrentRecord()) || '未提供'}} · 按工单号加载答疑平台对话</small></div>
+                <div class="blind-label-chat-actions"><a v-if="blindLabelWorkOrderDetailUrl(blindLabelCurrentRecord())" class="btn bd bsm" :href="blindLabelWorkOrderDetailUrl(blindLabelCurrentRecord())" target="_blank" rel="noopener noreferrer">工单详情</a><button v-if="blindLabelChatUrl()" type="button" class="btn bd bsm" @click="reloadBlindLabelChat">重新加载</button></div>
               </div>
               <div class="blind-label-chat-frame">
                 <iframe v-if="blindLabelChatUrl()" :key="blindLabeling.current.chatFrameKey" :src="blindLabelChatUrl()" title="答疑平台聊天记录"></iframe>
-                <div v-else class="blind-label-chat-empty">当前工单没有可用的工单 ID，暂时无法加载聊天记录。</div>
+                <div v-else class="blind-label-chat-empty">当前样本没有可用的工单号，暂时无法加载聊天记录。</div>
               </div>
-              <div class="blind-label-chat-hint">聊天记录已嵌入左侧，可在右侧直接完成候选判断和标注。</div>
+              <div class="blind-label-chat-hint">聊天记录与工单详情都按工单号打开：左侧内嵌答疑平台对话，右侧工单详情在新窗口打开，可在右侧直接完成候选判断和标注。</div>
             </section>
             <section class="blind-label-annotator-content" aria-labelledby="blind-label-content-title">
               <div class="blind-label-annotator-heading"><strong id="blind-label-content-title">盲标工单详情</strong></div>
               <section class="blind-label-work-order">
                 <div class="blind-label-work-order-top"><div><div class="blind-label-work-order-id">工单 {{blindLabelWorkOrderId(blindLabeling.current.detail || blindLabeling.current.assignment)}}</div><h4>{{blindLabelQuery(blindLabeling.current.detail || blindLabeling.current.assignment) || '未提供问题摘要'}}</h4></div><span class="blind-label-status" :class="blindLabelStatusClass(blindLabeling.current.assignment && blindLabeling.current.assignment.status)">{{blindLabelStatusLabel(blindLabeling.current.assignment && blindLabeling.current.assignment.status)}}</span></div>
-                <div class="blind-label-work-order-meta"><span v-if="blindLabelCategory(blindLabeling.current.detail || blindLabeling.current.assignment)">{{blindLabelCategory(blindLabeling.current.detail || blindLabeling.current.assignment)}}</span><span v-if="blindLabeling.current.detail && (blindLabeling.current.detail.created_at || blindLabeling.current.detail.submitted_at)">· {{formatDate(blindLabeling.current.detail.submitted_at || blindLabeling.current.detail.created_at)}}</span><span>· 仅展示前三条候选</span></div>
+                <div class="blind-label-work-order-meta"><span v-if="blindLabelCategory(blindLabelCurrentRecord())">{{blindLabelCategory(blindLabelCurrentRecord())}}</span><span v-if="blindLabelConversationId(blindLabelCurrentRecord()) && blindLabelConversationId(blindLabelCurrentRecord()) !== blindLabelWorkOrderId(blindLabelCurrentRecord())">· 会话 {{blindLabelConversationId(blindLabelCurrentRecord())}}</span><span v-if="blindLabeling.current.detail && (blindLabeling.current.detail.created_at || blindLabeling.current.detail.submitted_at)">· {{formatDate(blindLabeling.current.detail.submitted_at || blindLabeling.current.detail.created_at)}}</span><span>· 仅展示前三条候选</span></div>
               </section>
               <section class="blind-label-candidate-section">
                 <div class="blind-label-candidate-head"><div><h4>候选内容</h4><p v-if="!blindLabeling.current.readOnly">请选择一条最相关的候选；如果三条都不适用，请点击“均不可参考”并分别填写三条原因。</p><p v-else>本次标注结果不可修改。</p></div><div class="blind-label-mode-actions" v-if="!blindLabeling.current.readOnly"><span class="blind-label-mode-note" v-if="blindLabelAllNotReferable()">当前为“均不可参考”模式</span><button type="button" class="btn bd bsm" :class="{'on-unhelpful':blindLabelAllNotReferable()}" @click="setBlindLabelAllNotReferable(!blindLabelAllNotReferable())">{{blindLabelAllNotReferable()?'返回选择可参考':'均不可参考'}}</button></div><span class="hint" v-else>{{blindLabeling.current.candidates.length}} 条</span></div>
@@ -5753,9 +5753,21 @@ Vue.createApp({
       if (!id || id === '-') return '';
       return 'https://zzdy.powerzhuan.cn/#/workorderDetail?questionFormId=' + encodeURIComponent(id) + '&sceneType=2';
     },
-    blindLabelChatUrl: function() {
+    blindLabelCurrentRecord: function() {
       var current = this.blindLabeling && this.blindLabeling.current ? this.blindLabeling.current : {};
-      return this.workOrderChatUrl(this.blindLabelWorkOrderId(current.detail || current.assignment));
+      return current.detail || current.assignment;
+    },
+    blindLabelWorkOrderDetailUrl: function(item) {
+      // 工单详情只按上游工单号（曼哈顿 questionFormId）打开，不得用会话号顶替。
+      var id = String(this.blindLabelQuestionFormId(item) || '').trim();
+      if (!id || id === '-') return '';
+      return 'https://nmht.zhuanspirit.com/qaManage/workOrderDetail?questionFormId=' + encodeURIComponent(id) + '&sceneType=2';
+    },
+    blindLabelChatUrl: function() {
+      // 只按上游工单号打开对话；历史样本没有独立工单号时才回退到会话号。
+      var record = this.blindLabelCurrentRecord();
+      var id = this.blindLabelQuestionFormId(record) || this.blindLabelConversationId(record);
+      return this.workOrderChatUrl(id);
     },
     reloadBlindLabelChat: function() {
       var current = this.blindLabeling && this.blindLabeling.current;
@@ -8702,11 +8714,32 @@ Vue.createApp({
       var workOrder = nested.work_order && typeof nested.work_order === 'object' ? nested.work_order : nested;
       return String(this.blindLabelValue(item, ['query','question','query_text','problem_text','summary','title'], this.blindLabelValue(workOrder, ['query','question','query_text','summary','title'], '')) || '').trim();
     },
-    blindLabelWorkOrderId: function(item) {
-      item = item || {};
+    blindLabelRecord: function(item) {
+      item = item && typeof item === 'object' ? item : {};
       var nested = item.assignment && typeof item.assignment === 'object' ? item.assignment : (item.work_order && typeof item.work_order === 'object' ? item.work_order : (item.detail && typeof item.detail === 'object' ? item.detail : {}));
-      var workOrder = nested.work_order && typeof nested.work_order === 'object' ? nested.work_order : nested;
-      return String(this.blindLabelValue(item, ['conversation_id','ticket_id','work_order_id'], this.blindLabelValue(workOrder, ['conversation_id','ticket_id','work_order_id','id'], this.blindLabelValue(item, ['id'], '-'))) || '-');
+      return nested.work_order && typeof nested.work_order === 'object' ? nested.work_order : nested;
+    },
+    blindLabelConversationId: function(item) {
+      // 会话号：只用它打开答疑平台聊天记录。
+      item = item && typeof item === 'object' ? item : {};
+      var workOrder = this.blindLabelRecord(item);
+      return String(this.blindLabelValue(item, ['conversation_id','conversationId','ticket_id'], this.blindLabelValue(workOrder, ['conversation_id','conversationId','ticket_id'], '')) || '').trim();
+    },
+    blindLabelQuestionFormId: function(item) {
+      // 工单号（上游曼哈顿 questionFormId）：只用它打开工单详情。
+      item = item && typeof item === 'object' ? item : {};
+      var workOrder = this.blindLabelRecord(item);
+      return String(this.blindLabelValue(item, ['question_form_id','questionFormId','upstream_work_order_id'], this.blindLabelValue(workOrder, ['question_form_id','questionFormId','upstream_work_order_id'], '')) || '').trim();
+    },
+    blindLabelWorkOrderId: function(item) {
+      // 展示用号码：优先上游工单号，历史样本没有工单号时回退到会话号。
+      var questionFormId = this.blindLabelQuestionFormId(item);
+      if (questionFormId) return questionFormId;
+      var conversationId = this.blindLabelConversationId(item);
+      if (conversationId) return conversationId;
+      item = item || {};
+      var workOrder = this.blindLabelRecord(item);
+      return String(this.blindLabelValue(item, ['ticket_id','work_order_id'], this.blindLabelValue(workOrder, ['ticket_id','work_order_id','id'], this.blindLabelValue(item, ['id'], '-'))) || '-');
     },
     blindLabelCategory: function(item) {
       item = item || {};

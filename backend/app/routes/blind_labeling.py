@@ -108,7 +108,7 @@ def _get_assignment(db: Session, assignment_id: str) -> BlindLabelAssignment:
 
 
 def _get_work_order(db: Session, identifier: str) -> BlindLabelWorkOrder | None:
-    """Resolve either the internal work-order ID or the source conversation ID."""
+    """Resolve the internal ID, the upstream work-order ID, or the conversation ID."""
 
     identifier = str(identifier or "").strip()
     if not identifier:
@@ -117,6 +117,7 @@ def _get_work_order(db: Session, identifier: str) -> BlindLabelWorkOrder | None:
         db.query(BlindLabelWorkOrder)
         .filter(
             (BlindLabelWorkOrder.id == identifier)
+            | (BlindLabelWorkOrder.question_form_id == identifier)
             | (BlindLabelWorkOrder.conversation_id == identifier)
         )
         .first()
