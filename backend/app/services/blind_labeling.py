@@ -257,16 +257,26 @@ def freeze_work_order_snapshot(db: Session, event: RetrievalQualityEvent) -> dic
 
 
 def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
-    """Materialize missing conversation work orders from business-pool events.
+    """Materialize missing work orders from business-pool events.
 
     Events are materialized newest first.  A unique conversation constraint and
     nested transactions make concurrent claim requests safe even when both
     happen to inspect the same telemetry row.
+
+    严格口径：只有带上游曼哈顿工单号（``question_form_id``）的事件才能进入
+    盲标池。仅有会话号的样本会被跳过 —— 标注页要用工单号打开上游工单详情，
+    没有工单号的样本无法核对。工单号是盲标工单的身份，同一工单的多次会话
+    只保留最新一条。
     """
 
     existing_conversations = {
         str(value)
         for (value,) in db.query(BlindLabelWorkOrder.conversation_id).all()
+        if value
+    }
+    existing_question_forms = {
+        str(value)
+        for (value,) in db.query(BlindLabelWorkOrder.question_form_id).all()
         if value
     }
     needed = max(0, int(minimum_new or 0))
@@ -277,6 +287,7 @@ def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
         db.query(RetrievalQualityEvent)
         .filter(
             RetrievalQualityEvent.conversation_id.isnot(None),
+            RetrievalQualityEvent.question_form_id.isnot(None),
             RetrievalQualityEvent.candidate_snapshot.isnot(None),
             RetrievalQualityEvent.source_kind.in_(("reply", "combined")),
             RetrievalQualityEvent.request_status.in_(("success", "fallback")),
@@ -288,20 +299,23 @@ def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
         .limit(limit)
         .all()
     )
-    latest_by_conversation: dict[str, RetrievalQualityEvent] = {}
+    latest_by_question_form: dict[str, RetrievalQualityEvent] = {}
     for event in candidate_events:
-        conversation_id = str(event.conversation_id or "").strip()
-        if conversation_id and conversation_id not in latest_by_conversation:
-            latest_by_conversation[conversation_id] = event
-    events = list(latest_by_conversation.values())
+        question_form_id = str(event.question_form_id or "").strip()
+        if question_form_id and question_form_id not in latest_by_question_form:
+            latest_by_question_form[question_form_id] = event
+    events = list(latest_by_question_form.values())
     created = 0
     seen_in_run: set[str] = set()
     for event in events:
         conversation_id = str(event.conversation_id or "").strip()
+        question_form_id = str(event.question_form_id or "").strip()
         if (
             not conversation_id
+            or not question_form_id
+            or question_form_id in existing_question_forms
             or conversation_id in existing_conversations
-            or conversation_id in seen_in_run
+            or question_form_id in seen_in_run
         ):
             continue
         snapshot = freeze_work_order_snapshot(db, event)
@@ -314,6 +328,7 @@ def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
         work_order = BlindLabelWorkOrder(
             id=_new_id("wo"),
             conversation_id=conversation_id[:128],
+            question_form_id=question_form_id[:64],
             source_event_id=event.id,
             query_text=snapshot["query"],
             category_id=first.get("category_id"),
@@ -328,7 +343,8 @@ def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
         except IntegrityError:
             continue
         existing_conversations.add(conversation_id)
-        seen_in_run.add(conversation_id)
+        existing_question_forms.add(question_form_id)
+        seen_in_run.add(question_form_id)
         created += 1
         if needed and created >= needed:
             break
@@ -836,6 +852,7 @@ def assignment_summary(db: Session, assignment: BlindLabelAssignment) -> dict[st
         "work_order_id": work_order.id,
         "batch_id": assignment.batch_id,
         "conversation_id": work_order.conversation_id,
+        "question_form_id": work_order.question_form_id or "",
         "query": work_order.query_text,
         "category": work_order.category_name or "",
         "candidate_count": len(snapshots),
@@ -1006,6 +1023,7 @@ def private_work_order_detail(db: Session, work_order: BlindLabelWorkOrder) -> d
     return {
         "id": work_order.id,
         "conversation_id": work_order.conversation_id,
+        "question_form_id": work_order.question_form_id or "",
         "query": work_order.query_text,
         "category": work_order.category_name or "",
         "source_event_id": work_order.source_event_id,
@@ -1118,7 +1136,11 @@ def overview(
     # the original retrieval event time.  Do the range check after loading
     # assignments so a recently labeled older work order is not hidden.
     if conversation_id:
-        query = query.filter(BlindLabelWorkOrder.conversation_id == conversation_id.strip())
+        identifier = conversation_id.strip()
+        query = query.filter(
+            (BlindLabelWorkOrder.question_form_id == identifier)
+            | (BlindLabelWorkOrder.conversation_id == identifier)
+        )
     if category:
         query = query.filter(BlindLabelWorkOrder.category_name == category.strip())
     candidates = query.all()
@@ -1142,8 +1164,9 @@ def overview(
         if keyword:
             keyword_value = keyword.strip().lower()
             if keyword_value and keyword_value not in (
-                f"{work_order.conversation_id} {work_order.query_text}".lower()
-            ):
+                f"{work_order.question_form_id or ''} {work_order.conversation_id} "
+                f"{work_order.query_text}"
+            ).lower():
                 continue
         assignments = (
             db.query(BlindLabelAssignment)
@@ -1222,6 +1245,7 @@ def overview(
                 "id": work_order.id,
                 "work_order_id": work_order.id,
                 "conversation_id": work_order.conversation_id,
+                "question_form_id": work_order.question_form_id or "",
                 "query": work_order.query_text,
                 "category": work_order.category_name or "",
                 "candidate_count": len(work_order.candidate_snapshot or []),

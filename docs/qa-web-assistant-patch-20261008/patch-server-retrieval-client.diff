@@ -1,0 +1,74 @@
+﻿diff --git a/original/server-retrieval-client.js b/src.js
+index 7795765..f99daf2 100644
+--- a/original/server-retrieval-client.js
++++ b/src.js
+@@ -1189,12 +1189,21 @@
+     var rawWorkOrderId = String(
+       source.workOrderId || source.work_order_id || ''
+     ).trim();
+     var workOrderId = /^\d{1,64}$/.test(rawWorkOrderId) ? rawWorkOrderId : '';
+-    // 只上送工单号（页面「工单ID」）：请求身份就是工单号，会话号不再进入请求体与请求头。
++    // 只上送工单号（页面「工单ID」）：请求身份优先用工单号，会话号绝不写进 workOrderId。
+     // 知识库契约要求 conversationId 必填数字、且 X-Conversation-Id 头与请求体相等，
+     // 因此这里把工单号放进该字段，真实类型由 workOrderId + conversationIdKind 表达。
+-    var transportConversationId = rawWorkOrderId;
++    // 知识库侧补丁 2026-10-08：没有真实工单号时回退用会话号作请求身份（会话号仍只出现在
++    // conversationId 上），检索照常发送、事件照常入库，但 workOrderId 为空 ⇒ 不进盲标池。
++    var rawConversationId = String(
++      source.conversationId || source.conversation_id || ''
++    ).trim();
++    var conversationId = /^\d{1,64}$/.test(rawConversationId)
++      ? rawConversationId
++      : '';
++    var transportConversationId = workOrderId || conversationId;
++    var conversationIdKind = workOrderId ? 'workorder' : 'conversation';
+     var requestId = String(
+       source.requestId || source.request_id || ''
+     ).trim();
+     if (!/^\d{1,64}$/.test(transportConversationId)) {
+@@ -1216,10 +1225,9 @@
+     }
+     var requestPayload = {
+       conversationId: transportConversationId,
+       workOrderId: workOrderId,
+-      // 能走到这里说明工单号一定合法（缺号已在上方拦下），类型恒为 workorder。
+-      conversationIdKind: 'workorder',
++      conversationIdKind: conversationIdKind,
+       requestId: requestId,
+       requestMode: 'semantic',
+       normalizedQuestion: text(source.normalizedQuestion, 8000).trim(),
+       productType: text(
+@@ -1455,11 +1463,18 @@
+     var rawWorkOrderId = String(
+       source.workOrderId || source.work_order_id || ''
+     ).trim();
+     var workOrderId = /^\d{1,64}$/.test(rawWorkOrderId) ? rawWorkOrderId : '';
+-    // 与 search() 同一口径（本函数只在 server 模式运行）：只用工单号作请求身份，
+-    // 没有工单号直接返回 CONVERSATION_ID_REQUIRED，不发请求。
+-    var transportConversationId = rawWorkOrderId;
++    // 与 search() 同一口径（本函数只在 server 模式运行）：请求身份优先用工单号，
++    // 没有工单号时回退会话号（知识库侧补丁 2026-10-08），会话号绝不写进 workOrderId。
++    var rawConversationId = String(
++      source.conversationId || source.conversation_id || ''
++    ).trim();
++    var conversationId = /^\d{1,64}$/.test(rawConversationId)
++      ? rawConversationId
++      : '';
++    var transportConversationId = workOrderId || conversationId;
++    var conversationIdKind = workOrderId ? 'workorder' : 'conversation';
+     var requestId = String(
+       source.requestId || source.request_id || ''
+     ).trim();
+     if (!/^\d{1,64}$/.test(transportConversationId)) {
+@@ -1484,10 +1499,9 @@
+       : {};
+     var requestPayload = {
+       conversationId: transportConversationId,
+       workOrderId: workOrderId,
+-      // 能走到这里说明工单号一定合法（缺号已在上方拦下），类型恒为 workorder。
+-      conversationIdKind: 'workorder',
++      conversationIdKind: conversationIdKind,
+       requestId: requestId,
+       requestMode: 'model_configuration',
+       productType: text(
+         source.productType || orderInfo.category,

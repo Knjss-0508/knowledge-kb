@@ -1,7 +1,14 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from app.schemas.knowledge import (
     BusinessType,
@@ -12,6 +19,24 @@ from app.schemas.knowledge import (
     TagDimensionResponse,
     WritableKnowledgeOrigin,
 )
+
+_QUESTION_FORM_ID_PLACEHOLDERS = {"", "-", "null", "none", "undefined", "nan"}
+
+
+def normalize_question_form_id(value: str | None) -> str | None:
+    """归一化上游曼哈顿工单号（questionFormId）。
+
+    助手可能尚未升级，也可能把会话号、空串或占位符发进来。这类值一律
+    归一化为 ``None``（等于“没有工单号”），而不是抛 422 —— 检索链路不能
+    因为遥测字段而失败。只有纯数字且长度合法的号码才会被保留。
+    """
+
+    cleaned = str(value or "").strip()
+    if cleaned.lower() in _QUESTION_FORM_ID_PLACEHOLDERS:
+        return None
+    if not cleaned.isdigit() or len(cleaned) > 64:
+        return None
+    return cleaned
 
 
 class IntegrationSource(BaseModel):
@@ -399,6 +424,22 @@ class IntegrationStandardSearchRequest(BaseModel):
         pattern=r"^[0-9]{1,64}$",
         description="插件从当前页面读取的原始工单ID，服务器不得生成或改写。",
     )
+    question_form_id: str | None = Field(
+        None,
+        validation_alias=AliasChoices(
+            "questionFormId",
+            "workOrderId",
+            "question_form_id",
+            "work_order_id",
+            "realWorkOrderId",
+            "real_work_order_id",
+        ),
+        max_length=64,
+        description=(
+            "上游曼哈顿工单号（questionFormId）。与 conversationId（会话号）是两个"
+            "不同号码，不得互相顶替；助手拿不到真实工单号时保持为空。"
+        ),
+    )
     request_id: str = Field(
         ...,
         alias="requestId",
@@ -464,6 +505,11 @@ class IntegrationStandardSearchRequest(BaseModel):
     @classmethod
     def normalize_question(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("question_form_id")
+    @classmethod
+    def normalize_question_form(cls, value: str | None) -> str | None:
+        return normalize_question_form_id(value)
 
     @field_validator(
         "product_type",
@@ -639,6 +685,18 @@ class RetrievalQualityEventPayload(BaseModel):
         max_length=64,
         pattern=r"^[0-9]{1,64}$",
     )
+    question_form_id: str | None = Field(
+        None,
+        validation_alias=AliasChoices(
+            "questionFormId",
+            "workOrderId",
+            "question_form_id",
+            "work_order_id",
+            "realWorkOrderId",
+            "real_work_order_id",
+        ),
+        max_length=64,
+    )
     request_id: str = Field(
         ...,
         min_length=1,
@@ -693,6 +751,11 @@ class RetrievalQualityEventPayload(BaseModel):
         default_factory=dict,
         validate_default=True,
     )
+
+    @field_validator("question_form_id")
+    @classmethod
+    def normalize_question_form(cls, value: str | None) -> str | None:
+        return normalize_question_form_id(value)
 
     @field_validator("metadata")
     @classmethod

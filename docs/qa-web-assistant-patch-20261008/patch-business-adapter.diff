@@ -1,0 +1,55 @@
+﻿diff --git a/original/business-adapter.js b/web/business-adapter.js
+index 94f3231..53fd8d5 100644
+--- a/original/business-adapter.js
++++ b/web/business-adapter.js
+@@ -288,19 +288,29 @@
+           (source.orderInfo && source.orderInfo.workOrderId),
+         64
+       );
+       if (!/^\d{1,64}$/.test(workOrderId)) workOrderId = '';
++      // 知识库侧补丁 2026-10-08：没有工单号时不再直接放弃，改用会话号当请求身份
++      // （conversationId），照常检索、照常入库；workOrderId 保持为空，知识库据此把
++      // 这类事件挡在盲标池之外（没有真实工单号的样本不进盲标池）。
++      var conversationId = text(
++        source.conversationId || source.conversation_id,
++        64
++      );
++      if (!/^\d{1,64}$/.test(conversationId)) conversationId = '';
++      var identityId = workOrderId || conversationId;
+       var rawContext = conversationText(source);
+       var base = buildResultBase(source, rawContext);
+-      if (!workOrderId || !rawContext) {
+-        // 没有工单号就一个请求都不发：宁可不推荐，也不上送非工单号。
+-        if (!workOrderId) base.skipReason = 'WORK_ORDER_ID_REQUIRED';
++      if (!identityId || !rawContext) {
++        // 连会话号都没有才一个请求都不发：没有任何可用身份就无法入库。
++        if (!identityId) base.skipReason = 'WORK_ORDER_ID_REQUIRED';
+         return base;
+       }
+-      var requestId = createRequestId('qa-web', workOrderId);
++      var requestId = createRequestId('qa-web', identityId);
+       var orderInfo = base.query.orderInfo || source.orderInfo || {};
+       var searchResponse = await retrievalClient.search(fetchImpl, config, {
+         workOrderId: workOrderId,
++        conversationId: conversationId,
+         requestId: requestId,
+         normalizedQuestion: base.normalizedQuestion,
+         contextSummary: rawContext,
+         productType: base.query.productType || orderInfo.category || '',
+@@ -319,14 +329,15 @@
+         limitPerType: 10,
+         pluginVersion: '0.5.8'
+       }, requestOptions);
+       var merged = mergeSearchResult(base, searchResponse);
+-      var configRequestId = createRequestId('qa-web-config', workOrderId);
++      var configRequestId = createRequestId('qa-web-config', identityId);
+       var configurationResponse = await retrievalClient.searchModelConfiguration(
+         fetchImpl,
+         config,
+         {
+           workOrderId: workOrderId,
++          conversationId: conversationId,
+           requestId: configRequestId,
+           orderInfo: orderInfo,
+           productType: orderInfo.category || '',
+           categoryId: orderInfo.categoryId || orderInfo.category_id || '',

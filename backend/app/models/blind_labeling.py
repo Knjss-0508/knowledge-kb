@@ -78,6 +78,7 @@ class BlindLabelWorkOrder(Base):
 
     id = Column(String(64), primary_key=True)
     conversation_id = Column(String(128), nullable=False, unique=True, index=True)
+    question_form_id = Column(String(64), nullable=True, index=True)
     source_event_id = Column(String(64), ForeignKey("retrieval_quality_events.id"), nullable=True, index=True)
     query_text = Column(Text, nullable=False, default="")
     category_id = Column(String(64), nullable=True, index=True)

@@ -83,6 +83,7 @@ class RetrievalQualityEvent(Base):
     idempotency_key = Column(String(128), nullable=False, unique=True, index=True)
     source_system = Column(String(64), nullable=False, index=True)
     conversation_id = Column(String(128), nullable=True, index=True)
+    question_form_id = Column(String(64), nullable=True, index=True)
     request_id = Column(String(80), nullable=True, index=True)
     source_kind = Column(
         String(16),

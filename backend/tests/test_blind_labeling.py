@@ -48,6 +48,9 @@ from app.services.blind_labeling import (
 )
 
 
+_QUESTION_FORM_ID_UNSET = object()
+
+
 def _build_threshold_event(
     *,
     event_id: str,
@@ -56,12 +59,18 @@ def _build_threshold_event(
     top_rerank_score: float,
     candidate_snapshot: list[dict],
     candidate_origins: list[str],
+    question_form_id: str | None | object = _QUESTION_FORM_ID_UNSET,
 ) -> RetrievalQualityEvent:
     return RetrievalQualityEvent(
         id=event_id,
         idempotency_key=f"key-{event_id}",
         source_system="test",
         conversation_id=conversation_id,
+        question_form_id=(
+            conversation_id
+            if question_form_id is _QUESTION_FORM_ID_UNSET
+            else question_form_id
+        ),
         request_id=f"request-{event_id}",
         source_kind=source_kind,
         query_text="分数门槛测试",
@@ -137,6 +146,7 @@ def db():
             idempotency_key="event-key-1",
             source_system="test",
             conversation_id="conversation-1",
+            question_form_id="question-form-1",
             request_id="request-1",
             source_kind="reply",
             query_text="手机屏幕问题",
@@ -166,6 +176,7 @@ def db():
             idempotency_key="event-key-standard",
             source_system="test",
             conversation_id="conversation-standard",
+            question_form_id="question-form-standard",
             request_id="request-standard",
             source_kind="standard",
             query_text="总部问题",
@@ -224,11 +235,91 @@ def test_claim_materializes_business_top3_and_reuses_active_batch(db):
     assert len(assignments) == 1
     assert len(assignments[0].work_order.candidate_snapshot) == 3
     assert assignments[0].work_order.conversation_id == "conversation-1"
+    assert assignments[0].work_order.question_form_id == "question-form-1"
     assert db.query(BlindLabelWorkOrder).filter_by(conversation_id="conversation-standard").count() == 0
 
     reused, same_assignments = claim_batch(db, "u1", target_count=1)
     assert reused.id == batch.id
     assert [item.id for item in same_assignments] == [assignments[0].id]
+
+
+def test_event_without_question_form_id_is_recorded_but_never_materialized(db):
+    """严格口径：没有工单号的事件照常入库，但绝不进入盲标池。"""
+
+    db.add(
+        _build_threshold_event(
+            event_id="event-no-question-form",
+            conversation_id="conversation-no-question-form",
+            source_kind="reply",
+            top_rerank_score=0.9,
+            candidate_snapshot=[
+                {
+                    "knowledge_id": f"biz-{index}",
+                    "rank": index,
+                    "title": f"业务知识 {index}",
+                    "final_score": 0.9 - index * 0.01,
+                    "knowledge_origin": "business_accumulation",
+                }
+                for index in range(1, 4)
+            ],
+            candidate_origins=["business_accumulation"] * 3,
+            question_form_id=None,
+        )
+    )
+    db.commit()
+
+    ensure_work_orders(db, 0)
+    db.commit()
+    assert (
+        db.query(BlindLabelWorkOrder)
+        .filter_by(conversation_id="conversation-no-question-form")
+        .count()
+        == 0
+    )
+    assert (
+        db.query(BlindLabelWorkOrder)
+        .filter_by(question_form_id="conversation-no-question-form")
+        .count()
+        == 0
+    )
+    recorded = db.get(RetrievalQualityEvent, "event-no-question-form")
+    assert recorded is not None
+    assert recorded.question_form_id is None
+
+
+def test_event_with_question_form_id_is_materialized_with_the_upstream_number(db):
+    """有工单号的事件仍然照常物化，并把工单号写进工单记录。"""
+
+    db.add(
+        _build_threshold_event(
+            event_id="event-with-question-form",
+            conversation_id="conversation-with-question-form",
+            source_kind="reply",
+            top_rerank_score=0.9,
+            candidate_snapshot=[
+                {
+                    "knowledge_id": f"biz-{index}",
+                    "rank": index,
+                    "title": f"业务知识 {index}",
+                    "final_score": 0.9 - index * 0.01,
+                    "knowledge_origin": "business_accumulation",
+                }
+                for index in range(1, 4)
+            ],
+            candidate_origins=["business_accumulation"] * 3,
+            question_form_id="2092919668271485492",
+        )
+    )
+    db.commit()
+
+    ensure_work_orders(db, 0)
+    db.commit()
+    work_order = (
+        db.query(BlindLabelWorkOrder)
+        .filter_by(question_form_id="2092919668271485492")
+        .one()
+    )
+    assert work_order.conversation_id == "conversation-with-question-form"
 
 
 def test_top1_score_below_sixty_percent_is_not_materialized_but_boundary_passes(db):
@@ -313,6 +404,7 @@ def test_combined_event_does_not_use_global_score_for_business_top1(db):
             idempotency_key="key-combined-missing-business-score",
             source_system="test",
             conversation_id="conversation-combined-missing-business-score",
+            question_form_id="question-form-combined-missing-business-score",
             request_id="request-combined-missing-business-score",
             source_kind="combined",
             query_text="组合池分数测试",
@@ -362,6 +454,7 @@ def test_ensure_work_orders_materializes_newest_eligible_event_first(db):
             idempotency_key="event-key-newest",
             source_system="test",
             conversation_id="conversation-newest",
+            question_form_id="question-form-newest",
             request_id="request-newest",
             source_kind="reply",
             query_text="最新手机问题",
