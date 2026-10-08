@@ -86,8 +86,45 @@ def test_blind_label_claim_is_explicit_and_completed_batch_offers_next_batch() -
     assert "/blind-labeling/my-batch:claim?target_count=50" in FRONTEND
     assert "{method:'POST'" in FRONTEND
     assert "blindLabeling.batch.status==='completed'?'领取下一批':'领取 50 条任务'" in FRONTEND
-    assert "本批 50 条已完成，可点击“领取下一批”。" in FRONTEND
     assert "return next ? self.openBlindLabelAssignment(next) : null;" in FRONTEND
+
+
+def test_blind_label_batch_size_comes_from_loaded_items_not_the_fixed_claim_size() -> None:
+    # 固定批次口径只用于「领取」动作，界面展示必须回落到真实装载条数。
+    assert "blindLabelBatchSize: function(batch)" in FRONTEND
+    assert "var realItems = Math.max(completed + inProgress + released, completed + assigned);" in FRONTEND
+    assert "{{blindLabeling.batch.completed || 0}}/{{blindLabelBatchSize()}}" in FRONTEND
+    assert ">当前 50 条批次<" not in FRONTEND
+    assert "{{blindLabeling.batch.total || 50}}" not in FRONTEND
+    assert "本批 50 条已完成" not in FRONTEND
+    assert "var total = Number(this.blindLabeling.batch.total) || 50" not in FRONTEND
+
+
+def test_blind_label_batch_progress_meta_stays_consistent_with_the_displayed_size() -> None:
+    # 进度明细必须和头部 N/M 同口径：后端 pending 是「50 - 未回收条数」的推算值，
+    # 前端按真实条数重算，且已完成的批次不再展示「待领取」。
+    assert "blindLabelBatchEmptyHint: function()" in FRONTEND
+    assert "if (!size) return '本批没有可标注的工单" in FRONTEND
+    assert "'本批 ' + size + ' 条已完成，可点击“领取下一批”。'" in FRONTEND
+    assert "被系统回收，等待新样本入库后点击“补充/刷新任务”" in FRONTEND
+    assert "</span><span>待处理 <b>" not in FRONTEND
+    assert "<span>进行中 <b>{{blindLabeling.batch.in_progress || 0}}</b></span><span>待领取 <b>{{blindLabeling.batch.pending || 0}}</b></span>" in FRONTEND
+    assert "{{blindLabeling.batch.pending || 0}}</b></span><span>进行中" not in FRONTEND
+    assert "blindLabeling.batch.status!=='completed'\"><span>进行中" in FRONTEND
+
+
+def test_blind_label_batch_progress_card_is_mine_only() -> None:
+    # 「我的已标注」不能沿用待标批次的进度卡。
+    assert "<template v-if=\"blindLabeling.tab==='mine'\">" in FRONTEND
+    assert 'class="blind-label-progress-card"' in FRONTEND
+    assert "if (tab === 'completed') this.blindLabeling.batch = this.blindLabelEmptyBatch();" in FRONTEND
+    assert "if (self.blindLabeling.tab === 'completed') self.blindLabeling.batch = self.blindLabelEmptyBatch();" in FRONTEND
+    assert "blindLabelEmptyBatch: function()" in FRONTEND
+    start = FRONTEND.index("<template v-if=\"blindLabeling.tab==='mine' || blindLabeling.tab==='completed'\">")
+    end = FRONTEND.index("<template v-if=\"isBlindLabelOverviewTab()\">", start)
+    flow = FRONTEND[start:end]
+    assert 'class="blind-label-progress-card"' not in flow
+    assert flow.count("<template v-if=\"blindLabeling.tab==='mine'\">") == 1
 
 
 def test_blind_label_annotators_cannot_manually_release_tasks() -> None:
