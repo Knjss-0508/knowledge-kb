@@ -1,0 +1,23 @@
+﻿diff --git a/original/app.js b/web/app.js
+index 1fbe557..6ed0b4f 100644
+--- a/original/app.js
++++ b/web/app.js
+@@ -379,14 +379,15 @@
+         signal: state.controller && state.controller.signal
+       });
+       if (token !== state.requestToken) return;
+       if (result.skipReason === 'WORK_ORDER_ID_REQUIRED') {
+-        // 只上送工单号：没有工单ID的会话一个请求都不发，明确说明原因，
++        // 只上送工单号：既没有工单ID也没有会话ID的会话一个请求都不发，明确说明原因，
+         // 不能显示成「未命中」，否则同事会误以为知识库没有匹配内容。
++        // 知识库侧补丁 2026-10-08：只有工单ID缺失、会话ID存在时不再跳过，照常上送。
+         state.stage = 'ready';
+         setConnection('ready', '已连接');
+-        setStatus('当前会话没有工单ID，未上送知识库');
+-        var skipped = empty('未上送：当前会话没有工单ID');
++        setStatus('当前会话没有工单ID也没有会话ID，未上送知识库');
++        var skipped = empty('未上送：当前会话没有可用的工单ID或会话ID');
+         byId('reply-content').innerHTML = skipped;
+         byId('standard-content').innerHTML = skipped;
+         byId('configuration-content').innerHTML = skipped;
+         setPanelState('reply-state', '未上送');
