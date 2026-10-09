@@ -1344,7 +1344,7 @@
         <p v-else>每批分配 50 个工单。只展示前三条候选，隐藏来源、ID、分数和其他人的标注结果；任务自领取起 24 小时未提交将由系统自动回收。</p>
       </div>
       <div class="blind-label-hero-side">
-        <div class="blind-label-mini"><span>{{isBlindLabelAdmin() ? '已标注工单' : '本批已完成'}}</span><b>{{isBlindLabelAdmin() ? blindLabeling.overview.summary.completed : blindLabeling.batch.completed}}<template v-if="!isBlindLabelAdmin()"> / {{blindLabeling.batch.total || 50}}</template></b></div>
+        <div class="blind-label-mini"><span>{{isBlindLabelAdmin() ? '已标注工单' : '本批已完成'}}</span><b>{{isBlindLabelAdmin() ? blindLabeling.overview.summary.completed : blindLabeling.batch.completed}}<template v-if="!isBlindLabelAdmin()"> / {{blindLabelBatchSize()}}</template></b></div>
         <div class="blind-label-mini"><span>{{isBlindLabelAdmin() ? '共识率' : '批次状态'}}</span><b>{{isBlindLabelAdmin() ? blindLabelPercent(blindLabeling.overview.summary.consensus_rate) : blindLabelBatchStatusLabel(blindLabeling.batch.status)}}</b></div>
       </div>
     </section>
@@ -1358,24 +1358,26 @@
     </div>
 
     <template v-if="blindLabeling.tab==='mine' || blindLabeling.tab==='completed'">
-      <div class="blind-label-summary">
+      <template v-if="blindLabeling.tab==='mine'">
+        <div class="blind-label-summary">
         <section class="blind-label-progress-card">
-          <div class="blind-label-progress-head"><div><h3>当前 50 条批次</h3><p>{{blindLabelBatchStatusLabel(blindLabeling.batch.status)}}<template v-if="blindLabeling.batch.started_at"> · {{formatDate(blindLabeling.batch.started_at)}} 开始</template></p></div><div class="blind-label-progress-number">{{blindLabeling.batch.completed || 0}}/{{blindLabeling.batch.total || 50}}</div></div>
+          <div class="blind-label-progress-head"><div><h3>{{blindLabeling.batch.status==='completed' ? '本批' : '当前'}} {{blindLabelBatchSize()}} 条批次</h3><p>{{blindLabelBatchStatusLabel(blindLabeling.batch.status)}}<template v-if="blindLabeling.batch.started_at"> · {{formatDate(blindLabeling.batch.started_at)}} 开始</template></p></div><div class="blind-label-progress-number">{{blindLabeling.batch.completed || 0}}/{{blindLabelBatchSize()}}</div></div>
           <div class="blind-label-progress-track"><i :style="{width:blindLabelBatchPercent()+'%'}"></i></div>
-          <div class="blind-label-progress-meta"><span>已完成 <b>{{blindLabeling.batch.completed || 0}}</b></span><span>待处理 <b>{{blindLabeling.batch.pending || 0}}</b></span><span>进行中 <b>{{blindLabeling.batch.in_progress || 0}}</b></span></div>
+          <div class="blind-label-progress-meta"><span>已完成 <b>{{blindLabeling.batch.completed || 0}}</b></span><span>进行中 <b>{{blindLabeling.batch.in_progress || 0}}</b></span><span v-if="blindLabelBatchPending()">剩余名额 <b>{{blindLabelBatchPending()}}</b></span></div>
         </section>
         <div class="blind-label-info-grid">
           <article class="blind-label-info"><span>可标注工单</span><b>{{blindLabeling.assignments.length}}</b><small>当前账号已分配</small></article>
           <article class="blind-label-info"><span>本批完成率</span><b>{{blindLabelBatchPercent()}}%</b><small>提交后计入批次</small></article>
           <article class="blind-label-info"><span>系统自动回收</span><b>{{blindLabeling.batch.released || 0}}</b><small>超 24 小时未提交的任务</small></article>
         </div>
-      </div>
+        </div>
+      </template>
       <div v-if="blindLabeling.error" class="blind-label-error" role="alert">{{blindLabeling.error}}</div>
       <div class="blind-label-toolbar"><span class="tt">{{blindLabeling.tab==='mine'?'我的待标工单':'我的已标注工单'}}</span><span class="review-selected-note">共 <b>{{blindLabeling.assignments.length}}</b> 条</span><span class="blind-label-toolbar-spacer"></span><button v-if="blindLabeling.tab==='mine' && !blindLabeling.assignments.length" class="btn bp" type="button" @click="claimBlindLabelBatch" :disabled="blindLabeling.claiming">{{blindLabeling.claiming?'分配中...':(blindLabeling.batch.status==='completed'?'领取下一批':'领取 50 条任务')}}</button><button v-if="blindLabeling.tab==='mine' && blindLabeling.batch.status!=='completed'" class="btn bd" type="button" @click="claimBlindLabelBatch" :disabled="blindLabeling.claiming">{{blindLabeling.claiming?'刷新中...':'补充/刷新任务'}}</button><button class="btn bd" type="button" @click="loadBlindLabelAssignments" :disabled="blindLabeling.loading">刷新</button></div>
       <div class="tw" :class="{'blind-label-loading':blindLabeling.loading}">
         <table class="blind-label-order-table"><thead><tr><th style="width:150px">工单 ID</th><th>问题摘要</th><th style="width:110px">候选数</th><th style="width:125px">状态</th><th style="width:155px">分配时间</th><th style="width:140px;text-align:right">操作</th></tr></thead><tbody>
           <tr v-for="assignment in blindLabeling.assignments" :key="assignment.id || assignment.assignment_id || assignment.work_order_id"><td><span class="blind-label-subline" style="margin-top:0">{{blindLabelWorkOrderId(assignment)}}</span></td><td><div class="blind-label-query" :title="blindLabelQuery(assignment)">{{blindLabelQuery(assignment)}}</div><div class="blind-label-subline"><template v-if="assignment.updated_at">最近更新 {{formatDate(assignment.updated_at)}}</template><template v-else>等待标注</template></div></td><td>{{blindLabelCandidateCount(assignment)}}</td><td><span class="blind-label-status" :class="blindLabelStatusClass(assignment.status)">{{blindLabelStatusLabel(assignment.status)}}</span></td><td>{{formatDate(assignment.assigned_at || assignment.created_at)}}</td><td style="text-align:right"><button class="btn bp bsm" type="button" @click="openBlindLabelAssignment(assignment, $event)">{{blindLabelIsDone(assignment)?'查看详情':'开始标注'}}</button></td></tr>
-          <tr v-if="!blindLabeling.assignments.length"><td colspan="6" class="blind-label-empty">{{blindLabeling.tab==='mine'?(blindLabeling.batch.status==='completed'?'本批 50 条已完成，可点击“领取下一批”。':'当前没有待标工单。点击“领取 50 条任务”开始盲标。'):'暂无已标注工单。完成提交后会显示在这里。'}}</td></tr>
+          <tr v-if="!blindLabeling.assignments.length"><td colspan="6" class="blind-label-empty">{{blindLabeling.tab==='mine'?(blindLabeling.batch.status==='completed'||!blindLabelBatchSize()?blindLabelBatchEmptyHint():'当前没有待标工单。点击“领取 50 条任务”开始盲标。'):'暂无已标注工单。完成提交后会显示在这里。'}}</td></tr>
         </tbody></table>
       </div>
     </template>
@@ -2307,7 +2309,7 @@ Vue.createApp({
         saving:false,
         error:'',
         updatedAt:'-',
-        batch:{id:'',status:'',total:50,completed:0,pending:0,in_progress:0,released:0,started_at:'',completed_at:''},
+        batch:{id:'',status:'',total:50,completed:0,assigned:0,pending:0,in_progress:0,released:0,started_at:'',completed_at:''},
         assignments:[],
         completed:[],
         pagination:{page:1,size:50,total:0,totalPages:1},
@@ -8256,6 +8258,41 @@ Vue.createApp({
       if (data.data && typeof data.data === 'object') return this.blindLabelListFromResponse(data.data, keys);
       return [];
     },
+    blindLabelEmptyBatch: function() {
+      return {id:'',status:'',total:0,completed:0,assigned:0,pending:0,in_progress:0,released:0,started_at:'',completed_at:''};
+    },
+    blindLabelBatchSize: function(batch) {
+      batch = batch || this.blindLabeling.batch || {};
+      var total = Number(batch.total) || 0;
+      var completed = Number(batch.completed) || 0;
+      var inProgress = Number(batch.in_progress) || 0;
+      var assigned = Number(batch.assigned) || 0;
+      var loaded = this.blindLabeling.assignments ? this.blindLabeling.assignments.length : 0;
+      // 真实条数 = 已提交 + 进行中（backend 的 assigned 口径把已回收的行也算在内），
+      // 拿不到计数时回落到列表本身的条数。目标 50 只在没有真实数据时才作为占位。
+      var realItems = Math.max(completed + inProgress, assigned, loaded);
+      if (!realItems) return total;
+      return total ? Math.min(total, realItems) : realItems;
+    },
+    blindLabelBatchPending: function(batch) {
+      batch = batch || this.blindLabeling.batch || {};
+      if (batch.status === 'completed') return 0;
+      var loaded = this.blindLabeling.assignments ? this.blindLabeling.assignments.length : 0;
+      return Math.max(0, this.blindLabelBatchSize(batch) - loaded);
+    },
+    blindLabelBatchEmptyHint: function() {
+      var batch = this.blindLabeling.batch || {};
+      var loaded = this.blindLabeling.assignments ? this.blindLabeling.assignments.length : 0;
+      var released = Number(batch.released) || 0;
+      // 这批从未领取过（没有计数、没有开始时间）时才提示「没有可标注的工单」。
+      var claimed = !!(batch.status || batch.started_at || Number(batch.completed) || Number(batch.in_progress) || Number(batch.assigned));
+      if (!claimed) return '本批没有可标注的工单，等待新样本入库后点击“领取下一批”。';
+      var size = this.blindLabelBatchSize();
+      if (batch.status === 'completed') return '本批 ' + size + ' 条已完成，可点击“领取下一批”。';
+      if (released) return '本批 ' + size + ' 条已分发完毕，其中 ' + released + ' 条被系统回收，等待新样本入库后点击“补充/刷新任务”。';
+      if (loaded) return '本批 ' + size + ' 条任务已全部处理完毕，等待新样本入库后点击“补充/刷新任务”。';
+      return '本批任务已全部处理完毕，等待新样本入库后点击“补充/刷新任务”。';
+    },
     blindLabelBatchFromResponse: function(data) {
       data = data || {};
       var batch = data.batch || data.current_batch || data.my_batch || {};
@@ -8368,6 +8405,7 @@ Vue.createApp({
         if (!this.can('retrieval:blind_label') && !this.isSuperAdmin()) return;
       }
       this.blindLabeling.tab = tab;
+      if (tab === 'completed') this.blindLabeling.batch = this.blindLabelEmptyBatch();
       if (this.isBlindLabelOverviewTab()) this.loadBlindLabelOverview();
       else this.loadBlindLabelAssignments(false);
     },
@@ -8386,7 +8424,9 @@ Vue.createApp({
           var active = normalized.filter(function(item) { return !self.blindLabelIsDone(item) && item.status !== 'released'; });
           self.blindLabeling.assignments = self.blindLabeling.tab === 'completed' ? completed : active;
           self.blindLabeling.completed = completed;
-          if (data.batch || data.current_batch || data.my_batch) self.blindLabeling.batch = self.blindLabelBatchFromResponse(data);
+          if (self.blindLabeling.tab === 'completed') self.blindLabeling.batch = self.blindLabelEmptyBatch();
+          else if (data.batch || data.current_batch || data.my_batch) self.blindLabeling.batch = self.blindLabelBatchFromResponse(data);
+          else self.blindLabeling.batch = self.blindLabelEmptyBatch();
           self.blindLabeling.pagination.total = self.blindLabeling.assignments.length;
           self.blindLabeling.updatedAt = self.formatDate(new Date());
           return data;
@@ -8766,7 +8806,7 @@ Vue.createApp({
       return 'assigned';
     },
     blindLabelBatchStatusLabel: function(value) { return {active:'进行中',in_progress:'进行中',completed:'已完成',pending:'待领取',empty:'待领取'}[String(value || '').toLowerCase()] || '进行中'; },
-    blindLabelBatchPercent: function() { var total = Number(this.blindLabeling.batch.total) || 50; var done = Number(this.blindLabeling.batch.completed) || 0; return Math.min(100, Math.max(0, Math.round(done / total * 100))); },
+    blindLabelBatchPercent: function() { var total = this.blindLabelBatchSize(); var done = Number(this.blindLabeling.batch.completed) || 0; return total ? Math.min(100, Math.max(0, Math.round(done / total * 100))) : 0; },
     blindLabelProgress: function(done, total) { done = Number(done) || 0; total = Number(total) || 0; return total ? Math.min(100, Math.max(0, Math.round(done / total * 100))) : 0; },
     blindLabelPercent: function(value) { var number = Number(value); if (isNaN(number)) return '0%'; if (number <= 1) number *= 100; return (Math.round(number * 10) / 10) + '%'; },
     blindLabelDuration: function(value) { var number = Number(value); if (!number || isNaN(number)) return '-'; if (number > 3600000) number = number / 1000; if (number > 3600) return (number / 3600).toFixed(1) + ' 小时'; if (number > 60) return (number / 60).toFixed(1) + ' 分钟'; return Math.round(number) + ' 秒'; },

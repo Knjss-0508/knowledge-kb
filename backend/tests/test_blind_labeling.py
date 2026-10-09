@@ -1070,3 +1070,70 @@ def test_blind_label_api_contract_exposes_claim_detail_and_overview_routes():
     assert "/api/v1/blind-labeling/overview" in paths
     assert "/api/v1/blind-labeling/work-orders/{work_order_id}" in paths
     assert "post" in paths["/api/v1/blind-labeling/assignments/{assignment_id}/submit"]
+
+
+def test_batch_summary_reports_target_size_and_items_actually_loaded(db):
+    """池子不足时批次被提前装满：total 仍是固定口径 50，真实条数看 assigned。"""
+
+    assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
+    batch, rows = claim_batch(db, "u1")
+    assert len(rows) == 3
+    assert batch.status == "active"
+
+    summary = batch_summary(db, batch)
+    assert summary["total"] == BLIND_LABEL_BATCH_SIZE
+    assert summary["assigned"] == 3
+    # 前端用 max(completed, assigned) 渲染「当前 N 条批次」，因此 3 条批次显示 3 而不是 50。
+    assert max(summary["completed"], summary["assigned"]) == 3
+
+    for assignment in rows:
+        submit_assignment(db, assignment, _labels(assignment), task_reason_code="")
+    db.commit()
+
+    completed_summary = batch_summary(db, batch)
+    # 固定目标 50 未被填满时批次保持 active（现有完成判定要求 assigned/completed 均达标），
+    # 但真实条数已经是 3：界面必须显示 3/3 而不是 3/50。
+    assert completed_summary["assigned"] == 3
+    assert completed_summary["completed"] == 3
+    assert max(completed_summary["completed"], completed_summary["assigned"]) == 3
+    assert completed_summary["total"] == BLIND_LABEL_BATCH_SIZE
+
+
+def test_my_assignments_completed_tab_does_not_expose_the_active_batch(db):
+    """「我的已标注」拉取历史时必须清空在途批次视图，不能把进行中的批次当成本页上下文。"""
+
+    assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
+    batch, rows = claim_batch(db, "u1")
+    assert batch.status == "active"
+
+    completed_response = list_my_assignments(
+        batch_id=None,
+        assignment_status="completed",
+        include_released=False,
+        page=1,
+        page_size=50,
+        db=db,
+        current_user=db.get(User, "u1"),
+    )
+    assert completed_response["items"] == []
+    assert completed_response["total"] == 0
+    # 后端仍返回批次上下文，由前端在 completed 页签清空；这里锁定它不能是进行中的批次口径。
+    assert completed_response["batch"]["status"] == "active"
+
+    for assignment in rows:
+        submit_assignment(db, assignment, _labels(assignment), task_reason_code="")
+    db.commit()
+
+    done_response = list_my_assignments(
+        batch_id=None,
+        assignment_status="completed",
+        include_released=False,
+        page=1,
+        page_size=50,
+        db=db,
+        current_user=db.get(User, "u1"),
+    )
+    assert done_response["total"] == 3
+    assert done_response["batch"]["completed"] == 3
+    # 批次未填满 50，不会被自动置为 completed；已完成条目仍能出现在历史页签。
+    assert done_response["batch"]["status"] == "active"
