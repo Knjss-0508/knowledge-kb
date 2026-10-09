@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from app.core.config import settings
+from app.services.model_connection import (
+    DEFAULT_MODEL_TIMEOUT_SECONDS,
+    cached_model_config,
+    mask_api_key,
+    merge_model_config,
+)
 
 
 @dataclass
@@ -130,16 +137,59 @@ def _shadow_rerun_prompt(
     )
 
 
-def _call_deepseek_flash(prompt: str, *, purpose: str) -> dict[str, Any]:
+def _environment_model_config() -> dict[str, Any]:
+    """The route defined by this deployment's DEEPSEEK_*/GROUP_LLM_* variables."""
     base_url = (
         settings.DEEPSEEK_BASE_URL.strip()
         or settings.GROUP_LLM_BASE_URL.strip()
     ).rstrip("/")
     api_key = settings.DEEPSEEK_API_KEY.strip() or settings.GROUP_LLM_API_KEY.strip()
     model = settings.DEEPSEEK_MODEL.strip() or "deepseek-flash"
+    try:
+        timeout = max(1.0, float(settings.DEEPSEEK_TIMEOUT_SECONDS))
+    except (TypeError, ValueError):
+        timeout = DEFAULT_MODEL_TIMEOUT_SECONDS
+    return {
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model,
+        "timeout_seconds": timeout,
+    }
+
+
+def resolve_call_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The effective route for one model call.
+
+    An explicit ``config`` (used by the connection test with unsaved form
+    values) wins; otherwise the override saved from the confidence-training
+    page is layered on top of the environment variables.
+    """
+    if config:
+        return merge_model_config(config, _environment_model_config())
+    return merge_model_config(cached_model_config(), _environment_model_config())
+
+
+def _call_deepseek_flash(
+    prompt: str,
+    *,
+    purpose: str,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    resolved = resolve_call_config(config)
+    base_url = str(resolved.get("base_url") or "").strip().rstrip("/")
+    api_key = str(resolved.get("api_key") or "").strip()
+    model = str(resolved.get("model") or "").strip() or "deepseek-flash"
+    try:
+        timeout = max(
+            1.0,
+            float(resolved.get("timeout_seconds") or DEFAULT_MODEL_TIMEOUT_SECONDS),
+        )
+    except (TypeError, ValueError):
+        timeout = DEFAULT_MODEL_TIMEOUT_SECONDS
     if not base_url or not api_key:
         raise ModelAnnotationError(
-            "内部 DeepSeek-flash API 尚未配置；请配置 DEEPSEEK_*，或提供已有的 GROUP_LLM_API_KEY。",
+            "内部 DeepSeek-flash API 尚未配置；请在“模型连接配置”里填写模型地址和 API Key，"
+            "或配置 DEEPSEEK_*（也可复用 GROUP_LLM_API_KEY）。",
             "CONFIG_MISSING",
         )
     url = f"{base_url}/chat/completions"
@@ -158,7 +208,7 @@ def _call_deepseek_flash(prompt: str, *, purpose: str) -> dict[str, Any]:
             url,
             headers=headers,
             json=body,
-            timeout=max(1.0, float(settings.DEEPSEEK_TIMEOUT_SECONDS)),
+            timeout=timeout,
         )
         if response.status_code >= 400:
             retryable = response.status_code == 429 or response.status_code >= 500
@@ -261,11 +311,30 @@ def shadow_rerun_transcribed_candidate(
     return result
 
 
-def test_deepseek_flash_connection() -> dict[str, Any]:
-    result = _call_deepseek_flash(
-        "请只返回 JSON：{\"status\":\"ok\"}",
-        purpose="连接测试",
-    )
+def test_deepseek_flash_connection(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Probe the DeepSeek-flash route and report what was actually used.
+
+    ``config`` carries unsaved form values from the model-connection dialog so
+    an operator can test an address or key before storing it.
+    """
+    resolved = resolve_call_config(config)
+    started = time.perf_counter()
+    if config:
+        result = _call_deepseek_flash(
+            "请只返回 JSON：{\"status\":\"ok\"}",
+            purpose="连接测试",
+            config=config,
+        )
+    else:
+        result = _call_deepseek_flash(
+            "请只返回 JSON：{\"status\":\"ok\"}",
+            purpose="连接测试",
+        )
     if str(result.get("status") or "").lower() != "ok":
         raise ModelAnnotationError("DeepSeek-flash 连接测试返回了非预期结果。")
+    result["latency_ms"] = int((time.perf_counter() - started) * 1000)
+    result["base_url"] = str(resolved.get("base_url") or "")
+    result["model"] = str(resolved.get("model") or "")
+    result["timeout_seconds"] = resolved.get("timeout_seconds")
+    result["api_key_masked"] = mask_api_key(resolved.get("api_key"))
     return result

@@ -54,6 +54,67 @@ class ConfidenceTrainingSettings(BaseModel):
     evaluation_scope: str
 
 
+class ModelConnectionOverrides(BaseModel):
+    """Which fields the saved override record currently supplies."""
+
+    base_url: bool = False
+    model: bool = False
+    timeout_seconds: bool = False
+    api_key: bool = False
+
+
+class ModelConnectionEnvironment(BaseModel):
+    """The fallback route defined by the deployment environment variables."""
+
+    base_url: str = ""
+    model: str = ""
+    timeout_seconds: float = 60.0
+    api_key_configured: bool = False
+
+
+class ModelConnectionConfig(BaseModel):
+    """Client-safe view of the effective DeepSeek-flash route (key masked)."""
+
+    configured: bool = False
+    source: str = "environment"
+    base_url: str = ""
+    model: str = ""
+    timeout_seconds: float = 60.0
+    api_key_configured: bool = False
+    api_key_masked: str = ""
+    api_key_source: str = "missing"
+    overrides: ModelConnectionOverrides = Field(default_factory=ModelConnectionOverrides)
+    environment: ModelConnectionEnvironment = Field(default_factory=ModelConnectionEnvironment)
+    prompt_version: str = ""
+    updated_by: str = ""
+    updated_at: str | None = None
+
+
+class ModelConnectionUpdate(BaseModel):
+    """A partial edit from the model-connection dialog.
+
+    Omitted or empty fields keep their current value; ``api_key`` is only
+    replaced when a non-empty value is sent, and ``clear_api_key`` /
+    ``reset_to_environment`` remove stored overrides explicitly.
+    """
+
+    base_url: str | None = Field(None, max_length=500)
+    model: str | None = Field(None, max_length=128)
+    timeout_seconds: float | None = None
+    api_key: str | None = Field(None, max_length=500)
+    clear_api_key: bool = False
+    reset_to_environment: bool = False
+
+
+class ModelConnectionTest(BaseModel):
+    """Unsaved form values used for a one-off connection test."""
+
+    base_url: str | None = Field(None, max_length=500)
+    model: str | None = Field(None, max_length=128)
+    timeout_seconds: float | None = None
+    api_key: str | None = Field(None, max_length=500)
+
+
 class ConfidenceTrainingJob(BaseModel):
     id: str
     status: str

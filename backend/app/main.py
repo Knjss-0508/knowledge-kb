@@ -34,6 +34,7 @@ from app.services.knowledge_import_worker import run_knowledge_import_worker
 from app.services.knowledge_vector_worker import run_knowledge_vector_worker
 from app.services.media_deletion import run_media_deletion_worker
 from app.services.media_storage import _normalize_remote_media_path_prefix
+from app.services.model_connection import refresh_model_config_cache
 
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,12 @@ def _gateway_path_allowed(path: str) -> bool:
 async def lifespan(_: FastAPI):
     stop_event = asyncio.Event()
     workers: list[asyncio.Task] = []
+    try:
+        refresh_model_config_cache()
+    except Exception:
+        # A missing override record (or a database that is still starting) must
+        # never block startup: model calls then fall back to the environment.
+        logger.exception("Failed to load the saved model connection overrides.")
     if _background_workers_should_start():
         workers = [
             asyncio.create_task(run_media_deletion_worker(stop_event)),

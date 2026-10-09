@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services import model_annotation
+from app.services import model_annotation, model_connection
 
 
 def test_correction_requires_internal_endpoint(monkeypatch):
@@ -141,3 +141,103 @@ def test_http_error_keeps_retry_classification(monkeypatch):
         model_annotation.correct_with_deepseek_flash({"human_truth": {"knowledge_value": "worthy"}})
     assert error.value.error_code == "HTTP_429"
     assert error.value.retryable is True
+
+
+def test_connection_test_passes_unsaved_dialog_values_and_reports_the_route(monkeypatch):
+    captured = {}
+
+    def fake_call(prompt, *, purpose, config=None):
+        captured.update(prompt=prompt, purpose=purpose, config=config)
+        return {"status": "ok", "requested_model": "deepseek-flash"}
+
+    monkeypatch.setattr(model_annotation, "_call_deepseek_flash", fake_call)
+    result = model_annotation.test_deepseek_flash_connection(
+        {"base_url": "http://form/v1", "api_key": "sk-form-secret-9999", "model": "form-model"}
+    )
+    assert captured["purpose"] == "连接测试"
+    assert captured["config"]["base_url"] == "http://form/v1"
+    assert result["status"] == "ok"
+    assert result["base_url"] == "http://form/v1"
+    assert result["model"] == "form-model"
+    assert isinstance(result["latency_ms"], int)
+    assert result["api_key_masked"].startswith("sk-f")
+    assert "sk-form-secret-9999" not in str(result)
+
+
+def test_connection_test_without_a_dialog_body_keeps_the_plain_call(monkeypatch):
+    captured = {}
+
+    def fake_call(prompt, *, purpose):
+        captured.update(prompt=prompt, purpose=purpose)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(model_annotation, "_call_deepseek_flash", fake_call)
+    assert model_annotation.test_deepseek_flash_connection()["status"] == "ok"
+    assert "config" not in captured
+
+
+def test_saved_model_override_is_used_by_model_calls(monkeypatch):
+    calls = []
+
+    class Response:
+        def json(self):
+            return {"choices": [{"message": {"content": '{"knowledge_value":"worthy"}'}}]}
+
+    monkeypatch.setattr(
+        model_annotation,
+        "settings",
+        SimpleNamespace(DEEPSEEK_BASE_URL="", DEEPSEEK_API_KEY="", GROUP_LLM_BASE_URL="", GROUP_LLM_API_KEY="", DEEPSEEK_MODEL="deepseek-flash", DEEPSEEK_TIMEOUT_SECONDS=5, DEEPSEEK_PROMPT_VERSION="v1"),
+    )
+    monkeypatch.setattr(
+        model_connection,
+        "_CACHED_OVERRIDES",
+        {
+            "base_url": "http://saved/v1",
+            "api_key": "sk-saved",
+            "model": "saved-model",
+            "timeout_seconds": 21,
+        },
+    )
+    monkeypatch.setattr(
+        model_annotation.httpx,
+        "post",
+        lambda *args, **kwargs: (calls.append((args, kwargs)) or Response()),
+    )
+    result = model_annotation.correct_with_deepseek_flash({"human_truth": {"knowledge_value": "worthy"}})
+    assert calls[0][0][0] == "http://saved/v1/chat/completions"
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer sk-saved"
+    assert calls[0][1]["json"]["model"] == "saved-model"
+    assert calls[0][1]["timeout"] == 21
+    assert result["model_name"] == "saved-model"
+
+
+def test_explicit_call_config_wins_over_the_saved_override(monkeypatch):
+    calls = []
+
+    class Response:
+        def json(self):
+            return {"choices": [{"message": {"content": '{"status":"ok"}'}}]}
+
+    monkeypatch.setattr(
+        model_annotation,
+        "settings",
+        SimpleNamespace(DEEPSEEK_BASE_URL="", DEEPSEEK_API_KEY="", GROUP_LLM_BASE_URL="", GROUP_LLM_API_KEY="", DEEPSEEK_MODEL="deepseek-flash", DEEPSEEK_TIMEOUT_SECONDS=5, DEEPSEEK_PROMPT_VERSION="v1"),
+    )
+    monkeypatch.setattr(
+        model_connection,
+        "_CACHED_OVERRIDES",
+        {"base_url": "http://saved/v1", "api_key": "sk-saved"},
+    )
+    monkeypatch.setattr(
+        model_annotation.httpx,
+        "post",
+        lambda *args, **kwargs: (calls.append((args, kwargs)) or Response()),
+    )
+    result = model_annotation._call_deepseek_flash(
+        "只返回 JSON",
+        purpose="连接测试",
+        config={"base_url": "http://form/v1", "api_key": "sk-form"},
+    )
+    assert calls[0][0][0] == "http://form/v1/chat/completions"
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer sk-form"
+    assert result["prompt_version"] == "v1"

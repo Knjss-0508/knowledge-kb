@@ -55,3 +55,33 @@ def test_training_tab_binds_to_initialized_settings_state():
     assert "v-model=\"confidenceTraining.settings.training_snapshot_enabled\"" in FRONTEND
     assert "confidenceTraining: {tab:'overview'" in FRONTEND
     assert "settings:{training_candidate_collection_enabled:true" in FRONTEND
+
+
+def test_model_connection_dialog_edits_the_internal_route_from_the_ui():
+    assert "模型连接配置" in FRONTEND
+    assert "openConfidenceModelConnection" in FRONTEND
+    assert "applyConfidenceModelConnection" in FRONTEND
+    assert "closeConfidenceModelConnection" in FRONTEND
+    assert "confidenceModelConnectionPayload" in FRONTEND
+    assert "confidenceModelConnectionKeyPlaceholder" in FRONTEND
+    assert "confidenceModelConnectionKeySourceLabel" in FRONTEND
+    assert "saveConfidenceModelConnection" in FRONTEND
+    assert "testConfidenceModelConnection" in FRONTEND
+    assert "resetConfidenceModelConnection" in FRONTEND
+    assert "modelConnection:{open:false" in FRONTEND
+    assert "'/confidence-training/model-connection'" in FRONTEND
+    assert "/confidence-training/model-connection-test" in FRONTEND
+    assert "模型地址（Base URL）" in FRONTEND
+    assert "留空则保持不变" in FRONTEND
+    assert "已保存，新的模型调用立即使用该配置。" in FRONTEND
+    assert "clear_api_key" in FRONTEND
+    assert "reset_to_environment:true" in FRONTEND
+    assert "恢复使用环境变量" in FRONTEND
+    assert "测试连接（用当前表单值）" in FRONTEND
+    assert "保存并立即生效" in FRONTEND
+    assert "v-model.trim=\"confidenceTraining.modelConnection.base_url\"" in FRONTEND
+    assert "v-model.trim=\"confidenceTraining.modelConnection.api_key\"" in FRONTEND
+    assert "api_key_masked" in FRONTEND
+    # The dialog reads the key back masked only; it never renders a stored key.
+    assert "type=\"password\"" in FRONTEND
+    assert "测试模型连接" in FRONTEND
