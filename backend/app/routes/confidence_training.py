@@ -25,6 +25,9 @@ from app.schemas.confidence_training import (
     ConfidenceTrainingSettings,
     ConfidenceTrainingSettingsUpdate,
     ConfidenceTrainingUpdate,
+    ModelConnectionConfig,
+    ModelConnectionTest,
+    ModelConnectionUpdate,
 )
 from app.services.confidence_training import (
     EVALUATION_SCOPE,
@@ -43,6 +46,12 @@ from app.services.model_annotation import (
     revise_confidence_training_prompt,
     shadow_rerun_transcribed_candidate,
     test_deepseek_flash_connection,
+)
+from app.services.model_connection import (
+    ModelConnectionError,
+    model_config_for_test,
+    model_config_snapshot,
+    update_model_config,
 )
 from app.services.active_prompt import get_active_confidence_prompt as resolve_active_confidence_prompt
 
@@ -1022,13 +1031,46 @@ def patch_confidence_training_settings(
     )
 
 
-@router.post("/model-connection-test")
-def test_confidence_training_model_connection(
+@router.get("/model-connection", response_model=ModelConnectionConfig)
+def get_confidence_model_connection(
+    db: Session = Depends(get_db),
     _: User = Depends(require_permission("knowledge:submit")),
 ):
-    """Use a fixed non-business payload to verify the internal model route."""
+    """The editable DeepSeek-flash route. The API key is always masked."""
+    return model_config_snapshot(db)
+
+
+@router.patch("/model-connection", response_model=ModelConnectionConfig)
+def patch_confidence_model_connection(
+    body: ModelConnectionUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    """Store an override so the next model call picks it up immediately."""
     try:
-        result = test_deepseek_flash_connection()
+        return update_model_config(
+            db,
+            body.model_dump(),
+            updated_by=current_user.username,
+        )
+    except ModelConnectionError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/model-connection-test")
+def test_confidence_training_model_connection(
+    body: ModelConnectionTest | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("knowledge:submit")),
+):
+    """Use a fixed non-business payload to verify the internal model route.
+
+    The optional body carries unsaved dialog values, so an operator can test an
+    address or key before saving it.
+    """
+    try:
+        config = model_config_for_test(db, body.model_dump() if body else None)
+        result = test_deepseek_flash_connection(config)
     except ModelAnnotationError as exc:
         raise HTTPException(503, str(exc)) from exc
     return {
@@ -1036,6 +1078,11 @@ def test_confidence_training_model_connection(
         "requested_model": result.get("requested_model"),
         "resolved_model_version": result.get("resolved_model_version"),
         "prompt_version": result.get("prompt_version"),
+        "base_url": result.get("base_url"),
+        "model": result.get("model"),
+        "timeout_seconds": result.get("timeout_seconds"),
+        "api_key_masked": result.get("api_key_masked"),
+        "latency_ms": result.get("latency_ms"),
     }
 
 
