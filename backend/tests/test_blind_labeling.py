@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from inspect import signature
 from unittest.mock import MagicMock
 
@@ -20,6 +20,9 @@ from app.models.integration import RetrievalQualityEvent
 from app.models.knowledge import Category, Knowledge, KnowledgeStatus
 from app.models.user import User
 from app.routes.blind_labeling import (
+    _as_date,
+    _as_datetime,
+    _resolve_date_range,
     arbitrate_work_order,
     get_my_batch,
     list_my_assignments,
@@ -1137,3 +1140,108 @@ def test_my_assignments_completed_tab_does_not_expose_the_active_batch(db):
     assert done_response["batch"]["completed"] == 3
     # 批次未填满 50，不会被自动置为 completed；已完成条目仍能出现在历史页签。
     assert done_response["batch"]["status"] == "active"
+
+
+def _load_my_assignments(db, user, **overrides):
+    kwargs = dict(
+        batch_id=None,
+        assignment_status="completed",
+        include_released=False,
+        page=1,
+        page_size=50,
+        db=db,
+        current_user=user,
+    )
+    kwargs.update(overrides)
+    return list_my_assignments(**kwargs)
+
+
+def test_my_assignments_accepts_annotation_activity_date_range(db):
+    """「我的已标注」的时间筛选：日期为闭区间，缺省时保持原有全量行为。"""
+
+    assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
+    _, rows = claim_batch(db, "u1")
+    for assignment in rows:
+        submit_assignment(db, assignment, _labels(assignment), task_reason_code="")
+    db.commit()
+
+    user = db.get(User, "u1")
+    today = datetime.utcnow().date()
+
+    # 不带日期（旧行为）：全部历史
+    assert _load_my_assignments(db, user)["total"] == 3
+    # 当天（前端默认）
+    assert _load_my_assignments(db, user, start_date=today)["total"] == 3
+    assert _load_my_assignments(db, user, start_date=today, end_date=today)["total"] == 3
+    # 结束日期按自然日闭区间处理，明天的零点才是排他上界
+    assert _load_my_assignments(db, user, end_date=today)["total"] == 3
+    # 过去的区间与未来的区间都取不到今天的活动
+    assert (
+        _load_my_assignments(
+            db,
+            user,
+            start_date=today - timedelta(days=3),
+            end_date=today - timedelta(days=1),
+        )["total"]
+        == 0
+    )
+    assert _load_my_assignments(db, user, start_date=today + timedelta(days=1))["total"] == 0
+    # 兼容 date_from / date_to 别名
+    assert _load_my_assignments(db, user, date_from=today, date_to=today)["total"] == 3
+
+
+def test_my_assignments_date_filter_follows_activity_time_and_rejects_inverted_range(db):
+    """时间筛选按标注活动时间判定（分配/完成/标注提交任一命中即可），并拒绝倒置区间。"""
+
+    assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
+    _, rows = claim_batch(db, "u1")
+    for assignment in rows:
+        submit_assignment(db, assignment, _labels(assignment), task_reason_code="")
+    db.commit()
+
+    three_days_ago = datetime.utcnow() - timedelta(days=3)
+    for assignment in rows:
+        assignment.assigned_at = three_days_ago
+        assignment.started_at = three_days_ago
+        assignment.completed_at = three_days_ago
+    db.commit()
+    db.expire_all()
+
+    user = db.get(User, "u1")
+    today = datetime.utcnow().date()
+
+    # 分配与完成时间都在 3 天前，只剩标注提交时间落在今天 → 仍算「今天标注的」
+    assert _load_my_assignments(db, user, start_date=today, end_date=today)["total"] == 3
+    # 3 天前那一天通过分配/完成时间命中
+    assert (
+        _load_my_assignments(
+            db,
+            user,
+            start_date=today - timedelta(days=3),
+            end_date=today - timedelta(days=3),
+        )["total"]
+        == 3
+    )
+
+    with pytest.raises(HTTPException) as error:
+        _load_my_assignments(
+            db,
+            user,
+            start_date=today,
+            end_date=today - timedelta(days=1),
+        )
+    assert error.value.status_code == 422
+
+
+def test_my_assignments_ignores_fastapi_query_placeholders_when_called_directly(db):
+    """直接调用路由函数时 Query(None) 占位符不能被当成筛选值。"""
+
+    from fastapi import Query
+
+    assert _as_datetime(Query(None)) is None
+    assert _as_date(Query(None)) is None
+    assert _resolve_date_range(Query(None), Query(None), Query(None), Query(None)) == (None, None)
+    assert _resolve_date_range(None, None, date(2026, 10, 9), date(2026, 10, 9)) == (
+        datetime(2026, 10, 9, 0, 0),
+        datetime(2026, 10, 10, 0, 0),
+    )
