@@ -127,6 +127,28 @@ def test_blind_label_batch_progress_card_is_mine_only() -> None:
     assert flow.count("<template v-if=\"blindLabeling.tab==='mine'\">") == 1
 
 
+def test_blind_label_my_annotations_filters_by_activity_date_and_defaults_to_today() -> None:
+    # 「我的已标注」默认只看当天，可切换范围查看全部标注历史。
+    assert "mineFilter:{preset:'today',dateFrom:'',dateTo:''}" in FRONTEND
+    assert "blindLabelDateString: function(offsetDays)" in FRONTEND
+    assert "blindLabelMineRange: function()" in FRONTEND
+    assert "blindLabelMineRangeLabel: function()" in FRONTEND
+    assert "blindLabelMineFilterEmptyHint: function()" in FRONTEND
+    assert "setBlindLabelMinePeriod: function(preset)" in FRONTEND
+    assert "applyBlindLabelMineDates: function()" in FRONTEND
+    assert "if (preset === 'all') return {from:'',to:''};" in FRONTEND
+    assert "params.set('start_date', range.from);" in FRONTEND
+    assert "params.set('end_date', range.to);" in FRONTEND
+    assert 'v-if="blindLabeling.tab===\'completed\'" class="blind-label-mine-filter"' in FRONTEND
+    assert '@click="setBlindLabelMinePeriod(option.value)"' in FRONTEND
+    assert "blindLabelMineFilterEmptyHint()" in FRONTEND
+    assert "标注活动时间 " in FRONTEND
+    assert ".blind-label-mine-filter{display:flex" in FRONTEND
+    # 时间筛选只在「我的已标注」出现，待标页签不受影响
+    assert ":blindLabelMineFilterEmptyHint()" in FRONTEND
+    assert "暂无已标注工单。完成提交后会显示在这里。" in FRONTEND
+
+
 def test_blind_label_annotators_cannot_manually_release_tasks() -> None:
     assert "releaseBlindLabelAssignment: function()" not in FRONTEND
     assert "blindLabeling.releasing" not in FRONTEND

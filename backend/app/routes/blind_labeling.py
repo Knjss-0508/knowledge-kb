@@ -26,6 +26,7 @@ from app.schemas.blind_labeling import (
 )
 from app.services.blind_labeling import (
     BLIND_LABEL_BATCH_SIZE,
+    _assignment_matches_activity_range,
     assignment_summary,
     batch_summary,
     claim_batch,
@@ -77,14 +78,33 @@ def _normalize_datetime(value: datetime | None) -> datetime | None:
     return value
 
 
+def _as_datetime(value) -> datetime | None:
+    """Only keep real datetimes.
+
+    FastAPI's ``Query(None)`` placeholder leaks through when a route function is
+    called directly (the unit tests do that), and those placeholders must not be
+    mistaken for a filter value.
+    """
+
+    return value if isinstance(value, datetime) else None
+
+
+def _as_date(value) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    return value if isinstance(value, date) else None
+
+
 def _resolve_date_range(
     start_at: datetime | None,
     end_at: datetime | None,
     start_date: date | None,
     end_date: date | None,
 ) -> tuple[datetime | None, datetime | None]:
-    start_at = _normalize_datetime(start_at)
-    end_at = _normalize_datetime(end_at)
+    start_at = _normalize_datetime(_as_datetime(start_at))
+    end_at = _normalize_datetime(_as_datetime(end_at))
+    start_date = _as_date(start_date)
+    end_date = _as_date(end_date)
     if start_at is None and start_date is not None:
         start_at = datetime.combine(start_date, time.min)
     if end_at is None and end_date is not None:
@@ -191,11 +211,25 @@ def list_my_assignments(
     batch_id: str | None = Query(None),
     assignment_status: str | None = Query(None, alias="status"),
     include_released: bool = Query(False),
+    start_at: datetime | None = Query(None),
+    end_at: datetime | None = Query(None),
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    date_from: date | None = Query(None, alias="date_from"),
+    date_to: date | None = Query(None, alias="date_to"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_blind_annotator()),
 ):
+    # 时间筛选按「标注活动时间」判定（分配/开始/完成/回收 + 标注提交），与管理员
+    # 「已标注总览」保持同一口径，避免同一记录在两处落在不同日期。
+    start_at, end_at = _resolve_date_range(
+        start_at,
+        end_at,
+        start_date or date_from,
+        end_date or date_to,
+    )
     query = db.query(BlindLabelAssignment).filter(
         BlindLabelAssignment.user_id == current_user.id
     )
@@ -208,6 +242,12 @@ def list_my_assignments(
     assignments = query.order_by(
         BlindLabelAssignment.assigned_at.desc(), BlindLabelAssignment.id.desc()
     ).all()
+    if start_at is not None or end_at is not None:
+        assignments = [
+            item
+            for item in assignments
+            if _assignment_matches_activity_range(item, start_at, end_at)
+        ]
     total = len(assignments)
     start = (page - 1) * page_size
     batch = (
