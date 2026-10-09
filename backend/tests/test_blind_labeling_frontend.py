@@ -6,6 +6,26 @@ FRONTEND = (
 ).read_text(encoding="utf-8")
 
 
+def _template_end(source: str, start: int) -> int:
+    """Return the index just past the `</template>` that closes the one at `start`."""
+    index = start
+    depth = 0
+    while index < len(source):
+        opened = source.find("<template", index)
+        closed = source.find("</template>", index)
+        if closed == -1:
+            break
+        if opened != -1 and opened < closed:
+            depth += 1
+            index = opened + len("<template")
+            continue
+        depth -= 1
+        if depth == 0:
+            return closed + len("</template>")
+        index = closed + len("</template>")
+    return len(source)
+
+
 def test_admin_blind_labeling_splits_people_and_work_order_views() -> None:
     assert "人员统计</button>" in FRONTEND
     assert "已标注总览</button>" in FRONTEND
@@ -29,7 +49,7 @@ def test_blind_label_people_panel_only_shows_name_completed_annotations_and_last
     assert "<th>标注员</th><th>总完成标注数</th><th>最后活动时间</th>" in FRONTEND
     assert "person.annotation_count || person.annotations || person.total_annotations || 0" in FRONTEND
     assert '<td colspan="3" class="blind-label-empty">' in FRONTEND
-    assert ".blind-label-person-table{min-width:520px;table-layout:fixed}" in FRONTEND
+    assert ".blind-label-person-table{min-width:900px}" in FRONTEND
 
 def test_blind_label_date_filter_formats_dates_and_chains_selection() -> None:
     assert '@click="openBlindLabelDatePicker(\'start\')"' in FRONTEND
@@ -92,7 +112,7 @@ def test_blind_label_claim_is_explicit_and_completed_batch_offers_next_batch() -
 def test_blind_label_batch_size_comes_from_loaded_items_not_the_fixed_claim_size() -> None:
     # 固定批次口径只用于「领取」动作，界面展示必须回落到真实装载条数。
     assert "blindLabelBatchSize: function(batch)" in FRONTEND
-    assert "var realItems = Math.max(completed + inProgress + released, completed + assigned);" in FRONTEND
+    assert "var realItems = Math.max(completed + inProgress, assigned, loaded);" in FRONTEND
     assert "{{blindLabeling.batch.completed || 0}}/{{blindLabelBatchSize()}}" in FRONTEND
     assert ">当前 50 条批次<" not in FRONTEND
     assert "{{blindLabeling.batch.total || 50}}" not in FRONTEND
@@ -102,15 +122,15 @@ def test_blind_label_batch_size_comes_from_loaded_items_not_the_fixed_claim_size
 
 def test_blind_label_batch_progress_meta_stays_consistent_with_the_displayed_size() -> None:
     # 进度明细必须和头部 N/M 同口径：后端 pending 是「50 - 未回收条数」的推算值，
-    # 前端按真实条数重算，且已完成的批次不再展示「待领取」。
+    # 前端按真实条数重算剩余名额，且已完成的批次不再展示剩余名额。
     assert "blindLabelBatchEmptyHint: function()" in FRONTEND
-    assert "if (!size) return '本批没有可标注的工单" in FRONTEND
-    assert "'本批 ' + size + ' 条已完成，可点击“领取下一批”。'" in FRONTEND
+    assert "if (!claimed) return '本批没有可标注的工单" in FRONTEND
+    assert "if (batch.status === 'completed') return '本批 ' + size + ' 条已完成，可点击“领取下一批”。';" in FRONTEND
     assert "被系统回收，等待新样本入库后点击“补充/刷新任务”" in FRONTEND
     assert "</span><span>待处理 <b>" not in FRONTEND
-    assert "<span>进行中 <b>{{blindLabeling.batch.in_progress || 0}}</b></span><span>待领取 <b>{{blindLabeling.batch.pending || 0}}</b></span>" in FRONTEND
-    assert "{{blindLabeling.batch.pending || 0}}</b></span><span>进行中" not in FRONTEND
-    assert "blindLabeling.batch.status!=='completed'\"><span>进行中" in FRONTEND
+    assert "{{blindLabeling.batch.pending || 0}}" not in FRONTEND
+    assert '<span>进行中 <b>{{blindLabeling.batch.in_progress || 0}}</b></span><span v-if="blindLabelBatchPending()">剩余名额 <b>{{blindLabelBatchPending()}}</b></span>' in FRONTEND
+    assert "if (batch.status === 'completed') return 0;" in FRONTEND
 
 
 def test_blind_label_batch_progress_card_is_mine_only() -> None:
@@ -123,8 +143,13 @@ def test_blind_label_batch_progress_card_is_mine_only() -> None:
     start = FRONTEND.index("<template v-if=\"blindLabeling.tab==='mine' || blindLabeling.tab==='completed'\">")
     end = FRONTEND.index("<template v-if=\"isBlindLabelOverviewTab()\">", start)
     flow = FRONTEND[start:end]
-    assert 'class="blind-label-progress-card"' not in flow
-    assert flow.count("<template v-if=\"blindLabeling.tab==='mine'\">") == 1
+    guard = "<template v-if=\"blindLabeling.tab==='mine'\">"
+    assert flow.count(guard) == 1
+    # 进度卡必须落在 mine 守卫内部；守卫之外的共用区域（含「我的已标注」）不允许再出现。
+    guard_start = flow.index(guard)
+    guard_end = _template_end(flow, guard_start)
+    assert 'class="blind-label-progress-card"' in flow[guard_start:guard_end]
+    assert 'class="blind-label-progress-card"' not in flow[guard_end:]
 
 
 def test_blind_label_my_annotations_filters_by_activity_date_and_defaults_to_today() -> None:
