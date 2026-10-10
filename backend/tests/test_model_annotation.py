@@ -17,6 +17,10 @@ def test_correction_requires_internal_endpoint(monkeypatch):
 
 def test_correction_preserves_structured_model_result(monkeypatch):
     class Response:
+        # model_annotation 会先看 status_code 再读 body（见
+        # app/services/model_annotation.py:213），假响应必须带上它。
+        status_code = 200
+
         def raise_for_status(self):
             return None
 
@@ -38,6 +42,7 @@ def test_correction_preserves_structured_model_result(monkeypatch):
 
 def test_correction_reuses_group_model_configuration(monkeypatch):
     class Response:
+        status_code = 200
         def raise_for_status(self): return None
         def json(self): return {"model": "deepseek-flash-internal", "choices": [{"message": {"content": '{"knowledge_value":"worthy"}'}}]}
 
@@ -180,6 +185,8 @@ def test_saved_model_override_is_used_by_model_calls(monkeypatch):
     calls = []
 
     class Response:
+        status_code = 200
+
         def json(self):
             return {"choices": [{"message": {"content": '{"knowledge_value":"worthy"}'}}]}
 
@@ -215,6 +222,8 @@ def test_explicit_call_config_wins_over_the_saved_override(monkeypatch):
     calls = []
 
     class Response:
+        status_code = 200
+
         def json(self):
             return {"choices": [{"message": {"content": '{"status":"ok"}'}}]}
 
