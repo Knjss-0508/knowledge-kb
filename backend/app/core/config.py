@@ -160,6 +160,24 @@ class Settings(BaseSettings):
     BLIND_LABEL_ASSIGNMENT_TIMEOUT_SECONDS: int = 24 * 60 * 60
     BLIND_LABEL_RELEASE_POLL_SECONDS: float = 300.0
     BLIND_LABEL_RELEASE_BATCH_SIZE: int = 100
+    # Blind-label work-order numbers are checked against the zzdy reverse-proxy
+    # access log instead of the Manhattan API.  The log proves how a number was
+    # really used upstream (work-order detail vs chat conversation) without any
+    # login cookie, and it survives the short-lived Manhattan session.  The log
+    # directory has to be mounted read-only into the container; when the path
+    # does not exist the checker simply stays idle.
+    WORK_ORDER_LOG_ENABLED: bool = True
+    WORK_ORDER_LOG_PATH: str = "/app/nlogs/zzdy.powerzhuan.cn.log"
+    # Empty means "<backend>/data/work_order_log_verdicts.json" (the mounted
+    # runtime volume in production).
+    WORK_ORDER_LOG_STATE_FILE: str = ""
+    WORK_ORDER_LOG_POLL_SECONDS: float = 300.0
+    # 0 disables the per-run read cap. Positive values bound one scan so a huge
+    # log can be consumed across several runs.
+    WORK_ORDER_LOG_MAX_BYTES_PER_RUN: int = 0
+    # Backfill "work_order_verified=false" onto already stored telemetry rows for
+    # numbers newly classified as chat-only. 0 disables the backfill.
+    WORK_ORDER_LOG_BACKFILL_LIMIT: int = 500
     # Excel imports are persisted before processing, so browser disconnects do
     # not cancel work. A lease enables safe recovery after a backend restart.
     KNOWLEDGE_IMPORT_POLL_SECONDS: float = 1.0

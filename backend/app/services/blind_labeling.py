@@ -30,6 +30,8 @@ from app.models.blind_labeling import (
 )
 from app.models.integration import RetrievalQualityEvent
 from app.models.knowledge import Category, Knowledge
+from app.services.work_order_log_verdicts import VERDICT_REAL, VERDICT_SESSION
+from app.services.work_order_log_verdicts import verdict_for as log_verdict_for
 from app.services.work_order_verification import WorkOrderVerifier
 
 BLIND_LABEL_BATCH_SIZE = 50
@@ -279,13 +281,18 @@ def ensure_work_orders(
 
     真实性门禁：助手会把「当前页面号码」同时填进 conversationId 与
     workOrderId（见 docs/qa-web-assistant-work-order-id-spec.md），于是会话号
-    也会出现在 ``question_form_id`` 上。建单前用上游
-    ``queryQuestionFormDetail`` 复核（``WorkOrderVerifier``）：
+    也会出现在 ``question_form_id`` 上。建单前有两道复核：
 
-    * 上游明确查不到 -> 记 ``work_order_verified=False`` 并跳过，不再建单；
-    * 上游有数据 -> 记 ``True`` 并放行；
-    * 没有 Cookie / 超时 / 上游异常 -> 不拦截（fail-open，行为与改造前一致），
-      避免没有 Cookie 时把盲标池饿死。
+    1. 上游 ``queryQuestionFormDetail`` 复核（``WorkOrderVerifier``）：上游明确
+       查不到 -> 记 ``work_order_verified=False`` 并跳过；上游有数据 -> 记
+       ``True`` 并放行；没有 Cookie / 超时 / 上游异常 -> 不下结论。
+    2. Cookie 判定不了时，改用 zzdy 反代访问日志的旁证
+       （``app.services.work_order_log_verdicts``）：同一个号码只在
+       ``im/history`` 上有聊天数据、从未在 ``queryQuestionFormDetail`` 上有数据，
+       说明它是会话号 -> 记 ``False`` 并跳过；反过来有工单详情数据 -> 记
+       ``True``；日志里没有记录 -> 放行（fail-open，避免把新工单饿死）。
+
+    两道门禁都判定不了时行为与改造前一致（不拦截）。
     """
 
     existing_conversations = {
@@ -351,6 +358,18 @@ def ensure_work_orders(
         ):
             continue
         verdict = checker.verify(question_form_id)
+        if verdict is None:
+            # No cookie (or the upstream call was inconclusive): fall back to the
+            # evidence recorded in the zzdy reverse-proxy access log.
+            log_verdict = log_verdict_for(question_form_id)
+            if log_verdict == VERDICT_SESSION:
+                event.work_order_verified = False
+                logger.info(
+                    "盲标池：%s 在上游只作为会话号出现，跳过建单。", question_form_id
+                )
+                continue
+            if log_verdict == VERDICT_REAL:
+                verdict = True
         if verdict is False:
             # 上游查不到这个工单号（多半是会话号），拒绝建单并留下结论，
             # 下次 claim 不再重复请求上游。
