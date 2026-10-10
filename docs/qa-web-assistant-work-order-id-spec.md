@@ -17,6 +17,7 @@
 | 知识库「没有工单号的样本不进盲标池」 | ✅ 已上线并在线上验证 | 见 2.3、2.6 |
 | 知识库盲标弹窗「只用工单号」 | ✅ 已上线（工单详情 + 聊天面板都用工单号） | `frontend/index.html` |
 | 存量 423 条「只有会话号」的历史盲标工单 | ✅ 已备份后物理删除 | 见 2.5 |
+| 建单前复核上游工单详情（新代码，默认休眠需 Cookie） | 🟡 已实现待部署（需先跑迁移 `20261010_01`） | 见 2.7 |
 
 ## 1. 为什么最终判定「不用改上游、不用改工作台」
 
@@ -117,6 +118,20 @@ if (!workOrderId || !rawContext) {
 | 上线后入库的事件 | 3,534 |
 | 其中无工单号（照常入库、不进池） | 3,132 |
 | 其中带工单号 | 402 |
+
+### 2.7 建单前工单号真实性校验（2026-10-10）
+
+严格口径只保证「有号码」，不保证「号码真的是工单号」。2026-10-10 的核查（`docs/blind-label-work-order-number-audit-20261010.md`）确认：1,292 条盲标工单里 **216 条（16.7%）的号码在上游只能取到聊天记录、取不到工单详情**，即助手把会话号填进了 `workOrderId`。因此新增一道**建单前上游复核**：
+
+- 新增 `backend/app/services/work_order_verification.py`：调用上游 `GET /nmhtapi/qa/queryQuestionFormDetail?questionFormId=<号>&sceneType=2`，按**实测响应体大小**判定（不解析业务 JSON）：`≤128 B` → `False`（上游「查不到」，实测 123/124 B）；`≥300 B` → `True`（实测 534–1128 B）；中间值 → `None`。
+- `backend/app/services/blind_labeling.py` 的 `ensure_work_orders()`：判重之后、物化之前校验。
+  - `False` → **不建单**，并在 `retrieval_quality_events.work_order_verified` 记 `False`（下次 claim 不再重复请求上游）；
+  - `True` → 记 `True` 并正常建单；
+  - `None`（没有 Cookie / 超时 / 401 / 非 200 / 空响应 / 登录页）→ **fail-open**，行为与改造前一致，避免没有 Cookie 时把盲标池饿死。
+- 另外接收并落库助手自报的身份类型：`retrieval_quality_events.conversation_id_kind`（`workorder` / `conversation`，见 `backend/app/schemas/integration.py` 的 `conversationIdKind` 别名）。`kind='conversation'` 的事件直接跳过，不再请求上游。
+- 迁移：`backend/migrations/versions/20261010_01_conversation_identity.py`（`revision = 20261010_01_conversation_identity`，`down_revision = 20261008_01_question_form_id`）新增上述两列。**部署必须先 `alembic upgrade head` 再重启后端**：ORM 会 SELECT 全部映射列（含新列），缺列时池子查询直接报错，无法靠代码兜底。
+- 生效前提：上游复核需要曼哈顿 Cookie（`NMHT_COOKIE` 或 `/login` 粘贴的运行时 Cookie）。**线上 `NMHT_COOKIE` 目前为空**，所以这道门禁默认处于「全部 `None` → 不拦截」状态；粘贴 Cookie 后才真正拦截。每次 claim 最多校验 40 个号码，连续 3 次无法判定即自动停用（避免拖慢领取）。
+- 单次校验上限、超时与缓存都在 `WorkOrderVerifier` 里，行为由 `backend/tests/test_work_order_verification.py` 与 `backend/tests/test_blind_labeling.py` 的门禁用例覆盖。
 
 ## 3. 助手侧补丁（已上线，2026-10-08 15:00）
 

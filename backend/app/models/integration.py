@@ -84,6 +84,8 @@ class RetrievalQualityEvent(Base):
     source_system = Column(String(64), nullable=False, index=True)
     conversation_id = Column(String(128), nullable=True, index=True)
     question_form_id = Column(String(64), nullable=True, index=True)
+    conversation_id_kind = Column(String(32), nullable=True)
+    work_order_verified = Column(Boolean, nullable=True)
     request_id = Column(String(80), nullable=True, index=True)
     source_kind = Column(
         String(16),

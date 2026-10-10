@@ -66,8 +66,14 @@ def _configured_path(kind: str) -> str:
     return OPTION_PATHS.get(kind, "")
 
 
-def _active_cookie() -> str:
+def active_cookie() -> str:
+    """当前生效的曼哈顿 Cookie：运行时（/login 粘贴）优先，其次环境变量。"""
+
     return _runtime_cookie or settings.NMHT_COOKIE
+
+
+def _active_cookie() -> str:
+    return active_cookie()
 
 
 def _headers(cookie: str | None = None) -> dict[str, str]:

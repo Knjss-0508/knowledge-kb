@@ -8,6 +8,7 @@ blind-label overview/consensus endpoints.
 from __future__ import annotations
 
 import copy
+import logging
 import math
 import uuid
 from collections import Counter, defaultdict
@@ -15,7 +16,7 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -29,6 +30,7 @@ from app.models.blind_labeling import (
 )
 from app.models.integration import RetrievalQualityEvent
 from app.models.knowledge import Category, Knowledge
+from app.services.work_order_verification import WorkOrderVerifier
 
 BLIND_LABEL_BATCH_SIZE = 50
 BLIND_LABEL_MAX_ASSIGNMENTS = 3
@@ -72,6 +74,8 @@ _PRIVATE_CANDIDATE_KEYS = {
     "selected_candidate_rank",
     "candidate_ids",
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _new_id(prefix: str) -> str:
@@ -256,7 +260,12 @@ def freeze_work_order_snapshot(db: Session, event: RetrievalQualityEvent) -> dic
     }
 
 
-def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
+def ensure_work_orders(
+    db: Session,
+    minimum_new: int = 0,
+    *,
+    verifier: WorkOrderVerifier | None = None,
+) -> int:
     """Materialize missing work orders from business-pool events.
 
     Events are materialized newest first.  A unique conversation constraint and
@@ -267,6 +276,16 @@ def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
     盲标池。仅有会话号的样本会被跳过 —— 标注页要用工单号打开上游工单详情，
     没有工单号的样本无法核对。工单号是盲标工单的身份，同一工单的多次会话
     只保留最新一条。
+
+    真实性门禁：助手会把「当前页面号码」同时填进 conversationId 与
+    workOrderId（见 docs/qa-web-assistant-work-order-id-spec.md），于是会话号
+    也会出现在 ``question_form_id`` 上。建单前用上游
+    ``queryQuestionFormDetail`` 复核（``WorkOrderVerifier``）：
+
+    * 上游明确查不到 -> 记 ``work_order_verified=False`` 并跳过，不再建单；
+    * 上游有数据 -> 记 ``True`` 并放行；
+    * 没有 Cookie / 超时 / 上游异常 -> 不拦截（fail-open，行为与改造前一致），
+      避免没有 Cookie 时把盲标池饿死。
     """
 
     existing_conversations = {
@@ -291,6 +310,18 @@ def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
             RetrievalQualityEvent.candidate_snapshot.isnot(None),
             RetrievalQualityEvent.source_kind.in_(("reply", "combined")),
             RetrievalQualityEvent.request_status.in_(("success", "fallback")),
+            # 已判定为「上游查不到」的事件不再重复校验/建单；NULL 表示尚未
+            # 校验，保持放行。
+            or_(
+                RetrievalQualityEvent.work_order_verified.is_(None),
+                RetrievalQualityEvent.work_order_verified.is_(True),
+            ),
+            # 助手自报号码来自会话 ID 的直接跳过；NULL（旧助手未上报）
+            # 仍需走上面的上游复核。
+            or_(
+                RetrievalQualityEvent.conversation_id_kind.is_(None),
+                RetrievalQualityEvent.conversation_id_kind != "conversation",
+            ),
         )
         # Scan newest first so a conversation's frozen snapshot always comes
         # from its latest eligible retrieval event and newly created work orders
@@ -305,6 +336,7 @@ def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
         if question_form_id and question_form_id not in latest_by_question_form:
             latest_by_question_form[question_form_id] = event
     events = list(latest_by_question_form.values())
+    checker = verifier or WorkOrderVerifier()
     created = 0
     seen_in_run: set[str] = set()
     for event in events:
@@ -318,6 +350,14 @@ def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
             or question_form_id in seen_in_run
         ):
             continue
+        verdict = checker.verify(question_form_id)
+        if verdict is False:
+            # 上游查不到这个工单号（多半是会话号），拒绝建单并留下结论，
+            # 下次 claim 不再重复请求上游。
+            event.work_order_verified = False
+            continue
+        if verdict is True:
+            event.work_order_verified = True
         snapshot = freeze_work_order_snapshot(db, event)
         if not snapshot or not snapshot.get("candidates"):
             continue
@@ -348,6 +388,12 @@ def ensure_work_orders(db: Session, minimum_new: int = 0) -> int:
         created += 1
         if needed and created >= needed:
             break
+    if checker.stats["checks"]:
+        logger.info(
+            "Blind label pool verification: results=%s created=%s",
+            checker.stats,
+            created,
+        )
     return created
 
 
