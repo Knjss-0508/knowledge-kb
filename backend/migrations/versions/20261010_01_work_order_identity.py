@@ -1,15 +1,21 @@
 """record upstream conversation identity and work-order verification
 
-Revision ID: 20261010_01_conversation_identity
+Revision ID: 20261010_01_work_order_identity
 Revises: 20261008_01_question_form_id
 Create Date: 2026-10-10
+
+注意：``alembic_version.version_num`` 是 ``varchar(32)``（alembic 默认宽度，
+线上实测也是 32），revision id 必须不超过 32 个字符（本 id 为 31 字符）。
+最初的 id ``20261010_01_conversation_identity``（33 字符）在 PostgreSQL 上
+写版本号时直接抛 ``StringDataRightTruncation``，因此改名；该约束由
+``backend/tests/test_migration_revisions.py`` 兜住。
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 
-revision = "20261010_01_conversation_identity"
+revision = "20261010_01_work_order_identity"
 down_revision = "20261008_01_question_form_id"
 branch_labels = None
 depends_on = None

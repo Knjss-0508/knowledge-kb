@@ -83,8 +83,9 @@ zzdy 反代 nginx 访问日志（`/www/wwwlogs/zzdy.powerzhuan.cn.log`）里的�
 > 处置进展（2026-10-10 晚）：第 1、2 条**已实现**（分支见 PR，实现说明见
 > `docs/qa-web-assistant-work-order-id-spec.md` 第 2.7 节）：新增
 > `backend/app/services/work_order_verification.py` + 迁移
-> `backend/migrations/versions/20261010_01_conversation_identity.py`
-> （`retrieval_quality_events.conversation_id_kind` / `work_order_verified`），
+> `backend/migrations/versions/20261010_01_work_order_identity.py`
+> （`revision = 20261010_01_work_order_identity`；
+> `retrieval_quality_events.conversation_id_kind` / `work_order_verified`），
 > `ensure_work_orders()` 建单前复核上游工单详情。第 3 条（存量清理）与第 4 条（助手侧）
 > **仍未做**，且第 1 条在线上默认休眠（需要曼哈顿 Cookie 才生效）。
 
