@@ -222,3 +222,79 @@ def test_backfill_verdicts_marks_and_unblocks_telemetry_rows():
     # 非法号码与空结论不写库。
     assert verdicts.backfill_verdicts({"abc": verdicts.VERDICT_SESSION}, session_factory=session_factory) == 0
     assert verdicts.backfill_verdicts({}, session_factory=session_factory) == 0
+
+
+def test_backfill_verdicts_writes_whole_batches_through_a_small_chunk_size():
+    """一次全量扫描会判定上万条号码，回写必须分批而不是只处理前 N 条。"""
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    RetrievalQualityEvent.__table__.create(engine)
+    session_factory = sessionmaker(bind=engine)
+    session = session_factory()
+    for index in range(5):
+        session.add(
+            RetrievalQualityEvent(
+                id="rqe-%s" % index,
+                idempotency_key="k%s" % index,
+                source_system="knowledge-kb-standard-search",
+                conversation_id="c%s" % index,
+                question_form_id=str(1000 + index),
+                query_text="q",
+                score_threshold=0.5,
+                outcome="answered",
+            )
+        )
+    session.commit()
+    session.close()
+
+    changed = {str(1000 + index): verdicts.VERDICT_SESSION for index in range(5)}
+    assert verdicts.backfill_verdicts(changed, session_factory=session_factory, chunk_size=2) == 5
+    session = session_factory()
+    marked = [session.get(RetrievalQualityEvent, "rqe-%s" % index).work_order_verified for index in range(5)]
+    session.close()
+    assert marked == [False] * 5
+
+
+def test_backfill_all_verdicts_drains_the_state_file_and_marks_it(tmp_path):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    RetrievalQualityEvent.__table__.create(engine)
+    session_factory = sessionmaker(bind=engine)
+    session = session_factory()
+    session.add(
+        RetrievalQualityEvent(
+            id="rqe-old",
+            idempotency_key="k-old",
+            source_system="knowledge-kb-standard-search",
+            conversation_id="c-old",
+            question_form_id="2108536379561477121",
+            query_text="q",
+            score_threshold=0.5,
+            outcome="answered",
+        )
+    )
+    session.commit()
+    session.close()
+
+    state_file = str(tmp_path / "state.json")
+    verdicts._write_state(
+        state_file,
+        {
+            "offset": 10,
+            "inode": 1,
+            "size": 10,
+            "verdicts": {"2108536379561477121": verdicts.VERDICT_SESSION},
+            "backfilled_at": "",
+        },
+    )
+    assert verdicts.state_needs_backfill(state_file=state_file)
+    assert verdicts.backfill_all_verdicts(state_file=state_file, session_factory=session_factory, chunk_size=1) == 1
+
+    session = session_factory()
+    assert session.get(RetrievalQualityEvent, "rqe-old").work_order_verified is False
+    session.close()
+
+    verdicts.mark_backfilled(state_file=state_file)
+    payload = json.loads(open(state_file, encoding="utf-8").read())
+    assert payload["backfilled_at"]
+    assert not verdicts.state_needs_backfill(state_file=state_file)
+

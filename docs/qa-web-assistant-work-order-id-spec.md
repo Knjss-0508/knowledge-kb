@@ -149,10 +149,10 @@ Cookie 复核的致命弱点在线上被证实：`NMHT_COOKIE` 为空、运行�
   - 同一号码两者都有数据 → `real`（真工单号即使也被当作会话号用，不降级）。
 - 实现：`backend/app/services/work_order_log_verdicts.py`
   - **增量扫描**：状态文件 `<backend>/data/work_order_log_verdicts.json`（容器内 `/app/data`，`0600`、tmp + `os.replace` 原子写）记录 `offset`/`inode`/`verdicts`，每轮只读新增字节（尾部半行留给下一轮，避免半行写出错误结论）；日志被轮转或截断时从头重扫，**已得结论保留**。首轮全量扫描实测约 45 s（9.58 GB / 3,250 万行）。
-  - 后台 worker：`backend/app/main.py` 的 lifespan 里按 `WORK_ORDER_LOG_ENABLED` 启动 `run_work_order_log_verdict_worker`，默认每 `WORK_ORDER_LOG_POLL_SECONDS=300` 秒一轮；有新结论时按 `WORK_ORDER_LOG_BACKFILL_LIMIT`（默认 500，0 关闭）回写既有事件的 `work_order_verified`（`session` → `false`，`real` → `true`），使拦截在 SQL 层就生效。
+  - 后台 worker：`backend/app/main.py` 的 lifespan 里按 `WORK_ORDER_LOG_ENABLED` 启动 `run_work_order_log_verdict_worker`，默认每 `WORK_ORDER_LOG_POLL_SECONDS=300` 秒一轮；有新结论时回写既有事件的 `work_order_verified`（`session` → `false`，`real` → `true`），每批 `WORK_ORDER_LOG_BACKFILL_LIMIT`（默认 500）条、分批提交（0 关闭回写），使拦截在 SQL 层就生效。**首轮全量扫描判定的号码不会再算作「新增」**，所以 worker 发现结论文件还没有回写标记时会做一次全量回写（`backfill_all_verdicts`，按同一批大小分批）并把 `backfilled_at` 写回结论文件——升级现网或清空数据卷后靠它把历史遥测一次性对齐。
   - 门禁接线：`ensure_work_orders()` 里**上游复核优先**；`WorkOrderVerifier.verify()` 返回 `None` 时改查日志判定，`session` → 不建单并记 `work_order_verified=False`，`real` → 记 `True`，未知 → 照常建单。
 - 部署要求：容器必须能读到日志——在 `run-kb-backend.sh` 的 `docker run` 参数里加只读挂载 `-v /www/wwwlogs:/app/nlogs:ro`（配置项 `WORK_ORDER_LOG_PATH` 默认 `/app/nlogs/zzdy.powerzhuan.cn.log`）。**漏掉挂载时门禁会静默失效**（日志不可读只记一条 warning）。本机制不涉及数据库变更，无需迁移。
-- 测试：`backend/tests/test_work_order_log_verdicts.py`（体量判据、增量、尾部半行、轮转重扫、每轮字节预算、统计、回写与解除拦截）与 `backend/tests/test_blind_labeling.py` 的四条门禁用例（日志判 `session` 拦、判 `real` 放、上游有结论时不查日志、fail-open）。
+- 测试：`backend/tests/test_work_order_log_verdicts.py`（体量判据、增量、尾部半行、轮转重扫、每轮字节预算、统计、分批回写与解除拦截、首轮全量回写与标记）与 `backend/tests/test_blind_labeling.py` 的四条门禁用例（日志判 `session` 拦、判 `real` 放、上游有结论时不查日志、fail-open）。
 - 已知边界：日志里查不到的号码一律放行；判定只覆盖「上游真实流量留下过记录」的号码，不会主动调上游接口。
 
 ## 3. 助手侧补丁（已上线，2026-10-08 15:00）

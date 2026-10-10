@@ -175,8 +175,9 @@ class Settings(BaseSettings):
     # 0 disables the per-run read cap. Positive values bound one scan so a huge
     # log can be consumed across several runs.
     WORK_ORDER_LOG_MAX_BYTES_PER_RUN: int = 0
-    # Backfill "work_order_verified=false" onto already stored telemetry rows for
-    # numbers newly classified as chat-only. 0 disables the backfill.
+    # How many work-order numbers one backfill UPDATE carries. The backfill is
+    # batched so a first full scan (tens of thousands of verdicts) can be written
+    # back without one huge transaction. 0 disables the backfill.
     WORK_ORDER_LOG_BACKFILL_LIMIT: int = 500
     # Excel imports are persisted before processing, so browser disconnects do
     # not cancel work. A lease enables safe recovery after a backend restart.

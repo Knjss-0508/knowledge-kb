@@ -145,10 +145,24 @@ def _read_state(state_file: str) -> dict[str, Any]:
         with open(state_file, encoding="utf-8") as handle:
             raw = json.load(handle)
     except FileNotFoundError:
-        return {"offset": 0, "inode": 0, "size": 0, "verdicts": {}, "updated_at": ""}
+        return {
+            "offset": 0,
+            "inode": 0,
+            "size": 0,
+            "verdicts": {},
+            "updated_at": "",
+            "backfilled_at": "",
+        }
     except (OSError, ValueError):
         logger.warning("工单号日志判定状态文件损坏，重新从日志开头扫描：%s", state_file, exc_info=True)
-        return {"offset": 0, "inode": 0, "size": 0, "verdicts": {}, "updated_at": ""}
+        return {
+            "offset": 0,
+            "inode": 0,
+            "size": 0,
+            "verdicts": {},
+            "updated_at": "",
+            "backfilled_at": "",
+        }
     verdicts = raw.get("verdicts")
     if not isinstance(verdicts, dict):
         verdicts = {}
@@ -171,6 +185,7 @@ def _read_state(state_file: str) -> dict[str, Any]:
         "size": int(raw.get("size") or 0),
         "verdicts": cleaned,
         "updated_at": str(raw.get("updated_at") or ""),
+        "backfilled_at": str(raw.get("backfilled_at") or ""),
     }
 
 
@@ -183,6 +198,7 @@ def _write_state(state_file: str, state: dict[str, Any]) -> None:
         "inode": int(state.get("inode") or 0),
         "size": int(state.get("size") or 0),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "backfilled_at": str(state.get("backfilled_at") or ""),
         "verdicts": state.get("verdicts") or {},
     }
     temporary = f"{state_file}.tmp"
@@ -312,14 +328,22 @@ def scan_log(
     _trim(verdicts)
     _write_state(
         state_path,
-        {"offset": new_offset, "inode": info.st_ino, "size": info.st_size, "verdicts": verdicts},
+        {
+            "offset": new_offset,
+            "inode": info.st_ino,
+            "size": info.st_size,
+            "verdicts": verdicts,
+            "backfilled_at": state.get("backfilled_at") or "",
+        },
     )
     stats["offset"] = new_offset
     stats["verdicts"] = len(verdicts)
     stats["elapsed_seconds"] = round(time.time() - started, 3)
-    limit = int(getattr(settings, "WORK_ORDER_LOG_BACKFILL_LIMIT", 0) or 0)
-    if limit > 0:
-        stats["changed"] = dict(list(changed.items())[:limit])
+    if _backfill_chunk_size() > 0:
+        # The caller backfills telemetry rows in batches of this size, so the
+        # whole freshly decided set is handed over (a first full scan can decide
+        # tens of thousands of numbers at once).
+        stats["changed"] = changed
     else:
         stats["changed"] = {}
     return stats
@@ -385,16 +409,28 @@ def reset_cache() -> None:
         _CACHE.update(path=None, mtime=None, size=None, verdicts={})
 
 
+def _backfill_chunk_size() -> int:
+    """How many numbers one ``UPDATE`` may carry; ``0`` disables the backfill."""
+
+    try:
+        return int(getattr(settings, "WORK_ORDER_LOG_BACKFILL_LIMIT", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def backfill_verdicts(
     changed: dict[str, str],
     *,
     session_factory: Callable[[], Any] | None = None,
+    chunk_size: int | None = None,
 ) -> int:
     """Persist fresh verdicts onto already stored telemetry rows.
 
     Rows already marked with the same verdict are left untouched; only rows whose
     ``work_order_verified`` is NULL (or contradictory) are updated, so a number
-    that later turns out to be a real work order is unblocked again.
+    that later turns out to be a real work order is unblocked again.  The update
+    runs in batches of ``chunk_size`` (default ``WORK_ORDER_LOG_BACKFILL_LIMIT``)
+    so one call can carry a whole first-scan result without a huge transaction.
     """
 
     cleaned = {
@@ -403,6 +439,10 @@ def backfill_verdicts(
         if str(number).isdigit() and verdict in (VERDICT_REAL, VERDICT_SESSION)
     }
     if not cleaned:
+        return 0
+    batch_size = int(chunk_size if chunk_size is not None else _backfill_chunk_size())
+    if batch_size <= 0:
+        logger.info("工单号日志判定：回写已关闭（WORK_ORDER_LOG_BACKFILL_LIMIT=0），本次跳过。")
         return 0
     from sqlalchemy import update
 
@@ -416,24 +456,66 @@ def backfill_verdicts(
     try:
         for verdict, verified in ((VERDICT_SESSION, False), (VERDICT_REAL, True)):
             numbers = [number for number, value in cleaned.items() if value == verdict]
-            if not numbers:
-                continue
-            result = session.execute(
-                update(RetrievalQualityEvent)
-                .where(
-                    RetrievalQualityEvent.question_form_id.in_(numbers),
-                    RetrievalQualityEvent.work_order_verified.is_not(verified),
+            for start in range(0, len(numbers), batch_size):
+                batch = numbers[start : start + batch_size]
+                result = session.execute(
+                    update(RetrievalQualityEvent)
+                    .where(
+                        RetrievalQualityEvent.question_form_id.in_(batch),
+                        RetrievalQualityEvent.work_order_verified.is_not(verified),
+                    )
+                    .values(work_order_verified=verified)
                 )
-                .values(work_order_verified=verified)
-            )
-            updated += int(result.rowcount or 0)
-        session.commit()
+                updated += int(result.rowcount or 0)
+                # Commit per batch: a first full scan can decide hundreds of
+                # thousands of numbers and must not hold one giant transaction.
+                session.commit()
     except Exception:
         session.rollback()
         raise
     finally:
         session.close()
     return updated
+
+
+def state_needs_backfill(*, state_file: str | None = None) -> bool:
+    """Whether the recorded verdicts have not been written onto telemetry rows yet."""
+
+    if _backfill_chunk_size() <= 0:
+        return False
+    state = _read_state(str(state_file or default_state_file()))
+    if not state["verdicts"]:
+        return False
+    return not state.get("backfilled_at")
+
+
+def mark_backfilled(*, state_file: str | None = None) -> None:
+    """Remember that the recorded verdicts have been written onto telemetry rows."""
+
+    path = str(state_file or default_state_file())
+    state = _read_state(path)
+    state["backfilled_at"] = datetime.now().isoformat(timespec="seconds")
+    _write_state(path, state)
+    reset_cache()
+
+
+def backfill_all_verdicts(
+    *,
+    state_file: str | None = None,
+    session_factory: Callable[[], Any] | None = None,
+    chunk_size: int | None = None,
+) -> int:
+    """Backfill every verdict recorded in the state file (first-run catch-up).
+
+    The first full scan advances the log offset, so numbers decided on that scan
+    never show up as "changed" again; this drains them once.
+    """
+
+    path = str(state_file or default_state_file())
+    verdicts = _read_state(path)["verdicts"]
+    if not verdicts:
+        return 0
+    return backfill_verdicts(verdicts, session_factory=session_factory, chunk_size=chunk_size)
 
 
 async def run_work_order_log_verdict_worker(stop_event: asyncio.Event) -> None:
@@ -456,6 +538,12 @@ async def run_work_order_log_verdict_worker(stop_event: asyncio.Event) -> None:
                 updated = await asyncio.to_thread(backfill_verdicts, changed)
                 if updated:
                     logger.info("工单号日志判定：回写 %s 条遥测记录。", updated)
+            if await asyncio.to_thread(state_needs_backfill):
+                # First run after an upgrade (or after the volume was cleared):
+                # the verdicts recorded so far were never written onto the rows.
+                total = await asyncio.to_thread(backfill_all_verdicts)
+                await asyncio.to_thread(mark_backfilled)
+                logger.info("工单号日志判定：首次全量回写 %s 条遥测记录。", total)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -475,12 +563,15 @@ __all__ = [
     "VERDICT_REAL",
     "VERDICT_SESSION",
     "apply_signal",
+    "backfill_all_verdicts",
     "backfill_verdicts",
     "classify_log_line",
     "default_state_file",
+    "mark_backfilled",
     "reset_cache",
     "run_work_order_log_verdict_worker",
     "scan_log",
+    "state_needs_backfill",
     "verdict_for",
     "verdict_stats",
 ]
