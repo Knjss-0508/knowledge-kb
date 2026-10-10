@@ -18,6 +18,7 @@
 | 知识库盲标弹窗「只用工单号」 | ✅ 已上线（工单详情 + 聊天面板都用工单号） | `frontend/index.html` |
 | 存量 423 条「只有会话号」的历史盲标工单 | ✅ 已备份后物理删除 | 见 2.5 |
 | 建单前复核上游工单详情（新代码，默认休眠需 Cookie） | 🟢 已上线（2026-10-10，迁移已应用；门禁因线上无 Cookie 暂休眠） | 见 2.7 |
+| 曼哈顿 Cookie 持久化（重启/部署后仍生效） | 🟡 已实现待部署（2026-10-10） | 见 2.7 |
 
 ## 1. 为什么最终判定「不用改上游、不用改工作台」
 
@@ -131,8 +132,9 @@ if (!workOrderId || !rawContext) {
 - 另外接收并落库助手自报的身份类型：`retrieval_quality_events.conversation_id_kind`（`workorder` / `conversation`，见 `backend/app/schemas/integration.py` 的 `conversationIdKind` 别名）。`kind='conversation'` 的事件直接跳过，不再请求上游。
 - 迁移：`backend/migrations/versions/20261010_01_work_order_identity.py`（`revision = 20261010_01_work_order_identity`，`down_revision = 20261008_01_question_form_id`）新增上述两列。**部署必须先 `alembic upgrade head` 再重启后端**：ORM 会 SELECT 全部映射列（含新列），缺列时池子查询直接报错，无法靠代码兜底。
   - revision id 必须 ≤32 字符：`alembic_version.version_num` 是 `varchar(32)`（线上实测 32），最初的 `20261010_01_conversation_identity`（33 字符）在 PostgreSQL 上写版本号时抛 `psycopg2.errors.StringDataRightTruncation`，`alembic upgrade head` 整体回滚（DDL 未生效）。约束由 `backend/tests/test_migration_revisions.py` 兜住。
-- 生效前提：上游复核需要曼哈顿 Cookie（`NMHT_COOKIE` 或 `/login` 粘贴的运行时 Cookie）。**线上 `NMHT_COOKIE` 目前为空**，所以这道门禁默认处于「全部 `None` → 不拦截」状态；粘贴 Cookie 后才真正拦截。每次 claim 最多校验 40 个号码，连续 3 次无法判定即自动停用（避免拖慢领取）。
-- 单次校验上限、超时与缓存都在 `WorkOrderVerifier` 里，行为由 `backend/tests/test_work_order_verification.py` 与 `backend/tests/test_blind_labeling.py` 的门禁用例覆盖。
+- 生效前提：上游复核需要曼哈顿 Cookie（持久化的 Cookie 或 `NMHT_COOKIE` 环境变量）。**线上 `NMHT_COOKIE` 目前为空**，所以这道门禁默认处于「全部 `None` → 不拦截」状态；粘贴 Cookie 后才真正拦截。每次 claim 最多校验 40 个号码，连续 3 次无法判定即自动停用（避免拖慢领取）。
+- Cookie 持久化（2026-10-10 补充）：Cookie 原先只存在于 uvicorn 进程内存（`_runtime_cookie`），容器每次重启/重新部署都会丢失，门禁会静默退回休眠。现在「知识工作区 → 输入 `mht` → 更新曼哈顿数据 → 粘贴后台 Cookie → 验证并保存」会把 Cookie 以 `0600` 权限原子写入 `/app/data/manhattan_cookie.json`（数据卷 `knowledge-kb_manhattan_cache`，随容器重建保留）；读取优先级为 **运行时粘贴 → 持久化文件 → `NMHT_COOKIE` 环境变量**，`GET /manhattan/session` 返回 `source`（`runtime`／`saved`／`env`）与 `persisted`／`updated_at`／`updated_by` 供界面显示。`POST`／`DELETE /manhattan/session` 已收紧为需要 `account:manage` 权限；清除连接或上游判定登录过期（refresh 收到 401/403）都会同时删掉该文件。若该文件保存失败，接口仍返回成功但 `persisted=false`，界面会提示「容器重启后需要重新粘贴」。
+- 单次校验上限、超时与缓存都在 `WorkOrderVerifier` 里，行为由 `backend/tests/test_work_order_verification.py`、`backend/tests/test_manhattan_session_persistence.py` 与 `backend/tests/test_blind_labeling.py` 的门禁用例覆盖；界面契约由 `backend/tests/test_manhattan_session_frontend.py` 覆盖。
 - **上线记录（2026-10-10）**：生产迁移已应用（`alembic current` = `20261010_01_work_order_identity (head)`，`retrieval_quality_events` 两列已存在），后端镜像 `knowledge-kb-backend:work-order-verification-20261010b` 已上线（`/health`、`/ready`、`/app` 均 200）；回滚镜像 tag `knowledge-kb-backend:rollback-before-181-20261010`，部署前文件备份在 `/opt/knowledge-kb-runtime/deploy-backup-20261010-work-order-verification/`。上线后只读演练 `ensure_work_orders(db, 0)`（结果 rollback）在 25 个候选上正常跑通，`WorkOrderVerifier.enabled = False`、`stats.checks = 0`，确认门禁休眠且不发上游请求；最新事件已能看到助手自报的 `conversation_id_kind = 'workorder'`。
 
 ## 3. 助手侧补丁（已上线，2026-10-08 15:00）

@@ -93,6 +93,13 @@ zzdy 反代 nginx 访问日志（`/www/wwwlogs/zzdy.powerzhuan.cn.log`）里的�
 > `knowledge-kb-backend:work-order-verification-20261010b` 已切换（回滚 tag
 > `rollback-before-181-20261010`）；上线后只读演练确认门禁在无 Cookie 时休眠、
 > 不发上游请求（`WorkOrderVerifier.enabled = False`、`stats.checks = 0`）。
+>
+> Cookie 持久化（2026-10-10 补充）：门禁只差 Cookie 即可生效，而运行时 Cookie 原先
+> 只存在于进程内存（容器重启即丢）。现在界面「知识工作区 → 输入 `mht` → 更新曼哈顿数据
+> → 粘贴后台 Cookie → 验证并保存」会把 Cookie 以 `0600` 写入
+> `/app/data/manhattan_cookie.json`（数据卷 `knowledge-kb_manhattan_cache`），
+> 读取优先级为运行时 → 持久化文件 → `NMHT_COOKIE`；`POST`/`DELETE /manhattan/session`
+> 收紧为需要 `account:manage`。粘贴一次后门禁即在后续重启与部署中持续生效。
 
 1. **止血（代码）**：`ensure_work_orders` 建单前增加「工单详情查得到」的门禁——可用已落库的 `conversationIdKind`（需先让后端接收并入库，成本最低）
    或调用上游 `queryQuestionFormDetail` 校验（需要 Cookie，成本高）。

@@ -1,15 +1,20 @@
 import asyncio
 import json
+import logging
 import os
 from datetime import datetime
 from threading import Lock
 from urllib.parse import urljoin
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
 from app.core.config import settings
+from app.models.user import User
+from app.routes.auth import require_permission
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/manhattan", tags=["Manhattan options"])
 _runtime_cookie = ""
@@ -30,6 +35,12 @@ _refresh_status = {
 }
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data"))
 CACHE_FILE = os.path.join(DATA_DIR, "manhattan_options.json")
+# 持久化的曼哈顿 Cookie：DATA_DIR 位于 knowledge-kb_manhattan_cache 数据卷上，
+# 容器重启/重新部署后仍可读回，避免每次部署后复核门禁都退回休眠。
+COOKIE_FILE = os.path.join(DATA_DIR, "manhattan_cookie.json")
+_saved_cookie: str | None = None
+_saved_cookie_meta: dict = {}
+_saved_cookie_lock = Lock()
 REQUEST_DELAY_SECONDS = 0.25
 ALLOWED_CATEGORY_NAMES = {
     "手机",
@@ -66,10 +77,85 @@ def _configured_path(kind: str) -> str:
     return OPTION_PATHS.get(kind, "")
 
 
-def active_cookie() -> str:
-    """当前生效的曼哈顿 Cookie：运行时（/login 粘贴）优先，其次环境变量。"""
+def _load_saved_cookie() -> str:
+    """读取持久化的曼哈顿 Cookie（首次读盘后缓存，缺失/损坏时返回空串）。"""
 
-    return _runtime_cookie or settings.NMHT_COOKIE
+    global _saved_cookie, _saved_cookie_meta
+
+    with _saved_cookie_lock:
+        if _saved_cookie is not None:
+            return _saved_cookie
+        cookie = ""
+        meta: dict = {}
+        try:
+            with open(COOKIE_FILE, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if isinstance(payload, dict):
+                cookie = str(payload.get("cookie") or "").strip()
+                if cookie:
+                    meta = payload
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError):
+            logger.warning("Failed to read the persisted Manhattan cookie file.")
+        _saved_cookie = cookie
+        _saved_cookie_meta = meta
+        return cookie
+
+
+def saved_cookie_meta() -> dict:
+    """返回持久化 Cookie 的元信息（updated_at / updated_by），未保存时为空字典。"""
+
+    _load_saved_cookie()
+    return dict(_saved_cookie_meta)
+
+
+def _write_saved_cookie(cookie: str, updated_by: str = "") -> bool:
+    """把 Cookie 原子写入数据卷（文件权限 0600），失败时只记日志不影响本次请求。"""
+
+    global _saved_cookie, _saved_cookie_meta
+
+    payload = {
+        "cookie": cookie,
+        "updated_by": updated_by,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        tmp_file = COOKIE_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.chmod(tmp_file, 0o600)
+        os.replace(tmp_file, COOKIE_FILE)
+    except OSError:
+        logger.warning("Failed to persist the Manhattan cookie.")
+        return False
+    with _saved_cookie_lock:
+        _saved_cookie = cookie
+        _saved_cookie_meta = payload
+    return True
+
+
+def _delete_saved_cookie() -> None:
+    """删除持久化的 Cookie（清除连接或上游判定登录过期时调用）。"""
+
+    global _saved_cookie, _saved_cookie_meta
+
+    with _saved_cookie_lock:
+        _saved_cookie = ""
+        _saved_cookie_meta = {}
+    try:
+        os.remove(COOKIE_FILE)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("Failed to delete the persisted Manhattan cookie file.")
+
+
+def active_cookie() -> str:
+    """当前生效的曼哈顿 Cookie：运行时（界面粘贴）优先，其次持久化，最后环境变量。"""
+
+    return _runtime_cookie or _load_saved_cookie() or settings.NMHT_COOKIE
 
 
 def _active_cookie() -> str:
@@ -501,9 +587,22 @@ async def get_manhattan_options(
 
 @router.get("/session")
 def get_manhattan_session():
+    saved = _load_saved_cookie()
+    if _runtime_cookie:
+        source = "runtime"
+    elif saved:
+        source = "saved"
+    elif settings.NMHT_COOKIE:
+        source = "env"
+    else:
+        source = ""
+    meta = saved_cookie_meta() if saved else {}
     return {
         "logged_in": bool(_active_cookie()),
-        "source": "runtime" if _runtime_cookie else ("env" if settings.NMHT_COOKIE else ""),
+        "source": source,
+        "persisted": bool(saved),
+        "updated_at": meta.get("updated_at") or None,
+        "updated_by": meta.get("updated_by") or "",
     }
 
 
@@ -708,12 +807,11 @@ async def _refresh_manhattan_cache_job(cookie: str) -> None:
                 updated_at=cache["updated_at"],
             )
         except Exception as exc:
-            if (
-                isinstance(exc, HTTPException)
-                and exc.status_code in (401, 403)
-                and _runtime_cookie == cookie
-            ):
-                _runtime_cookie = ""
+            if isinstance(exc, HTTPException) and exc.status_code in (401, 403):
+                if _runtime_cookie == cookie:
+                    _runtime_cookie = ""
+                if _load_saved_cookie() == cookie:
+                    _delete_saved_cookie()
             _set_refresh_status(
                 running=False,
                 stage="error",
@@ -740,7 +838,10 @@ def get_refresh_status():
 
 
 @router.post("/session")
-async def set_manhattan_session(request: Request):
+async def set_manhattan_session(
+    request: Request,
+    current_user: User = Depends(require_permission("account:manage")),
+):
     global _runtime_cookie
     body = await request.json()
     cookie = str(body.get("cookie") or "").strip()
@@ -758,13 +859,15 @@ async def set_manhattan_session(request: Request):
         raise HTTPException(resp.status_code, f"Cookie verification failed: {resp.text[:300]}")
     _json_or_auth_error(resp)
     _runtime_cookie = cookie
-    return {"ok": True}
+    persisted = _write_saved_cookie(cookie, getattr(current_user, "username", "") or "")
+    return {"ok": True, "source": "runtime", "persisted": persisted}
 
 
 @router.delete("/session")
-def clear_manhattan_session():
+def clear_manhattan_session(_: User = Depends(require_permission("account:manage"))):
     global _runtime_cookie
     _runtime_cookie = ""
+    _delete_saved_cookie()
     return {"ok": True}
 
 
