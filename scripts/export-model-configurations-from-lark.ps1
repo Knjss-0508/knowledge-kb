@@ -21,6 +21,20 @@ $ErrorActionPreference = "Stop"
 $env:LARKSUITE_CLI_NO_UPDATE_NOTIFIER = "1"
 $env:LARKSUITE_CLI_NO_SKILLS_NOTIFIER = "1"
 
+function ConvertTo-ColumnName {
+    param([int]$Number)
+    if ($Number -lt 1) {
+        throw "飞书工作表列数必须大于 0。"
+    }
+    $name = ""
+    while ($Number -gt 0) {
+        $Number -= 1
+        $name = [char]([int][char]'A' + ($Number % 26)) + $name
+        $Number = [math]::Floor($Number / 26)
+    }
+    return $name
+}
+
 if (-not (Get-Command lark-cli -ErrorAction SilentlyContinue)) {
     throw "未找到 lark-cli，请先安装并完成用户授权。"
 }
@@ -40,10 +54,14 @@ if (-not $Range.Trim()) {
     $targetSheet = @($workbookInfo.data.sheets) |
         Where-Object { $_.sheet_id -eq $SheetId } |
         Select-Object -First 1
-    if (-not $targetSheet -or [int]$targetSheet.row_count -lt 1) {
-        throw "未找到目标工作表或工作表行数无效：$SheetId"
+    if (
+        -not $targetSheet -or
+        [int]$targetSheet.row_count -lt 1 -or
+        [int]$targetSheet.column_count -lt 1
+    ) {
+        throw "未找到目标工作表或工作表行数/列数无效：$SheetId"
     }
-    $Range = "A1:Q$([int]$targetSheet.row_count)"
+    $Range = "A1:$(ConvertTo-ColumnName -Number ([int]$targetSheet.column_count))$([int]$targetSheet.row_count)"
 }
 
 $rawOutput = (
@@ -94,8 +112,7 @@ $requiredHeaders = @(
     "品牌ID",
     "品牌",
     "型号ID",
-    "型号",
-    "综合内容"
+    "型号"
 )
 $ignoredSourceFieldHeaders = @(
     "是否有卡槽",
@@ -111,6 +128,13 @@ foreach ($requiredHeader in $requiredHeaders) {
     if (-not $headers.ContainsKey($requiredHeader)) {
         throw "飞书表格缺少必填列：$requiredHeader"
     }
+}
+$contentHeader = if ($headers.ContainsKey("综合内容")) {
+    "综合内容"
+} elseif ($headers.ContainsKey("综合信息")) {
+    "综合信息"
+} else {
+    throw "飞书表格缺少必填列：综合内容（兼容综合信息）"
 }
 
 function Get-CellText {
@@ -146,7 +170,7 @@ for ($rowIndex = 1; $rowIndex -lt $rows.Count; $rowIndex += 1) {
         "品牌" = Get-CellText -Row $row -Header "品牌"
         "型号ID" = Get-CellText -Row $row -Header "型号ID"
         "型号" = Get-CellText -Row $row -Header "型号"
-        "综合内容" = Get-CellText -Row $row -Header "综合内容"
+        "综合内容" = Get-CellText -Row $row -Header $contentHeader
     }
     $populatedRequiredValues = @(
         $requiredValues.GetEnumerator() |
