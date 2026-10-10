@@ -126,13 +126,30 @@ def test_candidate_review_list_reload_is_awaitable_for_save_and_next() -> None:
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def _legacy_draft_disposition_references(source: str) -> list[str]:
+    """返回所有「不是 human_draft_disposition」的 draft_disposition 引用。
+
+    前端现在的字段名是 ``human_draft_disposition``（人工对模型草稿处理结论的
+    确认），它包含旧字段名 ``draft_disposition`` 作为子串，所以不能再用
+    子串判断旧门禁字段是否被复用。
+    """
+
+    references: list[str] = []
+    index = source.find("draft_disposition")
+    while index != -1:
+        if source[max(0, index - len("human_")) : index] != "human_":
+            references.append(source[max(0, index - 40) : index + 40])
+        index = source.find("draft_disposition", index + 1)
+    return references
+
+
 def test_candidate_review_uses_one_human_decision_for_legacy_gate_fields() -> None:
     assert "只需选择一次复核结论" in FRONTEND
     assert "复核说明（选填）" in FRONTEND
     assert "知识草稿处理" in FRONTEND
     assert "reviewModelDraftDispositionLabel" in FRONTEND
     assert "草稿处理由模型初标决定；人工仅确认是否值得沉淀。" in FRONTEND
-    assert "draft_disposition" not in FRONTEND
+    assert _legacy_draft_disposition_references(FRONTEND) == []
     assert "form.knowledge_value === 'worthy' && form.draft_disposition === 'approved'" not in FRONTEND
     assert '<label class="fl">是否可用</label>' not in FRONTEND
     assert '<label class="fl">人工审核结论</label>' not in FRONTEND
