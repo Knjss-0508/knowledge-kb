@@ -130,6 +130,10 @@ def apply_signal(verdicts: dict[str, str], number: str, signal: str) -> bool:
         # simply not have been queried yet.  Keep failing open.
         return False
     current = verdicts.get(number)
+    if current:
+        # Re-insert so an actively used number moves to the back of the dict and
+        # survives ``_trim``（字典顺序即最近一次出现顺序）。
+        verdicts[number] = verdicts.pop(number)
     if current == new_verdict:
         return False
     if current == VERDICT_REAL and new_verdict == VERDICT_SESSION:
@@ -212,11 +216,25 @@ def _write_state(state_file: str, state: dict[str, Any]) -> None:
 
 
 def _trim(verdicts: dict[str, str]) -> None:
+    """Keep the tracked set inside ``MAX_TRACKED_NUMBERS``.
+
+    ``real`` verdicts go first: losing one only means fail-open (build the work
+    order), while losing a ``session`` verdict would let a chat number through
+    the gate.  Inside one verdict the oldest sighting goes first.
+    """
+
     overflow = len(verdicts) - MAX_TRACKED_NUMBERS
     if overflow <= 0:
         return
-    for number in list(verdicts)[:overflow]:
-        verdicts.pop(number, None)
+    for wanted in (VERDICT_REAL, VERDICT_SESSION):
+        if overflow <= 0:
+            return
+        for number in list(verdicts):
+            if overflow <= 0:
+                return
+            if verdicts.get(number) == wanted:
+                verdicts.pop(number, None)
+                overflow -= 1
 
 
 def _consume_lines(handle, offset: int, max_bytes: int, on_line: Callable[[str], None]) -> int:
@@ -262,8 +280,8 @@ def scan_log(
     """Scan new log bytes and persist the updated verdict state.
 
     Returns a stats dict with ``new_real``/``new_session`` (verdicts learned in
-    this run) and ``changed`` (``{number: verdict}``, bounded by
-    ``WORK_ORDER_LOG_BACKFILL_LIMIT``) so the caller can backfill telemetry rows.
+    this run) and ``changed`` (``{number: verdict}`` for every verdict learned in
+    this run) so the caller can backfill telemetry rows.
     """
 
     global _MISSING_LOGGED

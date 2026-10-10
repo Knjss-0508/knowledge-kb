@@ -298,3 +298,50 @@ def test_backfill_all_verdicts_drains_the_state_file_and_marks_it(tmp_path):
     assert payload["backfilled_at"]
     assert not verdicts.state_needs_backfill(state_file=state_file)
 
+
+def test_apply_signal_refreshes_the_recency_of_a_number_seen_again():
+    tracked = {"old-real": verdicts.VERDICT_REAL, "old-session": verdicts.VERDICT_SESSION}
+
+    # 已经判过 real 的号码又出现聊天流量：结论不变，但要挪到队尾（最近仍在用）
+    assert verdicts.apply_signal(tracked, "old-real", verdicts.SIGNAL_CHAT_PRESENT) is False
+    assert list(tracked) == ["old-session", "old-real"]
+    assert tracked["old-real"] == verdicts.VERDICT_REAL
+
+    # 已经判过 session 的号码再次出现：同样只是刷新位置
+    assert verdicts.apply_signal(tracked, "old-session", verdicts.SIGNAL_CHAT_PRESENT) is False
+    assert list(tracked) == ["old-real", "old-session"]
+
+
+def test_trim_drops_real_verdicts_before_session_ones(monkeypatch):
+    monkeypatch.setattr(verdicts, "MAX_TRACKED_NUMBERS", 4)
+    tracked = {
+        "r1": verdicts.VERDICT_REAL,
+        "s1": verdicts.VERDICT_SESSION,
+        "r2": verdicts.VERDICT_REAL,
+        "s2": verdicts.VERDICT_SESSION,
+        "r3": verdicts.VERDICT_REAL,
+        "s3": verdicts.VERDICT_SESSION,
+    }
+
+    verdicts._trim(tracked)
+
+    # 超出的 2 个名额优先丢最早的 real，session 一条都不丢
+    assert len(tracked) == 4
+    assert [key for key, value in tracked.items() if value == verdicts.VERDICT_SESSION] == ["s1", "s2", "s3"]
+    assert [key for key, value in tracked.items() if value == verdicts.VERDICT_REAL] == ["r3"]
+
+
+def test_trim_falls_back_to_the_oldest_session_verdicts(monkeypatch):
+    monkeypatch.setattr(verdicts, "MAX_TRACKED_NUMBERS", 2)
+    tracked = {
+        "s1": verdicts.VERDICT_SESSION,
+        "r1": verdicts.VERDICT_REAL,
+        "s2": verdicts.VERDICT_SESSION,
+        "s3": verdicts.VERDICT_SESSION,
+    }
+
+    verdicts._trim(tracked)
+
+    # real 丢完还不够时，才动最旧的 session
+    assert list(tracked) == ["s2", "s3"]
+
