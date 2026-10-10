@@ -1474,10 +1474,11 @@
       <div class="dlg-h"><h3>更新曼哈顿后台数据</h3><button class="dlg-x" @click="mht.open=false">&times;</button></div>
       <div class="dlg-b">
         <div class="mht-form">
-          <div class="hint">此功能仅超级管理员可见。输入后台 Cookie 后，系统会在后台更新适用类目、品牌和机型缓存。</div>
+          <div class="hint">此功能仅超级管理员可见。输入后台 Cookie 后，系统会在后台更新适用类目、品牌和机型缓存；该 Cookie 同时用于盲标建单前的工单号真实性校验，验证通过后会保存到服务器数据卷，容器重启或重新部署后仍然有效。</div>
           <div><label class="fl">后台 Cookie</label><textarea class="fi" v-model="mht.cookie" placeholder="粘贴曼哈顿后台 Cookie"></textarea></div>
           <div class="mht-status">
-            登录状态：<strong>{{mh.loggedIn ? '已连接' : '未连接'}}</strong><br>
+            登录状态：<strong>{{mh.loggedIn ? '已连接' : '未连接'}}</strong>（{{manhattanSessionSourceLabel()}}）<br>
+            <span v-if="mh.persisted">保存时间：{{mh.updatedAt}}<span v-if="mh.updatedBy"> · {{mh.updatedBy}}</span><br></span>
             数据状态：{{mhtStatusLabel()}}<br>
             {{mht.status.message || '尚未开始更新'}}
             <span v-if="mht.status.percent">（{{mht.status.percent}}%）</span>
@@ -1487,7 +1488,7 @@
       </div>
       <div class="dlg-f mht-actions">
         <button class="btn bd" @click="clearManhattanSession">清除连接</button>
-        <button class="btn bd" @click="verifyManhattanSession" :disabled="mht.saving">验证 Cookie</button>
+        <button class="btn bd" @click="verifyManhattanSession" :disabled="mht.saving">{{mht.saving ? '验证中...' : '验证并保存'}}</button>
         <button class="btn bp" @click="refreshManhattanCache" :disabled="mht.refreshing || !mh.loggedIn">{{mht.refreshing ? '更新中...' : '开始更新'}}</button>
       </div>
     </div>
@@ -2468,7 +2469,7 @@ Vue.createApp({
       brandKw: '',
       modelKw: '',
       dev: {keys:'', showManhattanUpdate:false},
-      mh: {loggedIn:false, source:''},
+      mh: {loggedIn:false, source:'', persisted:false, updatedAt:'', updatedBy:''},
       mht: {open:false, cookie:'', saving:false, refreshing:false, status:{running:false, stage:'idle', message:'', percent:0, error:'', counts:{}}},
       mhCache: {updated_at:null, applicable_categories:[], brands_by_category:{}, models:[]},
       mhCaches: {},
@@ -6601,8 +6602,23 @@ Vue.createApp({
       var self = this;
       fetch(API + '/manhattan/session', {headers:self.authHeaders()})
         .then(function(r) { return r.json(); })
-        .then(function(d) { self.mh = {loggedIn: !!d.logged_in, source: d.source || ''}; })
-        .catch(function(){ self.mh = {loggedIn:false, source:''}; });
+        .then(function(d) {
+          self.mh = {
+            loggedIn: !!d.logged_in,
+            source: d.source || '',
+            persisted: !!d.persisted,
+            updatedAt: d.updated_at || '',
+            updatedBy: d.updated_by || ''
+          };
+        })
+        .catch(function(){ self.mh = {loggedIn:false, source:'', persisted:false, updatedAt:'', updatedBy:''}; });
+    },
+    manhattanSessionSourceLabel: function() {
+      var source = this.mh.source;
+      if (source === 'runtime') return this.mh.persisted ? '本次粘贴，已保存到服务器' : '本次粘贴，仅本次进程有效';
+      if (source === 'saved') return '已保存到服务器，容器重启后仍有效';
+      if (source === 'env') return '来自服务器环境变量 NMHT_COOKIE';
+      return '未连接';
     },
     goManhattanLogin: function() {
       this.openManhattanPanel();
@@ -6631,7 +6647,12 @@ Vue.createApp({
             return d;
           });
         })
-        .then(function() { self.mht.saving = false; self.loadManhattanSession(); })
+        .then(function(d) {
+          self.mht.saving = false;
+          self.mht.cookie = '';
+          self.loadManhattanSession();
+          if (d && d.persisted === false) alert('Cookie 已验证并生效，但保存到服务器数据卷失败，容器重启后需要重新粘贴。');
+        })
         .catch(function(e) { self.mht.saving = false; alert(e.message); });
     },
     clearManhattanSession: function() {

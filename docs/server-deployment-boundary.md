@@ -226,6 +226,15 @@ git clean -fd
 
 知识主数据位于 PostgreSQL，媒体本体位于项目的 `backend/uploads`。备份与恢复必须同时处理数据库和媒体文件。
 
+后端还有两类**不在仓库里**的运行时状态，位于 Docker 卷 `knowledge-kb_manhattan_cache`（容器内挂载为 `/app/data`）：
+
+| 文件 | 用途 | 说明 |
+|---|---|---|
+| `/app/data/manhattan_options.json` | 曼哈顿类目/品牌/机型缓存 | 可由界面「更新曼哈顿数据」重建 |
+| `/app/data/manhattan_cookie.json` | 曼哈顿后台 Cookie（`0600`） | 由界面粘贴并保存，用于盲标建单前的工单号真实性复核；**不要写入仓库、日志或聊天记录**，过期后在界面重新粘贴即可 |
+
+重建 `kb-backend` 容器时该卷会沿用，因此 Cookie 在重启与常规部署后仍然有效；只有删除卷或清除连接才会失效。
+
 发生异常时，优先按以下顺序排查，避免扩大影响：
 
 1. 查看项目专属容器状态和日志；
