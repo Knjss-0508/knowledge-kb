@@ -1358,3 +1358,51 @@ def test_ensure_work_orders_stays_fail_open_when_verification_is_undecided(db):
     assert verifier.stats["undecided"] == 1
     assert db.get(RetrievalQualityEvent, "event-1").work_order_verified is None
     assert db.query(BlindLabelWorkOrder).count() == 1
+
+
+def test_ensure_work_orders_blocks_numbers_the_access_log_proved_chat_only(db, monkeypatch):
+    """Cookie 判定不了时，访问日志证明只当过会话号的号码不得建单。"""
+
+    monkeypatch.setattr(
+        "app.services.blind_labeling.log_verdict_for",
+        lambda number, **kwargs: "session",
+    )
+    verifier = _StubVerifier()
+    assert ensure_work_orders(db, 1, verifier=verifier) == 0
+    db.commit()
+
+    assert verifier.calls == ["question-form-1"]
+    assert db.get(RetrievalQualityEvent, "event-1").work_order_verified is False
+    assert db.query(BlindLabelWorkOrder).count() == 0
+
+    # 结论已落库，第二轮在 SQL 层就被排除。
+    assert ensure_work_orders(db, 1, verifier=_StubVerifier()) == 0
+    assert db.query(BlindLabelWorkOrder).count() == 0
+
+
+def test_ensure_work_orders_allows_numbers_with_work_order_detail_traffic(db, monkeypatch):
+    """访问日志里有工单详情流量的号码正常建单，并记 work_order_verified=True。"""
+
+    monkeypatch.setattr(
+        "app.services.blind_labeling.log_verdict_for",
+        lambda number, **kwargs: "real",
+    )
+    assert ensure_work_orders(db, 1, verifier=_StubVerifier()) == 1
+    db.commit()
+
+    assert db.get(RetrievalQualityEvent, "event-1").work_order_verified is True
+    assert db.query(BlindLabelWorkOrder).count() == 1
+
+
+def test_ensure_work_orders_prefers_the_upstream_verifier_over_the_access_log(db, monkeypatch):
+    """上游有结论时不再查日志（日志只是兜底证据）。"""
+
+    calls: list[str] = []
+
+    def _log_verdict(number, **kwargs):
+        calls.append(number)
+        return "session"
+
+    monkeypatch.setattr("app.services.blind_labeling.log_verdict_for", _log_verdict)
+    assert ensure_work_orders(db, 1, verifier=_StubVerifier({"question-form-1": True})) == 1
+    assert calls == []

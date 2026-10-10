@@ -18,7 +18,8 @@
 | 知识库盲标弹窗「只用工单号」 | ✅ 已上线（工单详情 + 聊天面板都用工单号） | `frontend/index.html` |
 | 存量 423 条「只有会话号」的历史盲标工单 | ✅ 已备份后物理删除 | 见 2.5 |
 | 建单前复核上游工单详情（新代码，默认休眠需 Cookie） | 🟢 已上线（2026-10-10，迁移已应用；门禁因线上无 Cookie 暂休眠） | 见 2.7 |
-| 曼哈顿 Cookie 持久化（重启/部署后仍生效） | 🟡 已实现待部署（2026-10-10） | 见 2.7 |
+| 曼哈顿 Cookie 持久化（重启/部署后仍生效） | 🟢 已上线（2026-10-10） | 见 2.7 |
+| 无 Cookie 的访问日志判定门禁（主用判定） | 🟡 已实现待部署（2026-10-10） | 见 2.8 |
 
 ## 1. 为什么最终判定「不用改上游、不用改工作台」
 
@@ -136,6 +137,23 @@ if (!workOrderId || !rawContext) {
 - Cookie 持久化（2026-10-10 补充）：Cookie 原先只存在于 uvicorn 进程内存（`_runtime_cookie`），容器每次重启/重新部署都会丢失，门禁会静默退回休眠。现在「知识工作区 → 输入 `mht` → 更新曼哈顿数据 → 粘贴后台 Cookie → 验证并保存」会把 Cookie 以 `0600` 权限原子写入 `/app/data/manhattan_cookie.json`（数据卷 `knowledge-kb_manhattan_cache`，随容器重建保留）；读取优先级为 **运行时粘贴 → 持久化文件 → `NMHT_COOKIE` 环境变量**，`GET /manhattan/session` 返回 `source`（`runtime`／`saved`／`env`）与 `persisted`／`updated_at`／`updated_by` 供界面显示。`POST`／`DELETE /manhattan/session` 已收紧为需要 `account:manage` 权限；清除连接或上游判定登录过期（refresh 收到 401/403）都会同时删掉该文件。若该文件保存失败，接口仍返回成功但 `persisted=false`，界面会提示「容器重启后需要重新粘贴」。
 - 单次校验上限、超时与缓存都在 `WorkOrderVerifier` 里，行为由 `backend/tests/test_work_order_verification.py`、`backend/tests/test_manhattan_session_persistence.py` 与 `backend/tests/test_blind_labeling.py` 的门禁用例覆盖；界面契约由 `backend/tests/test_manhattan_session_frontend.py` 覆盖。
 - **上线记录（2026-10-10）**：生产迁移已应用（`alembic current` = `20261010_01_work_order_identity (head)`，`retrieval_quality_events` 两列已存在），后端镜像 `knowledge-kb-backend:work-order-verification-20261010b` 已上线（`/health`、`/ready`、`/app` 均 200）；回滚镜像 tag `knowledge-kb-backend:rollback-before-181-20261010`，部署前文件备份在 `/opt/knowledge-kb-runtime/deploy-backup-20261010-work-order-verification/`。上线后只读演练 `ensure_work_orders(db, 0)`（结果 rollback）在 25 个候选上正常跑通，`WorkOrderVerifier.enabled = False`、`stats.checks = 0`，确认门禁休眠且不发上游请求；最新事件已能看到助手自报的 `conversation_id_kind = 'workorder'`。
+
+### 2.8 无 Cookie 的访问日志判定门禁（2026-10-10，主用判定）
+
+Cookie 复核的致命弱点在线上被证实：`NMHT_COOKIE` 为空、运行时粘贴的 Cookie 只存在于 uvicorn 内存、而浏览器里的 Cookie 是 Chromium 的 `v20` 应用绑定加密（无法用 DPAPI 导出）。也就是说**没有可自动获得的凭据**，2.7 那道门禁会长期休眠。于是补一道不需要登录的判定：
+
+- 证据源是 zzdy 反代访问日志 `/www/wwwlogs/zzdy.powerzhuan.cn.log`（即 1.2 节实测体量的原始出处），只读、无需 Cookie。判据与 `docs/blind-label-work-order-number-audit-20261010.md` 完全一致：
+  - `GET /nmhtapi/qa/queryQuestionFormDetail?questionFormId=<号>` 响应体 `≥300 B` → `real`（真工单号；实测 534–1128 B）；
+  - 只在 `GET /nmhtapi/im/history?conversationId=<号>` 上有数据（`≥300 B`，空会话只有 68 B）且从未在上面那条接口上有数据 → `session`（只当过会话号）；
+  - 只有「查不到」（123/124 B）或日志里根本没有该号码 → **不下结论**（fail-open 放行，避免把新工单饿死）；
+  - 同一号码两者都有数据 → `real`（真工单号即使也被当作会话号用，不降级）。
+- 实现：`backend/app/services/work_order_log_verdicts.py`
+  - **增量扫描**：状态文件 `<backend>/data/work_order_log_verdicts.json`（容器内 `/app/data`，`0600`、tmp + `os.replace` 原子写）记录 `offset`/`inode`/`verdicts`，每轮只读新增字节（尾部半行留给下一轮，避免半行写出错误结论）；日志被轮转或截断时从头重扫，**已得结论保留**。首轮全量扫描实测约 45 s（9.58 GB / 3,250 万行）。
+  - 后台 worker：`backend/app/main.py` 的 lifespan 里按 `WORK_ORDER_LOG_ENABLED` 启动 `run_work_order_log_verdict_worker`，默认每 `WORK_ORDER_LOG_POLL_SECONDS=300` 秒一轮；有新结论时按 `WORK_ORDER_LOG_BACKFILL_LIMIT`（默认 500，0 关闭）回写既有事件的 `work_order_verified`（`session` → `false`，`real` → `true`），使拦截在 SQL 层就生效。
+  - 门禁接线：`ensure_work_orders()` 里**上游复核优先**；`WorkOrderVerifier.verify()` 返回 `None` 时改查日志判定，`session` → 不建单并记 `work_order_verified=False`，`real` → 记 `True`，未知 → 照常建单。
+- 部署要求：容器必须能读到日志——在 `run-kb-backend.sh` 的 `docker run` 参数里加只读挂载 `-v /www/wwwlogs:/app/nlogs:ro`（配置项 `WORK_ORDER_LOG_PATH` 默认 `/app/nlogs/zzdy.powerzhuan.cn.log`）。**漏掉挂载时门禁会静默失效**（日志不可读只记一条 warning）。本机制不涉及数据库变更，无需迁移。
+- 测试：`backend/tests/test_work_order_log_verdicts.py`（体量判据、增量、尾部半行、轮转重扫、每轮字节预算、统计、回写与解除拦截）与 `backend/tests/test_blind_labeling.py` 的四条门禁用例（日志判 `session` 拦、判 `real` 放、上游有结论时不查日志、fail-open）。
+- 已知边界：日志里查不到的号码一律放行；判定只覆盖「上游真实流量留下过记录」的号码，不会主动调上游接口。
 
 ## 3. 助手侧补丁（已上线，2026-10-08 15:00）
 

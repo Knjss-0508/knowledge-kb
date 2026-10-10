@@ -35,6 +35,7 @@ from app.services.knowledge_vector_worker import run_knowledge_vector_worker
 from app.services.media_deletion import run_media_deletion_worker
 from app.services.media_storage import _normalize_remote_media_path_prefix
 from app.services.model_connection import refresh_model_config_cache
+from app.services.work_order_log_verdicts import run_work_order_log_verdict_worker
 
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,10 @@ async def lifespan(_: FastAPI):
         ]
         if settings.BLIND_LABEL_AUTO_RELEASE_ENABLED:
             workers.append(asyncio.create_task(run_blind_label_auto_release_worker(stop_event)))
+        if settings.WORK_ORDER_LOG_ENABLED:
+            # Judge blind-label work-order numbers against the zzdy access log so
+            # the gate keeps working while the Manhattan cookie is unavailable.
+            workers.append(asyncio.create_task(run_work_order_log_verdict_worker(stop_event)))
     try:
         yield
     finally:

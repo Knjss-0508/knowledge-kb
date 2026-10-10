@@ -232,8 +232,11 @@ git clean -fd
 |---|---|---|
 | `/app/data/manhattan_options.json` | 曼哈顿类目/品牌/机型缓存 | 可由界面「更新曼哈顿数据」重建 |
 | `/app/data/manhattan_cookie.json` | 曼哈顿后台 Cookie（`0600`） | 由界面粘贴并保存，用于盲标建单前的工单号真实性复核；**不要写入仓库、日志或聊天记录**，过期后在界面重新粘贴即可 |
+| `/app/data/work_order_log_verdicts.json` | 访问日志工单号判定结论与扫描进度（`0600`） | 由后台 worker 自动重建（首轮全量扫描约 45 s）；丢失只会让门禁暂时放行，不影响业务数据 |
 
 重建 `kb-backend` 容器时该卷会沿用，因此 Cookie 在重启与常规部署后仍然有效；只有删除卷或清除连接才会失效。
+
+为了让「无 Cookie 的访问日志判定门禁」生效，`kb-backend` 还必须把 zzdy 反代日志目录**只读**挂载进容器：`-v /www/wwwlogs:/app/nlogs:ro`（已写入 `/opt/knowledge-kb-runtime/run-kb-backend.sh`，配置项 `WORK_ORDER_LOG_PATH` 默认 `/app/nlogs/zzdy.powerzhuan.cn.log`）。漏掉该挂载时门禁静默失效（只记一条 warning），日志本身不会被容器写入或修改。
 
 发生异常时，优先按以下顺序排查，避免扩大影响：
 
