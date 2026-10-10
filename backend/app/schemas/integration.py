@@ -21,6 +21,9 @@ from app.schemas.knowledge import (
 )
 
 _QUESTION_FORM_ID_PLACEHOLDERS = {"", "-", "null", "none", "undefined", "nan"}
+# 助手自报的身份类型：workorder 表示号码取自页面工单 ID，conversation 表示
+# 取自会话 ID。取不到或无法识别时归一化为 None（不猜测、不拦截请求）。
+_CONVERSATION_ID_KINDS = {"workorder", "conversation"}
 
 
 def normalize_question_form_id(value: str | None) -> str | None:
@@ -37,6 +40,21 @@ def normalize_question_form_id(value: str | None) -> str | None:
     if not cleaned.isdigit() or len(cleaned) > 64:
         return None
     return cleaned
+
+
+def normalize_conversation_id_kind(value: str | None) -> str | None:
+    """归一化助手自报的 ``conversationIdKind``。
+
+    只保留已知取值（``workorder`` / ``conversation``，大小写不敏感）；其余
+    一律为 ``None``。这个字段是遥测性质的，绝不能因为取值异常让检索请求
+    失败。注意：0.5.8 的助手即便号码其实是会话号也会自报 ``workorder``，
+    因此它只能作为辅助证据，不能单独当作真实性判据。
+    """
+
+    cleaned = str(value or "").strip().lower()
+    if cleaned in _CONVERSATION_ID_KINDS:
+        return cleaned
+    return None
 
 
 class IntegrationSource(BaseModel):
@@ -440,6 +458,18 @@ class IntegrationStandardSearchRequest(BaseModel):
             "不同号码，不得互相顶替；助手拿不到真实工单号时保持为空。"
         ),
     )
+    conversation_id_kind: str | None = Field(
+        None,
+        validation_alias=AliasChoices(
+            "conversationIdKind",
+            "conversation_id_kind",
+        ),
+        max_length=32,
+        description=(
+            "助手自报的身份类型：workorder（号码取自页面工单 ID）或 "
+            "conversation（取自会话 ID）；未知取值归一化为空。"
+        ),
+    )
     request_id: str = Field(
         ...,
         alias="requestId",
@@ -510,6 +540,11 @@ class IntegrationStandardSearchRequest(BaseModel):
     @classmethod
     def normalize_question_form(cls, value: str | None) -> str | None:
         return normalize_question_form_id(value)
+
+    @field_validator("conversation_id_kind")
+    @classmethod
+    def normalize_id_kind(cls, value: str | None) -> str | None:
+        return normalize_conversation_id_kind(value)
 
     @field_validator(
         "product_type",
@@ -697,6 +732,14 @@ class RetrievalQualityEventPayload(BaseModel):
         ),
         max_length=64,
     )
+    conversation_id_kind: str | None = Field(
+        None,
+        validation_alias=AliasChoices(
+            "conversationIdKind",
+            "conversation_id_kind",
+        ),
+        max_length=32,
+    )
     request_id: str = Field(
         ...,
         min_length=1,
@@ -756,6 +799,11 @@ class RetrievalQualityEventPayload(BaseModel):
     @classmethod
     def normalize_question_form(cls, value: str | None) -> str | None:
         return normalize_question_form_id(value)
+
+    @field_validator("conversation_id_kind")
+    @classmethod
+    def normalize_id_kind(cls, value: str | None) -> str | None:
+        return normalize_conversation_id_kind(value)
 
     @field_validator("metadata")
     @classmethod

@@ -213,6 +213,36 @@ def _all_refs(assignment):
     return [item["candidate_ref"] for item in assignment.work_order.candidate_snapshot]
 
 
+def _seed_extra_business_events(db, count=2):
+    """补齐合格业务事件，使 ``ensure_work_orders`` 能物化出 ``1 + count`` 条工单。
+
+    默认 fixture 只种了一条合格业务事件（``event-1``）。需要多条工单的用例
+    必须自己补齐 —— 否则断言会依赖错误的种子假设（这正是 2026-10-10 之前
+    这批用例残留 ``== 3`` 却一直没被执行到的原因）。
+    """
+
+    for index in range(1, count + 1):
+        db.add(
+            _build_threshold_event(
+                event_id=f"event-extra-{index}",
+                conversation_id=f"conversation-extra-{index}",
+                source_kind="reply",
+                top_rerank_score=0.9,
+                candidate_snapshot=[
+                    {
+                        "knowledge_id": f"biz-{index}",
+                        "rank": 1,
+                        "title": f"业务知识 {index}",
+                        "final_score": 0.9 - index * 0.01,
+                        "knowledge_origin": "business_accumulation",
+                    }
+                ],
+                candidate_origins=["business_accumulation"],
+            )
+        )
+    db.commit()
+
+
 def _labels(assignment, verdict="referable"):
     refs = _all_refs(assignment)
     if verdict == "referable":
@@ -1078,6 +1108,7 @@ def test_blind_label_api_contract_exposes_claim_detail_and_overview_routes():
 def test_batch_summary_reports_target_size_and_items_actually_loaded(db):
     """池子不足时批次被提前装满：total 仍是固定口径 50，真实条数看 assigned。"""
 
+    _seed_extra_business_events(db)
     assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
     batch, rows = claim_batch(db, "u1")
     assert len(rows) == 3
@@ -1105,6 +1136,7 @@ def test_batch_summary_reports_target_size_and_items_actually_loaded(db):
 def test_my_assignments_completed_tab_does_not_expose_the_active_batch(db):
     """「我的已标注」拉取历史时必须清空在途批次视图，不能把进行中的批次当成本页上下文。"""
 
+    _seed_extra_business_events(db)
     assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
     batch, rows = claim_batch(db, "u1")
     assert batch.status == "active"
@@ -1159,6 +1191,7 @@ def _load_my_assignments(db, user, **overrides):
 def test_my_assignments_accepts_annotation_activity_date_range(db):
     """「我的已标注」的时间筛选：日期为闭区间，缺省时保持原有全量行为。"""
 
+    _seed_extra_business_events(db)
     assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
     _, rows = claim_batch(db, "u1")
     for assignment in rows:
@@ -1193,6 +1226,7 @@ def test_my_assignments_accepts_annotation_activity_date_range(db):
 def test_my_assignments_date_filter_follows_activity_time_and_rejects_inverted_range(db):
     """时间筛选按标注活动时间判定（分配/完成/标注提交任一命中即可），并拒绝倒置区间。"""
 
+    _seed_extra_business_events(db)
     assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
     _, rows = claim_batch(db, "u1")
     for assignment in rows:
@@ -1245,3 +1279,82 @@ def test_my_assignments_ignores_fastapi_query_placeholders_when_called_directly(
         datetime(2026, 10, 9, 0, 0),
         datetime(2026, 10, 10, 0, 0),
     )
+
+
+class _StubVerifier:
+    """替身：按号码给结论，未配置的号码返回 None（无法判定）。"""
+
+    def __init__(self, verdicts: dict[str, bool] | None = None) -> None:
+        self.verdicts = dict(verdicts or {})
+        self.calls: list[str] = []
+        self.stats = {"checks": 0, "present": 0, "missing": 0, "undecided": 0}
+
+    def verify(self, question_form_id: str) -> bool | None:
+        self.calls.append(question_form_id)
+        self.stats["checks"] += 1
+        verdict = self.verdicts.get(question_form_id)
+        if verdict is True:
+            self.stats["present"] += 1
+        elif verdict is False:
+            self.stats["missing"] += 1
+        else:
+            self.stats["undecided"] += 1
+        return verdict
+
+
+def test_ensure_work_orders_skips_numbers_the_upstream_does_not_know(db):
+    """上游明确「查不到」的工单号不得建单，并把结论落库以避免重复请求。"""
+
+    verifier = _StubVerifier({"question-form-1": False})
+    assert ensure_work_orders(db, 1, verifier=verifier) == 0
+    assert verifier.calls == ["question-form-1"]
+    db.commit()
+
+    event = db.get(RetrievalQualityEvent, "event-1")
+    assert event.work_order_verified is False
+    assert db.query(BlindLabelWorkOrder).count() == 0
+
+    # 第二轮即使上游改口也不该再为已判定的事件建单（SQL 层已排除），
+    # 且不会重复请求上游。
+    retry = _StubVerifier({"question-form-1": True})
+    assert ensure_work_orders(db, 1, verifier=retry) == 0
+    assert retry.calls == []
+
+
+def test_ensure_work_orders_skips_events_reported_as_conversation_identity(db):
+    """助手自报号码来自会话 ID 的事件直接跳过，连上游都不必请求。"""
+
+    event = db.get(RetrievalQualityEvent, "event-1")
+    event.conversation_id_kind = "conversation"
+    db.commit()
+
+    verifier = _StubVerifier({"question-form-1": True})
+    assert ensure_work_orders(db, 1, verifier=verifier) == 0
+    assert verifier.calls == []
+    assert db.query(BlindLabelWorkOrder).count() == 0
+
+
+def test_ensure_work_orders_records_a_verified_work_order(db):
+    """上游能查到工单详情时正常建单，并把核验结论写成 True。"""
+
+    verifier = _StubVerifier({"question-form-1": True})
+    assert ensure_work_orders(db, 1, verifier=verifier) == 1
+    db.commit()
+
+    assert verifier.calls == ["question-form-1"]
+    assert db.get(RetrievalQualityEvent, "event-1").work_order_verified is True
+    work_order = db.query(BlindLabelWorkOrder).one()
+    assert work_order.question_form_id == "question-form-1"
+
+
+def test_ensure_work_orders_stays_fail_open_when_verification_is_undecided(db):
+    """没有 Cookie/上游异常时（None）行为与改造前一致：照常建单。"""
+
+    verifier = _StubVerifier()
+    assert ensure_work_orders(db, 1, verifier=verifier) == 1
+    db.commit()
+
+    assert verifier.calls == ["question-form-1"]
+    assert verifier.stats["undecided"] == 1
+    assert db.get(RetrievalQualityEvent, "event-1").work_order_verified is None
+    assert db.query(BlindLabelWorkOrder).count() == 1
