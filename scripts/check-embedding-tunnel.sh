@@ -55,3 +55,4 @@ if [ "$failures" -eq "$FAIL_THRESHOLD" ]; then
 fi
 
 exit 0
+
