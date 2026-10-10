@@ -17,7 +17,7 @@
 | 知识库「没有工单号的样本不进盲标池」 | ✅ 已上线并在线上验证 | 见 2.3、2.6 |
 | 知识库盲标弹窗「只用工单号」 | ✅ 已上线（工单详情 + 聊天面板都用工单号） | `frontend/index.html` |
 | 存量 423 条「只有会话号」的历史盲标工单 | ✅ 已备份后物理删除 | 见 2.5 |
-| 建单前复核上游工单详情（新代码，默认休眠需 Cookie） | 🟡 已实现待部署（需先跑迁移 `20261010_01`） | 见 2.7 |
+| 建单前复核上游工单详情（新代码，默认休眠需 Cookie） | 🟢 已上线（2026-10-10，迁移已应用；门禁因线上无 Cookie 暂休眠） | 见 2.7 |
 
 ## 1. 为什么最终判定「不用改上游、不用改工作台」
 
@@ -133,6 +133,7 @@ if (!workOrderId || !rawContext) {
   - revision id 必须 ≤32 字符：`alembic_version.version_num` 是 `varchar(32)`（线上实测 32），最初的 `20261010_01_conversation_identity`（33 字符）在 PostgreSQL 上写版本号时抛 `psycopg2.errors.StringDataRightTruncation`，`alembic upgrade head` 整体回滚（DDL 未生效）。约束由 `backend/tests/test_migration_revisions.py` 兜住。
 - 生效前提：上游复核需要曼哈顿 Cookie（`NMHT_COOKIE` 或 `/login` 粘贴的运行时 Cookie）。**线上 `NMHT_COOKIE` 目前为空**，所以这道门禁默认处于「全部 `None` → 不拦截」状态；粘贴 Cookie 后才真正拦截。每次 claim 最多校验 40 个号码，连续 3 次无法判定即自动停用（避免拖慢领取）。
 - 单次校验上限、超时与缓存都在 `WorkOrderVerifier` 里，行为由 `backend/tests/test_work_order_verification.py` 与 `backend/tests/test_blind_labeling.py` 的门禁用例覆盖。
+- **上线记录（2026-10-10）**：生产迁移已应用（`alembic current` = `20261010_01_work_order_identity (head)`，`retrieval_quality_events` 两列已存在），后端镜像 `knowledge-kb-backend:work-order-verification-20261010b` 已上线（`/health`、`/ready`、`/app` 均 200）；回滚镜像 tag `knowledge-kb-backend:rollback-before-181-20261010`，部署前文件备份在 `/opt/knowledge-kb-runtime/deploy-backup-20261010-work-order-verification/`。上线后只读演练 `ensure_work_orders(db, 0)`（结果 rollback）在 25 个候选上正常跑通，`WorkOrderVerifier.enabled = False`、`stats.checks = 0`，确认门禁休眠且不发上游请求；最新事件已能看到助手自报的 `conversation_id_kind = 'workorder'`。
 
 ## 3. 助手侧补丁（已上线，2026-10-08 15:00）
 
