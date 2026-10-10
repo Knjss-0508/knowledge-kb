@@ -88,6 +88,11 @@ zzdy 反代 nginx 访问日志（`/www/wwwlogs/zzdy.powerzhuan.cn.log`）里的�
 > `retrieval_quality_events.conversation_id_kind` / `work_order_verified`），
 > `ensure_work_orders()` 建单前复核上游工单详情。第 3 条（存量清理）与第 4 条（助手侧）
 > **仍未做**，且第 1 条在线上默认休眠（需要曼哈顿 Cookie 才生效）。
+>
+> 上线（2026-10-10）：生产已应用迁移 `20261010_01_work_order_identity`，后端镜像
+> `knowledge-kb-backend:work-order-verification-20261010b` 已切换（回滚 tag
+> `rollback-before-181-20261010`）；上线后只读演练确认门禁在无 Cookie 时休眠、
+> 不发上游请求（`WorkOrderVerifier.enabled = False`、`stats.checks = 0`）。
 
 1. **止血（代码）**：`ensure_work_orders` 建单前增加「工单详情查得到」的门禁——可用已落库的 `conversationIdKind`（需先让后端接收并入库，成本最低）
    或调用上游 `queryQuestionFormDetail` 校验（需要 Cookie，成本高）。
