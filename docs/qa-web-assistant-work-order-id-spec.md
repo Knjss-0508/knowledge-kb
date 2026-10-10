@@ -129,7 +129,8 @@ if (!workOrderId || !rawContext) {
   - `True` → 记 `True` 并正常建单；
   - `None`（没有 Cookie / 超时 / 401 / 非 200 / 空响应 / 登录页）→ **fail-open**，行为与改造前一致，避免没有 Cookie 时把盲标池饿死。
 - 另外接收并落库助手自报的身份类型：`retrieval_quality_events.conversation_id_kind`（`workorder` / `conversation`，见 `backend/app/schemas/integration.py` 的 `conversationIdKind` 别名）。`kind='conversation'` 的事件直接跳过，不再请求上游。
-- 迁移：`backend/migrations/versions/20261010_01_conversation_identity.py`（`revision = 20261010_01_conversation_identity`，`down_revision = 20261008_01_question_form_id`）新增上述两列。**部署必须先 `alembic upgrade head` 再重启后端**：ORM 会 SELECT 全部映射列（含新列），缺列时池子查询直接报错，无法靠代码兜底。
+- 迁移：`backend/migrations/versions/20261010_01_work_order_identity.py`（`revision = 20261010_01_work_order_identity`，`down_revision = 20261008_01_question_form_id`）新增上述两列。**部署必须先 `alembic upgrade head` 再重启后端**：ORM 会 SELECT 全部映射列（含新列），缺列时池子查询直接报错，无法靠代码兜底。
+  - revision id 必须 ≤32 字符：`alembic_version.version_num` 是 `varchar(32)`（线上实测 32），最初的 `20261010_01_conversation_identity`（33 字符）在 PostgreSQL 上写版本号时抛 `psycopg2.errors.StringDataRightTruncation`，`alembic upgrade head` 整体回滚（DDL 未生效）。约束由 `backend/tests/test_migration_revisions.py` 兜住。
 - 生效前提：上游复核需要曼哈顿 Cookie（`NMHT_COOKIE` 或 `/login` 粘贴的运行时 Cookie）。**线上 `NMHT_COOKIE` 目前为空**，所以这道门禁默认处于「全部 `None` → 不拦截」状态；粘贴 Cookie 后才真正拦截。每次 claim 最多校验 40 个号码，连续 3 次无法判定即自动停用（避免拖慢领取）。
 - 单次校验上限、超时与缓存都在 `WorkOrderVerifier` 里，行为由 `backend/tests/test_work_order_verification.py` 与 `backend/tests/test_blind_labeling.py` 的门禁用例覆盖。
 
