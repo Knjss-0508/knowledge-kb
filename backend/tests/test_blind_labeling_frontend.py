@@ -36,6 +36,14 @@ def test_admin_blind_labeling_splits_people_and_work_order_views() -> None:
     assert "id=\"blind-label-work-orders-panel\"" in FRONTEND
 
 
+def test_blind_label_frontend_uses_five_annotators_and_eighty_percent_consensus() -> None:
+    assert "每工单最多 5 名标注员 · 4/5 达成共识" in FRONTEND
+    assert "Math.min(5, Math.max(1" in FRONTEND
+    assert "达到 80% 共识或已仲裁" in FRONTEND
+    assert "五人标注未达到 80% 共识" in FRONTEND
+    assert "待完成 ' + required + ' 人独立标注后计算 ' + votes + '/' + required + ' 共识。" in FRONTEND
+
+
 def test_admin_blind_labeling_defaults_to_people_and_keeps_shared_filters() -> None:
     assert "isBlindLabelOverviewTab: function()" in FRONTEND
     assert "this.blindLabeling.tab = this.isBlindLabelAdmin() ? 'people' : 'mine';" in FRONTEND

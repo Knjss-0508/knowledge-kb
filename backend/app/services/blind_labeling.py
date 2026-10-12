@@ -35,7 +35,12 @@ from app.services.work_order_log_verdicts import verdict_for as log_verdict_for
 from app.services.work_order_verification import WorkOrderVerifier
 
 BLIND_LABEL_BATCH_SIZE = 50
-BLIND_LABEL_MAX_ASSIGNMENTS = 3
+# 每个工单由 5 名不同标注员独立标注；达到 4/5（80%）才自动形成共识。
+BLIND_LABEL_MAX_ASSIGNMENTS = 5
+BLIND_LABEL_CONSENSUS_THRESHOLD = 0.80
+BLIND_LABEL_REQUIRED_CONSENSUS_VOTES = math.ceil(
+    BLIND_LABEL_MAX_ASSIGNMENTS * BLIND_LABEL_CONSENSUS_THRESHOLD
+)
 BLIND_LABEL_MAX_CANDIDATES = 3
 # 盲标只接收 TOP1 候选分数达到 0.60 的请求；分数统一使用 0~1 口径。
 BLIND_LABEL_MIN_TOP1_SCORE = 0.60
@@ -393,6 +398,7 @@ def ensure_work_orders(
             category_id=first.get("category_id"),
             category_name=first.get("category_name") or None,
             candidate_snapshot=candidates,
+            assignment_limit=BLIND_LABEL_MAX_ASSIGNMENTS,
             source_created_at=event.created_at,
         )
         try:
@@ -451,10 +457,20 @@ def _maybe_complete_batch(db: Session, batch: BlindLabelBatch) -> None:
         batch.completed_at = datetime.utcnow()
 
 
-def _work_order_capacity(db: Session, work_order_id: str) -> int:
+def _work_order_assignment_limit(work_order: BlindLabelWorkOrder) -> int:
+    """Return the immutable annotator target captured on a work order."""
+
+    try:
+        configured = int(getattr(work_order, "assignment_limit", 0) or 0)
+    except (TypeError, ValueError):
+        configured = 0
+    return max(1, configured or BLIND_LABEL_MAX_ASSIGNMENTS)
+
+
+def _work_order_capacity(db: Session, work_order: BlindLabelWorkOrder) -> int:
     rows = (
         db.query(BlindLabelAssignment.user_id, BlindLabelAssignment.status)
-        .filter(BlindLabelAssignment.work_order_id == work_order_id)
+        .filter(BlindLabelAssignment.work_order_id == work_order.id)
         .with_for_update()
         .all()
     )
@@ -463,7 +479,7 @@ def _work_order_capacity(db: Session, work_order_id: str) -> int:
         for user_id, status in rows
         if str(status) in BLIND_LABEL_ACTIVE_STATUSES
     }
-    return max(0, BLIND_LABEL_MAX_ASSIGNMENTS - len(active_users))
+    return max(0, _work_order_assignment_limit(work_order) - len(active_users))
 
 
 def _choose_assignments(
@@ -496,7 +512,7 @@ def _choose_assignments(
         BlindLabelWorkOrder.created_at,
     )
     # First fill work orders already assigned to other annotators, favoring the
-    # ones nearest the three-person cap.  Within the same assignment level,
+    # ones nearest their per-work-order cap.  Within the same assignment level,
     # dispatch the newest source work order first.  Lock each selected work
     # order again before counting active annotators: PostgreSQL honors the row
     # lock; SQLite simply serializes the test transaction.
@@ -504,7 +520,7 @@ def _choose_assignments(
         db.query(BlindLabelWorkOrder)
         .filter(
             ~current_user_already_assigned,
-            active_assignment_count < BLIND_LABEL_MAX_ASSIGNMENTS,
+            active_assignment_count < BlindLabelWorkOrder.assignment_limit,
         )
         .order_by(
             active_assignment_count.desc(),
@@ -527,7 +543,12 @@ def _choose_assignments(
             .with_for_update()
             .first()
         )
-        if not locked or _work_order_capacity(db, locked.id) <= 0:
+        if not locked or _work_order_capacity(db, locked) <= 0:
+            continue
+        # 已完成或已仲裁的工单是终态，即使其所属批次后来释放了名额也不能
+        # 继续派发给新的标注员。
+        resolved_status, _ = work_order_status(db, locked)
+        if resolved_status in {"completed", "arbitrated"}:
             continue
         # 二次防线：历史上已物化但尚未分配的低分工单，也不能进入新批次。
         if not _top1_score_is_eligible(
@@ -971,6 +992,10 @@ def _completed_assignments(db: Session, work_order_id: str) -> list[BlindLabelAs
 def consensus_for_work_order(db: Session, work_order: BlindLabelWorkOrder) -> dict[str, Any]:
     assignments = _completed_assignments(db, work_order.id)
     candidates = [item for item in (work_order.candidate_snapshot or []) if isinstance(item, dict)]
+    assignment_limit = _work_order_assignment_limit(work_order)
+    required_consensus_votes = math.ceil(
+        assignment_limit * BLIND_LABEL_CONSENSUS_THRESHOLD
+    )
     candidate_results: list[dict[str, Any]] = []
     arbitration_by_ref = {
         item.candidate_ref: item
@@ -978,11 +1003,9 @@ def consensus_for_work_order(db: Session, work_order: BlindLabelWorkOrder) -> di
         .filter(BlindLabelArbitration.work_order_id == work_order.id)
         .all()
     }
-    # New submissions contain at most one referable candidate.  In that mode,
-    # different selected candidates are a real disagreement even though the
-    # non-selected candidates are intentionally omitted rather than recorded
-    # as negative labels.  Keep the old per-candidate positive/negative split
-    # behavior for legacy submissions that contain multiple referable labels.
+    # 新版提交每人至多选择一个可参考候选。非选中的候选不会被伪造成负票，
+    # 但可根据 5 人的唯一选择判断是否有同一候选达到 4 票共识。对历史的
+    # 多候选可参考提交，仍按每个候选的显式正反票聚合，避免改变既有证据语义。
     referable_refs_by_assignment = [
         {
             annotation.candidate_ref
@@ -994,6 +1017,11 @@ def consensus_for_work_order(db: Session, work_order: BlindLabelWorkOrder) -> di
     single_choice_mode = bool(assignments) and all(
         len(refs) <= 1 for refs in referable_refs_by_assignment
     )
+    selected_choice_by_assignment = [
+        next(iter(refs)) if len(refs) == 1 else None
+        for refs in referable_refs_by_assignment
+    ]
+    selected_choice_counts = Counter(selected_choice_by_assignment)
     selected_refs = {
         next(iter(refs))
         for refs in referable_refs_by_assignment
@@ -1001,24 +1029,50 @@ def consensus_for_work_order(db: Session, work_order: BlindLabelWorkOrder) -> di
     }
     choice_disagreement = (
         single_choice_mode
-        and len(assignments) >= BLIND_LABEL_MAX_ASSIGNMENTS
-        and len(
-            {
-                next(iter(refs)) if refs else None
-                for refs in referable_refs_by_assignment
-            }
-        )
-        > 1
+        and len(assignments) >= assignment_limit
+        and len(selected_choice_counts) > 1
     )
+    completed_count = len(assignments)
+    fully_completed = completed_count >= assignment_limit
+    single_choice_has_winner = False
+    if single_choice_mode and fully_completed:
+        for choice, votes in selected_choice_counts.items():
+            if votes >= required_consensus_votes:
+                single_choice_has_winner = True
+                break
+
+    # 先收集每个候选的显式票数与阈值结论。单选模式下，只有真正写入的
+    # ``not_referable`` 才是负票；选择另一个候选仅表示未把当前候选选为最佳。
+    candidate_vote_counts: dict[str, Counter[str]] = {}
+    candidate_threshold_verdicts: dict[str, str] = {}
     for candidate in candidates:
         ref = str(candidate.get("candidate_ref") or "")
-        votes = [
+        counts = Counter(
             annotation.verdict
             for assignment in assignments
             for annotation in assignment.annotations
             if annotation.candidate_ref == ref
-        ]
-        counts = Counter(votes)
+        )
+        candidate_vote_counts[ref] = counts
+        if counts.get("referable", 0) >= required_consensus_votes:
+            candidate_threshold_verdicts[ref] = "referable"
+        elif counts.get("not_referable", 0) >= required_consensus_votes:
+            candidate_threshold_verdicts[ref] = "not_referable"
+
+    # 新流程按「同一最佳候选」或「全部不可参考」的 4/5 结论自动通过。
+    # 历史多选提交没有唯一最佳候选，保守地要求所有候选都已有 80% 的显式结论。
+    if single_choice_mode:
+        automatic_consensus = fully_completed and single_choice_has_winner
+    else:
+        automatic_consensus = (
+            fully_completed
+            and bool(candidates)
+            and len(candidate_threshold_verdicts) == len(candidates)
+        )
+
+    for candidate in candidates:
+        ref = str(candidate.get("candidate_ref") or "")
+        counts = candidate_vote_counts[ref]
         preliminary = None
         if counts:
             preliminary = counts.most_common(1)[0][0]
@@ -1028,51 +1082,77 @@ def consensus_for_work_order(db: Session, work_order: BlindLabelWorkOrder) -> di
             and counts.get("not_referable", 0) > 0
         )
         choice_split = choice_disagreement and ref in selected_refs
+        threshold_verdict = candidate_threshold_verdicts.get(ref)
         if arbitration is not None:
             candidate_status = "arbitrated"
+            needs_arbitration = False
+        elif not fully_completed:
+            candidate_status = "pending"
+            needs_arbitration = False
+        elif automatic_consensus:
+            # 达到整体 4/5 共识时，不把少数不同选择误报为待仲裁。
+            if threshold_verdict:
+                candidate_status = "consensus"
+            else:
+                candidate_status = "not_selected"
+            needs_arbitration = False
+        elif threshold_verdict:
+            # 即使其他候选还存在争议，已达到 80% 的这个候选无需再次仲裁。
+            candidate_status = "consensus"
+            needs_arbitration = False
         elif split or choice_split:
             candidate_status = "needs_arbitration"
-        elif len(votes) >= BLIND_LABEL_MAX_ASSIGNMENTS:
-            candidate_status = "unanimous"
+            needs_arbitration = True
         else:
             candidate_status = "pending"
+            needs_arbitration = False
         candidate_results.append(
             {
                 "candidate_ref": ref,
                 "rank": int(candidate.get("rank") or 0),
                 "referable_count": int(counts.get("referable", 0)),
                 "not_referable_count": int(counts.get("not_referable", 0)),
+                "selected_count": int(selected_choice_counts.get(ref, 0)),
+                "selection_total": completed_count,
                 "preliminary_verdict": preliminary,
                 "status": candidate_status,
-                "needs_arbitration": (split or choice_split) and arbitration is None,
+                "consensus_verdict": threshold_verdict,
+                "needs_arbitration": needs_arbitration,
                 "arbitrated_verdict": arbitration.verdict if arbitration else None,
                 "arbitrated_by": arbitration.arbitrated_by if arbitration else None,
                 "arbitration_reason": arbitration.reason if arbitration else "",
                 "arbitrated": arbitration is not None,
             }
         )
-    completed_count = len(assignments)
-    if completed_count < BLIND_LABEL_MAX_ASSIGNMENTS:
+    unresolved_split = any(
+        result["needs_arbitration"] for result in candidate_results
+    )
+    has_arbitration = any(result["arbitrated"] for result in candidate_results)
+    # 管理员已经完成的历史仲裁必须保持终态，不能因人数从 3 调整为 5
+    # 被重新打开为待标注；若仍有未解决的候选分歧，则继续要求补充仲裁。
+    if has_arbitration and not unresolved_split:
+        overall_status = "arbitrated"
+        needs_arbitration = False
+    elif not fully_completed:
         overall_status = "pending"
         needs_arbitration = False
+    elif unresolved_split:
+        overall_status = "majority"
+        needs_arbitration = True
+    elif automatic_consensus:
+        overall_status = "consensus"
+        needs_arbitration = False
     else:
-        split = any(
-            result["referable_count"] > 0 and result["not_referable_count"] > 0
-            for result in candidate_results
-        )
-        has_disagreement = split or choice_disagreement
-        unresolved_split = any(
-            result["needs_arbitration"] for result in candidate_results
-        )
-        overall_status = (
-            "majority"
-            if unresolved_split
-            else ("arbitrated" if has_disagreement else "unanimous")
-        )
-        needs_arbitration = unresolved_split
+        # 防御性兜底：5 人已完成却无法形成 80% 共识时必须人工仲裁，不能
+        # 沿用过去「三人无显式冲突即全员一致」的判断。
+        overall_status = "majority"
+        needs_arbitration = True
     return {
         "status": overall_status,
         "completed_annotators": completed_count,
+        "required_annotators": assignment_limit,
+        "required_consensus_votes": required_consensus_votes,
+        "consensus_threshold": BLIND_LABEL_CONSENSUS_THRESHOLD,
         "needs_arbitration": needs_arbitration,
         "candidate_results": candidate_results,
     }
@@ -1132,7 +1212,7 @@ def work_order_status(db: Session, work_order: BlindLabelWorkOrder) -> tuple[str
     consensus = consensus_for_work_order(db, work_order)
     if consensus["status"] == "majority":
         return "needs_arbitration", consensus
-    if consensus["status"] in {"unanimous", "arbitrated"}:
+    if consensus["status"] in {"consensus", "unanimous", "arbitrated"}:
         if consensus["status"] == "arbitrated":
             return "arbitrated", consensus
         return "completed", consensus
@@ -1336,8 +1416,8 @@ def overview(
                 ),
                 "created_at": work_order.created_at,
                 "updated_at": last_activity or work_order.updated_at,
-                "max_annotators": BLIND_LABEL_MAX_ASSIGNMENTS,
-                "assignment_limit": BLIND_LABEL_MAX_ASSIGNMENTS,
+                "max_annotators": _work_order_assignment_limit(work_order),
+                "assignment_limit": _work_order_assignment_limit(work_order),
                 "dimension": (
                     consensus["candidate_results"][0]["preliminary_verdict"]
                     if consensus["candidate_results"]
@@ -1406,7 +1486,12 @@ def overview(
         "total_assignments": sum(item["assignment_count"] for item in items),
         "completed_assignments": sum(item["completed_assignments"] for item in items),
         "released_assignments": sum(item["released_assignments"] for item in items),
-        "unanimous_count": sum(item["consensus_status"] == "unanimous" for item in items),
+        # ``unanimous_count`` 保留为兼容字段；新口径以 4/5 即可达成自动共识。
+        "unanimous_count": sum(
+            item["consensus_status"] in {"consensus", "unanimous"}
+            for item in items
+        ),
+        "consensus_count": sum(item["consensus_status"] == "consensus" for item in items),
         "majority_count": sum(item["consensus_status"] == "majority" for item in items),
         "arbitrated_count": sum(item["consensus_status"] == "arbitrated" for item in items),
         "pending_consensus_count": sum(item["consensus_status"] == "pending" for item in items),

@@ -35,7 +35,9 @@ from app.schemas.blind_labeling import BlindLabelClaimRequest, BlindLabelRelease
 from app.services.blind_labeling import (
     BLIND_LABEL_AUTO_RELEASE_REASON,
     BLIND_LABEL_BATCH_SIZE,
+    BLIND_LABEL_MAX_ASSIGNMENTS,
     BLIND_LABEL_MIN_TOP1_SCORE,
+    BLIND_LABEL_REQUIRED_CONSENSUS_VOTES,
     _choose_assignments,
     batch_summary,
     claim_batch,
@@ -133,7 +135,7 @@ def db():
             created_by="seed",
         )
     )
-    for user_id in ("u1", "u2", "u3", "u4"):
+    for user_id in ("u1", "u2", "u3", "u4", "u5", "u6"):
         session.add(
             User(
                 id=user_id,
@@ -524,8 +526,8 @@ def test_choose_assignments_fills_existing_work_orders_before_newest_fresh_items
     now = datetime.utcnow()
     db.add(
         User(
-            id="u5",
-            username="u5",
+            id="u7",
+            username="u7",
             password_hash="unused",
             role="junior_support",
             is_active=True,
@@ -569,7 +571,7 @@ def test_choose_assignments_fills_existing_work_orders_before_newest_fresh_items
             target_count=BLIND_LABEL_BATCH_SIZE,
             status="active",
         )
-        for user_id in ("u1", "u2", "u4", "u5")
+        for user_id in ("u1", "u2", "u4", "u5", "u6", "u7")
     }
     db.add_all(batches.values())
     db.flush()
@@ -618,7 +620,11 @@ def test_choose_assignments_fills_existing_work_orders_before_newest_fresh_items
     )
 
     second = _choose_assignments(db, batches["u5"], "u5", needed=1)
-    assert [item.work_order_id for item in second] == [work_orders["one-new"].id]
+    assert [item.work_order_id for item in second] == [work_orders["two-old"].id]
+    third = _choose_assignments(db, batches["u6"], "u6", needed=1)
+    assert [item.work_order_id for item in third] == [work_orders["two-old"].id]
+    fourth = _choose_assignments(db, batches["u7"], "u7", needed=1)
+    assert [item.work_order_id for item in fourth] == [work_orders["one-new"].id]
 
 
 def test_claim_batch_is_fixed_to_50_and_normalizes_legacy_active_batch(db):
@@ -750,14 +756,14 @@ def test_claim_routes_reject_client_attempts_to_change_batch_size(db):
         app.dependency_overrides.pop(get_current_user, None)
 
 
-def test_three_users_are_capped_and_consensus_never_writes_legacy_event(db):
+def test_five_users_are_capped_and_four_of_five_reaches_consensus_without_legacy_write(db):
     ensure_work_orders(db, 1)
     assignments = []
-    for user_id in ("u1", "u2", "u3"):
+    for user_id in ("u1", "u2", "u3", "u4", "u5"):
         _, rows = claim_batch(db, user_id, target_count=1)
         assignments.append(rows[0])
     for index, assignment in enumerate(assignments):
-        verdict = "referable" if index < 2 else "not_referable"
+        verdict = "referable" if index < 4 else "not_referable"
         submit_assignment(
             db,
             assignment,
@@ -767,30 +773,34 @@ def test_three_users_are_capped_and_consensus_never_writes_legacy_event(db):
     db.commit()
     work_order = assignments[0].work_order
     consensus = consensus_for_work_order(db, work_order)
-    assert consensus["status"] == "majority"
-    assert consensus["needs_arbitration"] is True
+    assert consensus["status"] == "consensus"
+    assert consensus["needs_arbitration"] is False
+    assert consensus["required_annotators"] == BLIND_LABEL_MAX_ASSIGNMENTS == 5
+    assert consensus["required_consensus_votes"] == BLIND_LABEL_REQUIRED_CONSENSUS_VOTES == 4
     assert consensus["candidate_results"][0]["preliminary_verdict"] == "referable"
-    assert consensus["candidate_results"][0]["status"] == "needs_arbitration"
-    assert consensus["candidate_results"][0]["needs_arbitration"] is True
+    assert consensus["candidate_results"][0]["status"] == "consensus"
+    assert consensus["candidate_results"][0]["needs_arbitration"] is False
     assert db.query(RetrievalQualityEvent).filter_by(id="event-1").one().review_status == "unreviewed"
-    assert db.query(BlindLabelAssignment).filter_by(work_order_id=work_order.id).count() == 3
-    majority_overview = overview(db)
-    assert majority_overview["summary"]["disputed"] == 1
-    assert majority_overview["summary"]["consensus_rate"] == 0
+    assert db.query(BlindLabelAssignment).filter_by(work_order_id=work_order.id).count() == 5
+    consensus_overview = overview(db)
+    assert consensus_overview["summary"]["disputed"] == 0
+    assert consensus_overview["summary"]["consensus_count"] == 1
+    assert consensus_overview["summary"]["consensus_rate"] == 1
 
-    _, fourth_rows = claim_batch(db, "u4", target_count=1)
-    assert fourth_rows == []
+    _, sixth_rows = claim_batch(db, "u6", target_count=1)
+    assert sixth_rows == []
 
 
 def test_single_choice_consensus_does_not_treat_omitted_candidates_as_negative_votes(db):
     ensure_work_orders(db, 1)
     assignments = []
-    for user_id in ("u1", "u2", "u3"):
+    for user_id in ("u1", "u2", "u3", "u4", "u5"):
         _, rows = claim_batch(db, user_id, target_count=1)
         assignments.append(rows[0])
 
     refs = _all_refs(assignments[0])
-    for assignment, ref in zip(assignments, refs, strict=True):
+    for index, assignment in enumerate(assignments):
+        ref = refs[index % len(refs)]
         submit_assignment(
             db,
             assignment,
@@ -803,11 +813,57 @@ def test_single_choice_consensus_does_not_treat_omitted_candidates_as_negative_v
     assert consensus["status"] == "majority"
     assert consensus["needs_arbitration"] is True
     assert all(
-        result["referable_count"] == 1
+        result["referable_count"] in {1, 2}
         and result["not_referable_count"] == 0
         and result["status"] == "needs_arbitration"
         for result in consensus["candidate_results"]
     )
+
+
+def test_four_of_five_all_not_referable_reaches_consensus(db):
+    ensure_work_orders(db, 1)
+    assignments = []
+    for user_id in ("u1", "u2", "u3", "u4", "u5"):
+        _, rows = claim_batch(db, user_id, target_count=1)
+        assignments.append(rows[0])
+
+    for index, assignment in enumerate(assignments):
+        verdict = "not_referable" if index < 4 else "referable"
+        submit_assignment(
+            db,
+            assignment,
+            _labels(assignment, verdict),
+            task_reason_code="knowledge_missing" if verdict == "not_referable" else "",
+        )
+    db.commit()
+
+    consensus = consensus_for_work_order(db, assignments[0].work_order)
+
+    assert consensus["status"] == "consensus"
+    assert consensus["needs_arbitration"] is False
+    assert all(
+        result["status"] == "consensus"
+        and result["consensus_verdict"] == "not_referable"
+        for result in consensus["candidate_results"]
+    )
+
+
+def test_fewer_than_five_completed_annotations_remain_pending(db):
+    ensure_work_orders(db, 1)
+    assignments = []
+    for user_id in ("u1", "u2", "u3"):
+        _, rows = claim_batch(db, user_id, target_count=1)
+        assignments.append(rows[0])
+
+    for assignment in assignments:
+        submit_assignment(db, assignment, _labels(assignment, "referable"))
+    db.commit()
+
+    consensus = consensus_for_work_order(db, assignments[0].work_order)
+
+    assert consensus["status"] == "pending"
+    assert consensus["completed_annotators"] == 3
+    assert consensus["needs_arbitration"] is False
 
 
 def test_expired_assignment_is_automatically_reclaimed_and_frees_its_slot(db):
@@ -890,11 +946,11 @@ def test_public_detail_does_not_leak_ids_scores_or_other_annotations(db):
 def test_arbitration_resolves_disputed_consensus_and_overview_aliases(db):
     ensure_work_orders(db, 1)
     assignments = []
-    for user_id in ("u1", "u2", "u3"):
+    for user_id in ("u1", "u2", "u3", "u4", "u5"):
         _, rows = claim_batch(db, user_id, target_count=1)
         assignments.append(rows[0])
     for index, assignment in enumerate(assignments):
-        verdict = "referable" if index < 2 else "not_referable"
+        verdict = "referable" if index < 3 else "not_referable"
         submit_assignment(
             db,
             assignment,
@@ -903,6 +959,9 @@ def test_arbitration_resolves_disputed_consensus_and_overview_aliases(db):
         )
     db.commit()
     work_order = assignments[0].work_order
+    before_arbitration = consensus_for_work_order(db, work_order)
+    assert before_arbitration["status"] == "majority"
+    assert before_arbitration["needs_arbitration"] is True
     for index, candidate in enumerate(work_order.candidate_snapshot, start=1):
         db.add(
             BlindLabelArbitration(
@@ -922,6 +981,65 @@ def test_arbitration_resolves_disputed_consensus_and_overview_aliases(db):
     )
     result = overview(db, dimension="disputed")
     assert result["summary"]["total"] == 0
+
+
+def test_legacy_three_annotator_arbitration_remains_terminal_after_five_vote_upgrade(db):
+    ensure_work_orders(db, 1)
+    assignments = []
+    for user_id in ("u1", "u2", "u3"):
+        _, rows = claim_batch(db, user_id, target_count=1)
+        assignments.append(rows[0])
+    work_order = assignments[0].work_order
+    work_order.assignment_limit = 3
+    for index, assignment in enumerate(assignments):
+        verdict = "referable" if index < 2 else "not_referable"
+        submit_assignment(
+            db,
+            assignment,
+            _labels(assignment, verdict),
+            task_reason_code="knowledge_missing" if verdict == "not_referable" else "",
+        )
+    for index, candidate in enumerate(work_order.candidate_snapshot, start=1):
+        db.add(
+            BlindLabelArbitration(
+                id=f"legacy-arb-{index}",
+                work_order_id=work_order.id,
+                candidate_ref=candidate["candidate_ref"],
+                verdict="not_referable",
+                reason="历史仲裁",
+                arbitrated_by="admin",
+            )
+        )
+    db.commit()
+
+    consensus = consensus_for_work_order(db, work_order)
+
+    assert consensus["status"] == "arbitrated"
+    assert consensus["completed_annotators"] == 3
+    assert consensus["needs_arbitration"] is False
+
+
+def test_legacy_three_annotator_consensus_stays_completed_and_is_not_reassigned(db):
+    ensure_work_orders(db, 1)
+    assignments = []
+    for user_id in ("u1", "u2", "u3"):
+        _, rows = claim_batch(db, user_id, target_count=1)
+        assignments.append(rows[0])
+    work_order = assignments[0].work_order
+    work_order.assignment_limit = 3
+    for assignment in assignments:
+        submit_assignment(db, assignment, _labels(assignment, "referable"))
+    db.commit()
+
+    consensus = consensus_for_work_order(db, work_order)
+
+    assert consensus["status"] == "consensus"
+    assert consensus["required_annotators"] == 3
+    assert consensus["required_consensus_votes"] == 3
+    assert consensus["needs_arbitration"] is False
+
+    _, fourth_rows = claim_batch(db, "u4", target_count=1)
+    assert fourth_rows == []
 
 
 def test_referable_reason_is_optional_but_not_referable_reason_is_required(db):
