@@ -10,7 +10,7 @@ User=root
 Environment=HOME=/root
 WorkingDirectory=/opt/knowledge-kb-model-sync
 EnvironmentFile=/opt/knowledge-kb-model-sync/model-configuration-sync.env
-ExecStart=/usr/bin/python3 /opt/knowledge-kb-model-sync/sync_model_configurations_scheduler.py
+ExecStart=/usr/bin/python3 /opt/knowledge-kb-model-sync/sync_model_configurations_scheduler.py --preflight-all-sources
 NoNewPrivileges=true
 PrivateTmp=true
 UMask=0077

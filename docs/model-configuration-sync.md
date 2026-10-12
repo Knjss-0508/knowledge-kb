@@ -113,8 +113,9 @@ SSH 将 JSON 送入服务器的 `kb-backend` 容器，不需要开放新的公�
 1. 读取飞书文档 `revision`；与上次成功 checkpoint 相同则直接结束。
 2. revision 变化后读取完整工作表并执行与手动导出相同的全表校验。
 3. 读取结束后再次检查 revision；读取期间发生变化则丢弃本次结果并重试。
-4. 校验通过后调用容器内 `sync_model_configurations`，成功后才写入 checkpoint。
-5. 记录新增、修改、未变化结果；源表删行默认不自动废弃知识。
+4. 多来源真实写入前先对全部来源执行一次只读预检；任一来源校验失败时，本次不写入任何来源。
+5. 全部预检通过后调用容器内 `sync_model_configurations`，成功后才写入 checkpoint。
+6. 记录新增、修改、未变化结果；源表删行默认不自动废弃知识。
 
 安装模板：
 
@@ -158,6 +159,9 @@ set +a
 /usr/bin/python3 /opt/knowledge-kb-model-sync/sync_model_configurations_scheduler.py --check-only
 systemctl enable --now knowledge-kb-model-configuration-sync.timer
 ```
+
+定时服务默认带 `--preflight-all-sources`：每次发现需要同步时，先对所有来源
+完成全量只读校验；任一来源失败就停止本轮写入，避免只写入一部分来源。
 
 服务器首次配置 Bot 时，不要复制 Windows 上的 `lark-cli` 配置文件，也不要把
 App Secret 写入环境文件、命令参数、仓库或日志。以 root 交互登录服务器后，使用

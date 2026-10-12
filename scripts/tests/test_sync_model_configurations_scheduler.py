@@ -830,6 +830,30 @@ class MultiSourceSyncTests(unittest.TestCase):
             )
             self.assertNotIn("phone-node", json.dumps(phone_state, ensure_ascii=False))
 
+    def test_preflight_failure_blocks_all_source_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(
+                directory,
+                wiki_root="wiki-root",
+                source_config_path=_wiki_source_config(directory),
+                preflight_all_sources=True,
+            )
+            lark = self._wiki_lark()
+            lark.cells_by_token["phone-book"]["data"]["ranges"][0]["cells"][0].pop()
+            calls = []
+
+            result = run_once(
+                config,
+                lark=lark,
+                backend_sync=lambda _config, payload: calls.append(payload),
+            )
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["preflight"], "failed")
+        self.assertEqual(calls, [])
+        self.assertEqual(len(result["failed_sources"]), 1)
+        self.assertEqual(result["failed_sources"][0]["sheet_id"], "phone-sheet")
+
     def test_unexpected_source_exception_is_isolated(self):
         with tempfile.TemporaryDirectory() as directory:
             config = _config(

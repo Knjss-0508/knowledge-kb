@@ -81,6 +81,7 @@ class SchedulerConfig:
     command_timeout_seconds: int
     force: bool
     check_only: bool
+    preflight_all_sources: bool = False
     # 单表模式沿用历史默认值；Wiki 模式会由来源清单覆盖这些字段。
     category_id: str = DEFAULT_CATEGORY_ID
     category_name: str = DEFAULT_CATEGORY_NAME
@@ -1768,6 +1769,59 @@ def _run_wiki_once(
 
         results: list[dict[str, Any]] = []
         failures: list[dict[str, str]] = []
+
+        if config.preflight_all_sources and not config.check_only:
+            preflight_config = replace(config, check_only=True)
+            for source in sources:
+                try:
+                    _run_source_once(
+                        preflight_config,
+                        source,
+                        lark=lark_client,
+                        backend_sync=backend_sync,
+                    )
+                except Exception as exc:
+                    message = _safe_message(
+                        str(exc), spreadsheet_token=source.spreadsheet_token
+                    )
+                    if not message:
+                        message = f"{type(exc).__name__}"
+                    try:
+                        checkpoint_error = _record_source_error(config, source, message)
+                        if checkpoint_error:
+                            message = f"{message}；{checkpoint_error}"
+                    except Exception as checkpoint_exc:
+                        message = (
+                            f"{message}；来源失败 checkpoint 写入失败："
+                            + _safe_message(str(checkpoint_exc))
+                        )
+                    failures.append(
+                        {
+                            "workbook_title": source.workbook_title,
+                            "sheet_id": source.sheet_id,
+                            "reason": message,
+                        }
+                    )
+                    log(
+                        f"来源预检失败（{source.workbook_title}/{source.sheet_id}）：{message}",
+                        level="ERROR",
+                    )
+            if failures:
+                log(
+                    "多来源预检未全部通过，本次不写入任何来源："
+                    f"failed={len(failures)}。",
+                    level="ERROR",
+                )
+                return {
+                    "status": "partial",
+                    "sources": [],
+                    "failed_sources": failures,
+                    "skipped_sources": all_skipped,
+                    "missing_previous_sources": missing_previous_sources,
+                    "ignored_non_target_sources": ignored_non_target_sources,
+                    "preflight": "failed",
+                }
+
         for source in sources:
             try:
                 result = _run_source_once(
@@ -1873,6 +1927,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--command-timeout-seconds", type=int, default=int(os.environ.get("MODEL_CONFIG_SYNC_COMMAND_TIMEOUT_SECONDS", "900")))
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument(
+        "--preflight-all-sources",
+        action="store_true",
+        help="多来源真实写入前先完成所有来源的全量只读校验。",
+    )
     return parser
 
 
@@ -1905,6 +1964,7 @@ def _config_from_args(args: argparse.Namespace) -> SchedulerConfig:
         command_timeout_seconds=args.command_timeout_seconds,
         force=args.force,
         check_only=args.check_only,
+        preflight_all_sources=args.preflight_all_sources,
         category_id=_identity_text(args.category_id),
         category_name=_identity_text(args.category_name),
         sheet_name=_identity_text(args.sheet_name) or DEFAULT_TARGET_SHEET_NAME,
