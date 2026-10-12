@@ -605,6 +605,35 @@ class ScheduledSyncTests(unittest.TestCase):
             self.assertEqual(result["reason"], "revision_unchanged")
             self.assertEqual(calls, [])
 
+    def test_last_error_forces_retry_when_revision_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(directory)
+            config.state_path.write_text(
+                json.dumps(
+                    {
+                        "spreadsheet_token_sha256": _spreadsheet_fingerprint(
+                            config.spreadsheet_token
+                        ),
+                        "sheet_id": config.sheet_id,
+                        "last_success_revision": "1",
+                        "source_definition_sha256": "",
+                        "last_error": {"message": "上次后端暂时不可用"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calls = []
+
+            result = run_once(
+                config,
+                lark=FakeLark(["1", "1"], _cells(revision="1")),
+                backend_sync=lambda _config, payload: calls.append(payload)
+                or {"status": "success", "created": 1},
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(calls), 1)
+
     def test_revision_change_syncs_then_persists_checkpoint(self):
         with tempfile.TemporaryDirectory() as directory:
             config = _config(directory)
@@ -991,31 +1020,23 @@ class MultiSourceSyncTests(unittest.TestCase):
         self.assertEqual(len(matched), 1)
         self.assertEqual(matched[0].category_id, "999")
 
-    def test_example_source_config_uses_strong_sheet_ids_without_title_dependency(self):
+    def test_example_source_config_is_redacted_and_keeps_ten_category_templates(self):
         with tempfile.TemporaryDirectory() as directory:
             path = SCRIPT_ROOT.parent / "deploy" / "systemd" / "model-configuration-sources.example.json"
             document = json.loads(path.read_text(encoding="utf-8"))
             self.assertFalse(document["include_default_mappings"])
             self.assertEqual(len(document["sources"]), 10)
-            self.assertTrue(all(item.get("sheet_id") for item in document["sources"]))
+            self.assertTrue(
+                all(
+                    item["spreadsheet_token"].startswith("<")
+                    and item["wiki_node_token"].startswith("<")
+                    and item["sheet_id"].startswith("<")
+                    for item in document["sources"]
+                )
+            )
             self.assertTrue(
                 all("workbook_title" not in item for item in document["sources"])
             )
-            mappings, _ = _load_source_mappings(
-                _config(directory, source_config_path=path)
-            )
-            watch = next(item for item in document["sources"] if item["sheet_id"] == "2TrbJP")
-            mapping = _resolve_source_mapping(
-                mappings,
-                spreadsheet_token=watch["spreadsheet_token"],
-                wiki_node_token=watch["wiki_node_token"],
-                workbook_title="智能手表",
-                sheet_name="个性化配置信息",
-                sheet_id="2TrbJP",
-            )
-
-        self.assertIsNotNone(mapping)
-        self.assertEqual((mapping.category_id, mapping.category_name), ("1100000170", "手表"))
 
     def test_strong_spreadsheet_token_cannot_fallback_to_shared_sheet_id(self):
         mapping = SourceMapping(
