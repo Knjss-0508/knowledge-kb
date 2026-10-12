@@ -84,6 +84,14 @@ class BlindLabelWorkOrder(Base):
     category_id = Column(String(64), nullable=True, index=True)
     category_name = Column(String(128), nullable=True)
     candidate_snapshot = Column(JSON, nullable=False, default=list)
+    # 工单创建时固化需要的独立标注人数。历史工单保留原 3 人口径，新工单
+    # 使用当前的 5 人口径，避免规则升级后已完成工单被重新派发。
+    assignment_limit = Column(
+        Integer,
+        nullable=False,
+        default=5,
+        server_default=text("5"),
+    )
     source_created_at = Column(DateTime, nullable=True, index=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -173,7 +173,7 @@ class BlindLabelSubmitResponse(BaseModel):
 
 
 class BlindLabelConsensus(BaseModel):
-    status: Literal["pending", "majority", "unanimous", "arbitrated"]
+    status: Literal["pending", "majority", "consensus", "unanimous", "arbitrated"]
     completed_annotators: int = Field(alias="completedAnnotators")
     needs_arbitration: bool = Field(alias="needsArbitration")
     candidate_results: list[dict[str, Any]] = Field(
