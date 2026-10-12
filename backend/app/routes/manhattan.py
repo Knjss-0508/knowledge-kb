@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -7,7 +8,15 @@ from threading import Lock
 from urllib.parse import urljoin
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 
 from app.core.config import settings
 from app.models.user import User
@@ -22,6 +31,8 @@ _refresh_lock = asyncio.Lock()
 _cache_snapshot_lock = Lock()
 _cache_snapshot_signature: tuple[str, int, int] | None = None
 _cache_snapshot: dict | None = None
+# 缓存内容版本标记，用于派生 ETag；与 _cache_snapshot 同锁更新。
+_cache_snapshot_token: str = ""
 _refresh_status = {
     "running": False,
     "stage": "idle",
@@ -193,8 +204,31 @@ def _json_or_auth_error(resp: httpx.Response):
             raise HTTPException(502, f"Manhattan API returned non-JSON data: {text}")
 
 
+def _cache_version_token(signature: tuple[str, int, int], cache: dict) -> str:
+    """由缓存文件签名与 updated_at 派生内容版本标记，供 ETag 使用。
+
+    缓存刷新统一走 `_write_cache` 的 `os.replace`，换入新文件后 mtime_ns 必然变化，
+    所以这个标记会随内容一起更新；同一份文件在所有进程/重启后得到同一个标记，
+    保证多 worker 之间 ETag 一致。
+    """
+    payload = "|".join(
+        (
+            str(signature[0]),
+            str(signature[1]),
+            str(signature[2]),
+            str(cache.get("updated_at") or ""),
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
 def _read_cache() -> dict:
-    global _cache_snapshot_signature, _cache_snapshot
+    """读取机型缓存快照；文件未变化时直接复用进程内快照。
+
+    这是缓存读取的唯一入口，同时被既有单测当作替换点（monkeypatch `_read_cache`），
+    因此所有读取路径都必须经过这里。
+    """
+    global _cache_snapshot_signature, _cache_snapshot, _cache_snapshot_token
 
     cache_path = os.path.abspath(CACHE_FILE)
     try:
@@ -219,7 +253,19 @@ def _read_cache() -> dict:
                 cache = _ensure_options_by_business_type(json.load(f))
         _cache_snapshot_signature = signature
         _cache_snapshot = cache
+        _cache_snapshot_token = _cache_version_token(signature, cache)
         return cache
+
+
+def _cache_snapshot_and_token() -> tuple[dict, str]:
+    """返回缓存快照及其版本标记，供 ETag 使用。
+
+    快照统一经 `_read_cache()` 取得，版本标记与快照在同一把锁内更新，这里紧接着读取
+    即与返回值配套；因此 ETag 始终与本次响应体出自同一份文件状态。
+    """
+    cache = _read_cache()
+    with _cache_snapshot_lock:
+        return cache, _cache_snapshot_token
 
 
 def cached_applicable_category_ids(business_type: str) -> set[str]:
@@ -258,7 +304,7 @@ def cached_manhattan_options_snapshot() -> dict:
 
 
 def _write_cache(data: dict) -> None:
-    global _cache_snapshot_signature, _cache_snapshot
+    global _cache_snapshot_signature, _cache_snapshot, _cache_snapshot_token
 
     os.makedirs(DATA_DIR, exist_ok=True)
     tmp_file = CACHE_FILE + ".tmp"
@@ -268,6 +314,7 @@ def _write_cache(data: dict) -> None:
         os.replace(tmp_file, CACHE_FILE)
         _cache_snapshot_signature = None
         _cache_snapshot = None
+        _cache_snapshot_token = ""
 
 
 def _extract_items(raw) -> list:
@@ -606,29 +653,112 @@ def get_manhattan_session():
     }
 
 
+# 缓存响应头：private 防止共享缓存串号；no-cache 表示「可以存本地，但每次都必须
+# 回源校验」，配合 ETag 命中时只回 304（几十字节，不再重传 4.3MB）。
+# 这里刻意不用 max-age>0：前端「刷新缓存」按钮会 POST /manhattan/cache/refresh
+# （frontend/index.html:6698）再重新 GET 本接口（frontend/index.html:6724），
+# 若浏览器有 60 秒新鲜期，刷新后仍会拿到本地旧副本，看起来像刷新没生效。
+# 如果后续确认不需要这个即时性，把它改成 "private, max-age=60" 即可。
+MANHATTAN_CACHE_CONTROL = "private, no-cache"
+
+
+def _etag_matches(if_none_match: str, etag: str) -> bool:
+    """按 RFC 9110 的弱比较语义判断 If-None-Match 是否命中当前 ETag。"""
+    header = (if_none_match or "").strip()
+    if not header:
+        return False
+    if header == "*":
+        return True
+    target = etag[2:] if etag.startswith("W/") else etag
+    for candidate in header.split(","):
+        value = candidate.strip()
+        if value.startswith("W/"):
+            value = value[2:]
+        if value and value == target:
+            return True
+    return False
+
+
 @router.get("/cache")
 def get_manhattan_cache(
     business_type: str | None = Query(
         None,
         description="按业务类型读取适用类目缓存：self_operated 或 aggregated",
     ),
+    include_options_by_business_type: bool = Query(
+        False,
+        description=(
+            "兼容开关：显式传 1 时额外返回旧的 options_by_business_type 字段（体积翻倍）"
+        ),
+    ),
+    request: Request = None,
+    response: Response = None,
 ):
-    cache = _read_cache()
-    if business_type is None:
-        return cache
+    """读取曼哈顿选项缓存，默认只下发前端真正消费的字段。
 
-    normalized_business_type = business_type.strip().lower()
-    if normalized_business_type not in BUSINESS_TYPES:
-        raise HTTPException(
-            400,
-            "business_type must be self_operated or aggregated.",
+    前端字段契约（只读确认，未改动 `frontend/index.html`；行号会随前端继续改动
+    漂移，按函数名定位）：
+    - `loadEmbeddingLabScopeOptions()`（约 4225 行）不带 business_type 请求，只读
+      顶层 `updated_at` / `applicable_categories` / `brands_by_category` / `models`；
+    - `loadManhattanOptions()`（约 6806 行）带 business_type 请求，只读平铺后的
+      `updated_at` / `applicable_categories` / `brands_by_category` / `models`
+      以及 `business_type` 本身。
+    两个调用点都不读 `options_by_business_type`，而它只是 self_operated 分组的整份
+    逐字节副本（4.3MB，正好是 8.6MB 响应的一半），因此默认不再下发；确实需要旧
+    形状时显式传 `include_options_by_business_type=1`。
+
+    `request` / `response` 由 FastAPI 注入（两个参数带默认值不影响注入）；以普通
+    函数形式直接调用时它们为 None，此时返回普通 dict 且不设置缓存头。
+    """
+    cache, token = _cache_snapshot_and_token()
+
+    if business_type is None:
+        variant = "all"
+        payload = {
+            key: value
+            for key, value in cache.items()
+            if key != "options_by_business_type"
+        }
+    else:
+        normalized_business_type = business_type.strip().lower()
+        if normalized_business_type not in BUSINESS_TYPES:
+            raise HTTPException(
+                400,
+                "business_type must be self_operated or aggregated.",
+            )
+        variant = normalized_business_type
+        payload = {
+            "updated_at": cache.get("updated_at"),
+            "business_type": normalized_business_type,
+            **cache["options_by_business_type"][normalized_business_type],
+        }
+
+    if include_options_by_business_type:
+        payload["options_by_business_type"] = cache.get(
+            "options_by_business_type", {}
         )
 
-    return {
-        "updated_at": cache.get("updated_at"),
-        "business_type": normalized_business_type,
-        **cache["options_by_business_type"][normalized_business_type],
-    }
+    shape = "legacy" if include_options_by_business_type else "compact"
+    etag = f'"{token}-{variant}-{shape}"'
+    if response is not None:
+        response.headers["ETag"] = etag
+        response.headers["Cache-Control"] = MANHATTAN_CACHE_CONTROL
+        response.headers["X-Manhattan-Cache-Shape"] = shape
+
+    if request is not None and _etag_matches(
+        request.headers.get("if-none-match", ""),
+        etag,
+    ):
+        # 304 要自带缓存头：返回 Response 实例时 FastAPI 会丢弃注入 response 上的头。
+        return Response(
+            status_code=304,
+            headers={
+                "ETag": etag,
+                "Cache-Control": MANHATTAN_CACHE_CONTROL,
+            },
+        )
+
+    return payload
 
 
 async def _refresh_manhattan_cache_job(cookie: str) -> None:

@@ -1,13 +1,15 @@
 import logging
 import hashlib
 import uuid
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import and_, case, func, text
+from sqlalchemy import and_, case, cast, func, select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -729,6 +731,71 @@ def _retrieval_request_event_groups(
         sorted(group, key=_retrieval_event_sort_key, reverse=True)
         for group in grouped.values()
     ]
+
+
+# The retrieval analytics view reads every column of retrieval_quality_events except
+# this one.  It is 111 bytes per row, so leaving it out keeps ~10MB off the wire on a
+# 95k-event response.  All remaining columns are selected under their own names, so the
+# payload builders below keep reading the same attributes they always did.
+_RETRIEVAL_ANALYTICS_SKIPPED_COLUMNS = frozenset({"idempotency_key"})
+
+
+def _retrieval_analytics_event_columns() -> list:
+    """Event columns for the analytics view, without the unused wide ones.
+
+    These rows go through plain ``select()`` instead of the ORM: materialising 95k
+    ORM entities costs several seconds of Python object construction, and the analytics
+    path never needs identity, change tracking or relationships.
+    """
+
+    return [
+        getattr(RetrievalQualityEvent, column.name).label(column.name)
+        for column in RetrievalQualityEvent.__table__.columns
+        if column.name not in _RETRIEVAL_ANALYTICS_SKIPPED_COLUMNS
+    ]
+
+
+def _retrieval_request_payload_pages(
+    rows,
+    batch_size: int = 2000,
+    max_buffered_groups: int = 256,
+):
+    """Build request payloads while walking the event rows in batches.
+
+    The analytics view builds one payload per request out of every event of that
+    request, and the event table stores a candidate snapshot per row.  Loading the
+    whole window with ``.all()`` therefore keeps every wide JSONB of the window
+    alive in the process at once, which is what pushed the resident set of the
+    backend up by hundreds of megabytes per call.  Walking the rows in batches
+    instead lets the driver stream them, so only one batch of event rows is
+    materialised at a time; the merged candidate snapshots are still discarded as
+    soon as the payload for their request has been built.
+
+    Request groups are contiguous in the stream: the query that selects the events
+    keeps its ``row_number()`` ordering, and every event of a request shares its
+    ``conversation_id``/``request_id`` pair, so a group can be closed as soon as a
+    different pair shows up.  ``max_buffered_groups`` is a safety valve for the case
+    where the driver ever returns the rows in another order: instead of buffering the
+    whole result set (which is the behaviour this helper exists to avoid) the extra
+    groups are flushed on their own, so the endpoint keeps working at the cost of
+    merging fewer events per request.
+    """
+
+    pending: OrderedDict[tuple[str, str, str], list[RetrievalQualityEvent]] = (
+        OrderedDict()
+    )
+    for row in rows.yield_per(batch_size):
+        event: RetrievalQualityEvent = row
+        key = _retrieval_request_group_key(event)
+        if pending and key not in pending:
+            closed = pending.popitem(last=False)
+            yield _retrieval_request_payload(closed[1])
+        pending.setdefault(key, []).append(event)
+        while len(pending) > max_buffered_groups:
+            oldest = pending.popitem(last=False)
+            yield _retrieval_request_payload(oldest[1])
+    for group in pending.values():
+        yield _retrieval_request_payload(group)
 
 
 def _retrieval_candidate_score(candidate: dict) -> float | None:
@@ -2102,17 +2169,21 @@ def get_feedback_records(
         .limit(page_size)
         .all()
     )
-    operator_rows = operator_scope.with_entities(
-        RetrievalQualityEvent.event_metadata
-    ).all()
-    operators = sorted(
-        {
-            str((metadata or {}).get("operator_name") or "").strip()
-            for (metadata,) in operator_rows
-            if isinstance(metadata, dict)
-            and str(metadata.get("operator_name") or "").strip()
-        }
+    # 上传人下拉曾经把整个日期范围内每条事件的 event_metadata JSONB 全部拉进
+    # Python 再去重（实测 24 万行 / 约 0.5 GB 常驻），进程 RSS 会被抬到几百 MB
+    # 且不再归还操作系统。改由数据库做去重与排序，Python 只接收字符串。
+    operator_rows = (
+        operator_scope.with_entities(operator_expr.label("operator_name"))
+        .filter(operator_expr != "")
+        .distinct()
+        .order_by(operator_expr)
+        .all()
     )
+    operators = [
+        str(name).strip()
+        for (name,) in operator_rows
+        if str(name or "").strip()
+    ]
     return {
         "items": [_feedback_record_candidate(event) for event in events],
         "pagination": {
@@ -2181,25 +2252,22 @@ def get_retrieval_analytics(
         "reviewed": 0,
         "training_eligible": 0,
     }
-    latest_request_events = (
-        db.query(RetrievalQualityEvent)
-        .filter(
-            RetrievalQualityEvent.id.in_(
-                latest_retrieval_quality_request_event_ids(
-                    start_at=start_at,
-                    end_at=end_at,
-                )
-            )
-        )
-        .all()
+    requested_event_ids = latest_retrieval_quality_request_event_ids(
+        start_at=start_at,
+        end_at=end_at,
     )
-    request_payloads = [
-        _retrieval_request_payload(events)
-        for events in _retrieval_request_event_groups(
-            latest_request_events
+    # 全窗口统计、风险筛选、排序和当前页内容都按完整事件计算，但事件行按批流式
+    # 读取（见 _retrieval_request_payload_pages）：旧实现用 .all() 一次性把 7 天窗口
+    # 的全部事件行（含每行 candidate_snapshot 这个最宽的 JSONB）物化进进程，实测
+    # 单次调用把 RSS 推高数百 MB，glibc 释放后不归还操作系统，于是 40 多小时的
+    # 高负载 + 偶发大窗口查询把常驻内存抬到 2.6GB。
+    summary_events = db.execute(
+        select(*_retrieval_analytics_event_columns()).where(
+            RetrievalQualityEvent.id.in_(requested_event_ids)
         )
-    ]
-    request_payloads.sort(
+    )
+    summary_payloads = list(_retrieval_request_payload_pages(summary_events))
+    summary_payloads.sort(
         key=lambda item: (
             item["created_at"] is not None,
             item["created_at"],
@@ -2207,7 +2275,7 @@ def get_retrieval_analytics(
         ),
         reverse=True,
     )
-    for item in request_payloads:
+    for item in summary_payloads:
         outcome = str(item["outcome"] or "")
         if outcome in summary:
             summary[outcome] += 1
@@ -2245,11 +2313,11 @@ def get_retrieval_analytics(
         if item["training_eligible"]:
             summary["training_eligible"] += 1
     summary["candidate_queries"] = summary["candidate_requests"]
-    summary["total"] = len(request_payloads)
+    summary["total"] = len(summary_payloads)
 
     risk_items = [
         item
-        for item in request_payloads
+        for item in summary_payloads
         if (
             (item["review_status"] == "unreviewed")
             if pending_only
@@ -2262,9 +2330,11 @@ def get_retrieval_analytics(
     risk_total = len(risk_items)
     risk_total_pages = max(1, (risk_total + page_size - 1) // page_size)
     page = min(page, risk_total_pages)
-    risks = risk_items[
+    page_items = risk_items[
         (page - 1) * page_size : page * page_size
     ]
+
+    risks = page_items[:page_size]
 
     def rate(numerator: int, denominator: int) -> float:
         return round(numerator / denominator, 4) if denominator else 0.0
@@ -2303,7 +2373,7 @@ def get_retrieval_analytics(
 
     latencies = sorted(
         float(item["total_latency_ms"])
-        for item in request_payloads[:5000]
+        for item in summary_payloads[:5000]
         if item["total_latency_ms"] is not None
     )
 
@@ -2776,6 +2846,194 @@ def queue_knowledge_review_candidates(
     )
 
 
+# The candidate review list never reads these ingestion columns.  They are only ever
+# written by the ingestion pipeline, and they are the widest payloads on a 123MB table:
+# fetching them for every review page, together with full ORM entity construction, was
+# the bulk of the endpoint's runtime.
+_CANDIDATE_REVIEW_SKIPPED_COLUMNS = frozenset(
+    {
+        "source_message_ids",
+        "processing_metadata",
+    }
+)
+
+_CANDIDATE_REVIEW_BASE_FILTERS = (
+    IntegrationIngestion.review_status.isnot(None),
+    IntegrationIngestion.source_system != "excel",
+)
+
+
+def _candidate_review_rows_query():
+    return (
+        select(
+            *[
+                getattr(IntegrationIngestion, column.name).label(column.name)
+                for column in IntegrationIngestion.__table__.columns
+                if column.name not in _CANDIDATE_REVIEW_SKIPPED_COLUMNS
+            ]
+        )
+        .where(*_CANDIDATE_REVIEW_BASE_FILTERS)
+        .order_by(IntegrationIngestion.created_at.desc())
+    )
+
+
+def _candidate_review_full_items(
+    db: Session,
+    item_ids: list[str],
+) -> list[CandidateReviewListItem]:
+    """按给定 id 顺序取回整行并构造完整条目。
+
+    只有当前页（最多 limit 条）需要完整字段，列表统计与筛选走窄投影。
+    """
+
+    if not item_ids:
+        return []
+    rows = {
+        row.id: row
+        for row in db.execute(
+            _candidate_review_rows_query().where(IntegrationIngestion.id.in_(item_ids))
+        ).all()
+    }
+    return [
+        _candidate_review_item(rows[item_id]) for item_id in item_ids if item_id in rows
+    ]
+
+
+def _candidate_review_light_query(*, with_keyword_fields: bool):
+    """列表统计与筛选需要的窄投影查询。
+
+    candidate_payload / review_metadata 是 json 列（不是 jsonb），一个 `->` 就会
+    重新解析整个文档：19341 行、candidate_payload 合计 152MB 的快照上，取全字段要
+    3.2s（其中绝大部分是传输与解析），而列表统计/筛选只用到少数几个派生字段。
+    这里先 CAST 成 jsonb 解析一次，再只投影需要的字段，后续只对当前页取整行。
+
+    三层子查询各自的 LIMIT 与 confidence_training 里的做法一致：阻止 PostgreSQL
+    把子查询内联进外层，否则 CAST 会被复制进每个 `->` 表达式，19341 行上要多花数秒。
+    """
+
+    payload = cast(IntegrationIngestion.candidate_payload, JSONB).label("payload")
+    metadata = cast(IntegrationIngestion.review_metadata, JSONB).label("metadata")
+    parsed = (
+        select(
+            IntegrationIngestion.id.label("id"),
+            IntegrationIngestion.event_id.label("event_id"),
+            IntegrationIngestion.source_conversation_id.label("source_conversation_id"),
+            IntegrationIngestion.review_status.label("review_status"),
+            IntegrationIngestion.updated_at.label("updated_at"),
+            IntegrationIngestion.created_at.label("created_at"),
+            payload,
+            metadata,
+        )
+        .where(*_CANDIDATE_REVIEW_BASE_FILTERS)
+        .limit(2**31 - 1)
+        .subquery("candidate_review_parsed")
+    )
+    # 这一层只做「取子文档」，所有 `a or b` 的取值链都留在 Python 侧，与
+    # `_candidate_review_item` 的语义逐字一致（包括 0 / false 这类病态真假值）。
+    fact_columns = [
+        parsed.c.id.label("id"),
+        parsed.c.event_id.label("event_id"),
+        parsed.c.source_conversation_id.label("source_conversation_id"),
+        parsed.c.review_status.label("review_status"),
+        parsed.c.updated_at.label("updated_at"),
+        parsed.c.created_at.label("created_at"),
+        parsed.c.payload["model_review"].label("candidate_model_review"),
+        parsed.c.metadata["model_review"].label("metadata_model_review"),
+        parsed.c.payload["human_review"].label("candidate_human_review"),
+        parsed.c.metadata["human_review"].label("metadata_human_review"),
+        parsed.c.metadata["deduplication"].label("deduplication"),
+        parsed.c.metadata["deduplication_confirmation"].label(
+            "deduplication_confirmation"
+        ),
+        parsed.c.payload["knowledge"]["applicable_categories"].label(
+            "applicable_categories"
+        ),
+    ]
+    if with_keyword_fields:
+        fact_columns.append(parsed.c.payload["knowledge"]["title"].label("title"))
+        fact_columns.append(
+            parsed.c.payload["knowledge"]["evidence_excerpt"].label("evidence_excerpt")
+        )
+    facts = select(*fact_columns).limit(2**31 - 1).subquery("candidate_review_facts")
+    columns = [
+        facts.c.id,
+        facts.c.event_id,
+        facts.c.source_conversation_id,
+        facts.c.review_status,
+        facts.c.updated_at,
+        facts.c.candidate_model_review,
+        facts.c.metadata_model_review,
+        facts.c.candidate_human_review,
+        facts.c.metadata_human_review,
+        facts.c.deduplication,
+        facts.c.deduplication_confirmation,
+        facts.c.applicable_categories,
+    ]
+    if with_keyword_fields:
+        columns.append(facts.c.title)
+        columns.append(facts.c.evidence_excerpt)
+    return select(*columns).order_by(facts.c.created_at.desc())
+
+
+def _candidate_review_light_rows(db: Session, *, keyword: str) -> list:
+    """列表统计与筛选需要的窄投影行。"""
+
+    return db.execute(
+        _candidate_review_light_query(with_keyword_fields=bool(keyword.strip()))
+    ).all()
+
+
+def _candidate_review_light_item(row) -> CandidateReviewListItem:
+    """`_candidate_review_item` 的窄投影版本，只填列表统计/筛选读取的字段。
+
+    这里刻意复用与完整版本相同的派生逻辑（`normalize_human_review`、
+    `IntegrationDedupResponse` 校验、去重确认比对），只有 title / evidence_excerpt
+    在关键词搜索之外不做投影。
+    """
+
+    raw_model_review = row.candidate_model_review or row.metadata_model_review or {}
+    model_review = (
+        {
+            "priority_review": raw_model_review.get("priority_review"),
+            "knowledge_value": raw_model_review.get("knowledge_value"),
+        }
+        if isinstance(raw_model_review, dict)
+        else {"priority_review": None, "knowledge_value": None}
+    )
+    deduplication = None
+    raw_deduplication = row.deduplication
+    if isinstance(raw_deduplication, dict):
+        try:
+            deduplication = IntegrationDedupResponse.model_validate(raw_deduplication)
+        except ValueError:
+            logger.warning(
+                "Ignoring malformed deduplication metadata for candidate review %s",
+                row.id,
+            )
+    confirmation = dict(row.deduplication_confirmation or {})
+    return CandidateReviewListItem.model_construct(
+        id=row.id,
+        event_id=row.event_id,
+        source_conversation_id=row.source_conversation_id,
+        review_status=row.review_status or "pending",
+        title=str(getattr(row, "title", "") or ""),
+        evidence_excerpt=getattr(row, "evidence_excerpt", None),
+        applicable_categories=list(row.applicable_categories or []),
+        model_review=model_review,
+        human_review=normalize_human_review(
+            row.candidate_human_review or row.metadata_human_review or {}
+        ),
+        priority_review=bool(model_review.get("priority_review")),
+        deduplication=deduplication,
+        deduplication_confirmed=(
+            _deduplication_confirmation_matches_response(confirmation, deduplication)
+            if deduplication
+            else False
+        ),
+        updated_at=row.updated_at,
+    )
+
+
 @router.get(
     "/candidate-reviews",
     response_model=CandidateReviewListResponse,
@@ -2797,16 +3055,8 @@ def list_candidate_reviews(
 ):
     if updated_from and updated_to and updated_from > updated_to:
         raise HTTPException(status_code=400, detail="更新时间开始日期不能晚于结束日期。")
-    rows = (
-        db.query(IntegrationIngestion)
-        .filter(
-            IntegrationIngestion.review_status.isnot(None),
-            IntegrationIngestion.source_system != "excel",
-        )
-        .order_by(IntegrationIngestion.created_at.desc())
-        .all()
-    )
-    all_items = [_candidate_review_item(row) for row in rows]
+    rows = _candidate_review_light_rows(db, keyword=keyword)
+    all_items = [_candidate_review_light_item(row) for row in rows]
     product_categories: dict[str, dict[str, str]] = {}
     for item in all_items:
         for raw_category in item.applicable_categories:
@@ -2906,11 +3156,12 @@ def list_candidate_reviews(
             )
         ]
 
+    page_items = filtered[offset : offset + limit]
     return CandidateReviewListResponse(
         total=len(filtered),
         summary=summary,
         product_categories=sorted(product_categories.values(), key=lambda category: category["label"]),
-        items=filtered[offset : offset + limit],
+        items=_candidate_review_full_items(db, [item.id for item in page_items]),
     )
 
 

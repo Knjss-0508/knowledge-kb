@@ -744,7 +744,8 @@
             </div>
             <div class="ms-menu" v-if="filterDrop==='applicableCategories'">
               <div class="ms-all" @click="selectAllListFilterVisible('applicableCategories')">全选</div>
-              <div class="ms-empty" v-if="!listFilterOptions('applicableCategories').length">暂无类目数据</div>
+              <div class="ms-empty" v-if="listFilterLoading">正在加载适用类目...</div>
+              <div class="ms-empty" v-else-if="!listFilterOptions('applicableCategories').length">暂无类目数据</div>
               <div class="ms-opt" :class="{on:isListFilterSelected('applicableCategories',optValue(option))}" v-for="option in visibleListFilterOptions('applicableCategories')" :key="optKey(option)" @click="toggleListFilterSelected('applicableCategories',optValue(option))"><span>{{optLabel(option)}}</span><span class="ms-opt-check" v-if="isListFilterSelected('applicableCategories',optValue(option))">✓</span></div>
             </div>
           </div>
@@ -760,9 +761,10 @@
             <div class="ms-menu" v-if="filterDrop==='brands'">
               <div class="ms-all" v-if="listFilterOptions('brands').length" @click="selectAllListFilterVisible('brands')">全选</div>
               <div class="ms-empty" v-if="!f.applicableCategoryIds.length">请先选择类目</div>
+              <div class="ms-empty" v-else-if="listFilterLoading">正在加载适用品牌...</div>
               <div class="ms-empty" v-else-if="!listFilterOptions('brands').length">暂无品牌数据</div>
               <div class="ms-opt" :class="{on:isListFilterSelected('brands',optValue(option))}" v-for="option in visibleListFilterOptions('brands')" :key="optKey(option)" @click="toggleListFilterSelected('brands',optValue(option))"><span>{{optLabel(option)}}</span><span class="ms-opt-check" v-if="isListFilterSelected('brands',optValue(option))">✓</span></div>
-              <div class="ms-more" v-if="hiddenListFilterOptionCount('brands') > 0">还有 {{hiddenListFilterOptionCount('brands')}} 个品牌，请搜索缩小范围</div>
+              <div class="ms-more" v-if="hasHiddenListFilterOption('brands')">还有 {{hiddenListFilterOptionCount('brands')}} 个品牌，请搜索缩小范围</div>
             </div>
           </div>
         </div>
@@ -777,9 +779,10 @@
             <div class="ms-menu" v-if="filterDrop==='models'">
               <div class="ms-all" v-if="listFilterOptions('models').length" @click="selectAllListFilterVisible('models')">全选</div>
               <div class="ms-empty" v-if="!f.applicableCategoryIds.length||!f.brandIds.length">请先选择类目和品牌</div>
+              <div class="ms-empty" v-else-if="listFilterLoading">正在加载适用机型...</div>
               <div class="ms-empty" v-else-if="!listFilterOptions('models').length">暂无机型数据</div>
               <div class="ms-opt" :class="{on:isListFilterSelected('models',optValue(option))}" v-for="option in visibleListFilterOptions('models')" :key="optKey(option)" @click="toggleListFilterSelected('models',optValue(option))"><span>{{optLabel(option)}}</span><span class="ms-opt-check" v-if="isListFilterSelected('models',optValue(option))">✓</span></div>
-              <div class="ms-more" v-if="hiddenListFilterOptionCount('models') > 0">还有 {{hiddenListFilterOptionCount('models')}} 个机型，请搜索缩小范围</div>
+              <div class="ms-more" v-if="hasHiddenListFilterOption('models')">还有 {{hiddenListFilterOptionCount('models')}} 个机型，请搜索缩小范围</div>
             </div>
           </div>
         </div>
@@ -1814,7 +1817,7 @@
           <div class="row" v-if="showManhattanFields() && !isModelConfigurationForm()">
             <div class="fg"><label class="fl"><span class="req">*</span> 适用类目 <span style="font-weight:400;color:#86909c;font-size:11px">（至少选择一项，可多选）</span></label><div class="ms"><div class="ms-box" @click="focusMultiInput('categoryInput','applicableCategories')"><span class="ms-tag" v-for="v in fm.applicableCategories" :key="v"><span class="ms-tag-text">{{selectedLabel('applicableCategories',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('applicableCategories',v)">&times;</span></span><input ref="categoryInput" class="ms-inline-input" v-model="categoryKw" :disabled="viewOnly" :readonly="viewOnly" :aria-required="!viewOnly" :placeholder="fm.applicableCategories.length?'':'请选择类目（可多选）'" @focus="!viewOnly && (drop='applicableCategories')"><span class="ms-clear" @click.stop="clearMultiSelect('applicableCategories')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='applicableCategories'"><div class="ms-all" @click="selectAllVisible('applicableCategories', filteredApplicableCategories())">全选</div><div class="ms-empty" v-if="optErr.applicableCategories">{{optErr.applicableCategories}}</div><div class="ms-empty" v-else-if="!option.applicableCategories.length">暂无数据</div><div class="ms-opt" :class="{on:isSelected('applicableCategories',optValue(o))}" v-for="o in filteredApplicableCategories()" :key="optKey(o)" @click="toggleSelected('applicableCategories',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('applicableCategories',optValue(o))">✓</span></div></div></div><div class="hint" v-if="optErr.applicableCategories">{{optErr.applicableCategories}}</div></div>
             <div class="fg"><label class="fl">适用品牌</label><div class="ms"><div class="ms-box" @click="focusMultiInput('brandInput','brands')"><span class="ms-tag" v-for="v in fm.brands" :key="v"><span class="ms-tag-text">{{selectedLabel('brands',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('brands',v)">&times;</span></span><input ref="brandInput" class="ms-inline-input" v-model="brandKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.brands.length?'':'请选择品牌'" @focus="!viewOnly && (drop='brands')"><span class="ms-clear" @click.stop="clearMultiSelect('brands')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='brands'"><div class="ms-all" @click="selectAllVisible('brands', filteredBrands())">全选</div><div class="ms-empty" v-if="optErr.brands">{{optErr.brands}}</div><div class="ms-empty" v-else-if="!option.brands.length">请先选择类目</div><div class="ms-opt" :class="{on:isSelected('brands',optValue(o))}" v-for="o in filteredBrands()" :key="optKey(o)" @click="toggleSelected('brands',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('brands',optValue(o))">✓</span></div></div></div><div class="hint" v-if="optErr.brands">{{optErr.brands}}</div></div>
-            <div class="fg"><label class="fl">适用机型</label><div class="ms"><div class="ms-box" @click="focusMultiInput('modelInput','models')"><span class="ms-tag" v-for="v in fm.models" :key="v"><span class="ms-tag-text">{{selectedLabel('models',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('models',v)">&times;</span></span><input ref="modelInput" class="ms-inline-input" v-model="modelKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.models.length?'':'请选择机型'" @focus="!viewOnly && (drop='models')"><span class="ms-clear" @click.stop="clearMultiSelect('models')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='models'"><div class="ms-all" @click="selectAllVisible('models', visibleModels())">全选</div><div class="ms-empty" v-if="optErr.models">{{optErr.models}}</div><div class="ms-empty" v-else-if="!option.models.length">请先选择类目/品牌</div><div class="ms-opt" :class="{on:isSelected('models',optValue(o))}" v-for="o in visibleModels()" :key="optKey(o)" @click="toggleSelected('models',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('models',optValue(o))">✓</span></div><div class="ms-more" v-if="hiddenModelCount() > 0">还有 {{hiddenModelCount()}} 个机型，请搜索缩小范围</div></div></div><div class="hint" v-if="optErr.models">{{optErr.models}}</div></div>
+            <div class="fg"><label class="fl">适用机型</label><div class="ms"><div class="ms-box" @click="focusMultiInput('modelInput','models')"><span class="ms-tag" v-for="v in fm.models" :key="v"><span class="ms-tag-text">{{selectedLabel('models',v)}}</span><span class="ms-tag-x" @click.stop="removeSelected('models',v)">&times;</span></span><input ref="modelInput" class="ms-inline-input" v-model="modelKw" :disabled="viewOnly" :readonly="viewOnly" :placeholder="fm.models.length?'':'请选择机型'" @focus="!viewOnly && (drop='models')"><span class="ms-clear" @click.stop="clearMultiSelect('models')">&times;</span></div><div class="ms-menu" v-if="!viewOnly && drop==='models'"><div class="ms-all" @click="selectAllVisible('models', visibleModels())">全选</div><div class="ms-empty" v-if="optErr.models">{{optErr.models}}</div><div class="ms-empty" v-else-if="!option.models.length">请先选择类目/品牌</div><div class="ms-opt" :class="{on:isSelected('models',optValue(o))}" v-for="o in visibleModels()" :key="optKey(o)" @click="toggleSelected('models',optValue(o))"><span>{{optLabel(o)}}</span><span class="ms-opt-check" v-if="isSelected('models',optValue(o))">✓</span></div><div class="ms-more" v-if="hasHiddenModel()">还有 {{hiddenModelCount()}} 个机型，请搜索缩小范围</div></div></div><div class="hint" v-if="optErr.models">{{optErr.models}}</div></div>
           </div>
           <div class="fg" v-if="!isModelConfigurationForm()">
             <label class="fl">推荐回复</label>
@@ -1878,7 +1881,7 @@
                     <div class="ms-empty" v-if="optErr.models">{{optErr.models}}</div>
                     <div class="ms-empty" v-else-if="!option.models.length">请先选择品类和品牌</div>
                     <div class="ms-opt" :class="{on:isSelected('models',optValue(option))}" v-for="option in visibleModels()" :key="optKey(option)" @click="toggleSelected('models',optValue(option))"><span>{{optLabel(option)}}</span><span class="ms-opt-check" v-if="isSelected('models',optValue(option))">✓</span></div>
-                    <div class="ms-more" v-if="hiddenModelCount() > 0">还有 {{hiddenModelCount()}} 个机型，请搜索缩小范围</div>
+                    <div class="ms-more" v-if="hasHiddenModel()">还有 {{hiddenModelCount()}} 个机型，请搜索缩小范围</div>
                   </div>
                 </div>
                 <div class="hint" v-if="fm.models.length">当前机型ID：{{fm.models[0]}}</div>
@@ -2321,6 +2324,7 @@ Vue.createApp({
         pending: [],
         loading: false,
         available: false,
+        loaded: false,
         updatedAt: '-', modelAnnotating: false
       },
       analysis: {
@@ -2332,6 +2336,7 @@ Vue.createApp({
         pagination:{page:1,size:20,appliedPage:1,appliedSize:20,total:0,totalPages:1,jumpPage:''},
         timeFilter:{mode:'7d',appliedMode:'7d',startDate:'',endDate:'',appliedStartDate:'',appliedEndDate:''},
         loading:false,
+        loaded:false,
         error:'',
         requestSeq:0,
         updatedAt:'-'
@@ -2434,6 +2439,7 @@ Vue.createApp({
       listFilterCategoryKw: '',
       listFilterBrandKw: '',
       listFilterModelKw: '',
+      listFilterLoading: false,
       dlg: false,
       viewOnly: false,
       auditMode: false,
@@ -2499,8 +2505,9 @@ Vue.createApp({
           self.loadRoles();
           self.load();
           self.loadStats();
-          self.loadCandidateReviewDashboard();
-          if (self.isSuperAdmin()) self.loadSearchAnalysis();
+          // 首屏不再无条件并发触发秒级接口（候选复核 4.5s/818KB、召回分析 16.8s）：
+          // 运营总览的候选看板推迟到首屏渲染完成后再拉，召回分析完全改为进入向量模型页时才拉。
+          self.scheduleDeferredDashboardLoad();
           self.loadKnowledgeOrigins();
           self.loadBusinessTypes();
           self.loadCats();
@@ -3962,7 +3969,7 @@ Vue.createApp({
     openOverview: function() {
       this.view = 'overview';
       this.loadStats();
-      this.loadCandidateReviewDashboard();
+      this.ensureCandidateReviewDashboard();
     },
     openKnowledge: function(status) {
       this.view = 'knowledge';
@@ -4005,7 +4012,7 @@ Vue.createApp({
       if (tab === 'lab') this.loadEmbeddingLabScopeOptions();
       if (tab === 'samples') this.loadEmbeddingSamples();
       if (tab === 'training') this.loadEmbeddingJobs();
-      if (tab === 'quality') this.loadSearchAnalysis();
+      if (tab === 'quality') this.ensureSearchAnalysis();
     },
     loadEmbeddingOverview: function() {
       var self = this;
@@ -4848,6 +4855,7 @@ Vue.createApp({
           );
           self.candidateDashboard.pending = Array.isArray(data.items) ? data.items : [];
           self.candidateDashboard.available = true;
+          self.candidateDashboard.loaded = true;
           self.candidateDashboard.updatedAt = self.formatDate(new Date());
         })
         .catch(function(error) {
@@ -4856,6 +4864,22 @@ Vue.createApp({
           self.candidateDashboard.available = false;
         })
         .finally(function() { self.candidateDashboard.loading = false; });
+    },
+    // 候选看板按需加载：加载中/已加载都不重复请求，需要强制刷新时仍走 loadCandidateReviewDashboard。
+    ensureCandidateReviewDashboard: function() {
+      if (this.candidateDashboard.loading) return Promise.resolve(null);
+      if (this.candidateDashboard.loaded) return Promise.resolve(null);
+      return this.loadCandidateReviewDashboard();
+    },
+    // 运营总览是登录后的默认落地页，看板数据仍要展示，但推迟到首屏渲染完成之后再拉，
+    // 避免与首屏知识列表查询抢同一个后端工作进程。
+    scheduleDeferredDashboardLoad: function() {
+      var self = this;
+      if (self._dashboardLoadTimer) return;
+      self._dashboardLoadTimer = setTimeout(function() {
+        self._dashboardLoadTimer = 0;
+        self.ensureCandidateReviewDashboard();
+      }, 1200);
     },
     loadCandidateReviews: function(resetPage) {
       var self = this;
@@ -5599,6 +5623,7 @@ Vue.createApp({
             self.analysis.timeFilter.appliedEndDate = requestedFilter.endDate || '';
             self.analysis.timeFilter.mode = requestedFilter.mode;
           }
+          self.analysis.loaded = true;
           self.analysis.updatedAt = self.formatDate(new Date());
         })
         .catch(function(e) {
@@ -5617,6 +5642,13 @@ Vue.createApp({
         .finally(function() {
           if (requestSeq === self.analysis.requestSeq) self.analysis.loading = false;
         });
+    },
+    // 召回分析（服务端 16.8s）不再在首屏无条件触发：进入向量模型页的“效果分析”标签时才拉，
+    // 已加载过就不重复请求；切换筛选/分页/时间范围以及“刷新”按钮仍走 loadSearchAnalysis 强制拉取。
+    ensureSearchAnalysis: function(options) {
+      if (this.analysis.loading) return Promise.resolve(null);
+      if (this.analysis.loaded) return Promise.resolve(null);
+      return this.loadSearchAnalysis(options);
     },
     formatDate: function(value) {
       if (!value) return '-';
@@ -6579,8 +6611,12 @@ Vue.createApp({
         })
         .then(function(data) {
           self.businessTypes = Array.isArray(data) ? data : [];
+          // 首屏不再为每个业务类型各拉一份 manhattan 缓存（每份约 4.3MB）：
+          // 只保证当前已选中的业务类型可用，其余在切换业务类型或展开筛选栏时按需加载。
           self.businessTypes.forEach(function(businessType) {
-            if (businessType && businessType.value) self.loadManhattanOptions(businessType.value);
+            if (businessType && businessType.value && businessType.value === self.f.business_type) {
+              self.loadManhattanOptions(businessType.value);
+            }
           });
         })
         .catch(function(error) {
@@ -6764,10 +6800,16 @@ Vue.createApp({
           self.optErr.models = '';
         }
       }
-      return fetch(API + '/manhattan/cache?business_type=' + encodeURIComponent(requestedBusinessType), {headers:self.authHeaders()})
+      // 已有缓存直接复用；同一业务类型正在请求中时复用同一个 Promise，避免重复拉取 4.3MB。
+      if (Object.prototype.hasOwnProperty.call(self.mhCaches, requestedBusinessType)) {
+        return Promise.resolve(self.mhCaches[requestedBusinessType]);
+      }
+      if (!self._mhPending) self._mhPending = {};
+      if (self._mhPending[requestedBusinessType]) return self._mhPending[requestedBusinessType];
+      var pending = fetch(API + '/manhattan/cache?business_type=' + encodeURIComponent(requestedBusinessType), {headers:self.authHeaders()})
         .then(function(r) { if (!r.ok) return r.json().then(function(e) { throw new Error(e.detail || r.statusText); }); return r.json(); })
         .then(function(d) {
-          self.mhCaches[requestedBusinessType] = d || self.emptyManhattanCache();
+          self.mhCaches[requestedBusinessType] = self.freezeManhattanCache(d || self.emptyManhattanCache());
           if (self.fm.businessType === requestedBusinessType) self.activateFormManhattanOptions(requestedBusinessType);
           return self.mhCaches[requestedBusinessType];
         })
@@ -6775,15 +6817,113 @@ Vue.createApp({
           if (self.fm.businessType === requestedBusinessType) self.optErr.applicableCategories = e.message;
           console.error(e);
           return null;
+        })
+        .finally(function() {
+          if (self._mhPending) delete self._mhPending[requestedBusinessType];
         });
+      self._mhPending[requestedBusinessType] = pending;
+      return pending;
+    },
+    // 冻结后的对象不是 extensible，Vue 3 的 reactive 会原样返回它，
+    // 于是 31570 条机型不再逐个走 Proxy，读取开销降低约 10 倍。
+    freezeManhattanCache: function(data) {
+      if (!data || typeof data !== 'object') return data;
+      try {
+        return Object.freeze(data);
+      } catch (e) {
+        return data;
+      }
+    },
+    // 某个业务类型的曼哈顿缓存按需补拉（已有缓存或在途请求都不会重复发起）。
+    ensureManhattanCacheFor: function(businessType) {
+      var value = String(businessType || '').trim();
+      if (!value) return;
+      if (Object.prototype.hasOwnProperty.call(this.mhCaches, value)) return;
+      this.loadManhattanOptions(value);
+    },
+    // 派生结果记忆化：同一次渲染内、以及筛选条件不变时只算一次。
+    // 结果放在非响应式属性 _memoStore 上（不是 data），避免这些大数组再次被 Vue 深度代理。
+    memoStore: function() {
+      if (!this._memoStore) this._memoStore = {options: {}, filtered: {}};
+      return this._memoStore;
+    },
+    memoizedFilterOptions: function(slot, source, keyword, token) {
+      var store = this.memoStore();
+      var entry = store.filtered[slot];
+      var kw = String(keyword || '');
+      if (entry && entry.source === source && entry.token === token && entry.kw === kw) return entry.value;
+      var value = this.filterOptions(source, kw);
+      store.filtered[slot] = {source: source, token: token, kw: kw, value: value};
+      return value;
+    },
+    listFilterCaches: function() {
+      var self = this;
+      if (this.f.business_type) return [this.manhattanCacheFor(this.f.business_type)];
+      return (this.businessTypes || []).map(function(businessType) {
+        return self.manhattanCacheFor(businessType && businessType.value);
+      });
+    },
+    // 缓存 key = 业务类型 + 已选类目/品牌（列表本身与搜索词无关，搜索词在派生结果那层记忆化）。
+    listFilterSignature: function(key) {
+      return [
+        this.f.business_type || '',
+        (this.f.applicableCategoryIds || []).join(','),
+        (this.f.brandIds || []).join(',')
+      ].join('|');
+    },
+    sameCacheRefs: function(entry, caches) {
+      if (!entry || entry.caches.length !== caches.length) return false;
+      for (var i = 0; i < caches.length; i++) {
+        if (entry.caches[i] !== caches[i]) return false;
+      }
+      return true;
+    },
+    // 已选业务类型时其缓存由 loadManhattanOptions 负责；
+    // 未选（默认「全部业务」）时用一次不带参数的请求拿到两个业务类型的选项，
+    // 避免为每个业务类型各拉一份 4.3MB。
+    ensureListFilterManhattanCaches: function() {
+      var self = this;
+      if (!this.f.business_type) {
+        var missingAll = (this.businessTypes || []).some(function(businessType) {
+          return businessType && businessType.value
+            && !Object.prototype.hasOwnProperty.call(self.mhCaches, businessType.value);
+        });
+        if (!missingAll || this._mhAllPending) return;
+        this.listFilterLoading = true;
+        this._mhAllPending = fetch(API + '/manhattan/cache', {headers:this.authHeaders()})
+          .then(function(r) { if (!r.ok) return r.json().then(function(e) { throw new Error(e.detail || r.statusText); }); return r.json(); })
+          .then(function(d) {
+            var byType = (d && d.options_by_business_type) || {};
+            (self.businessTypes || []).forEach(function(businessType) {
+              var value = businessType && businessType.value;
+              if (!value || Object.prototype.hasOwnProperty.call(self.mhCaches, value)) return;
+              self.mhCaches[value] = self.freezeManhattanCache(byType[value] || self.emptyManhattanCache());
+            });
+            return d;
+          })
+          .catch(function(e) { console.error(e); return null; })
+          .finally(function() {
+            self._mhAllPending = null;
+            self.listFilterLoading = false;
+          });
+        return;
+      }
+      if (!Object.prototype.hasOwnProperty.call(this.mhCaches, this.f.business_type)) {
+        this.loadManhattanOptions(this.f.business_type);
+      }
     },
     listFilterOptions: function(key) {
+      var caches = this.listFilterCaches();
+      var store = this.memoStore();
+      var signature = this.listFilterSignature(key);
+      var entry = store.options[key];
+      if (entry && entry.signature === signature && this.sameCacheRefs(entry, caches)) return entry.value;
+      var value = this.computeListFilterOptions(key, caches);
+      store.options[key] = {signature: signature, caches: caches, value: value};
+      return value;
+    },
+    computeListFilterOptions: function(key, caches) {
       var self = this;
-      var caches = this.f.business_type
-        ? [this.manhattanCacheFor(this.f.business_type)]
-        : (this.businessTypes || []).map(function(businessType) {
-          return self.manhattanCacheFor(businessType && businessType.value);
-        });
       if (key === 'applicableCategories') {
         return this.flattenOptions(caches.reduce(function(result, cache) {
           return result.concat(cache.applicable_categories || []);
@@ -6837,18 +6977,20 @@ Vue.createApp({
       if (key === 'models') this.listFilterModelKw = '';
     },
     visibleListFilterOptions: function(key) {
-      return this.filterOptions(
-        this.listFilterOptions(key),
-        this.listFilterKeyword(key)
-      ).slice(0, 200);
+      return this.filteredListFilterOptions(key).slice(0, 200);
+    },
+    // 一次渲染里 v-if 与文本插值会各调一次，这里统一走同一份记忆化结果，只算一次。
+    hasHiddenListFilterOption: function(key) {
+      return this.filteredListFilterOptions(key).length > 200;
     },
     hiddenListFilterOptionCount: function(key) {
-      return Math.max(
-        0,
-        this.filterOptions(
-          this.listFilterOptions(key),
-          this.listFilterKeyword(key)
-        ).length - 200
+      return Math.max(0, this.filteredListFilterOptions(key).length - 200);
+    },
+    filteredListFilterOptions: function(key) {
+      return this.memoizedFilterOptions(
+        'list' + key,
+        this.listFilterOptions(key),
+        this.listFilterKeyword(key)
       );
     },
     listFilterFieldArray: function(key) {
@@ -6902,7 +7044,16 @@ Vue.createApp({
         this.listFilterModelKw = '';
       }
       this.resetKnowledgePagination();
-      this.load();
+      this.scheduleListReload();
+    },
+    // 连续点击多个筛选 tag 时合并成一次请求，避免请求风暴。
+    scheduleListReload: function() {
+      var self = this;
+      if (self._listReloadTimer) clearTimeout(self._listReloadTimer);
+      self._listReloadTimer = setTimeout(function() {
+        self._listReloadTimer = 0;
+        self.load();
+      }, 200);
     },
     listFilterSelectedLabel: function(key, value) {
       var options = this.listFilterOptions(key);
@@ -6918,6 +7069,7 @@ Vue.createApp({
       this.clearMultiSearch(this.drop);
       this.drop = '';
       this.filterDrop = key;
+      this.ensureListFilterManhattanCaches();
       var self = this;
       this.$nextTick(function() {
         var element = self.$refs[refName];
@@ -7038,16 +7190,20 @@ Vue.createApp({
       });
     },
     filteredApplicableCategories: function() {
-      return this.filterOptions(this.option.applicableCategories, this.categoryKw);
+      return this.memoizedFilterOptions('formCategories', this.option.applicableCategories, this.categoryKw, this.option.applicableCategories.length);
     },
     filteredBrands: function() {
-      return this.filterOptions(this.option.brands, this.brandKw);
+      return this.memoizedFilterOptions('formBrands', this.option.brands, this.brandKw, this.option.brands.length);
     },
     filteredModels: function() {
-      return this.filterOptions(this.option.models, this.modelKw);
+      return this.memoizedFilterOptions('formModels', this.option.models, this.modelKw, this.option.models.length);
     },
     visibleModels: function() {
       return this.filteredModels().slice(0, 200);
+    },
+    // 模板里 v-if 与文本插值原来各调一次 hiddenModelCount()，这里收敛成同一份记忆化结果。
+    hasHiddenModel: function() {
+      return this.filteredModels().length > 200;
     },
     hiddenModelCount: function() {
       return Math.max(0, this.filteredModels().length - 200);
@@ -7392,6 +7548,9 @@ Vue.createApp({
         candidate: candidate,
         target: {}
       };
+      // 弹窗里要显示「适用品类」的中文名，需要对应业务类型的曼哈顿缓存；
+      // 首屏不再预取，因此在真正要用的时候补一次（已有缓存或在途请求都不会重复发起）。
+      self.ensureManhattanCacheFor(candidate && candidate.business_type);
       fetch(API + '/knowledge/' + matches[0].knowledge_id, {headers:self.authHeaders()})
         .then(function(response) {
           return response.json().then(function(data) {
@@ -7401,6 +7560,7 @@ Vue.createApp({
         })
         .then(function(target) {
           self.dedupCompare.target = target;
+          self.ensureManhattanCacheFor(target && target.business_type);
           self.dedupCompare.loading = false;
         })
         .catch(function(error) {

@@ -1,12 +1,14 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -42,8 +44,11 @@ logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = BACKEND_DIR.parent
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
+# HTML 入口必须每次回源校验（no-cache），但不能再用 no-store：no-store 会让浏览器
+# 连条件请求都不发，重复访问只能整份重下 750KB 的 index.html。改成 no-cache 后配合
+# ETag/Last-Modified 条件请求，命中时只回 304（几十字节）。
 HTML_NO_CACHE_HEADERS = {
-    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Cache-Control": "no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
     "Expires": "0",
 }
@@ -157,32 +162,103 @@ app.mount("/lib", StaticFiles(directory=str(FRONTEND_DIR / "lib")), name="lib")
 app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")
 
 
+def _if_none_match_hits(header: str, etag: str) -> bool:
+    """按 RFC 9110 的弱比较语义判断 If-None-Match 是否命中当前 ETag。"""
+    value = (header or "").strip()
+    if not value:
+        return False
+    if value == "*":
+        return True
+    target = etag[2:] if etag.startswith("W/") else etag
+    for candidate in value.split(","):
+        item = candidate.strip()
+        if item.startswith("W/"):
+            item = item[2:]
+        if item and item == target:
+            return True
+    return False
+
+
+def _if_modified_since_hits(header: str, mtime: float) -> bool:
+    """按秒级精度判断 If-Modified-Since 是否命中（Last-Modified 只到秒）。"""
+    value = (header or "").strip()
+    if not value:
+        return False
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return False
+    if parsed is None:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp()) >= int(mtime)
+
+
+def _html_file_response(path: Path, request: Request | None = None) -> Response:
+    """返回 HTML 文件响应，并自行实现条件请求：命中时返回 304（无 body）。
+
+    Starlette 0.38 的 FileResponse 只会通过 set_stat_headers 写入 ETag /
+    Last-Modified，完全不处理 If-None-Match / If-Modified-Since（实测带
+    If-None-Match 请求仍然回 200 加整份文件），所以 304 分支必须自己写。
+    """
+    response = FileResponse(path, headers=HTML_NO_CACHE_HEADERS)
+    if request is None:
+        return response
+    try:
+        stat_result = path.stat()
+        # set_stat_headers 用的是 setdefault，提前调用与 FileResponse 内部调用等价。
+        response.set_stat_headers(stat_result)
+    except (AttributeError, OSError):
+        return response
+
+    etag = response.headers.get("etag", "")
+    if_none_match = request.headers.get("if-none-match", "")
+    if if_none_match:
+        # 按 RFC 9110：带 If-None-Match 时忽略 If-Modified-Since。
+        hit = bool(etag) and _if_none_match_hits(if_none_match, etag)
+    else:
+        hit = _if_modified_since_hits(
+            request.headers.get("if-modified-since", ""),
+            stat_result.st_mtime,
+        )
+    if not hit:
+        return response
+
+    # 返回 Response 实例时 FastAPI 会丢弃 FileResponse 上的头，304 需要自带
+    # ETag / Last-Modified（X-Content-Type-Options 由中间件统一补）。
+    headers = dict(HTML_NO_CACHE_HEADERS)
+    if etag:
+        headers["ETag"] = etag
+    last_modified = response.headers.get("last-modified", "")
+    if last_modified:
+        headers["Last-Modified"] = last_modified
+    return Response(status_code=304, headers=headers)
+
+
 @app.get("/app")
-def serve_frontend():
-    return FileResponse(FRONTEND_DIR / "index.html", headers=HTML_NO_CACHE_HEADERS)
+def serve_frontend(request: Request = None):
+    return _html_file_response(FRONTEND_DIR / "index.html", request)
 
 
 @app.get("/knowledge-pitfall/confidence-training")
-def serve_confidence_training_page():
-    return FileResponse(FRONTEND_DIR / "index.html", headers=HTML_NO_CACHE_HEADERS)
+def serve_confidence_training_page(request: Request = None):
+    return _html_file_response(FRONTEND_DIR / "index.html", request)
 
 
 @app.get("/")
-def serve_root():
-    return FileResponse(FRONTEND_DIR / "auth.html", headers=HTML_NO_CACHE_HEADERS)
+def serve_root(request: Request = None):
+    return _html_file_response(FRONTEND_DIR / "auth.html", request)
 
 
 @app.get("/login")
-def serve_login():
-    return FileResponse(FRONTEND_DIR / "auth.html", headers=HTML_NO_CACHE_HEADERS)
+def serve_login(request: Request = None):
+    return _html_file_response(FRONTEND_DIR / "auth.html", request)
 
 
 @app.get("/feedback-records")
-def serve_feedback_records():
-    return FileResponse(
-        FRONTEND_DIR / "feedback-records.html",
-        headers=HTML_NO_CACHE_HEADERS,
-    )
+def serve_feedback_records(request: Request = None):
+    return _html_file_response(FRONTEND_DIR / "feedback-records.html", request)
 
 
 @app.get("/health")

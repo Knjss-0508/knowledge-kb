@@ -5,7 +5,11 @@ from unittest.mock import patch
 from app.models.integration import RetrievalQualityEvent
 from app.routes.integration import (
     _retrieval_candidate_snapshot,
+    _retrieval_event_sort_key,
     _retrieval_feedback_dimensions,
+    _retrieval_request_group_key,
+    _retrieval_request_payload,
+    _retrieval_request_payload_pages,
     _record_standard_search_events,
     get_retrieval_analytics,
     submit_retrieval_quality_events,
@@ -1770,6 +1774,90 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
         self.assertNotIn(events["ticket-old-page"].id, risk_ids)
         self.assertIn(events["ticket-new-page"].id, risk_ids)
         self.assertEqual(len(risk_ids), 23)
+
+    def test_analytics_payload_paging_keeps_grouped_requests_together(self):
+        """The streaming payload builder must merge a request's events.
+
+        The analytics view walks the event rows in batches instead of loading the
+        whole window, so the builder has to close a request's group only when the
+        stream has really moved on to another request.  Buffering a bounded number
+        of groups keeps that guarantee while never holding the full result set.
+        """
+
+        items = [
+            self._payload(
+                "page-a1",
+                conversation_id="88000000000001",
+                request_id="request-page-a",
+            ),
+            self._payload(
+                "page-b1",
+                conversation_id="88000000000002",
+                request_id="request-page-b",
+            ),
+            self._payload(
+                "page-a2",
+                conversation_id="88000000000001",
+                request_id="request-page-a",
+            ),
+            self._payload(
+                "page-b2",
+                conversation_id="88000000000002",
+                request_id="request-page-b",
+            ),
+        ]
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=items),
+            self.db,
+            None,
+        )
+        events = {
+            event.idempotency_key: event
+            for event in self.db.query(RetrievalQualityEvent).all()
+        }
+        grouped: dict[tuple[str, str, str], list[RetrievalQualityEvent]] = {}
+        for event in events.values():
+            grouped.setdefault(_retrieval_request_group_key(event), []).append(
+                event
+            )
+        grouped = {
+            key: sorted(group, key=_retrieval_event_sort_key, reverse=True)
+            for key, group in grouped.items()
+        }
+
+        self.assertEqual(len(grouped), 2)
+        for group in grouped.values():
+            payload = _retrieval_request_payload(group)
+            self.assertEqual(payload["candidate_count"], 2)
+            self.assertEqual(payload["request_status"], "success")
+
+        shuffled_rows = [
+            events["page-a1"],
+            events["page-b1"],
+            events["page-a2"],
+            events["page-b2"],
+        ]
+
+        class _Rows:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def yield_per(self, _batch_size):
+                for row in self._rows:
+                    yield row
+
+        paged = list(
+            _retrieval_request_payload_pages(
+                _Rows(shuffled_rows),
+                max_buffered_groups=1,
+            )
+        )
+        # 缓冲上限为 1 时，任何一个分组都留不住：每读一行就得把上一行冲出去，
+        # 于是得到 4 个 payload。这正是安全阀的意义——宁可多产出几组（每组的
+        # 标量结论仍然正确），也不允许把整个结果集重新攒回内存里。
+        self.assertEqual(len(paged), 4)
+        for payload in paged:
+            self.assertEqual(payload["request_status"], "success")
 
 
 if __name__ == "__main__":

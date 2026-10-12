@@ -18,7 +18,7 @@ from typing import Any
 
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
 from app.models.blind_labeling import (
@@ -974,31 +974,57 @@ def public_assignment_detail(db: Session, assignment: BlindLabelAssignment) -> d
     }
 
 
-def _completed_assignments(db: Session, work_order_id: str) -> list[BlindLabelAssignment]:
-    return (
-        db.query(BlindLabelAssignment)
-        .filter(
-            BlindLabelAssignment.work_order_id == work_order_id,
-            BlindLabelAssignment.status == "completed",
+def _completed_assignments(
+    db: Session,
+    work_order_id: str,
+    loaded_assignments: Iterable[BlindLabelAssignment] | None = None,
+) -> list[BlindLabelAssignment]:
+    """Return the completed assignments of one work order in consensus order.
+
+    When the caller already eager-loaded the work order's assignments (the
+    overview list path), ``loaded_assignments`` is filtered in memory instead of
+    issuing one SQL query per work order.
+    """
+
+    rows = (
+        list(loaded_assignments)
+        if loaded_assignments is not None
+        else (
+            db.query(BlindLabelAssignment)
+            .filter(BlindLabelAssignment.work_order_id == work_order_id)
+            .all()
         )
-        .order_by(BlindLabelAssignment.completed_at, BlindLabelAssignment.id)
-        .all()
     )
+    completed = [item for item in rows if item.status == "completed"]
+    completed.sort(
+        key=lambda item: (item.completed_at is not None, item.completed_at, str(item.id))
+    )
+    return completed
 
 
-def consensus_for_work_order(db: Session, work_order: BlindLabelWorkOrder) -> dict[str, Any]:
-    assignments = _completed_assignments(db, work_order.id)
+def consensus_for_work_order(
+    db: Session,
+    work_order: BlindLabelWorkOrder,
+    loaded_assignments: Iterable[BlindLabelAssignment] | None = None,
+    loaded_arbitrations: Iterable[BlindLabelArbitration] | None = None,
+) -> dict[str, Any]:
+    assignments = _completed_assignments(db, work_order.id, loaded_assignments)
     candidates = [item for item in (work_order.candidate_snapshot or []) if isinstance(item, dict)]
     assignment_limit = _work_order_assignment_limit(work_order)
     completed_count = len(assignments)
     fully_completed = completed_count >= assignment_limit
     candidate_results: list[dict[str, Any]] = []
-    arbitration_by_ref = {
-        item.candidate_ref: item
-        for item in db.query(BlindLabelArbitration)
-        .filter(BlindLabelArbitration.work_order_id == work_order.id)
-        .all()
-    }
+    # 已由调用方预加载时不再逐工单查一次仲裁记录（总览列表的 N+1 就出在这里）。
+    arbitrations = (
+        list(loaded_arbitrations)
+        if loaded_arbitrations is not None
+        else (
+            db.query(BlindLabelArbitration)
+            .filter(BlindLabelArbitration.work_order_id == work_order.id)
+            .all()
+        )
+    )
+    arbitration_by_ref = {item.candidate_ref: item for item in arbitrations}
     # 新版提交每人至多选择一个可参考候选。非选中的候选不会被伪造成负票；
     # 只有全部标注员选择同一候选（或都选择均不可参考）才自动通过。对历史的
     # 多候选可参考提交，仍按每个候选的显式正反票聚合，避免改变既有证据语义。
@@ -1193,15 +1219,29 @@ def private_work_order_detail(db: Session, work_order: BlindLabelWorkOrder) -> d
     }
 
 
-def work_order_status(db: Session, work_order: BlindLabelWorkOrder) -> tuple[str, dict[str, Any]]:
-    assignments = (
-        db.query(BlindLabelAssignment.status)
-        .filter(BlindLabelAssignment.work_order_id == work_order.id)
-        .all()
+def work_order_status(
+    db: Session,
+    work_order: BlindLabelWorkOrder,
+    loaded_assignments: Iterable[BlindLabelAssignment] | None = None,
+    loaded_arbitrations: Iterable[BlindLabelArbitration] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    rows = (
+        list(loaded_assignments)
+        if loaded_assignments is not None
+        else (
+            db.query(BlindLabelAssignment.status)
+            .filter(BlindLabelAssignment.work_order_id == work_order.id)
+            .all()
+        )
     )
-    statuses = [str(status) for (status,) in assignments]
+    if loaded_assignments is not None:
+        # The eager-loaded path already carries whole assignment rows, so the
+        # status list is derived in memory instead of running an extra query.
+        statuses = [str(item.status) for item in rows]
+    else:
+        statuses = [str(status) for (status,) in rows]
     active = [status for status in statuses if status != "released"]
-    consensus = consensus_for_work_order(db, work_order)
+    consensus = consensus_for_work_order(db, work_order, rows, loaded_arbitrations)
     if consensus["status"] == "majority":
         return "needs_arbitration", consensus
     if consensus["status"] in {"consensus", "unanimous", "arbitrated"}:
@@ -1266,8 +1306,24 @@ def overview(
     page: int = 1,
     page_size: int = 20,
 ) -> dict[str, Any]:
-    query = db.query(BlindLabelWorkOrder).order_by(
-        BlindLabelWorkOrder.created_at.desc(), BlindLabelWorkOrder.id.desc()
+    query = (
+        db.query(BlindLabelWorkOrder)
+        # The panel reads every work order's assignments, annotator names,
+        # annotations and arbitrations.  Eager-load them in a constant number of
+        # batched queries instead of letting the loop below issue roughly four
+        # lazy loads per work order (the original 8000+ SQL round trips).
+        .options(
+            selectinload(BlindLabelWorkOrder.assignments).selectinload(
+                BlindLabelAssignment.user
+            ),
+            selectinload(BlindLabelWorkOrder.assignments).selectinload(
+                BlindLabelAssignment.annotations
+            ),
+            selectinload(BlindLabelWorkOrder.arbitrations),
+        )
+        .order_by(
+            BlindLabelWorkOrder.created_at.desc(), BlindLabelWorkOrder.id.desc()
+        )
     )
     # The panel's time filter is based on assignment/annotation activity, not
     # the original retrieval event time.  Do the range check after loading
@@ -1281,6 +1337,15 @@ def overview(
     if category:
         query = query.filter(BlindLabelWorkOrder.category_name == category.strip())
     candidates = query.all()
+    # Mirror the previous per-work-order query order
+    # (assigned_at, id) so pagination and the "first assigned" values are stable.
+    assignments_by_work_order: dict[str, list[BlindLabelAssignment]] = {
+        work_order.id: sorted(
+            work_order.assignments,
+            key=lambda item: (item.assigned_at is not None, item.assigned_at, str(item.id)),
+        )
+        for work_order in candidates
+    }
     items: list[dict[str, Any]] = []
     user_stats: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
@@ -1305,12 +1370,12 @@ def overview(
                 f"{work_order.query_text}"
             ).lower():
                 continue
-        assignments = (
-            db.query(BlindLabelAssignment)
-            .filter(BlindLabelAssignment.work_order_id == work_order.id)
-            .order_by(BlindLabelAssignment.assigned_at, BlindLabelAssignment.id)
-            .all()
-        )
+        # Keep the unfiltered row set for the consensus/status call: the
+        # original implementation always re-read every assignment of the work
+        # order there, whereas ``assignments`` above is narrowed by the
+        # batch/user/date filters.
+        all_assignments = assignments_by_work_order.get(work_order.id, ())
+        assignments = list(all_assignments)
         if batch_id:
             assignments = [item for item in assignments if item.batch_id == batch_id]
         if user_id:
@@ -1347,7 +1412,9 @@ def overview(
                 continue
         if not assignments:
             continue
-        current_status, consensus = work_order_status(db, work_order)
+        current_status, consensus = work_order_status(
+            db, work_order, all_assignments, work_order.arbitrations
+        )
         if dimension_status_filter == "disputed" and not consensus["needs_arbitration"]:
             continue
         if dimension_status_filter == "consensus" and current_status not in {"completed", "arbitrated"}:

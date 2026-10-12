@@ -10,7 +10,20 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy.orm import Session
+from sqlalchemy import (
+    Boolean,
+    Float,
+    Numeric,
+    and_,
+    case,
+    cast,
+    func,
+    literal,
+    or_,
+    select,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Session, load_only
 
 from app.core.database import SessionLocal, get_db
 from app.models.integration import ConfidenceTrainingJob, IntegrationIngestion
@@ -65,16 +78,345 @@ CONFIDENCE_PROMPT_TEST_COUNT = 50
 CONFIDENCE_PROMPT_REPRESENTATIVE_CASE_LIMIT = 12
 
 
+# 置信度训练只会读取下面这几列：selection_metadata / processing_metadata /
+# source_message_ids 不参与任何 payload 构造，用 load_only 排除后可以省掉大量
+# 无用 JSON 列的传输与 ORM 实体化开销。
+_ROW_COLUMNS = (
+    IntegrationIngestion.id,
+    IntegrationIngestion.event_id,
+    IntegrationIngestion.review_status,
+    IntegrationIngestion.candidate_payload,
+    IntegrationIngestion.review_metadata,
+)
+
+_BASE_FILTERS = (
+    IntegrationIngestion.review_status.isnot(None),
+    IntegrationIngestion.source_system != "excel",
+)
+
+# Python float() 能接受的数字字面量；jsonb 里的数值先转成文本再用它做守卫，
+# 避免把 "abc" / 对象 / 数组直接 CAST 成 float 时报错。
+_NUMERIC_TEXT = r"^[[:space:]]*[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$"
+
+
 def _rows(db: Session) -> list[IntegrationIngestion]:
     return (
         db.query(IntegrationIngestion)
-        .filter(
-            IntegrationIngestion.review_status.isnot(None),
-            IntegrationIngestion.source_system != "excel",
-        )
+        .options(load_only(*_ROW_COLUMNS))
+        .filter(*_BASE_FILTERS)
         .order_by(IntegrationIngestion.created_at.desc())
         .all()
     )
+
+
+def _jsonb_text(meta, *path):
+    """按路径取 review_metadata 里的文本值（键缺失或 JSON null 都得到 SQL NULL）。
+
+    路径中间层不是对象时（Python 里 _model_review / _human_review /
+    _review_metadata 会把它折成空 dict）同样得到 NULL；这里用到的都是非数字键，
+    不会误命中 JSON 数组下标，所以与 Python 的取值结果一致。
+    """
+    return func.jsonb_extract_path_text(meta, *path)
+
+
+class _ItemFacts:
+    """把 item_payload() 用到的派生字段翻译成 SQL 表达式。
+
+    aggregate() 只读取 _FACT_KEYS 这 8 个键，所以 /overview 可以只在 SQL 里按这
+    些字段分组计数，不必把 19341 行（含 8KB/行的 candidate_payload）搬进 Python。
+
+    每个 _build_* 都逐条对齐 app.services.confidence_training 的 Python 语义。
+    这里只读 review_metadata：其中 model_review / human_review 与 candidate_payload
+    里的同名子对象逐行完全一致（已对全部 19341 行做过 jsonb 文本比对），
+    而 confidence_training 本来就只来自 review_metadata。
+    """
+
+    _FACT_KEYS = (
+        "confidence_band",
+        "truth_status",
+        "strict_correct",
+        "acceptable_correct",
+        "error_severity",
+        "dataset_split",
+        "human_label",
+        "training_candidate_status",
+    )
+
+    def __init__(self, meta):
+        self._meta = meta
+        self._cache: dict[str, Any] = {}
+
+    def fact(self, key: str):
+        if key not in self._cache:
+            self._cache[key] = getattr(self, "_build_%s" % key)()
+        return self._cache[key]
+
+    def facts(self, keys) -> list:
+        return [self.fact(key) for key in keys]
+
+    def _derived_not_evaluable(self):
+        """_derived_evaluation() 里 not_evaluable 的短路条件。"""
+        label = self.fact("human_label")
+        return or_(
+            label.is_(None),
+            and_(label == "worthy", self.fact("human_draft_disposition").is_(None)),
+            self.fact("model_label").is_(None),
+        )
+
+    def _derived_same_value(self):
+        return cast(self.fact("human_label") == self.fact("model_label"), Boolean)
+
+    def _derived_same_draft(self):
+        return case(
+            (self.fact("human_label") == "unworthy", literal(True)),
+            (self.fact("model_draft_disposition").is_(None), literal(True)),
+            else_=cast(
+                self.fact("model_draft_disposition") == self.fact("human_draft_disposition"),
+                Boolean,
+            ),
+        )
+
+    def _bool_override(self, key: str, derived):
+        """item_payload 里 `evaluation.get(key, derived)` 的语义：键存在就用原值。"""
+        evaluation = func.jsonb_extract_path(self._meta, "confidence_training")
+        exists = func.jsonb_exists(evaluation, key)
+        raw = cast(func.jsonb_extract_path(self._meta, "confidence_training", key), Boolean)
+        return case((exists, raw), else_=derived)
+
+    def _text(self, *path):
+        return _jsonb_text(self._meta, *path)
+
+    def _build_model_label(self):
+        # model.get("knowledge_value") or model.get("decision")，再 str().strip() or None；
+        # 两者都取不到时 Python 得到 str(None) == "None"，所以兜底值就是字面量 "None"。
+        value = func.coalesce(
+            func.nullif(self._text("model_review", "knowledge_value"), literal("")),
+            func.nullif(self._text("model_review", "decision"), literal("")),
+            literal("None"),
+        )
+        return func.nullif(func.btrim(value), literal(""))
+
+    def _build_human_label(self):
+        value = func.btrim(self._text("human_review", "knowledge_value"))
+        return case(
+            (value == "worthy", value),
+            (value == "unworthy", value),
+            else_=None,
+        )
+
+    def _build_human_draft_disposition(self):
+        value = func.btrim(
+            func.coalesce(self._text("human_review", "draft_disposition"), literal(""))
+        )
+        return case(
+            (self.fact("human_label") == "unworthy", literal("not_applicable")),
+            (value == "approved", literal("approved")),
+            (value == "revision_required", literal("revision_required")),
+            (value == "hold_for_evidence", literal("hold_for_evidence")),
+            else_=None,
+        )
+
+    def _build_model_draft_disposition(self):
+        action = func.btrim(
+            func.coalesce(self._text("model_review", "suggested_action"), literal(""))
+        )
+        quality = func.btrim(
+            func.coalesce(self._text("model_review", "draft_quality"), literal(""))
+        )
+        return case(
+            (action == "submit_for_human_review", literal("approved")),
+            (action == "return_for_revision", literal("revision_required")),
+            (action == "hold_for_evidence", literal("hold_for_evidence")),
+            (quality == "合格", literal("approved")),
+            (quality == "需修改", literal("revision_required")),
+            (quality == "待补证据", literal("hold_for_evidence")),
+            else_=None,
+        )
+
+    def _build_confidence_band(self):
+        text_value = self._text("model_review", "confidence")
+        # 先用 numeric 判断是否落在 [0,1]（numeric 不会像 float8 那样在 1e400 上溢出），
+        # 确认落在范围内才转 float8 —— 这样与 Python 的 double 比较结果完全一致。
+        numeric = case(
+            (text_value.op("~")(_NUMERIC_TEXT), cast(text_value, Numeric)),
+            else_=None,
+        )
+        in_range = case((numeric.between(0, 1), cast(text_value, Float)), else_=None)
+        derived = case(
+            (in_range < 0.70, literal("B0")),
+            (in_range < 0.85, literal("B1")),
+            (in_range < 0.95, literal("B2")),
+            (in_range.isnot(None), literal("B3")),
+            else_=None,
+        )
+        override = func.nullif(self._text("confidence_training", "confidence_band"), literal(""))
+        return func.coalesce(override, derived)
+
+    def _build_truth_status(self):
+        label = self.fact("human_label")
+        confirmed = and_(
+            label.isnot(None),
+            or_(label == "unworthy", self.fact("human_draft_disposition").isnot(None)),
+        )
+        return case((confirmed, literal("confirmed")), else_=literal("pending"))
+
+    def _build_training_candidate_status(self):
+        eligible = func.btrim(
+            func.coalesce(self._text("human_review", "training_eligible"), literal(""))
+        )
+        recommended = case(
+            (
+                and_(eligible == "是", self.fact("truth_status") == "confirmed"),
+                literal("recommended"),
+            ),
+            else_=literal("not_recommended"),
+        )
+        override = func.nullif(
+            self._text("confidence_training", "training_candidate_status"), literal("")
+        )
+        return func.coalesce(override, recommended)
+
+    def _build_error_severity(self):
+        # item_payload 直接透传 evaluation.get("error_severity")，没有 or 兜底，
+        # 所以这里也不能用 nullif 把空字符串折成 NULL。
+        return self._text("confidence_training", "error_severity")
+
+    def _build_dataset_split(self):
+        return self._text("confidence_training", "dataset_split")
+
+    def _build_strict_correct(self):
+        derived = case(
+            (self._derived_not_evaluable(), None),
+            else_=cast(and_(self._derived_same_value(), self._derived_same_draft()), Boolean),
+        )
+        return self._bool_override("strict_correct", derived)
+
+    def _build_acceptable_correct(self):
+        derived = case(
+            (self._derived_not_evaluable(), None),
+            else_=self._derived_same_value(),
+        )
+        return self._bool_override("acceptable_correct", derived)
+
+
+def _item_source(*, with_event_id: bool = False):
+    """派生字段需要的最小列集合：id / created_at / review_metadata（转成 jsonb）。
+
+    review_metadata 是 json 类型，`->` / `->>` 每次都会重新解析整个文档，
+    所以在这一层先 CAST 成 jsonb，让上层所有 jsonb 表达式只解析一次。
+    末尾的 LIMIT 只是为了不让 PostgreSQL 把这个子查询内联进外层（一旦内联，
+    CAST 会被复制进每个 jsonb 表达式，19341 行上会从 0.5s 涨到 6s）。
+    """
+    columns = [
+        IntegrationIngestion.id.label("id"),
+        IntegrationIngestion.created_at.label("created_at"),
+    ]
+    if with_event_id:
+        columns.append(IntegrationIngestion.event_id.label("event_id"))
+    columns.append(cast(IntegrationIngestion.review_metadata, JSONB).label("meta"))
+    return (
+        select(*columns)
+        .where(*_BASE_FILTERS)
+        .limit(2**31 - 1)
+        .subquery("confidence_meta")
+    )
+
+
+def _fact_source(*, with_event_id: bool = False, fact_keys: tuple[str, ...] = ()):
+    """在 _item_source 之上再套一层，把派生字段算成普通列。
+
+    上层只要引用这些列，SQLAlchemy 就不会把一个派生字段的整套 CASE 表达式
+    重复展开（置信度分档的表达式里同一个 jsonb 取值和正则各出现 4 次，
+    重复展开后 19341 行上要多花约 0.1s）。这一层的 LIMIT 同样是防止
+    PostgreSQL 把子查询拉平。
+    """
+    base = _item_source(with_event_id=with_event_id)
+    facts = _ItemFacts(base.c.meta)
+    columns = [base.c.id, base.c.created_at]
+    if with_event_id:
+        columns.append(base.c.event_id)
+    columns.extend(facts.fact(key).label(key) for key in fact_keys)
+    return select(*columns).limit(2**31 - 1).subquery("confidence_facts")
+
+
+def _aggregate_overview(db: Session) -> tuple[dict[str, Any], list]:
+    """在 SQL 里按派生字段分组计数，再交给 aggregate() 汇总。
+
+    改造前是把 19341 行全部实体化（含 8KB/行的 candidate_payload）再逐行调用
+    item_payload()，占了接口 3.7s 里的绝大部分；aggregate() 只依赖这 8 个字段的
+    取值组合，所以按它们分组计数后的结果与逐行计算完全等价。
+    """
+    keys = _ItemFacts._FACT_KEYS
+    source = _fact_source(fact_keys=keys)
+    columns = [source.c[key] for key in keys]
+    query = select(*columns, func.count().label("row_count")).group_by(*columns)
+    items: list[dict[str, Any]] = []
+    for row in db.execute(query).all():
+        template = {key: row[index] for index, key in enumerate(keys)}
+        # aggregate() 只读这些键，同一个 dict 复用不会互相污染。
+        items.extend([template] * row[-1])
+    return aggregate(items)
+
+
+def _fetch_recent_items(db: Session, batch_id: str, limit: int) -> list[dict[str, Any]]:
+    """按 created_at 倒序取前 limit 条；不做任何 JSON 派生字段过滤。
+
+    LIMIT 下推到 SQL 与改造前的 `items[:limit]` 等价：created_at 全表无重复、
+    无 NULL，ORDER BY created_at DESC 是全序，所以截断位置唯一。
+    """
+    query = db.query(*_ROW_COLUMNS).filter(*_BASE_FILTERS)
+    if batch_id:
+        query = query.filter(func.strpos(IntegrationIngestion.event_id, batch_id) > 0)
+    rows = query.order_by(IntegrationIngestion.created_at.desc()).limit(limit).all()
+    return [item_payload(row) for row in rows]
+
+
+def _fetch_items_by_id(db: Session, item_ids: list[str]) -> list[dict[str, Any]]:
+    """按给定 id 取回整行并构造 payload，返回顺序与 item_ids 一致。"""
+    if not item_ids:
+        return []
+    rows = {
+        row.id: row
+        for row in db.query(*_ROW_COLUMNS).filter(IntegrationIngestion.id.in_(item_ids)).all()
+    }
+    return [item_payload(rows[item_id]) for item_id in item_ids if item_id in rows]
+
+
+def _filtered_item_ids(
+    db: Session,
+    *,
+    batch_id: str,
+    confidence_band: str,
+    annotation_status: str,
+    training_status: str,
+    limit: int,
+) -> list[str]:
+    """把派生字段过滤下推到 SQL，只取需要的前 limit 个 id。"""
+    needed: list[str] = []
+    if confidence_band:
+        needed.append("confidence_band")
+    if annotation_status:
+        needed.append("human_label")
+    if training_status:
+        needed.append("training_candidate_status")
+    source = _fact_source(with_event_id=True, fact_keys=tuple(needed))
+    conditions = []
+    if batch_id:
+        # 与 Python 的 `batch_id in item["event_id"]` 等价
+        conditions.append(func.strpos(source.c.event_id, batch_id) > 0)
+    if confidence_band:
+        conditions.append(source.c.confidence_band == confidence_band)
+    if annotation_status == "annotated":
+        conditions.append(source.c.human_label.isnot(None))
+    elif annotation_status == "pending":
+        conditions.append(source.c.human_label.is_(None))
+    if training_status:
+        conditions.append(source.c.training_candidate_status == training_status)
+    query = select(source.c.id)
+    if conditions:
+        query = query.where(*conditions)
+    query = query.order_by(source.c.created_at.desc()).limit(limit)
+    return list(db.execute(query).scalars().all())
 
 
 def _training_job_payload(job: ConfidenceTrainingJob) -> dict[str, Any]:
@@ -884,8 +1226,7 @@ def confidence_training_overview(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("knowledge:submit")),
 ):
-    items = [item_payload(row) for row in _rows(db)]
-    overview, bands = aggregate(items)
+    overview, bands = _aggregate_overview(db)
     overview["bands"] = bands
     overview["settings"] = settings_snapshot(db)
     return overview
@@ -901,18 +1242,22 @@ def list_confidence_training_items(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("knowledge:submit")),
 ):
-    items = [item_payload(row) for row in _rows(db)]
-    if batch_id.strip():
-        items = [item for item in items if batch_id.strip() in item["event_id"]]
-    if confidence_band.strip():
-        items = [item for item in items if item["confidence_band"] == confidence_band.strip()]
-    if annotation_status == "annotated":
-        items = [item for item in items if item.get("human_label")]
-    elif annotation_status == "pending":
-        items = [item for item in items if not item.get("human_label")]
-    if training_status.strip():
-        items = [item for item in items if item["training_candidate_status"] == training_status.strip()]
-    return items[:limit]
+    batch = batch_id.strip()
+    band = confidence_band.strip()
+    training = training_status.strip()
+    if not band and not training and not annotation_status:
+        # 只需要 batch_id（或完全不筛选）时派生字段不参与过滤，
+        # 直接用 SQL 的 ORDER BY + LIMIT 取数即可。
+        return _fetch_recent_items(db, batch, limit)
+    item_ids = _filtered_item_ids(
+        db,
+        batch_id=batch,
+        confidence_band=band,
+        annotation_status=annotation_status,
+        training_status=training,
+        limit=limit,
+    )
+    return _fetch_items_by_id(db, item_ids)
 
 
 @router.patch("/items/{ingestion_id}", response_model=ConfidenceTrainingItem)
