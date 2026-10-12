@@ -1,13 +1,14 @@
 import logging
 import hashlib
 import uuid
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import and_, case, func, text
+from sqlalchemy import and_, case, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -729,6 +730,71 @@ def _retrieval_request_event_groups(
         sorted(group, key=_retrieval_event_sort_key, reverse=True)
         for group in grouped.values()
     ]
+
+
+# The retrieval analytics view reads every column of retrieval_quality_events except
+# this one.  It is 111 bytes per row, so leaving it out keeps ~10MB off the wire on a
+# 95k-event response.  All remaining columns are selected under their own names, so the
+# payload builders below keep reading the same attributes they always did.
+_RETRIEVAL_ANALYTICS_SKIPPED_COLUMNS = frozenset({"idempotency_key"})
+
+
+def _retrieval_analytics_event_columns() -> list:
+    """Event columns for the analytics view, without the unused wide ones.
+
+    These rows go through plain ``select()`` instead of the ORM: materialising 95k
+    ORM entities costs several seconds of Python object construction, and the analytics
+    path never needs identity, change tracking or relationships.
+    """
+
+    return [
+        getattr(RetrievalQualityEvent, column.name).label(column.name)
+        for column in RetrievalQualityEvent.__table__.columns
+        if column.name not in _RETRIEVAL_ANALYTICS_SKIPPED_COLUMNS
+    ]
+
+
+def _retrieval_request_payload_pages(
+    rows,
+    batch_size: int = 2000,
+    max_buffered_groups: int = 256,
+):
+    """Build request payloads while walking the event rows in batches.
+
+    The analytics view builds one payload per request out of every event of that
+    request, and the event table stores a candidate snapshot per row.  Loading the
+    whole window with ``.all()`` therefore keeps every wide JSONB of the window
+    alive in the process at once, which is what pushed the resident set of the
+    backend up by hundreds of megabytes per call.  Walking the rows in batches
+    instead lets the driver stream them, so only one batch of event rows is
+    materialised at a time; the merged candidate snapshots are still discarded as
+    soon as the payload for their request has been built.
+
+    Request groups are contiguous in the stream: the query that selects the events
+    keeps its ``row_number()`` ordering, and every event of a request shares its
+    ``conversation_id``/``request_id`` pair, so a group can be closed as soon as a
+    different pair shows up.  ``max_buffered_groups`` is a safety valve for the case
+    where the driver ever returns the rows in another order: instead of buffering the
+    whole result set (which is the behaviour this helper exists to avoid) the extra
+    groups are flushed on their own, so the endpoint keeps working at the cost of
+    merging fewer events per request.
+    """
+
+    pending: OrderedDict[tuple[str, str, str], list[RetrievalQualityEvent]] = (
+        OrderedDict()
+    )
+    for row in rows.yield_per(batch_size):
+        event: RetrievalQualityEvent = row
+        key = _retrieval_request_group_key(event)
+        if pending and key not in pending:
+            closed = pending.popitem(last=False)
+            yield _retrieval_request_payload(closed[1])
+        pending.setdefault(key, []).append(event)
+        while len(pending) > max_buffered_groups:
+            oldest = pending.popitem(last=False)
+            yield _retrieval_request_payload(oldest[1])
+    for group in pending.values():
+        yield _retrieval_request_payload(group)
 
 
 def _retrieval_candidate_score(candidate: dict) -> float | None:
@@ -2102,17 +2168,21 @@ def get_feedback_records(
         .limit(page_size)
         .all()
     )
-    operator_rows = operator_scope.with_entities(
-        RetrievalQualityEvent.event_metadata
-    ).all()
-    operators = sorted(
-        {
-            str((metadata or {}).get("operator_name") or "").strip()
-            for (metadata,) in operator_rows
-            if isinstance(metadata, dict)
-            and str(metadata.get("operator_name") or "").strip()
-        }
+    # 上传人下拉曾经把整个日期范围内每条事件的 event_metadata JSONB 全部拉进
+    # Python 再去重（实测 24 万行 / 约 0.5 GB 常驻），进程 RSS 会被抬到几百 MB
+    # 且不再归还操作系统。改由数据库做去重与排序，Python 只接收字符串。
+    operator_rows = (
+        operator_scope.with_entities(operator_expr.label("operator_name"))
+        .filter(operator_expr != "")
+        .distinct()
+        .order_by(operator_expr)
+        .all()
     )
+    operators = [
+        str(name).strip()
+        for (name,) in operator_rows
+        if str(name or "").strip()
+    ]
     return {
         "items": [_feedback_record_candidate(event) for event in events],
         "pagination": {
@@ -2181,25 +2251,22 @@ def get_retrieval_analytics(
         "reviewed": 0,
         "training_eligible": 0,
     }
-    latest_request_events = (
-        db.query(RetrievalQualityEvent)
-        .filter(
-            RetrievalQualityEvent.id.in_(
-                latest_retrieval_quality_request_event_ids(
-                    start_at=start_at,
-                    end_at=end_at,
-                )
-            )
-        )
-        .all()
+    requested_event_ids = latest_retrieval_quality_request_event_ids(
+        start_at=start_at,
+        end_at=end_at,
     )
-    request_payloads = [
-        _retrieval_request_payload(events)
-        for events in _retrieval_request_event_groups(
-            latest_request_events
+    # 全窗口统计、风险筛选、排序和当前页内容都按完整事件计算，但事件行按批流式
+    # 读取（见 _retrieval_request_payload_pages）：旧实现用 .all() 一次性把 7 天窗口
+    # 的全部事件行（含每行 candidate_snapshot 这个最宽的 JSONB）物化进进程，实测
+    # 单次调用把 RSS 推高数百 MB，glibc 释放后不归还操作系统，于是 40 多小时的
+    # 高负载 + 偶发大窗口查询把常驻内存抬到 2.6GB。
+    summary_events = db.execute(
+        select(*_retrieval_analytics_event_columns()).where(
+            RetrievalQualityEvent.id.in_(requested_event_ids)
         )
-    ]
-    request_payloads.sort(
+    )
+    summary_payloads = list(_retrieval_request_payload_pages(summary_events))
+    summary_payloads.sort(
         key=lambda item: (
             item["created_at"] is not None,
             item["created_at"],
@@ -2207,7 +2274,7 @@ def get_retrieval_analytics(
         ),
         reverse=True,
     )
-    for item in request_payloads:
+    for item in summary_payloads:
         outcome = str(item["outcome"] or "")
         if outcome in summary:
             summary[outcome] += 1
@@ -2245,11 +2312,11 @@ def get_retrieval_analytics(
         if item["training_eligible"]:
             summary["training_eligible"] += 1
     summary["candidate_queries"] = summary["candidate_requests"]
-    summary["total"] = len(request_payloads)
+    summary["total"] = len(summary_payloads)
 
     risk_items = [
         item
-        for item in request_payloads
+        for item in summary_payloads
         if (
             (item["review_status"] == "unreviewed")
             if pending_only
@@ -2262,9 +2329,11 @@ def get_retrieval_analytics(
     risk_total = len(risk_items)
     risk_total_pages = max(1, (risk_total + page_size - 1) // page_size)
     page = min(page, risk_total_pages)
-    risks = risk_items[
+    page_items = risk_items[
         (page - 1) * page_size : page * page_size
     ]
+
+    risks = page_items[:page_size]
 
     def rate(numerator: int, denominator: int) -> float:
         return round(numerator / denominator, 4) if denominator else 0.0
@@ -2303,7 +2372,7 @@ def get_retrieval_analytics(
 
     latencies = sorted(
         float(item["total_latency_ms"])
-        for item in request_payloads[:5000]
+        for item in summary_payloads[:5000]
         if item["total_latency_ms"] is not None
     )
 
@@ -2776,6 +2845,37 @@ def queue_knowledge_review_candidates(
     )
 
 
+# The candidate review list never reads these ingestion columns.  They are only ever
+# written by the ingestion pipeline, and they are the widest payloads on a 123MB table:
+# fetching them for every review page, together with full ORM entity construction, was
+# the bulk of the endpoint's runtime.
+_CANDIDATE_REVIEW_SKIPPED_COLUMNS = frozenset(
+    {
+        "source_message_ids",
+        "processing_metadata",
+    }
+)
+
+
+def _candidate_review_rows(db: Session) -> list:
+    """Ingestion rows for the review list, without the unused wide payloads."""
+
+    return db.execute(
+        select(
+            *[
+                getattr(IntegrationIngestion, column.name).label(column.name)
+                for column in IntegrationIngestion.__table__.columns
+                if column.name not in _CANDIDATE_REVIEW_SKIPPED_COLUMNS
+            ]
+        )
+        .where(
+            IntegrationIngestion.review_status.isnot(None),
+            IntegrationIngestion.source_system != "excel",
+        )
+        .order_by(IntegrationIngestion.created_at.desc())
+    ).all()
+
+
 @router.get(
     "/candidate-reviews",
     response_model=CandidateReviewListResponse,
@@ -2797,15 +2897,7 @@ def list_candidate_reviews(
 ):
     if updated_from and updated_to and updated_from > updated_to:
         raise HTTPException(status_code=400, detail="更新时间开始日期不能晚于结束日期。")
-    rows = (
-        db.query(IntegrationIngestion)
-        .filter(
-            IntegrationIngestion.review_status.isnot(None),
-            IntegrationIngestion.source_system != "excel",
-        )
-        .order_by(IntegrationIngestion.created_at.desc())
-        .all()
-    )
+    rows = _candidate_review_rows(db)
     all_items = [_candidate_review_item(row) for row in rows]
     product_categories: dict[str, dict[str, str]] = {}
     for item in all_items:
