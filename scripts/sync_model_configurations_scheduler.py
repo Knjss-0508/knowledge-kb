@@ -1501,6 +1501,7 @@ def run_once(
             if (
                 not config.force
                 and last_revision == before_revision
+                and not state.get("last_error")
                 and (
                     not stored_source_definition
                     or stored_source_definition == expected_source_definition

@@ -3,72 +3,72 @@
   "include_default_mappings": false,
   "sources": [
     {
-      "spreadsheet_token": "JQbesW7gPheeletjsHRcNX6An9f",
-      "wiki_node_token": "PCg1wkXYWijMr7k6vazcBPoMnbf",
-      "sheet_id": "4XMCyB",
+      "spreadsheet_token": "<笔记本工作簿 token>",
+      "wiki_node_token": "<笔记本 Wiki 节点 token>",
+      "sheet_id": "<笔记本个性化配置信息 Sheet ID>",
       "category_id": "1100000016",
       "category_name": "笔记本"
     },
     {
-      "spreadsheet_token": "KPiNsOTQRhExYTtR7CzcOofYnhd",
-      "wiki_node_token": "Tst3we290iVhNgk4bNjcfYnXn0c",
-      "sheet_id": "BpZlyl",
+      "spreadsheet_token": "<手机工作簿 token>",
+      "wiki_node_token": "<手机 Wiki 节点 token>",
+      "sheet_id": "<手机个性化配置信息 Sheet ID>",
       "category_id": "101",
       "category_name": "手机"
     },
     {
-      "spreadsheet_token": "Rky7sRolKhXcPttFuV5cdyJZnfh",
-      "wiki_node_token": "Me3iwFqiri8yTWk08p5crVCunUc",
-      "sheet_id": "2SCTAn",
+      "spreadsheet_token": "<相机镜头工作簿 token>",
+      "wiki_node_token": "<相机镜头 Wiki 节点 token>",
+      "sheet_id": "<相机镜头个性化配置信息 Sheet ID>",
       "category_id": "1100000180",
       "category_name": "相机镜头"
     },
     {
-      "spreadsheet_token": "ALjasdC0uhFYxkt3C4tc20A9ncb",
-      "wiki_node_token": "IEUqwBpLriloLDkynWfc2mXrnZg",
-      "sheet_id": "2TrbJP",
+      "spreadsheet_token": "<手表工作簿 token>",
+      "wiki_node_token": "<手表 Wiki 节点 token>",
+      "sheet_id": "<手表个性化配置信息 Sheet ID>",
       "category_id": "1100000170",
       "category_name": "手表"
     },
     {
-      "spreadsheet_token": "TLxlsXMKJhPn1htD31lcdl2enKd",
-      "wiki_node_token": "AQlQwpLHLiCCeBkrRr0claCKnbf",
-      "sheet_id": "w3Caff",
+      "spreadsheet_token": "<平板电脑工作簿 token>",
+      "wiki_node_token": "<平板电脑 Wiki 节点 token>",
+      "sheet_id": "<平板电脑个性化配置信息 Sheet ID>",
       "category_id": "119",
       "category_name": "平板电脑"
     },
     {
-      "spreadsheet_token": "IbYgsRMlThpt1Ct8TXDcFU2lnFd",
-      "wiki_node_token": "HjoVwl73oiahK5kFNnKcmLVin1b",
-      "sheet_id": "1sYMRM",
+      "spreadsheet_token": "<学习机工作簿 token>",
+      "wiki_node_token": "<学习机 Wiki 节点 token>",
+      "sheet_id": "<学习机个性化配置信息 Sheet ID>",
       "category_id": "1100001166",
       "category_name": "学习机"
     },
     {
-      "spreadsheet_token": "G3MasjFPChlVKIt97Hac3HKGntd",
-      "wiki_node_token": "D8RewNShSikOE2ka5wnc41dOnRb",
-      "sheet_id": "2STsOR",
+      "spreadsheet_token": "<单电微单机身工作簿 token>",
+      "wiki_node_token": "<单电微单机身 Wiki 节点 token>",
+      "sheet_id": "<单电微单机身个性化配置信息 Sheet ID>",
       "category_id": "1100000182",
       "category_name": "单电微单机身"
     },
     {
-      "spreadsheet_token": "CpE0sQ7szhcCiEtoJGwcbKRrnbf",
-      "wiki_node_token": "PMDWwEC1siDnhHkSQAdcLllbnTh",
-      "sheet_id": "2mnOSv",
+      "spreadsheet_token": "<耳机工作簿 token>",
+      "wiki_node_token": "<耳机 Wiki 节点 token>",
+      "sheet_id": "<耳机个性化配置信息 Sheet ID>",
       "category_id": "1100000186",
       "category_name": "耳机"
     },
     {
-      "spreadsheet_token": "UScAsPf4UhLaQqtwrvRcVefEn62",
-      "wiki_node_token": "N4Gzw30Bri2YsFkQlH1cGjwynxv",
-      "sheet_id": "2waXxL",
+      "spreadsheet_token": "<单反机身工作簿 token>",
+      "wiki_node_token": "<单反机身 Wiki 节点 token>",
+      "sheet_id": "<单反机身个性化配置信息 Sheet ID>",
       "category_id": "1100000179",
       "category_name": "单反机身"
     },
     {
-      "spreadsheet_token": "DUSasXypMh4ecitp8Q7cGkcmnyf",
-      "wiki_node_token": "PX7mweklvim9y1khtQacoOumnBg",
-      "sheet_id": "2MFmvW",
+      "spreadsheet_token": "<手写笔工作簿 token>",
+      "wiki_node_token": "<手写笔 Wiki 节点 token>",
+      "sheet_id": "<手写笔个性化配置信息 Sheet ID>",
       "category_id": "1100000040",
       "category_name": "手写笔"
     }
