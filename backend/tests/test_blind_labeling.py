@@ -36,8 +36,7 @@ from app.services.blind_labeling import (
     BLIND_LABEL_AUTO_RELEASE_REASON,
     BLIND_LABEL_BATCH_SIZE,
     BLIND_LABEL_MAX_ASSIGNMENTS,
-    BLIND_LABEL_MIN_TOP1_SCORE,
-    BLIND_LABEL_REQUIRED_CONSENSUS_VOTES,
+    BLIND_LABEL_MAX_TOP1_SCORE_EXCLUSIVE,
     _choose_assignments,
     batch_summary,
     claim_batch,
@@ -157,7 +156,7 @@ def db():
             query_text="手机屏幕问题",
             candidate_count=4,
             top_knowledge_id="biz-1",
-            top_rerank_score=0.9,
+            top_rerank_score=0.79,
             score_threshold=0.42,
             outcome="accepted",
             request_status="success",
@@ -166,7 +165,7 @@ def db():
                     "knowledge_id": f"biz-{index}",
                     "rank": index,
                     "title": f"业务知识 {index}",
-                    "final_score": 0.9 - index * 0.01,
+                    "final_score": 0.79 - index * 0.01,
                     "knowledge_origin": "business_accumulation",
                 }
                 for index in range(1, 4)
@@ -229,13 +228,13 @@ def _seed_extra_business_events(db, count=2):
                 event_id=f"event-extra-{index}",
                 conversation_id=f"conversation-extra-{index}",
                 source_kind="reply",
-                top_rerank_score=0.9,
+                top_rerank_score=0.79,
                 candidate_snapshot=[
                     {
                         "knowledge_id": f"biz-{index}",
                         "rank": 1,
                         "title": f"业务知识 {index}",
-                        "final_score": 0.9 - index * 0.01,
+                        "final_score": 0.79 - index * 0.01,
                         "knowledge_origin": "business_accumulation",
                     }
                 ],
@@ -286,13 +285,13 @@ def test_event_without_question_form_id_is_recorded_but_never_materialized(db):
             event_id="event-no-question-form",
             conversation_id="conversation-no-question-form",
             source_kind="reply",
-            top_rerank_score=0.9,
+            top_rerank_score=0.79,
             candidate_snapshot=[
                 {
                     "knowledge_id": f"biz-{index}",
                     "rank": index,
                     "title": f"业务知识 {index}",
-                    "final_score": 0.9 - index * 0.01,
+                    "final_score": 0.79 - index * 0.01,
                     "knowledge_origin": "business_accumulation",
                 }
                 for index in range(1, 4)
@@ -330,13 +329,13 @@ def test_event_with_question_form_id_is_materialized_with_the_upstream_number(db
             event_id="event-with-question-form",
             conversation_id="conversation-with-question-form",
             source_kind="reply",
-            top_rerank_score=0.9,
+            top_rerank_score=0.79,
             candidate_snapshot=[
                 {
                     "knowledge_id": f"biz-{index}",
                     "rank": index,
                     "title": f"业务知识 {index}",
-                    "final_score": 0.9 - index * 0.01,
+                    "final_score": 0.79 - index * 0.01,
                     "knowledge_origin": "business_accumulation",
                 }
                 for index in range(1, 4)
@@ -357,10 +356,24 @@ def test_event_with_question_form_id_is_materialized_with_the_upstream_number(db
     assert work_order.conversation_id == "conversation-with-question-form"
 
 
-def test_top1_score_below_sixty_percent_is_not_materialized_but_boundary_passes(db):
+def test_top1_score_below_eighty_percent_is_materialized_but_boundary_and_above_are_not(db):
     for event_id, conversation_id, score in (
         ("event-low-score", "conversation-low-score", 0.59),
-        ("event-boundary-score", "conversation-boundary-score", BLIND_LABEL_MIN_TOP1_SCORE),
+        (
+            "event-near-boundary-score",
+            "conversation-near-boundary-score",
+            BLIND_LABEL_MAX_TOP1_SCORE_EXCLUSIVE - 0.000001,
+        ),
+        (
+            "event-boundary-score",
+            "conversation-boundary-score",
+            BLIND_LABEL_MAX_TOP1_SCORE_EXCLUSIVE,
+        ),
+        (
+            "event-high-score",
+            "conversation-high-score",
+            BLIND_LABEL_MAX_TOP1_SCORE_EXCLUSIVE + 0.000001,
+        ),
     ):
         db.add(
             _build_threshold_event(
@@ -385,7 +398,7 @@ def test_top1_score_below_sixty_percent_is_not_materialized_but_boundary_passes(
             event_id="event-reply-fallback-score",
             conversation_id="conversation-reply-fallback-score",
             source_kind="reply",
-            top_rerank_score=BLIND_LABEL_MIN_TOP1_SCORE,
+            top_rerank_score=BLIND_LABEL_MAX_TOP1_SCORE_EXCLUSIVE - 0.000001,
             candidate_snapshot=[
                 {
                     "knowledge_id": "biz-2",
@@ -399,27 +412,29 @@ def test_top1_score_below_sixty_percent_is_not_materialized_but_boundary_passes(
     )
     db.commit()
 
-    assert ensure_work_orders(db, 10) == 3
-    assert db.query(BlindLabelWorkOrder).filter_by(conversation_id="conversation-low-score").count() == 0
-    assert db.query(BlindLabelWorkOrder).filter_by(conversation_id="conversation-boundary-score").count() == 1
+    assert ensure_work_orders(db, 10) == 4
+    assert db.query(BlindLabelWorkOrder).filter_by(conversation_id="conversation-low-score").count() == 1
+    assert db.query(BlindLabelWorkOrder).filter_by(conversation_id="conversation-near-boundary-score").count() == 1
+    assert db.query(BlindLabelWorkOrder).filter_by(conversation_id="conversation-boundary-score").count() == 0
+    assert db.query(BlindLabelWorkOrder).filter_by(conversation_id="conversation-high-score").count() == 0
     assert db.query(BlindLabelWorkOrder).filter_by(conversation_id="conversation-reply-fallback-score").count() == 1
 
 
-def test_existing_low_score_work_order_is_not_assigned_to_new_batch(db):
+def test_existing_high_score_work_order_is_not_assigned_to_new_batch(db):
     db.query(RetrievalQualityEvent).filter_by(id="event-1").update({"source_kind": "standard"})
     db.add(
         BlindLabelWorkOrder(
-            id="wo-low-score",
-            conversation_id="conversation-low-work-order",
-            query_text="历史低分工单",
+            id="wo-high-score",
+            conversation_id="conversation-high-work-order",
+            query_text="历史高分工单",
             candidate_snapshot=[
                 {
-                    "candidate_ref": "candidate-low-score",
+                    "candidate_ref": "candidate-high-score",
                     "knowledge_id": "biz-1",
                     "rank": 1,
-                    "title": "低分业务知识",
+                    "title": "高分业务知识",
                     "content": {"type": "text", "value": "正文"},
-                    "final_score": 0.59,
+                    "final_score": BLIND_LABEL_MAX_TOP1_SCORE_EXCLUSIVE,
                     "knowledge_origin": "business_accumulation",
                 }
             ],
@@ -495,7 +510,7 @@ def test_ensure_work_orders_materializes_newest_eligible_event_first(db):
             query_text="最新手机问题",
             candidate_count=3,
             top_knowledge_id="biz-1",
-            top_rerank_score=0.9,
+            top_rerank_score=0.79,
             score_threshold=0.42,
             outcome="accepted",
             request_status="success",
@@ -504,7 +519,7 @@ def test_ensure_work_orders_materializes_newest_eligible_event_first(db):
                     "knowledge_id": f"biz-{index}",
                     "rank": index,
                     "title": f"业务知识 {index}",
-                    "final_score": 0.9 - index * 0.01,
+                    "final_score": 0.79 - index * 0.01,
                     "knowledge_origin": "business_accumulation",
                 }
                 for index in range(1, 4)
@@ -538,28 +553,28 @@ def test_choose_assignments_fills_existing_work_orders_before_newest_fresh_items
             id="wo-two-old",
             conversation_id="priority-two-old",
             query_text="已有两人标注的旧工单",
-            candidate_snapshot=[{"candidate_ref": "cand-two-old", "final_score": 0.90}],
+                candidate_snapshot=[{"candidate_ref": "cand-two-old", "final_score": 0.79}],
             source_created_at=now - timedelta(days=3),
         ),
         "one-new": BlindLabelWorkOrder(
             id="wo-one-new",
             conversation_id="priority-one-new",
             query_text="已有一人标注的新工单",
-            candidate_snapshot=[{"candidate_ref": "cand-one-new", "final_score": 0.90}],
+                candidate_snapshot=[{"candidate_ref": "cand-one-new", "final_score": 0.79}],
             source_created_at=now - timedelta(days=1),
         ),
         "one-old": BlindLabelWorkOrder(
             id="wo-one-old",
             conversation_id="priority-one-old",
             query_text="已有一人标注的旧工单",
-            candidate_snapshot=[{"candidate_ref": "cand-one-old", "final_score": 0.90}],
+                candidate_snapshot=[{"candidate_ref": "cand-one-old", "final_score": 0.79}],
             source_created_at=now - timedelta(days=2),
         ),
         "fresh": BlindLabelWorkOrder(
             id="wo-fresh",
             conversation_id="priority-fresh",
             query_text="尚未分配的最新工单",
-            candidate_snapshot=[{"candidate_ref": "cand-fresh", "final_score": 0.90}],
+                candidate_snapshot=[{"candidate_ref": "cand-fresh", "final_score": 0.79}],
             source_created_at=now,
         ),
     }
@@ -756,7 +771,7 @@ def test_claim_routes_reject_client_attempts_to_change_batch_size(db):
         app.dependency_overrides.pop(get_current_user, None)
 
 
-def test_five_users_are_capped_and_four_of_five_reaches_consensus_without_legacy_write(db):
+def test_five_users_are_capped_and_four_of_five_requires_arbitration_without_legacy_write(db):
     ensure_work_orders(db, 1)
     assignments = []
     for user_id in ("u1", "u2", "u3", "u4", "u5"):
@@ -773,22 +788,43 @@ def test_five_users_are_capped_and_four_of_five_reaches_consensus_without_legacy
     db.commit()
     work_order = assignments[0].work_order
     consensus = consensus_for_work_order(db, work_order)
-    assert consensus["status"] == "consensus"
-    assert consensus["needs_arbitration"] is False
+    assert consensus["status"] == "majority"
+    assert consensus["needs_arbitration"] is True
     assert consensus["required_annotators"] == BLIND_LABEL_MAX_ASSIGNMENTS == 5
-    assert consensus["required_consensus_votes"] == BLIND_LABEL_REQUIRED_CONSENSUS_VOTES == 4
     assert consensus["candidate_results"][0]["preliminary_verdict"] == "referable"
-    assert consensus["candidate_results"][0]["status"] == "consensus"
-    assert consensus["candidate_results"][0]["needs_arbitration"] is False
+    assert consensus["candidate_results"][0]["status"] == "needs_arbitration"
+    assert consensus["candidate_results"][0]["needs_arbitration"] is True
     assert db.query(RetrievalQualityEvent).filter_by(id="event-1").one().review_status == "unreviewed"
     assert db.query(BlindLabelAssignment).filter_by(work_order_id=work_order.id).count() == 5
     consensus_overview = overview(db)
-    assert consensus_overview["summary"]["disputed"] == 0
-    assert consensus_overview["summary"]["consensus_count"] == 1
-    assert consensus_overview["summary"]["consensus_rate"] == 1
+    assert consensus_overview["summary"]["disputed"] == 1
+    assert consensus_overview["summary"]["unanimous_count"] == 0
+    assert consensus_overview["summary"]["consensus_rate"] == 0
 
     _, sixth_rows = claim_batch(db, "u6", target_count=1)
     assert sixth_rows == []
+
+
+def test_five_of_five_same_choice_reaches_unanimous_consensus(db):
+    ensure_work_orders(db, 1)
+    assignments = []
+    for user_id in ("u1", "u2", "u3", "u4", "u5"):
+        _, rows = claim_batch(db, user_id, target_count=1)
+        assignments.append(rows[0])
+    for assignment in assignments:
+        submit_assignment(db, assignment, _labels(assignment, "referable"))
+    db.commit()
+
+    consensus = consensus_for_work_order(db, assignments[0].work_order)
+
+    assert consensus["status"] == "unanimous"
+    assert consensus["needs_arbitration"] is False
+    assert consensus["candidate_results"][0]["status"] == "unanimous"
+    assert consensus["candidate_results"][0]["consensus_verdict"] == "referable"
+    assert all(
+        result["status"] == "not_selected"
+        for result in consensus["candidate_results"][1:]
+    )
 
 
 def test_single_choice_consensus_does_not_treat_omitted_candidates_as_negative_votes(db):
@@ -820,7 +856,7 @@ def test_single_choice_consensus_does_not_treat_omitted_candidates_as_negative_v
     )
 
 
-def test_four_of_five_all_not_referable_reaches_consensus(db):
+def test_four_of_five_all_not_referable_requires_arbitration(db):
     ensure_work_orders(db, 1)
     assignments = []
     for user_id in ("u1", "u2", "u3", "u4", "u5"):
@@ -839,12 +875,13 @@ def test_four_of_five_all_not_referable_reaches_consensus(db):
 
     consensus = consensus_for_work_order(db, assignments[0].work_order)
 
-    assert consensus["status"] == "consensus"
-    assert consensus["needs_arbitration"] is False
+    assert consensus["status"] == "majority"
+    assert consensus["needs_arbitration"] is True
+    assert consensus["candidate_results"][0]["status"] == "needs_arbitration"
+    assert consensus["candidate_results"][0]["consensus_verdict"] is None
     assert all(
-        result["status"] == "consensus"
-        and result["consensus_verdict"] == "not_referable"
-        for result in consensus["candidate_results"]
+        result["status"] == "not_selected"
+        for result in consensus["candidate_results"][1:]
     )
 
 
@@ -983,6 +1020,45 @@ def test_arbitration_resolves_disputed_consensus_and_overview_aliases(db):
     assert result["summary"]["total"] == 0
 
 
+def test_legacy_multi_choice_keeps_unanimous_candidate_out_of_arbitration(db):
+    ensure_work_orders(db, 1)
+    assignments = []
+    for user_id in ("u1", "u2", "u3"):
+        _, rows = claim_batch(db, user_id, target_count=1)
+        assignments.append(rows[0])
+    work_order = assignments[0].work_order
+    work_order.assignment_limit = 3
+    work_order.candidate_snapshot = work_order.candidate_snapshot[:2]
+    first_ref, second_ref = _all_refs(assignments[0])
+    for assignment in assignments:
+        submit_assignment(db, assignment, _labels(assignment, "referable"))
+    for index, assignment in enumerate(assignments):
+        verdict = "referable" if index < 2 else "not_referable"
+        db.add(
+            BlindLabelAnnotation(
+                id=f"legacy-multi-choice-{index}",
+                assignment_id=assignment.id,
+                work_order_id=work_order.id,
+                user_id=assignment.user_id,
+                candidate_ref=second_ref,
+                verdict=verdict,
+                reason_code="topic_irrelevant" if verdict == "not_referable" else "",
+                reason="历史多选测试" if verdict == "not_referable" else "",
+            )
+        )
+    db.commit()
+
+    consensus = consensus_for_work_order(db, work_order)
+    results = {item["candidate_ref"]: item for item in consensus["candidate_results"]}
+
+    assert consensus["status"] == "majority"
+    assert consensus["needs_arbitration"] is True
+    assert results[first_ref]["status"] == "unanimous"
+    assert results[first_ref]["needs_arbitration"] is False
+    assert results[second_ref]["status"] == "needs_arbitration"
+    assert results[second_ref]["needs_arbitration"] is True
+
+
 def test_legacy_three_annotator_arbitration_remains_terminal_after_five_vote_upgrade(db):
     ensure_work_orders(db, 1)
     assignments = []
@@ -1033,9 +1109,8 @@ def test_legacy_three_annotator_consensus_stays_completed_and_is_not_reassigned(
 
     consensus = consensus_for_work_order(db, work_order)
 
-    assert consensus["status"] == "consensus"
+    assert consensus["status"] == "unanimous"
     assert consensus["required_annotators"] == 3
-    assert consensus["required_consensus_votes"] == 3
     assert consensus["needs_arbitration"] is False
 
     _, fourth_rows = claim_batch(db, "u4", target_count=1)
