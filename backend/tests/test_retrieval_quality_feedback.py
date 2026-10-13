@@ -5,7 +5,12 @@ from unittest.mock import patch
 from app.models.integration import RetrievalQualityEvent
 from app.routes.integration import (
     _retrieval_candidate_snapshot,
+    _retrieval_event_sort_key,
     _retrieval_feedback_dimensions,
+    _retrieval_request_group_key,
+    _retrieval_request_payload,
+    _retrieval_request_payload_pages,
+    _retrieval_summary_events_stmt,
     _record_standard_search_events,
     get_retrieval_analytics,
     submit_retrieval_quality_events,
@@ -17,7 +22,8 @@ from app.schemas.integration import (
 )
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import sessionmaker
 
 
@@ -1770,6 +1776,111 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
         self.assertNotIn(events["ticket-old-page"].id, risk_ids)
         self.assertIn(events["ticket-new-page"].id, risk_ids)
         self.assertEqual(len(risk_ids), 23)
+
+    def test_analytics_payload_paging_keeps_grouped_requests_together(self):
+        """The streaming payload builder must merge a request's events.
+
+        The analytics view walks the event rows in batches instead of loading the
+        whole window, so the builder closes a request's group as soon as another
+        request shows up.  That is only correct while the rows of one request stay
+        together, which is why the summary statement orders by the grouping key: on
+        production data an unordered result put no two events of a request next to
+        each other, and every request was split into one payload per source pool.
+        """
+
+        items = [
+            self._payload(
+                "page-a1",
+                conversation_id="88000000000001",
+                request_id="request-page-a",
+            ),
+            self._payload(
+                "page-b1",
+                conversation_id="88000000000002",
+                request_id="request-page-b",
+            ),
+            self._payload(
+                "page-a2",
+                conversation_id="88000000000001",
+                request_id="request-page-a",
+            ),
+            self._payload(
+                "page-b2",
+                conversation_id="88000000000002",
+                request_id="request-page-b",
+            ),
+        ]
+        submit_retrieval_quality_events(
+            RetrievalQualityEventBatch(items=items),
+            self.db,
+            None,
+        )
+        events = {
+            event.idempotency_key: event
+            for event in self.db.query(RetrievalQualityEvent).all()
+        }
+        grouped: dict[tuple[str, str, str], list[RetrievalQualityEvent]] = {}
+        for event in events.values():
+            grouped.setdefault(_retrieval_request_group_key(event), []).append(
+                event
+            )
+        grouped = {
+            key: sorted(group, key=_retrieval_event_sort_key, reverse=True)
+            for key, group in grouped.items()
+        }
+
+        self.assertEqual(len(grouped), 2)
+        for group in grouped.values():
+            payload = _retrieval_request_payload(group)
+            self.assertEqual(payload["candidate_count"], 2)
+            self.assertEqual(payload["request_status"], "success")
+
+        class _Rows:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def yield_per(self, _batch_size):
+                for row in self._rows:
+                    yield row
+
+        ordered_rows = [
+            events["page-a1"],
+            events["page-a2"],
+            events["page-b1"],
+            events["page-b2"],
+        ]
+        paged = list(_retrieval_request_payload_pages(_Rows(ordered_rows)))
+        # 一个请求一个 payload（两条来源池事件合并），而不是一行一个。
+        self.assertEqual(len(paged), 2)
+        for payload in paged:
+            self.assertEqual(payload["request_status"], "success")
+
+        # 同一请求的两条事件被别的请求隔开时，分页器只能把它拆成两个 payload，
+        # 于是接口的 total/风险筛选/比率全部翻倍失真，所以这里必须直接报错。
+        interleaved_rows = [
+            events["page-a1"],
+            events["page-b1"],
+            events["page-a2"],
+            events["page-b2"],
+        ]
+        with self.assertRaises(RuntimeError):
+            list(_retrieval_request_payload_pages(_Rows(interleaved_rows)))
+
+    def test_summary_events_query_orders_rows_by_request_group_key(self):
+        """取行语句必须按分页器的分组键排序（conversation_id、request_id 在前）。"""
+
+        stmt = _retrieval_summary_events_stmt(select(RetrievalQualityEvent.id))
+        compiled = str(stmt.compile(dialect=postgresql.dialect()))
+        self.assertIn("ORDER BY", compiled.upper())
+        order_by = compiled.upper().split("ORDER BY", 1)[1]
+        self.assertLess(
+            order_by.index("CONVERSATION_ID"),
+            order_by.index("REQUEST_ID"),
+        )
+        self.assertLess(
+            order_by.index("REQUEST_ID"),
+            order_by.index("CREATED_AT"),
+        )
 
 
 if __name__ == "__main__":

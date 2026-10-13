@@ -11,3 +11,17 @@
 *.sh text eol=lf
 docker-compose*.yml text eol=lf
 .env.example text eol=lf
+
+# 其它文本资源：同样固定为 LF。
+#
+# 本机 core.autocrlf=true 时，Git 会把这些文件在工作区改成 CRLF，于是出现两种后果：
+# 1) 前端 index.html 被改成 730,332 B（CRLF 版），与线上部署的 LF 版本不一致；
+# 2) 与服务器上的同一份文件对比时，内容明明一样，却因为行尾不同被列成「已改动」
+#    （2026-10-10 的线上/仓库盘点里，33 个文件就是这么被误报的）。
+*.html text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.css text eol=lf
+*.json text eol=lf
