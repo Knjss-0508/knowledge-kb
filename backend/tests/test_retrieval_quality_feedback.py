@@ -10,6 +10,7 @@ from app.routes.integration import (
     _retrieval_request_group_key,
     _retrieval_request_payload,
     _retrieval_request_payload_pages,
+    _retrieval_summary_events_stmt,
     _record_standard_search_events,
     get_retrieval_analytics,
     submit_retrieval_quality_events,
@@ -21,7 +22,8 @@ from app.schemas.integration import (
 )
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import sessionmaker
 
 
@@ -1779,9 +1781,11 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
         """The streaming payload builder must merge a request's events.
 
         The analytics view walks the event rows in batches instead of loading the
-        whole window, so the builder has to close a request's group only when the
-        stream has really moved on to another request.  Buffering a bounded number
-        of groups keeps that guarantee while never holding the full result set.
+        whole window, so the builder closes a request's group as soon as another
+        request shows up.  That is only correct while the rows of one request stay
+        together, which is why the summary statement orders by the grouping key: on
+        production data an unordered result put no two events of a request next to
+        each other, and every request was split into one payload per source pool.
         """
 
         items = [
@@ -1831,13 +1835,6 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
             self.assertEqual(payload["candidate_count"], 2)
             self.assertEqual(payload["request_status"], "success")
 
-        shuffled_rows = [
-            events["page-a1"],
-            events["page-b1"],
-            events["page-a2"],
-            events["page-b2"],
-        ]
-
         class _Rows:
             def __init__(self, rows):
                 self._rows = rows
@@ -1846,18 +1843,44 @@ class RetrievalQualityFeedbackTests(unittest.TestCase):
                 for row in self._rows:
                     yield row
 
-        paged = list(
-            _retrieval_request_payload_pages(
-                _Rows(shuffled_rows),
-                max_buffered_groups=1,
-            )
-        )
-        # 缓冲上限为 1 时，任何一个分组都留不住：每读一行就得把上一行冲出去，
-        # 于是得到 4 个 payload。这正是安全阀的意义——宁可多产出几组（每组的
-        # 标量结论仍然正确），也不允许把整个结果集重新攒回内存里。
-        self.assertEqual(len(paged), 4)
+        ordered_rows = [
+            events["page-a1"],
+            events["page-a2"],
+            events["page-b1"],
+            events["page-b2"],
+        ]
+        paged = list(_retrieval_request_payload_pages(_Rows(ordered_rows)))
+        # 一个请求一个 payload（两条来源池事件合并），而不是一行一个。
+        self.assertEqual(len(paged), 2)
         for payload in paged:
             self.assertEqual(payload["request_status"], "success")
+
+        # 同一请求的两条事件被别的请求隔开时，分页器只能把它拆成两个 payload，
+        # 于是接口的 total/风险筛选/比率全部翻倍失真，所以这里必须直接报错。
+        interleaved_rows = [
+            events["page-a1"],
+            events["page-b1"],
+            events["page-a2"],
+            events["page-b2"],
+        ]
+        with self.assertRaises(RuntimeError):
+            list(_retrieval_request_payload_pages(_Rows(interleaved_rows)))
+
+    def test_summary_events_query_orders_rows_by_request_group_key(self):
+        """取行语句必须按分页器的分组键排序（conversation_id、request_id 在前）。"""
+
+        stmt = _retrieval_summary_events_stmt(select(RetrievalQualityEvent.id))
+        compiled = str(stmt.compile(dialect=postgresql.dialect()))
+        self.assertIn("ORDER BY", compiled.upper())
+        order_by = compiled.upper().split("ORDER BY", 1)[1]
+        self.assertLess(
+            order_by.index("CONVERSATION_ID"),
+            order_by.index("REQUEST_ID"),
+        )
+        self.assertLess(
+            order_by.index("REQUEST_ID"),
+            order_by.index("CREATED_AT"),
+        )
 
 
 if __name__ == "__main__":

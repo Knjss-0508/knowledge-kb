@@ -1,7 +1,6 @@
 import logging
 import hashlib
 import uuid
-from collections import OrderedDict
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
@@ -755,10 +754,39 @@ def _retrieval_analytics_event_columns() -> list:
     ]
 
 
+def _retrieval_summary_events_stmt(requested_event_ids):
+    """Select the analytics event rows ordered by their request grouping key.
+
+    ``_retrieval_request_payload_pages`` builds one payload per request and closes a
+    request's group as soon as the stream moves on, so the row order is part of this
+    query's contract: it has to return the events of one request together.  Without
+    the explicit ``ORDER BY`` PostgreSQL is free to hand back another request's event
+    in between (measured on production data: 49,056 rows for 24,528 requests, with no
+    two events of a request adjacent), which produced 49,056 payloads instead of
+    24,528 - and the endpoint counts, filters, paginates and takes percentiles over
+    exactly that list, so every number on the retrieval analytics view doubled while
+    each payload only carried one source pool's candidates.
+
+    The ordering keys are the first two components of ``_retrieval_request_group_key``;
+    ``created_at``/``id`` only make the row order inside a group deterministic (the
+    payload builders sort their own input anyway).
+    """
+
+    return (
+        select(*_retrieval_analytics_event_columns())
+        .where(RetrievalQualityEvent.id.in_(requested_event_ids))
+        .order_by(
+            RetrievalQualityEvent.conversation_id,
+            RetrievalQualityEvent.request_id,
+            RetrievalQualityEvent.created_at.desc(),
+            RetrievalQualityEvent.id.desc(),
+        )
+    )
+
+
 def _retrieval_request_payload_pages(
     rows,
     batch_size: int = 2000,
-    max_buffered_groups: int = 256,
 ):
     """Build request payloads while walking the event rows in batches.
 
@@ -767,35 +795,40 @@ def _retrieval_request_payload_pages(
     whole window with ``.all()`` therefore keeps every wide JSONB of the window
     alive in the process at once, which is what pushed the resident set of the
     backend up by hundreds of megabytes per call.  Walking the rows in batches
-    instead lets the driver stream them, so only one batch of event rows is
-    materialised at a time; the merged candidate snapshots are still discarded as
-    soon as the payload for their request has been built.
+    instead lets the driver stream them, so only the events of the request currently
+    being built are materialised; the merged candidate snapshot is discarded as soon
+    as its payload has been handed to the caller.
 
-    Request groups are contiguous in the stream: the query that selects the events
-    keeps its ``row_number()`` ordering, and every event of a request shares its
-    ``conversation_id``/``request_id`` pair, so a group can be closed as soon as a
-    different pair shows up.  ``max_buffered_groups`` is a safety valve for the case
-    where the driver ever returns the rows in another order: instead of buffering the
-    whole result set (which is the behaviour this helper exists to avoid) the extra
-    groups are flushed on their own, so the endpoint keeps working at the cost of
-    merging fewer events per request.
+    ``rows`` must be ordered by the request grouping key (see
+    ``_retrieval_summary_events_stmt``), because a group is closed when a different
+    key shows up.  A stream that violates that contract - a request whose events are
+    split by another request - would emit one payload per event instead of one per
+    request, and the endpoint's totals, risk list and rates would all be wrong, so
+    this helper raises instead of silently splitting a request.
     """
 
-    pending: OrderedDict[tuple[str, str, str], list[RetrievalQualityEvent]] = (
-        OrderedDict()
-    )
+    current_key: tuple[str, str, str] | None = None
+    current_events: list[RetrievalQualityEvent] = []
+    closed_keys: set[tuple[str, str, str]] = set()
     for row in rows.yield_per(batch_size):
         event: RetrievalQualityEvent = row
         key = _retrieval_request_group_key(event)
-        if pending and key not in pending:
-            closed = pending.popitem(last=False)
-            yield _retrieval_request_payload(closed[1])
-        pending.setdefault(key, []).append(event)
-        while len(pending) > max_buffered_groups:
-            oldest = pending.popitem(last=False)
-            yield _retrieval_request_payload(oldest[1])
-    for group in pending.values():
-        yield _retrieval_request_payload(group)
+        if key == current_key:
+            current_events.append(event)
+            continue
+        if current_key is not None:
+            closed_keys.add(current_key)
+            yield _retrieval_request_payload(current_events)
+        if key in closed_keys:
+            raise RuntimeError(
+                "retrieval analytics event rows must be ordered by "
+                "(conversation_id, request_id); request "
+                f"{key[1]}/{key[2]} reappeared after its payload was built"
+            )
+        current_key = key
+        current_events = [event]
+    if current_key is not None:
+        yield _retrieval_request_payload(current_events)
 
 
 def _retrieval_candidate_score(candidate: dict) -> float | None:
@@ -2260,12 +2293,9 @@ def get_retrieval_analytics(
     # 读取（见 _retrieval_request_payload_pages）：旧实现用 .all() 一次性把 7 天窗口
     # 的全部事件行（含每行 candidate_snapshot 这个最宽的 JSONB）物化进进程，实测
     # 单次调用把 RSS 推高数百 MB，glibc 释放后不归还操作系统，于是 40 多小时的
-    # 高负载 + 偶发大窗口查询把常驻内存抬到 2.6GB。
-    summary_events = db.execute(
-        select(*_retrieval_analytics_event_columns()).where(
-            RetrievalQualityEvent.id.in_(requested_event_ids)
-        )
-    )
+    # 高负载 + 偶发大窗口查询把常驻内存抬到 2.6GB。取行语句必须按请求分组键排序
+    # （见 _retrieval_summary_events_stmt），否则分页器会把一个请求拆成多个 payload。
+    summary_events = db.execute(_retrieval_summary_events_stmt(requested_event_ids))
     summary_payloads = list(_retrieval_request_payload_pages(summary_events))
     summary_payloads.sort(
         key=lambda item: (
