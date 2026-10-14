@@ -400,6 +400,106 @@ def verdict_for(number: str | None, *, state_file: str | None = None) -> str | N
     return _cached_verdicts(state_file).get(cleaned)
 
 
+def verdict_map(*, state_file: str | None = None) -> dict[str, str]:
+    """Return one snapshot of the persisted verdicts for bulk lookups.
+
+    ``verdict_for()`` copies the whole (currently 200k-entry) mapping on every
+    call, which is fine for a handful of numbers but not for a dispatch loop over
+    hundreds of candidates.  This returns one snapshot (of the same copy-on-read
+    kind) so a caller can look up many numbers without re-copying per number.
+    """
+
+    return _cached_verdicts(state_file)
+
+
+def _tail_bytes() -> int:
+    """Configured tail window size in bytes; ``0`` disables real-time reading."""
+
+    try:
+        return max(0, int(getattr(settings, "WORK_ORDER_LOG_TAIL_BYTES", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def recent_signals(
+    *,
+    path: str | None = None,
+    max_bytes: int | None = None,
+) -> dict[str, str]:
+    """Classify the numbers proven by the tail of the access log.
+
+    ``scan_log()`` is incremental and its worker polls every
+    ``WORK_ORDER_LOG_POLL_SECONDS``, but a work order is materialized only 3~5
+    seconds after its number first appears in the log.  The persisted state file
+    is therefore *always* too late for a brand-new number (that is exactly how
+    2110212947606246403 entered the pool on 2026-10-14).  Reading the tail gives
+    the same evidence with no lag at a bounded cost: one ``seek`` plus one
+    ``read`` of at most ``max_bytes`` (never the whole ~10 GB log).
+
+    Only numbers the window actually proves are returned: a number whose
+    work-order-detail response is 123/124 B is deliberately absent, because the
+    ``detail-missing`` signal never decides on its own in ``apply_signal()``.
+    A number seen in both roles stays ``real`` (``apply_signal`` semantics).
+    """
+
+    log_path = str(path or getattr(settings, "WORK_ORDER_LOG_PATH", "") or "").strip()
+    if not log_path:
+        return {}
+    limit = _tail_bytes() if max_bytes is None else max(0, int(max_bytes))
+    if limit <= 0:
+        return {}
+    try:
+        info = os.stat(log_path)
+    except OSError:
+        return {}
+    size = int(info.st_size)
+    if size <= 0:
+        return {}
+    start = max(0, size - limit)
+    try:
+        with open(log_path, "rb") as handle:
+            handle.seek(start)
+            blob = handle.read(limit)
+    except OSError:
+        return {}
+    if not blob:
+        return {}
+    text = blob.decode("utf-8", errors="ignore")
+    lines = text.split("\n")
+    if start > 0:
+        # The window begins mid-line; that fragment is not a complete entry.
+        lines = lines[1:]
+    if lines and not text.endswith("\n"):
+        # The writer is appending right now: drop the half-written last line
+        # (same policy as the incremental scanner, which leaves it for the
+        # next run).
+        lines = lines[:-1]
+    signals: dict[str, str] = {}
+    for line in lines:
+        if not line:
+            continue
+        classified = classify_log_line(line)
+        if classified is None:
+            continue
+        number, signal = classified
+        apply_signal(signals, number, signal)
+    return signals
+
+
+def recent_verdict_for(
+    number: str | None,
+    *,
+    path: str | None = None,
+    max_bytes: int | None = None,
+) -> str | None:
+    """``recent_signals()`` for a single number (one bounded tail read)."""
+
+    cleaned = str(number or "").strip()
+    if not cleaned:
+        return None
+    return recent_signals(path=path, max_bytes=max_bytes).get(cleaned)
+
+
 def verdict_stats(*, state_file: str | None = None) -> dict[str, Any]:
     """Diagnostics for operators: persisted offset and verdict distribution."""
 
@@ -536,6 +636,47 @@ def backfill_all_verdicts(
     return backfill_verdicts(verdicts, session_factory=session_factory, chunk_size=chunk_size)
 
 
+def _retire_limit() -> int:
+    """Work orders one worker pass may retire; ``0`` disables the auto-retire."""
+
+    try:
+        return max(0, int(getattr(settings, "WORK_ORDER_LOG_RETIRE_LIMIT", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def retire_session_work_orders_task() -> dict[str, Any]:
+    """One bounded retire pass over session-number work orders.
+
+    Newly decided session numbers only stopped the *next* work order from being
+    created; the ones already in the pool kept being dispatched and labeled.  The
+    worker therefore retires them every round (``active`` -> ``retired``) and
+    releases their in-flight assignments.  Nothing is deleted: completed
+    annotations stay readable through the admin overview.
+
+    ``app.services.blind_labeling`` imports this module, so the import has to
+    stay inside the function to avoid a circular import.
+    """
+
+    limit = _retire_limit()
+    if limit <= 0:
+        return {}
+    from app.services.blind_labeling import retire_session_work_orders
+
+    from app.core.database import SessionLocal
+
+    session = SessionLocal()
+    try:
+        result = retire_session_work_orders(session, limit=limit)
+        session.commit()
+        return result
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 async def run_work_order_log_verdict_worker(stop_event: asyncio.Event) -> None:
     """Periodically scan new access-log bytes and backfill fresh verdicts."""
 
@@ -562,6 +703,10 @@ async def run_work_order_log_verdict_worker(stop_event: asyncio.Event) -> None:
                 total = await asyncio.to_thread(backfill_all_verdicts)
                 await asyncio.to_thread(mark_backfilled)
                 logger.info("工单号日志判定：首次全量回写 %s 条遥测记录。", total)
+            # 已建工单不会因为新判定而被回收，所以每轮都要把判定为会话号的存量
+            # 工单退池（只改 pool_state 并释放在途派发，不删除任何记录）。
+            # 退池函数自己会在有变更时打一条 info 日志；这里只负责调用。
+            await asyncio.to_thread(retire_session_work_orders_task)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -586,10 +731,14 @@ __all__ = [
     "classify_log_line",
     "default_state_file",
     "mark_backfilled",
+    "recent_signals",
+    "recent_verdict_for",
     "reset_cache",
+    "retire_session_work_orders_task",
     "run_work_order_log_verdict_worker",
     "scan_log",
     "state_needs_backfill",
     "verdict_for",
+    "verdict_map",
     "verdict_stats",
 ]
