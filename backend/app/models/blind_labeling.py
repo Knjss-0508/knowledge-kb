@@ -25,6 +25,13 @@ from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 
+#: 工单仍在盲标池里，可以被派发。
+POOL_STATE_ACTIVE = "active"
+#: 工单已永久退出派发（目前唯一来源：访问日志证明该号码只当过会话号）。
+#: 退池只改这几列并释放在途派发，绝不删除工单、派发或标注记录。
+POOL_STATE_RETIRED = "retired"
+POOL_STATES = (POOL_STATE_ACTIVE, POOL_STATE_RETIRED)
+
 
 class BlindLabelBatch(Base):
     """A user's 50-item blind-labeling batch."""
@@ -93,6 +100,18 @@ class BlindLabelWorkOrder(Base):
         server_default=text("5"),
     )
     source_created_at = Column(DateTime, nullable=True, index=True)
+    # 池状态（见 POOL_STATE_ACTIVE / POOL_STATE_RETIRED）。历史行由迁移回填成
+    # active，所以列是 NOT NULL + server_default。retired 的工单不再被派发，
+    # 也不计入池内统计，但它的派发与标注记录全部保留可供审计。
+    pool_state = Column(
+        String(16),
+        nullable=False,
+        default=POOL_STATE_ACTIVE,
+        server_default=text("'active'"),
+        index=True,
+    )
+    retired_at = Column(DateTime, nullable=True)
+    retire_reason = Column(String(64), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

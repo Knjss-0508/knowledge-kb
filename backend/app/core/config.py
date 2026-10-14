@@ -171,14 +171,29 @@ class Settings(BaseSettings):
     # Empty means "<backend>/data/work_order_log_verdicts.json" (the mounted
     # runtime volume in production).
     WORK_ORDER_LOG_STATE_FILE: str = ""
-    WORK_ORDER_LOG_POLL_SECONDS: float = 300.0
+    # 判定 worker 的轮询间隔。新号码从首次出现在访问日志到建单只隔 3~5 秒，
+    # 状态文件天生滞后：2026-10-14 线上事故（2110212947606246403）就是建单时
+    # 状态文件里还没有这个号码 -> fail-open 放行。因此降到 1 分钟，并把"实时
+    # 判定"交给下面的日志尾部窗口（建单前直接读日志尾部）。
+    WORK_ORDER_LOG_POLL_SECONDS: float = 60.0
     # 0 disables the per-run read cap. Positive values bound one scan so a huge
     # log can be consumed across several runs.
     WORK_ORDER_LOG_MAX_BYTES_PER_RUN: int = 0
+    # 建单前（以及派发前）实时判定用的日志尾部窗口。只做 seek(size-bytes) +
+    # read(bytes)，绝不整文件读，所以窗口大小就是一次判定的上界开销。
+    # 8 MiB 的依据（2026-10-14 生产实测）：zzdy 日志平均写入约 2.6 KB/s
+    # （3 秒约 7.7 KB），8 MiB ≈ 53 分钟流量，1 MiB ≈ 6.5 分钟；而号码从首现
+    # 到建单只隔 3~5 秒，余量充足。0 表示关闭实时判定（退回只看状态文件）。
+    WORK_ORDER_LOG_TAIL_BYTES: int = 8 * 1024 * 1024
     # How many work-order numbers one backfill UPDATE carries. The backfill is
     # batched so a first full scan (tens of thousands of verdicts) can be written
     # back without one huge transaction. 0 disables the backfill.
     WORK_ORDER_LOG_BACKFILL_LIMIT: int = 500
+    # 判定 worker 每轮最多退池（pool_state='retired'）多少条已判定为会话号的
+    # 存量工单，并释放它们的在途派发。有界是为了让 worker 一轮的写入可控；
+    # 1000 是「一轮就能消化掉 2026-10-14 那 285 条存量」的量级。
+    # 0 表示不在 worker 里自动退池（仍可用 backend/scripts 手工清理）。
+    WORK_ORDER_LOG_RETIRE_LIMIT: int = 1000
     # Excel imports are persisted before processing, so browser disconnects do
     # not cancel work. A lease enables safe recovery after a backend restart.
     KNOWLEDGE_IMPORT_POLL_SECONDS: float = 1.0

@@ -409,6 +409,11 @@ def get_blind_label_overview(
     keyword: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    include_retired: bool = Query(
+        False,
+        alias="include_retired",
+        description="是否包含已退池（会话号）工单；默认排除",
+    ),
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("retrieval:label_overview")),
 ):
@@ -432,6 +437,7 @@ def get_blind_label_overview(
         keyword=keyword,
         page=page,
         page_size=page_size,
+        include_retired=include_retired,
     )
 
 

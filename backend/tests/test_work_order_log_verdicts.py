@@ -345,3 +345,100 @@ def test_trim_falls_back_to_the_oldest_session_verdicts(monkeypatch):
     # real 丢完还不够时，才动最旧的 session
     assert list(tracked) == ["s2", "s3"]
 
+
+def test_recent_signals_classifies_the_log_tail(tmp_path):
+    """建单前的实时判定：只读日志尾部，规则与增量扫描完全一致。"""
+
+    log = tmp_path / "access.log"
+    log.write_bytes(
+        (
+            _chat("2108536379561477121", 827)
+            + _detail("2108802993527718918", 639)
+            + _detail("2108536379561477121", 639)
+        ).encode("utf-8")
+    )
+    signals = verdicts.recent_signals(path=str(log))
+    # 有工单详情数据的 = 真工单号（即使它同时也被当作会话号用过，也不能降级）。
+    assert signals["2108536379561477121"] == verdicts.VERDICT_REAL
+    assert signals["2108802993527718918"] == verdicts.VERDICT_REAL
+
+
+def test_recent_signals_is_session_only_for_chat_traffic(tmp_path):
+    log = tmp_path / "access.log"
+    log.write_bytes(
+        (
+            _chat("111", 827)
+            + _chat("222", 520)
+            + _detail("222", 639)
+            + _detail("333", 124)
+        ).encode("utf-8")
+    )
+    signals = verdicts.recent_signals(path=str(log))
+    # 只有 im/history 上有数据的号码 = 会话号。
+    assert signals["111"] == verdicts.VERDICT_SESSION
+    assert signals["222"] == verdicts.VERDICT_REAL
+    # 只出现过 124 B 空详情响应的号码不算证据（detail-missing 不单独下结论）。
+    assert "333" not in signals
+
+
+def test_recent_signals_only_reads_the_requested_window(tmp_path):
+    log = tmp_path / "access.log"
+    old_line = _chat("999", 827)
+    log.write_bytes((old_line + _chat("111", 827)).encode("utf-8"))
+    signals = verdicts.recent_signals(
+        path=str(log), max_bytes=len(old_line.encode("utf-8")) + 1
+    )
+    assert "999" not in signals
+    assert signals["111"] == verdicts.VERDICT_SESSION
+
+
+def test_recent_signals_drops_the_truncated_window_edges(tmp_path):
+    """窗口起点落在半行上、以及日志最后一行只写了一半：两端都不能当证据。"""
+
+    log = tmp_path / "access.log"
+    first = _chat("111", 827)
+    second = _chat("222", 827)
+    third = _chat("333", 827)
+    log.write_bytes((first + second + third).encode("utf-8"))
+    # 起点落在 second 中间：second 的残余不能被当成 222 的证据，只有完整的 third 有效。
+    max_bytes = len(second.encode("utf-8")) + len(third.encode("utf-8")) - 5
+    signals = verdicts.recent_signals(path=str(log), max_bytes=max_bytes)
+    assert signals == {"333": verdicts.VERDICT_SESSION}
+
+    # 正在写入的最后一行（没有换行符、内容被截断）同样不能当证据。
+    half_written = tmp_path / "access-half.log"
+    complete = _chat("444", 827)
+    half_written.write_bytes(
+        (complete + _chat("555", 827).rstrip("\n")).encode("utf-8")
+    )
+    signals = verdicts.recent_signals(path=str(half_written))
+    assert signals == {"444": verdicts.VERDICT_SESSION}
+
+
+def test_recent_signals_is_empty_without_a_usable_log(tmp_path):
+    log = tmp_path / "access.log"
+    log.write_text(_chat("111", 827), encoding="utf-8")
+    assert verdicts.recent_signals(path=str(tmp_path / "nope.log")) == {}
+    assert verdicts.recent_signals(path=str(log), max_bytes=0) == {}
+    assert verdicts.recent_signals(path="") == {}
+    assert verdicts.recent_verdict_for("does-not-exist", path=str(log)) is None
+    assert verdicts.recent_verdict_for("", path=str(log)) is None
+    assert (
+        verdicts.recent_verdict_for("111", path=str(log)) == verdicts.VERDICT_SESSION
+    )
+
+
+def test_verdict_map_exposes_the_persisted_verdicts(tmp_path):
+    verdicts.reset_cache()
+    log = tmp_path / "access.log"
+    state = tmp_path / "state.json"
+    log.write_text(_detail("111", 639) + _chat("222", 827), encoding="utf-8")
+    verdicts.scan_log(path=str(log), state_file=str(state))
+    mapping = verdicts.verdict_map(state_file=str(state))
+    assert mapping == {
+        "111": verdicts.VERDICT_REAL,
+        "222": verdicts.VERDICT_SESSION,
+    }
+    assert verdicts.verdict_map(state_file=str(tmp_path / "missing.json")) == {}
+
+

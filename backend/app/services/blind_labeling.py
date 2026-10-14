@@ -10,6 +10,8 @@ from __future__ import annotations
 import copy
 import logging
 import math
+import threading
+import time
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Iterable
@@ -22,6 +24,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
 from app.models.blind_labeling import (
+    POOL_STATE_ACTIVE,
+    POOL_STATE_RETIRED,
     BlindLabelAnnotation,
     BlindLabelArbitration,
     BlindLabelAssignment,
@@ -31,7 +35,9 @@ from app.models.blind_labeling import (
 from app.models.integration import RetrievalQualityEvent
 from app.models.knowledge import Category, Knowledge
 from app.services.work_order_log_verdicts import VERDICT_REAL, VERDICT_SESSION
+from app.services.work_order_log_verdicts import recent_signals as log_tail_signals
 from app.services.work_order_log_verdicts import verdict_for as log_verdict_for
+from app.services.work_order_log_verdicts import verdict_map as log_verdict_map
 from app.services.work_order_verification import WorkOrderVerifier
 
 BLIND_LABEL_BATCH_SIZE = 50
@@ -45,6 +51,9 @@ BLIND_LABEL_VERDICTS = {"referable", "not_referable"}
 BLIND_LABEL_ASSIGNMENT_STATUSES = {"assigned", "in_progress", "completed", "released"}
 BLIND_LABEL_ACTIVE_STATUSES = {"assigned", "in_progress", "completed"}
 BLIND_LABEL_AUTO_RELEASE_REASON = "系统超时自动回收"
+# 退池原因：访问日志/上游证明这个号码只当过会话号。写入
+# ``BlindLabelWorkOrder.retire_reason``，也用作被释放派发的 ``release_reason``。
+BLIND_LABEL_SESSION_NUMBER_REASON = "session_number"
 # A verdict remains the only value used by consensus and arbitration.  These
 # codes are structured diagnostic evidence for later retrieval/knowledge work.
 BLIND_LABEL_REFERABLE_REASON_CODES = {
@@ -264,6 +273,72 @@ def freeze_work_order_snapshot(db: Session, event: RetrievalQualityEvent) -> dic
     }
 
 
+# 会话号判定快照：派发/建单时用来「不再派发已确证只当过会话号的工单」。
+# 两层来源（worker 写的状态文件 + 访问日志尾部），读取有界，任何失败都只让集合
+# 变小 —— 也就是少拦一点，绝不让建单或派发因为读日志出错而失败。
+_SESSION_NUMBER_CACHE: dict[str, Any] = {"numbers": frozenset(), "expires_at": 0.0}
+_SESSION_NUMBER_CACHE_TTL_SECONDS = 60.0
+_SESSION_NUMBER_CACHE_LOCK = threading.Lock()
+# 派发候选的 SQL ``NOT IN`` 参数上限保护：会话号通常只有几百个，超过这个量级
+# 就退化为逐候选的 Python 判断（``is_session_number``），避免生成超大 SQL。
+_SESSION_NUMBER_SQL_LIMIT = 5000
+
+
+def _load_session_numbers() -> frozenset[str]:
+    """收集已判定为「只当过会话号」的号码（状态文件 + 访问日志尾部）。"""
+
+    numbers: set[str] = set()
+    try:
+        for number, verdict in log_verdict_map().items():
+            if verdict == VERDICT_SESSION:
+                numbers.add(str(number))
+    except Exception:  # pragma: no cover - 读失败必须降级为「少拦一点」
+        logger.warning(
+            "盲标池：读取工单号判定状态文件失败，暂时忽略持久化的会话号。",
+            exc_info=True,
+        )
+    try:
+        for number, verdict in log_tail_signals().items():
+            if verdict == VERDICT_SESSION:
+                numbers.add(str(number))
+    except Exception:  # pragma: no cover - 读失败必须降级为「少拦一点」
+        logger.warning(
+            "盲标池：读取访问日志尾部失败，暂时忽略实时会话号。", exc_info=True
+        )
+    return frozenset(numbers)
+
+
+def session_number_snapshot() -> frozenset[str]:
+    """``_load_session_numbers()`` 的 TTL 缓存版本（派发热路径每 60s 最多读一次）。"""
+
+    now = time.monotonic()
+    if now < float(_SESSION_NUMBER_CACHE["expires_at"] or 0.0):
+        return _SESSION_NUMBER_CACHE["numbers"]
+    with _SESSION_NUMBER_CACHE_LOCK:
+        now = time.monotonic()
+        if now < float(_SESSION_NUMBER_CACHE["expires_at"] or 0.0):
+            return _SESSION_NUMBER_CACHE["numbers"]
+        numbers = _load_session_numbers()
+        _SESSION_NUMBER_CACHE["numbers"] = numbers
+        _SESSION_NUMBER_CACHE["expires_at"] = now + _SESSION_NUMBER_CACHE_TTL_SECONDS
+        return numbers
+
+
+def is_session_number(question_form_id: str | None) -> bool:
+    """这个号码是否已被证明只当过会话号（未知返回 ``False``）。
+
+    未知不能当成会话号：KB 自己的 ``queryQuestionFormDetail`` 复核请求走
+    ``nmht.zhuanspirit.com``，不经过 zzdy 的 nginx，所以「这份日志里完全没有这个
+    号码」是最常见的情况之一。把未知当会话号会把正常工单整批拦掉；判定不出来的
+    工单由 :func:`retire_session_work_orders` 事后退池兜底。
+    """
+
+    cleaned = str(question_form_id or "").strip()
+    if not cleaned:
+        return False
+    return cleaned in session_number_snapshot()
+
+
 def ensure_work_orders(
     db: Session,
     minimum_new: int = 0,
@@ -293,10 +368,18 @@ def ensure_work_orders(
        ``im/history`` 上有聊天数据、从未在 ``queryQuestionFormDetail`` 上有数据，
        说明它是会话号 -> 记 ``False`` 并跳过；反过来有工单详情数据 -> 记
        ``True``；日志里没有记录 -> 放行（fail-open，避免把新工单饿死）。
+       这一层本身也分两步：先查 worker 落盘的状态文件，查不到再读一次日志尾部
+       （``recent_signals``，见下面的 ``tail_verdict``）。状态文件必然滞后于新
+       号码（worker 每 60s 才轮询一次，而号码从首现到建单只隔 3~5 秒），所以
+       单纯依赖状态文件等于对新号码永远 fail-open。
 
     两道门禁都判定不了时行为与改造前一致（不拦截）。
     """
 
+    # 注意：这两个集合刻意是「全表」取号，**不能**按 ``pool_state`` 过滤。
+    # 否则同一个人在退池之后再次带着同一个号码出现时，会被当成新样本重新物化
+    # 出一张工单（唯一约束只挡 conversation_id，而新事件通常带新的
+    # conversation_id）。退池是「不再派发」，不是「允许重新建单」。
     existing_conversations = {
         str(value)
         for (value,) in db.query(BlindLabelWorkOrder.conversation_id).all()
@@ -348,6 +431,16 @@ def ensure_work_orders(
     checker = verifier or WorkOrderVerifier()
     created = 0
     seen_in_run: set[str] = set()
+    # 实时判定缓存（惰性）：只有状态文件也答不上来才会读日志尾部，而且整次
+    # ensure_work_orders() 调用最多读一次有界窗口，绝不按号码逐个读。
+    tail_signals: dict[str, str] | None = None
+
+    def tail_verdict(number: str) -> str | None:
+        nonlocal tail_signals
+        if tail_signals is None:
+            tail_signals = log_tail_signals()
+        return tail_signals.get(number)
+
     for event in events:
         conversation_id = str(event.conversation_id or "").strip()
         question_form_id = str(event.question_form_id or "").strip()
@@ -364,6 +457,12 @@ def ensure_work_orders(
             # No cookie (or the upstream call was inconclusive): fall back to the
             # evidence recorded in the zzdy reverse-proxy access log.
             log_verdict = log_verdict_for(question_form_id)
+            if log_verdict is None:
+                # 状态文件滞后于新号码（见本函数 docstring 第 2 条）：新号码在建单
+                # 时必然查不到，只能现场读一次日志尾部。2026-10-14 的
+                # 2110212947606246403 就是漏在这一步（首现 11:36:53 -> 建单
+                # 11:36:58，worker 建单之后才把判定写进状态文件）。
+                log_verdict = tail_verdict(question_form_id)
             if log_verdict == VERDICT_SESSION:
                 event.work_order_verified = False
                 logger.info(
@@ -513,12 +612,23 @@ def _choose_assignments(
     # dispatch the newest source work order first.  Lock each selected work
     # order again before counting active annotators: PostgreSQL honors the row
     # lock; SQLite simply serializes the test transaction.
+    # 已经判定为「只当过会话号」的工单在退池 worker 追上之前就不再派发。放进
+    # SQL 里排除（而不是取回候选后再过滤），否则这些工单会一直占满候选窗口，
+    # 把同一批真正的新工单饿死。
+    session_numbers = session_number_snapshot()
+    candidate_filters: list[Any] = [
+        ~current_user_already_assigned,
+        active_assignment_count < BlindLabelWorkOrder.assignment_limit,
+        # 退池工单永不派发（与「池内统计默认排除 retired」同一口径）。
+        BlindLabelWorkOrder.pool_state != POOL_STATE_RETIRED,
+    ]
+    if 0 < len(session_numbers) <= _SESSION_NUMBER_SQL_LIMIT:
+        candidate_filters.append(
+            BlindLabelWorkOrder.question_form_id.notin_(tuple(sorted(session_numbers)))
+        )
     candidates = (
         db.query(BlindLabelWorkOrder)
-        .filter(
-            ~current_user_already_assigned,
-            active_assignment_count < BlindLabelWorkOrder.assignment_limit,
-        )
+        .filter(*candidate_filters)
         .order_by(
             active_assignment_count.desc(),
             generated_at.desc(),
@@ -533,6 +643,10 @@ def _choose_assignments(
         if len(created) >= needed:
             break
         if candidate.id in selected_work_order_ids:
+            continue
+        # 第二道：候选窗口里可能有 SQL 层没排除掉的会话号（会话号集合超过
+        # _SESSION_NUMBER_SQL_LIMIT 时只走这里）。
+        if is_session_number(candidate.question_form_id):
             continue
         locked = (
             db.query(BlindLabelWorkOrder)
@@ -686,6 +800,10 @@ def mark_assignment_started(
     if locked.status == "released":
         if locked.release_reason == BLIND_LABEL_AUTO_RELEASE_REASON:
             raise ValueError("该盲标任务已超时自动回收，请刷新后领取新任务")
+        if locked.release_reason == BLIND_LABEL_SESSION_NUMBER_REASON:
+            # 系统退池（号码在上游只作为会话号）会释放所有在途派发，标注员
+            # 手上的这一单因此失效；给出可理解的提示而不是 500 或静默写入。
+            raise ValueError("该工单已被系统退池（号码在上游只作为会话号），任务已释放")
         raise ValueError("该盲标任务已释放")
     if locked.status == "assigned":
         locked.status = "in_progress"
@@ -716,6 +834,10 @@ def submit_assignment(
     if locked.status == "released":
         if locked.release_reason == BLIND_LABEL_AUTO_RELEASE_REASON:
             raise ValueError("该盲标任务已超时自动回收，请刷新后领取新任务")
+        if locked.release_reason == BLIND_LABEL_SESSION_NUMBER_REASON:
+            # 系统退池（号码在上游只作为会话号）会释放所有在途派发，标注员
+            # 手上的这一单因此失效；给出可理解的提示而不是 500 或静默写入。
+            raise ValueError("该工单已被系统退池（号码在上游只作为会话号），任务已释放")
         raise ValueError("该盲标任务已释放")
     if locked.status == "completed":
         raise ValueError("该盲标任务已经提交")
@@ -823,6 +945,101 @@ def release_assignment(db: Session, assignment: BlindLabelAssignment, reason: st
     locked.release_reason = str(reason or "").strip()[:512]
     locked.updated_at = datetime.utcnow()
     db.flush()
+
+
+def _session_retire_candidates(
+    db: Session,
+    session_numbers: frozenset[str] | set[str],
+    limit: int,
+) -> list[BlindLabelWorkOrder]:
+    """待退池的工单（未退池 + 号码有会话号证据），一次最多 ``limit`` 条。"""
+
+    if limit <= 0 or not session_numbers:
+        return []
+    query = db.query(BlindLabelWorkOrder).filter(
+        BlindLabelWorkOrder.pool_state != POOL_STATE_RETIRED,
+        BlindLabelWorkOrder.question_form_id.isnot(None),
+    )
+    numbers = sorted(session_numbers)
+    if len(numbers) <= _SESSION_NUMBER_SQL_LIMIT:
+        return (
+            query.filter(BlindLabelWorkOrder.question_form_id.in_(numbers))
+            .order_by(BlindLabelWorkOrder.id)
+            .limit(limit)
+            .all()
+        )
+    # pragma: no cover - 判定集大到不适合塞进 SQL 时的有界回退：有界地读一批
+    # 活跃工单，在 Python 里比对。此时需要多轮才能扫完整个池子。
+    page = (
+        query.order_by(BlindLabelWorkOrder.id).limit(max(limit * 50, 5000)).all()
+    )
+    return [
+        item
+        for item in page
+        if str(item.question_form_id or "").strip() in session_numbers
+    ][:limit]
+
+
+def retire_session_work_orders(
+    db: Session,
+    *,
+    limit: int | None = None,
+) -> dict[str, int]:
+    """把已判定为「只当过会话号」的工单永久退池，并释放其在途派发。
+
+    1. 工单侧：``pool_state='retired'`` + ``retired_at`` + ``retire_reason``；
+    2. 派发侧：``assigned`` / ``in_progress`` 的派发置为 ``released``，原因写
+       ``session_number``，与 :func:`release_assignment` 同一套字段语义。
+
+    **绝不删除任何记录**：``BlindLabelWorkOrder.assignments`` 是
+    ``cascade="all, delete-orphan"``，物理删除会连带删掉已经完成的标注
+    （2026-10-14 池内 285 张会话号工单里有 100 张已被真实标注、共 782 条标注）。
+    已 ``completed`` 的派发保持原样 —— 标注员的劳动是审计证据，而
+    ``pool_state='retired'`` 已经让这张工单不再被派发、不再计入池内统计。
+
+    幂等：已经是 retired 的工单不在候选里，重复调用不会重复计数或重复释放。
+    """
+
+    session_numbers = _load_session_numbers()
+    if not session_numbers:
+        return {"retired": 0, "released": 0, "scanned": 0}
+    effective_limit = (
+        settings.WORK_ORDER_LOG_RETIRE_LIMIT if limit is None else int(limit)
+    )
+    if effective_limit <= 0:
+        return {"retired": 0, "released": 0, "scanned": 0}
+    work_orders = _session_retire_candidates(db, session_numbers, effective_limit)
+    retired = 0
+    released = 0
+    now = datetime.utcnow()
+    for work_order in work_orders:
+        with db.begin_nested():
+            work_order.pool_state = POOL_STATE_RETIRED
+            work_order.retired_at = now
+            work_order.retire_reason = BLIND_LABEL_SESSION_NUMBER_REASON
+            work_order.updated_at = now
+            db.flush()
+            retired += 1
+            in_flight = (
+                db.query(BlindLabelAssignment)
+                .filter(
+                    BlindLabelAssignment.work_order_id == work_order.id,
+                    BlindLabelAssignment.status.in_(("assigned", "in_progress")),
+                )
+                .all()
+            )
+            for assignment in in_flight:
+                assignment.status = "released"
+                assignment.released_at = now
+                assignment.release_reason = BLIND_LABEL_SESSION_NUMBER_REASON
+                assignment.updated_at = now
+                released += 1
+            db.flush()
+    if retired or released:
+        logger.info(
+            "盲标退池：%s 条会话号工单退出派发，释放 %s 条在途派发。", retired, released
+        )
+    return {"retired": retired, "released": released, "scanned": len(work_orders)}
 
 
 def release_expired_assignments(
@@ -1314,6 +1531,7 @@ def overview(
     keyword: str | None = None,
     page: int = 1,
     page_size: int = 20,
+    include_retired: bool = False,
 ) -> dict[str, Any]:
     query = (
         db.query(BlindLabelWorkOrder)
@@ -1337,6 +1555,11 @@ def overview(
     # The panel's time filter is based on assignment/annotation activity, not
     # the original retrieval event time.  Do the range check after loading
     # assignments so a recently labeled older work order is not hidden.
+    if not include_retired and not conversation_id:
+        # 已退池（会话号）工单默认不出现在池内列表与统计里，否则「池子总数」
+        # 会继续被这 285 条污染。按号码显式查询（管理端审计、标注端打开历史
+        # 任务）时仍然可见，避免退池把历史查证能力整个砍掉。
+        query = query.filter(BlindLabelWorkOrder.pool_state != POOL_STATE_RETIRED)
     if conversation_id:
         identifier = conversation_id.strip()
         query = query.filter(

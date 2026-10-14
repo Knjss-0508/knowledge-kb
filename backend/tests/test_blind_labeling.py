@@ -10,6 +10,8 @@ from sqlalchemy import create_engine, update
 from sqlalchemy.orm import sessionmaker
 
 from app.models.blind_labeling import (
+    POOL_STATE_ACTIVE,
+    POOL_STATE_RETIRED,
     BlindLabelAnnotation,
     BlindLabelArbitration,
     BlindLabelAssignment,
@@ -43,14 +45,18 @@ from app.services.blind_labeling import (
     consensus_for_work_order,
     current_batch,
     ensure_work_orders,
+    is_session_number,
     mark_assignment_started,
     overview,
     public_assignment_detail,
     release_expired_assignments,
     release_assignment,
+    retire_session_work_orders,
+    session_number_snapshot,
     submit_assignment,
     work_order_status,
 )
+from app.services.work_order_log_verdicts import VERDICT_SESSION
 
 
 _QUESTION_FORM_ID_UNSET = object()
@@ -1653,3 +1659,309 @@ def test_ensure_work_orders_prefers_the_upstream_verifier_over_the_access_log(db
     monkeypatch.setattr("app.services.blind_labeling.log_verdict_for", _log_verdict)
     assert ensure_work_orders(db, 1, verifier=_StubVerifier({"question-form-1": True})) == 1
     assert calls == []
+
+
+def test_ensure_work_orders_blocks_numbers_proved_chat_only_by_the_log_tail(db, monkeypatch):
+    """Cookie 判定不了、状态文件也还没轮到它时，访问日志尾部是最后一道实时防线。
+
+    这正是 2026-10-14 生产上 2110212947606246403 的场景：Cookie 门禁自我禁用后
+    整批 fail-open，而号码在建单前 3~5 秒才第一次出现在访问日志里，worker 的
+    300 秒轮询状态文件还查不到它。
+    """
+
+    monkeypatch.setattr(
+        "app.services.blind_labeling.log_verdict_for",
+        lambda number, **kwargs: None,
+    )
+    tail_calls: list[dict] = []
+
+    def _tail(**kwargs):
+        tail_calls.append(kwargs)
+        return {"question-form-1": VERDICT_SESSION}
+
+    monkeypatch.setattr("app.services.blind_labeling.log_tail_signals", _tail)
+
+    verifier = _StubVerifier()
+    assert ensure_work_orders(db, 1, verifier=verifier) == 0
+    db.commit()
+
+    # 上游仍然只被问了一次；判定结论落库后第二轮在 SQL 层就被排除。
+    assert verifier.calls == ["question-form-1"]
+    assert db.get(RetrievalQualityEvent, "event-1").work_order_verified is False
+    assert db.query(BlindLabelWorkOrder).count() == 0
+    assert len(tail_calls) == 1
+
+
+def test_ensure_work_orders_scans_the_log_tail_once_per_run(db, monkeypatch):
+    """多个候选只允许读一次有界窗口：绝不允许按号码逐个读日志。"""
+
+    _seed_extra_business_events(db)
+    monkeypatch.setattr(
+        "app.services.blind_labeling.log_verdict_for",
+        lambda number, **kwargs: None,
+    )
+    tail_calls: list[int] = []
+
+    def _tail(**kwargs):
+        tail_calls.append(1)
+        return {}
+
+    monkeypatch.setattr("app.services.blind_labeling.log_tail_signals", _tail)
+
+    assert ensure_work_orders(db, 3, verifier=_StubVerifier()) == 3
+    assert len(tail_calls) == 1
+
+
+def test_session_number_snapshot_caches_and_never_treats_unknown_as_session(monkeypatch):
+    """派发热路径每 60 秒最多读一次；未知号码绝不当成会话号。"""
+
+    loads: list[int] = []
+
+    def _load():
+        loads.append(1)
+        return frozenset({"2108536379561477121"})
+
+    monkeypatch.setattr("app.services.blind_labeling._load_session_numbers", _load)
+    monkeypatch.setattr(
+        "app.services.blind_labeling._SESSION_NUMBER_CACHE",
+        {"numbers": frozenset(), "expires_at": 0.0},
+    )
+
+    assert is_session_number("2108536379561477121") is True
+    assert session_number_snapshot() == frozenset({"2108536379561477121"})
+    assert len(loads) == 1
+    # KB 自己的复核请求不过 zzdy 的 nginx，「日志里完全没这个号」是常见情况。
+    assert is_session_number("2108536379561477199") is False
+    assert is_session_number("") is False
+    assert is_session_number(None) is False
+
+
+def test_choose_assignments_never_hands_out_proven_session_numbers(db, monkeypatch):
+    """派发侧两道防线：SQL 排除 + 逐候选复查，都不再交出会话号工单。"""
+
+    _seed_extra_business_events(db, 1)
+    verifier = _StubVerifier({"question-form-1": True, "conversation-extra-1": True})
+    assert ensure_work_orders(db, 2, verifier=verifier) == 2
+
+    batch = BlindLabelBatch(
+        id="batch-dispatch",
+        user_id="u1",
+        target_count=BLIND_LABEL_BATCH_SIZE,
+        status="active",
+    )
+    db.add(batch)
+    db.commit()
+
+    monkeypatch.setattr(
+        "app.services.blind_labeling.session_number_snapshot",
+        lambda: frozenset({"question-form-1"}),
+    )
+    monkeypatch.setattr(
+        "app.services.blind_labeling.is_session_number",
+        lambda number: str(number or "").strip() == "question-form-1",
+    )
+    created = _choose_assignments(db, batch, "u1", 2)
+    assert [item.work_order.question_form_id for item in created] == [
+        "conversation-extra-1"
+    ]
+    db.commit()
+
+    # 只留 Python 一道防线（模拟会话号集合超出 SQL 参数上限、SQL 未排除的情况）。
+    monkeypatch.setattr(
+        "app.services.blind_labeling.session_number_snapshot",
+        lambda: frozenset(),
+    )
+    second = _choose_assignments(db, batch, "u2", 2)
+    assert [item.work_order.question_form_id for item in second] == [
+        "conversation-extra-1"
+    ]
+
+
+def test_retired_work_order_is_not_dispatchable_and_not_re_materialized(db, monkeypatch):
+    """退池后：不再派发，也不会被同一条事件重新物化成第二张工单。"""
+
+    assert ensure_work_orders(db, 1, verifier=_StubVerifier({"question-form-1": True})) == 1
+    db.commit()
+
+    monkeypatch.setattr(
+        "app.services.blind_labeling._load_session_numbers",
+        lambda: frozenset({"question-form-1"}),
+    )
+    assert retire_session_work_orders(db)["retired"] == 1
+    db.commit()
+
+    batch = BlindLabelBatch(
+        id="batch-retired",
+        user_id="u1",
+        target_count=BLIND_LABEL_BATCH_SIZE,
+        status="active",
+    )
+    db.add(batch)
+    db.commit()
+    monkeypatch.setattr(
+        "app.services.blind_labeling.session_number_snapshot",
+        lambda: frozenset({"question-form-1"}),
+    )
+    assert _choose_assignments(db, batch, "u1", 1) == []
+
+    # existing_conversations / existing_question_forms 必须保持「不过滤退池」，
+    # 否则同一条事件会被重新物化成第二张工单，历史判定也就白做了。
+    retry = _StubVerifier({"question-form-1": True})
+    assert ensure_work_orders(db, 1, verifier=retry) == 0
+    assert retry.calls == []
+    assert db.query(BlindLabelWorkOrder).count() == 1
+    assert db.query(BlindLabelWorkOrder).one().pool_state == POOL_STATE_RETIRED
+
+
+def test_retire_session_work_orders_releases_in_flight_and_keeps_completed_annotations(
+    db, monkeypatch
+):
+    """退池只改状态：在途派发被释放，已完成的标注与记录原样保留。"""
+
+    _seed_extra_business_events(db, 1)
+    verifier = _StubVerifier({"question-form-1": True, "conversation-extra-1": True})
+    assert ensure_work_orders(db, 2, verifier=verifier) == 2
+    orders = {order.question_form_id: order for order in db.query(BlindLabelWorkOrder)}
+    session_order = orders["question-form-1"]
+    control_order = orders["conversation-extra-1"]
+
+    batch = BlindLabelBatch(
+        id="batch-retire",
+        user_id="u1",
+        target_count=BLIND_LABEL_BATCH_SIZE,
+        status="active",
+    )
+    db.add(batch)
+    db.flush()
+    in_flight = BlindLabelAssignment(
+        id="as-in-flight",
+        batch_id=batch.id,
+        work_order_id=session_order.id,
+        user_id="u2",
+        status="in_progress",
+    )
+    to_complete = BlindLabelAssignment(
+        id="as-completed",
+        batch_id=batch.id,
+        work_order_id=session_order.id,
+        user_id="u1",
+        status="assigned",
+    )
+    control = BlindLabelAssignment(
+        id="as-control",
+        batch_id=batch.id,
+        work_order_id=control_order.id,
+        user_id="u3",
+        status="assigned",
+    )
+    db.add_all([in_flight, to_complete, control])
+    db.commit()
+
+    annotations = submit_assignment(
+        db, to_complete, _labels(to_complete), task_reason_code=""
+    )
+    db.commit()
+    assert db.get(BlindLabelAssignment, to_complete.id).status == "completed"
+
+    monkeypatch.setattr(
+        "app.services.blind_labeling._load_session_numbers",
+        lambda: frozenset({"question-form-1"}),
+    )
+    result = retire_session_work_orders(db)
+    db.commit()
+
+    assert result == {"retired": 1, "released": 1, "scanned": 1}
+    db.refresh(session_order)
+    assert session_order.pool_state == POOL_STATE_RETIRED
+    assert session_order.retire_reason == "session_number"
+    assert session_order.retired_at is not None
+
+    released = db.get(BlindLabelAssignment, in_flight.id)
+    assert released.status == "released"
+    assert released.release_reason == "session_number"
+    assert released.released_at is not None
+
+    kept = db.get(BlindLabelAssignment, to_complete.id)
+    assert kept.status == "completed"
+    assert kept.release_reason == ""
+    assert db.query(BlindLabelAnnotation).filter_by(assignment_id=kept.id).count() == len(
+        annotations
+    )
+    # 对照：真工单与它的在途派发完全不受影响。
+    assert db.get(BlindLabelAssignment, control.id).status == "assigned"
+    assert db.get(BlindLabelWorkOrder, control_order.id).pool_state == POOL_STATE_ACTIVE
+
+    # 幂等：第二轮不再计数、不再释放，标注记录一条不少。
+    assert retire_session_work_orders(db) == {"retired": 0, "released": 0, "scanned": 0}
+    db.commit()
+    assert db.query(BlindLabelAnnotation).count() == len(annotations)
+
+
+def test_overview_hides_retired_work_orders_unless_queried_by_number(db, monkeypatch):
+    """池内列表与统计默认排除退池工单，但按号码查证时仍然可读（审计）。"""
+
+    assert ensure_work_orders(db, 1, verifier=_StubVerifier({"question-form-1": True})) == 1
+    order = db.query(BlindLabelWorkOrder).one()
+    batch = BlindLabelBatch(
+        id="batch-overview",
+        user_id="u1",
+        target_count=BLIND_LABEL_BATCH_SIZE,
+        status="active",
+    )
+    db.add(batch)
+    db.flush()
+    db.add(
+        BlindLabelAssignment(
+            id="as-overview",
+            batch_id=batch.id,
+            work_order_id=order.id,
+            user_id="u1",
+            status="assigned",
+        )
+    )
+    db.commit()
+    assert [item["question_form_id"] for item in overview(db)["work_orders"]] == [
+        "question-form-1"
+    ]
+
+    monkeypatch.setattr(
+        "app.services.blind_labeling._load_session_numbers",
+        lambda: frozenset({"question-form-1"}),
+    )
+    assert retire_session_work_orders(db)["retired"] == 1
+    db.commit()
+
+    assert overview(db)["work_orders"] == []
+    assert overview(db)["summary"]["work_orders"] == 0
+    assert [
+        item["question_form_id"]
+        for item in overview(db, conversation_id="conversation-1")["work_orders"]
+    ] == ["question-form-1"]
+    assert [
+        item["question_form_id"]
+        for item in overview(db, include_retired=True)["work_orders"]
+    ] == ["question-form-1"]
+
+
+def test_starting_an_assignment_released_by_retire_explains_the_reason(db, monkeypatch):
+    """标注员手上的单被系统退池释放后，得到的是可理解的提示而不是 500。"""
+
+    assert ensure_work_orders(db, 1, verifier=_StubVerifier({"question-form-1": True})) == 1
+    _, rows = claim_batch(db, "u1", target_count=1)
+    assignment = rows[0]
+    db.commit()
+
+    monkeypatch.setattr(
+        "app.services.blind_labeling._load_session_numbers",
+        lambda: frozenset({"question-form-1"}),
+    )
+    assert retire_session_work_orders(db)["released"] == 1
+    db.commit()
+    db.refresh(assignment)
+    assert assignment.status == "released"
+
+    with pytest.raises(ValueError, match="系统退池"):
+        mark_assignment_started(db, assignment)
+    with pytest.raises(ValueError, match="系统退池"):
+        submit_assignment(db, assignment, _labels(assignment), task_reason_code="")
+
