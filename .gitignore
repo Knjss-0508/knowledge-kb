@@ -45,6 +45,13 @@ frontend/minimal.html
 .env.*.bak*
 *.env.bak*
 
+# 本地运行产物与临时工作目录（只匹配仓库根，避免误提交本机留下的脚本、快照与导出文件）。
+# 这些目录里通常含生产库导出、镜像/接口快照与本机专用脚本，历史上多次出现在 git status 里，
+# 容易在批量 add 时被误提交，因此按根锚定忽略；需要长期保留的内容请放到 docs/ 或 scripts/ 下。
+/.dsh-*/
+/.dsh-*
+/outputs/
+
 # 环境文件变体（.env.local / .env.production / .env.staging / *.env 等，通常填有真实令牌）。
 # 第 6 行的 `.env` 只覆盖同名文件；这里补齐带后缀的变体与 *.env 实例。
 # 末尾的 !*.example 放在忽略规则之后，保证所有示例文件（.env.example / .env.cloud.example /
