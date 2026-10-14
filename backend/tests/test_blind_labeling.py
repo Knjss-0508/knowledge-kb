@@ -49,6 +49,7 @@ from app.services.blind_labeling import (
     release_expired_assignments,
     release_assignment,
     submit_assignment,
+    work_order_status,
 )
 
 
@@ -640,6 +641,59 @@ def test_choose_assignments_fills_existing_work_orders_before_newest_fresh_items
     assert [item.work_order_id for item in third] == [work_orders["two-old"].id]
     fourth = _choose_assignments(db, batches["u7"], "u7", needed=1)
     assert [item.work_order_id for item in fourth] == [work_orders["one-new"].id]
+
+
+def test_claim_path_tolerates_a_work_order_that_already_has_a_completed_assignment(db):
+    """回归（2026-10-14 生产事故）：领单路径不得把「单列投影行」当完整分配行。
+
+    ``work_order_status`` 在没有预加载分配时用的是
+    ``db.query(BlindLabelAssignment.status)`` 的单列投影；#194 之后这份投影被
+    无条件透传给 ``consensus_for_work_order``，``_completed_assignments`` 于是
+    读 ``item.completed_at`` 抛 ``AttributeError: completed_at``。只要候选工单有
+    至少一条已完成分配，``POST /api/v1/blind-labeling/my-batch:claim`` 就整体 500。
+    """
+
+    now = datetime.utcnow()
+    work_order = BlindLabelWorkOrder(
+        id="wo-already-completed",
+        conversation_id="priority-already-completed",
+        query_text="已有一人完成标注的工单",
+        candidate_snapshot=[
+            {"candidate_ref": "cand-already-completed", "final_score": 0.79}
+        ],
+        source_created_at=now - timedelta(days=1),
+    )
+    db.add(work_order)
+    batches = {
+        user_id: BlindLabelBatch(
+            id=f"completed-batch-{user_id}",
+            user_id=user_id,
+            target_count=BLIND_LABEL_BATCH_SIZE,
+            status="active",
+        )
+        for user_id in ("u1", "u4")
+    }
+    db.add_all(batches.values())
+    db.flush()
+    db.add(
+        BlindLabelAssignment(
+            id="completed-assign-u1",
+            batch_id=batches["u1"].id,
+            work_order_id=work_order.id,
+            user_id="u1",
+            status="completed",
+            completed_at=now,
+        )
+    )
+    db.flush()
+
+    # 1) 直接调用判定：应返回 partial，而不是抛 AttributeError: completed_at
+    resolved_status, _ = work_order_status(db, work_order)
+    assert resolved_status == "partial"
+
+    # 2) 真实领单路径：另一名标注员仍然能领到这张尚未满员的工单
+    chosen = _choose_assignments(db, batches["u4"], "u4", needed=1)
+    assert [item.work_order_id for item in chosen] == [work_order.id]
 
 
 def test_claim_batch_is_fixed_to_50_and_normalizes_legacy_active_batch(db):

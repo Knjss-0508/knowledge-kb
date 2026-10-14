@@ -1241,7 +1241,16 @@ def work_order_status(
     else:
         statuses = [str(status) for (status,) in rows]
     active = [status for status in statuses if status != "released"]
-    consensus = consensus_for_work_order(db, work_order, rows, loaded_arbitrations)
+    # 只有总览列表那种「已预加载完整分配行」的路径才能把 rows 透传下去。
+    # 否则 rows 是 ``db.query(BlindLabelAssignment.status)`` 的单列投影行，
+    # 传给 consensus_for_work_order 会让 _completed_assignments 读
+    # item.completed_at 时抛 AttributeError（2026-10-14 领单 500 的根因）。
+    consensus = consensus_for_work_order(
+        db,
+        work_order,
+        rows if loaded_assignments is not None else None,
+        loaded_arbitrations,
+    )
     if consensus["status"] == "majority":
         return "needs_arbitration", consensus
     if consensus["status"] in {"consensus", "unanimous", "arbitrated"}:
