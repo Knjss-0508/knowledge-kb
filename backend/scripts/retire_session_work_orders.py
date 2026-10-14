@@ -22,6 +22,10 @@
 
     python backend/scripts/retire_session_work_orders.py
     python backend/scripts/retire_session_work_orders.py --apply
+
+注意：本脚本单独执行时必须自己把 ``app.models.user`` 导进来（见文件中部注释），
+否则 SQLAlchemy 配置 mapper 时会因为 ``BlindLabelBatch.user`` 找不到 ``User`` 而报
+``InvalidRequestError: expression 'User' failed to locate a name``。
 """
 
 from __future__ import annotations
@@ -42,6 +46,10 @@ from app.models.blind_labeling import (  # noqa: E402
     BlindLabelAssignment,
     BlindLabelWorkOrder,
 )
+# 只导入 blind_labeling 时，ORM mapper 配置会因为找不到 relationship 目标 User 而报
+# ``expression 'User' failed to locate a name``（应用进程由 app.main 预先导入了全部
+# 模型，所以只有单独跑本脚本才会踩到）。这里显式注册 User 让脚本可以独立执行。
+from app.models.user import User  # noqa: E402,F401
 from app.services.blind_labeling import (  # noqa: E402
     _session_retire_candidates,
     retire_session_work_orders,
