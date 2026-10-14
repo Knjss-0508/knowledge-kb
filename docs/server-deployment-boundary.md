@@ -126,6 +126,27 @@ KNOWLEDGE_ORIGIN_BACKFILL=headquarters_standard
 或者设置为 `business_accumulation`。迁移会自动检测旧知识和旧候选；非空旧库
 未配置时会停止并提示，避免静默归错来源。迁移完成且验收无误后可删除该临时配置。
 
+> **2026-10-14 实测（日常更新必读）**：当前生产机上的 `kb-backend` 容器**不是 Compose 管理的**
+> （`com.docker.compose.project` 与 `.service` 标签为空），
+> `docker compose ... up -d --no-deps backend` 会因容器名冲突回退创建出一个
+> `xxxxxxxx_kb-backend` 新容器：它不会接管 `127.0.0.1:8000`，线上流量不受影响，但会留下
+> 垃圾容器，并使 Compose 重写出来的重建参数与线上实际参数不一致。
+> 日常「只替换后端镜像」必须使用主机规范脚本：
+>
+> ```bash
+> bash /opt/knowledge-kb-runtime/run-kb-backend.sh <镜像标签>
+> ```
+>
+> 该脚本先 `docker rm -f kb-backend`，再按线上既有参数重新 `docker run`：
+> `--restart unless-stopped`、`-p 127.0.0.1:8000:8000`、`--network knowledge-kb_default`、
+> `--add-host=host.docker.internal:host-gateway`、
+> `-v /opt/knowledge-kb/backend/uploads:/app/uploads`、
+> `-v knowledge-kb_manhattan_cache:/app/data`、`-v /www/wwwlogs:/app/nlogs:ro`、
+> `--env-file /opt/knowledge-kb/.env`。切换前后必须比对环境变量 md5、挂载集合、
+> `cmd`/`entrypoint`/重启策略/端口/网络与镜像内关键文件 sha256；
+> 首次安装或经评审的拓扑、数据库、Redis、Embedding 变更才走下面的 Compose 流程。
+> 完整案例见 `docs/production-deploy-20261014-app-query-latency.md`。
+
 ```bash
 docker compose -p knowledge-kb \
   -f docker-compose.yml \
