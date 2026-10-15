@@ -75,9 +75,30 @@ p = (i) => { const t = i ? String(i) : "";
    - 聊天列表那份：`yx()` 的第三分支保持 `Nk(n)` 不变，但要让 `Cp` 真正被填充
      （补上调用方，或让 `/qa-roster` 兼容只带 `zzUserId` 的行）。
    - 归属（`isMe`）与姓名解析**解耦**是后续独立改动，别和这次混在一个 PR 里。
-3. **需要确认运维事实**：谁在 10-15 19:18 / 19:32 重建了 dist、用的是什么流程。
-   如果存在「本地构建 → 上传产物」的流水线，补丁必然丢失；若确认是「在线上产物上继续手工改」，
-   则需要把这次改动沉淀到源码才有意义。
+3. **「重建」的性质已基本查清，是手工补丁而非流水线重建**（2026-10-15 复核）：
+   - 同一个人的手改痕迹在 `/root` 里成串：`server.js.bak-20261015-175727 / 180841 / 184744 / 185119 /
+     185354 / 190159 / 190827 / 191816`（还有 `index.html.bak-20261015-180841`、
+     `package.json.bak-20261015-193610`）；PM2 日志里 `19:18:19`、`19:36:11` 各有一次 `qa-shell` 冷启动。
+   - 同期 `/www/wwwroot/zzdy.powerzhuan.cn/` 根下也在备份：`_backup-closeway-20261015-1845`、
+     `_backup-im-frames-20261015-0046`、`_backup-media-upload-20261015-1257`、`_backup-uploadfix-20261015`
+     —— **全是 `_backup-*` 目录，没有 `src/`、没有 vite/tsconfig/*.tsx**。
+   - 结论：这台服务器上的前端历来就是**直接补产物**（连 `index.html` 都单独备份），
+     所以我们的补丁能存活；**只要没人从干净源码重新构建并覆盖，它就不会丢**。
+     反过来说，「沉淀到源码」这件事不是可选项——因为源码重建迟早会发生（本单 19:18/19:32 那次改动
+     已经让入口 hash 从 `index-60714913.js` 变成 `index-DFKASPWw.js`）。
+4. **已确认的相邻事实（避免重复找）**：
+   - 桌面端「答疑工作台」的源码仓库是私有的 `Cyj-090900/dayigongzuotai`
+     （`package.json`：`answer-workbench` v2.7.8，appId `com.answer.workbench`，React 19 + antd 6 + Vite 7，
+     更新源 `https://qa.powerzhuan.cn/updates/`）——它是** Electron 壳**，
+     内部用 `WebContentsView` 打开 `https://zzdy.powerzhuan.cn`，`src/` 里**没有** `qaTrainerName`，
+     所以它不是待改的仓库（但它请求 `queryQuestionFormDetail?sceneType=1`，若有同款头部需另行确认）。
+   - `Cyj-090900/dayigongzuotai` 的 `docs/zntj-web-patches/README.md` 给出了同团队另一个网页版的仓库范式：
+     `https://gitcode.com/gcw_dIwpN56T/zntj`（本机克隆在开发者 Mac 的 `~/答疑智能推荐助手 web 版`，
+     凭据在 `~/.git-credentials`，线上部署在 `/www/wwwroot/zntj.powerzhuan.cn/web/`）。
+     **套壳前端极可能也在 gitcode 上以同样方式管理**，建议向该 owner 索取仓库地址，
+     或直接看那台 Mac 上的克隆目录名。
+   - 本机（E 盘、C 盘用户目录）与 knowledge-kb 仓全历史都没有套壳前端源码
+     （`git log --all -S 'qa-shell-server'` 与 `--diff-filter=A -- '*.tsx'` 均 0 命中）。
 
 ## 五、答疑中台侧（与本修复正交，已上线）
 
