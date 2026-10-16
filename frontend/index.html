@@ -1411,13 +1411,14 @@
         </div>
       </template>
       <div v-if="blindLabeling.error" class="blind-label-error" role="alert">{{blindLabeling.error}}</div>
-      <div class="blind-label-toolbar"><span class="tt">{{blindLabeling.tab==='mine'?'我的待标工单':'我的已标注工单'}}</span><span class="review-selected-note">共 <b>{{blindLabeling.assignments.length}}</b> 条</span><span v-if="blindLabeling.tab==='completed'" class="blind-label-mine-filter"><span class="blind-label-mine-filter-tabs"><button v-for="option in retrievalPeriodOptions" :key="option.value" class="retrieval-period-btn" :class="{on:blindLabeling.mineFilter.preset===option.value}" type="button" :aria-pressed="blindLabeling.mineFilter.preset===option.value" :disabled="blindLabeling.loading" @click="setBlindLabelMinePeriod(option.value)">{{option.label}}</button></span><span v-if="blindLabeling.mineFilter.preset==='custom'" class="retrieval-custom-range"><input class="inp" type="date" v-model="blindLabeling.mineFilter.dateFrom" aria-label="标注活动开始日期" :max="blindLabeling.mineFilter.dateTo || undefined" :disabled="blindLabeling.loading" @change="applyBlindLabelMineDates"><i class="candidate-date-separator">~</i><input class="inp" type="date" v-model="blindLabeling.mineFilter.dateTo" aria-label="标注活动结束日期" :min="blindLabeling.mineFilter.dateFrom || undefined" :disabled="blindLabeling.loading" @change="applyBlindLabelMineDates"></span><span v-if="blindLabeling.mineFilter.preset!=='all'" class="blind-label-mine-range">标注活动 {{blindLabelMineRangeLabel()}}</span></span><span class="blind-label-toolbar-spacer"></span><button v-if="blindLabeling.tab==='mine' && !blindLabeling.assignments.length" class="btn bp" type="button" @click="claimBlindLabelBatch" :disabled="blindLabeling.claiming">{{blindLabeling.claiming?'分配中...':(blindLabeling.batch.status==='completed'?'领取下一批':'领取 50 条任务')}}</button><button v-if="blindLabeling.tab==='mine' && blindLabeling.batch.status!=='completed'" class="btn bd" type="button" @click="claimBlindLabelBatch" :disabled="blindLabeling.claiming">{{blindLabeling.claiming?'刷新中...':'补充/刷新任务'}}</button><button class="btn bd" type="button" @click="loadBlindLabelAssignments" :disabled="blindLabeling.loading">刷新</button></div>
+      <div class="blind-label-toolbar"><span class="tt">{{blindLabeling.tab==='mine'?'我的待标工单':'我的已标注工单'}}</span><span class="review-selected-note">共 <b>{{blindLabelListTotal()}}</b> 条</span><span v-if="blindLabeling.tab==='completed'" class="blind-label-mine-filter"><span class="blind-label-mine-filter-tabs"><button v-for="option in retrievalPeriodOptions" :key="option.value" class="retrieval-period-btn" :class="{on:blindLabeling.mineFilter.preset===option.value}" type="button" :aria-pressed="blindLabeling.mineFilter.preset===option.value" :disabled="blindLabeling.loading" @click="setBlindLabelMinePeriod(option.value)">{{option.label}}</button></span><span v-if="blindLabeling.mineFilter.preset==='custom'" class="retrieval-custom-range"><input class="inp" type="date" v-model="blindLabeling.mineFilter.dateFrom" aria-label="标注活动开始日期" :max="blindLabeling.mineFilter.dateTo || undefined" :disabled="blindLabeling.loading" @change="applyBlindLabelMineDates"><i class="candidate-date-separator">~</i><input class="inp" type="date" v-model="blindLabeling.mineFilter.dateTo" aria-label="标注活动结束日期" :min="blindLabeling.mineFilter.dateFrom || undefined" :disabled="blindLabeling.loading" @change="applyBlindLabelMineDates"></span><span v-if="blindLabeling.mineFilter.preset!=='all'" class="blind-label-mine-range">标注活动 {{blindLabelMineRangeLabel()}}</span></span><span class="blind-label-toolbar-spacer"></span><button v-if="blindLabeling.tab==='mine' && !blindLabeling.assignments.length" class="btn bp" type="button" @click="claimBlindLabelBatch" :disabled="blindLabeling.claiming">{{blindLabeling.claiming?'分配中...':(blindLabeling.batch.status==='completed'?'领取下一批':'领取 50 条任务')}}</button><button v-if="blindLabeling.tab==='mine' && blindLabeling.batch.status!=='completed'" class="btn bd" type="button" @click="claimBlindLabelBatch" :disabled="blindLabeling.claiming">{{blindLabeling.claiming?'刷新中...':'补充/刷新任务'}}</button><button class="btn bd" type="button" @click="loadBlindLabelAssignments" :disabled="blindLabeling.loading">刷新</button></div>
       <div class="tw" :class="{'blind-label-loading':blindLabeling.loading}">
         <table class="blind-label-order-table"><thead><tr><th style="width:150px">工单 ID</th><th>问题摘要</th><th style="width:110px">候选数</th><th style="width:125px">状态</th><th style="width:155px">分配时间</th><th style="width:140px;text-align:right">操作</th></tr></thead><tbody>
           <tr v-for="assignment in blindLabeling.assignments" :key="assignment.id || assignment.assignment_id || assignment.work_order_id"><td><span class="blind-label-subline" style="margin-top:0">{{blindLabelWorkOrderId(assignment)}}</span></td><td><div class="blind-label-query" :title="blindLabelQuery(assignment)">{{blindLabelQuery(assignment)}}</div><div class="blind-label-subline"><template v-if="assignment.updated_at">最近更新 {{formatDate(assignment.updated_at)}}</template><template v-else>等待标注</template></div></td><td>{{blindLabelCandidateCount(assignment)}}</td><td><span class="blind-label-status" :class="blindLabelStatusClass(assignment.status)">{{blindLabelStatusLabel(assignment.status)}}</span></td><td>{{formatDate(assignment.assigned_at || assignment.created_at)}}</td><td style="text-align:right"><button class="btn bp bsm" type="button" @click="openBlindLabelAssignment(assignment, $event)">{{blindLabelIsDone(assignment)?'查看详情':'开始标注'}}</button></td></tr>
           <tr v-if="!blindLabeling.assignments.length"><td colspan="6" class="blind-label-empty">{{blindLabeling.tab==='mine'?(blindLabeling.batch.status==='completed'||!blindLabelBatchSize()?blindLabelBatchEmptyHint():'当前没有待标工单。点击“领取 50 条任务”开始盲标。'):blindLabelMineFilterEmptyHint()}}</td></tr>
         </tbody></table>
       </div>
+      <div v-if="blindLabeling.tab==='completed' && blindLabelMineTotalPages() > 1" class="blind-label-pagination"><button class="btn bd bsm" type="button" @click="changeBlindLabelMinePage(-1)" :disabled="blindLabeling.loading || blindLabeling.pagination.page <= 1">上一页</button><span>第 {{blindLabeling.pagination.page}} / {{blindLabelMineTotalPages()}} 页 · 共 {{blindLabeling.pagination.total}} 条</span><button class="btn bd bsm" type="button" @click="changeBlindLabelMinePage(1)" :disabled="blindLabeling.loading || blindLabeling.pagination.page >= blindLabelMineTotalPages()">下一页</button><select class="inp" v-model.number="blindLabeling.pagination.size" aria-label="每页条数" :disabled="blindLabeling.loading" @change="changeBlindLabelMinePageSize"><option :value="50">50 条/页</option><option :value="100">100 条/页</option><option :value="200">200 条/页</option><option :value="500">500 条/页</option></select></div>
     </template>
 
     <template v-if="isBlindLabelOverviewTab()">
@@ -2354,7 +2355,7 @@ Vue.createApp({
         mineFilter:{preset:'today',dateFrom:'',dateTo:''},
         assignments:[],
         completed:[],
-        pagination:{page:1,size:50,total:0,totalPages:1},
+        pagination:{page:1,size:200,total:0,totalPages:1},
         current:{open:false,readOnly:false,assignment:null,detail:null,candidates:[],labels:{},reasonCodes:{},reasonNotes:{},allNotReferable:false,taskReasonCode:'',note:'',error:''},
         overview:{loading:false,error:'',summary:{total:0,pending:0,in_progress:0,partial:0,completed:0,disputed:0,annotations:0,consensus_rate:0,active_annotators:0},cards:[],people:[],workOrders:[],updatedAt:'-',filters:{dateFrom:'',dateTo:'',status:'',dimension:'',annotator:'',keyword:''},datePicker:{kind:'',opening:false,openTimer:null,releaseTimer:null,startedAt:0},pagination:{page:1,size:20,total:0,totalPages:1}},
         adminDetail:{open:false,loading:false,error:'',item:null,workOrder:null,candidates:[],annotations:[],taskReasons:[],consensus:null,arbitration:{},arbitrationReason:'',arbitrating:false}
@@ -8553,6 +8554,32 @@ Vue.createApp({
       if (this.blindLabelMineFilter().preset === 'all') return '暂无已标注工单。完成提交后会显示在这里。';
       return '标注活动时间 ' + this.blindLabelMineRangeLabel() + ' 内暂无已标注工单，可切换时间范围查看全部记录。';
     },
+    blindLabelListTotal: function() {
+      // 「我的已标注」按服务端分页取数，条数必须用全量 total，不能再用当前页长度。
+      if (this.blindLabeling.tab === 'completed') return Number(this.blindLabeling.pagination.total) || 0;
+      return this.blindLabeling.assignments ? this.blindLabeling.assignments.length : 0;
+    },
+    blindLabelMineTotalPages: function() {
+      var pagination = this.blindLabeling.pagination || {};
+      var total = Number(pagination.total) || 0;
+      var size = Math.max(1, Number(pagination.size) || 1);
+      return Math.max(1, Number(pagination.totalPages) || Math.ceil(total / size));
+    },
+    changeBlindLabelMinePage: function(delta) {
+      var pagination = this.blindLabeling.pagination;
+      var current = Math.max(1, Number(pagination.page) || 1);
+      var target = Math.max(1, Math.min(this.blindLabelMineTotalPages(), current + Number(delta || 0)));
+      if (target === current) return Promise.resolve(null);
+      pagination.page = target;
+      return this.loadBlindLabelAssignments(false);
+    },
+    changeBlindLabelMinePageSize: function(event) {
+      var pagination = this.blindLabeling.pagination;
+      var value = Number(event && event.target ? event.target.value : event);
+      pagination.size = Math.max(1, value || Number(pagination.size) || 200);
+      pagination.page = 1;
+      return this.loadBlindLabelAssignments(false);
+    },
     setBlindLabelMinePeriod: function(preset) {
       var filter = this.blindLabelMineFilter();
       filter.preset = preset || 'today';
@@ -8566,6 +8593,8 @@ Vue.createApp({
         filter.dateTo = '';
       }
       if (this.blindLabeling.tab !== 'completed') return Promise.resolve(null);
+      // 时间范围变化后从第一页重新取数。
+      this.blindLabeling.pagination.page = 1;
       return this.loadBlindLabelAssignments(false);
     },
     applyBlindLabelMineDates: function() {
@@ -8575,6 +8604,8 @@ Vue.createApp({
       if (filter.dateFrom && !filter.dateTo) filter.dateTo = filter.dateFrom;
       if (!filter.dateFrom && filter.dateTo) filter.dateFrom = filter.dateTo;
       if (this.blindLabeling.tab !== 'completed') return Promise.resolve(null);
+      // 时间范围变化后从第一页重新取数。
+      this.blindLabeling.pagination.page = 1;
       return this.loadBlindLabelAssignments(false);
     },
     blindLabelBatchFromResponse: function(data) {
@@ -8690,6 +8721,7 @@ Vue.createApp({
       }
       this.blindLabeling.tab = tab;
       if (tab === 'completed') this.blindLabeling.batch = this.blindLabelEmptyBatch();
+      if (tab === 'completed') this.blindLabeling.pagination.page = 1;
       if (this.isBlindLabelOverviewTab()) this.loadBlindLabelOverview();
       else this.loadBlindLabelAssignments(false);
     },
@@ -8700,12 +8732,15 @@ Vue.createApp({
       this.blindLabeling.loading = true;
       this.blindLabeling.error = '';
       var query = '';
+      var pageSize = Math.max(1, Number(this.blindLabeling.pagination.size) || 200);
+      var reloadAfterClamp = false;
       if (this.blindLabeling.tab === 'completed') {
         // 已标注列表按「标注活动时间」筛选，默认当天；不选范围（全部）时不带日期参数。
+        // 历史标注会超过一页，因此按服务端分页取数，不能再固定截断到 200 条。
         var params = new URLSearchParams();
         params.set('status', 'completed');
-        params.set('page', '1');
-        params.set('page_size', '200');
+        params.set('page', String(Math.max(1, Number(this.blindLabeling.pagination.page) || 1)));
+        params.set('page_size', String(pageSize));
         var range = this.blindLabelMineRange();
         if (range.from) params.set('start_date', range.from);
         if (range.to) params.set('end_date', range.to);
@@ -8722,7 +8757,24 @@ Vue.createApp({
           if (self.blindLabeling.tab === 'completed') self.blindLabeling.batch = self.blindLabelEmptyBatch();
           else if (data.batch || data.current_batch || data.my_batch) self.blindLabeling.batch = self.blindLabelBatchFromResponse(data);
           else self.blindLabeling.batch = self.blindLabelEmptyBatch();
-          self.blindLabeling.pagination.total = self.blindLabeling.assignments.length;
+          if (self.blindLabeling.tab === 'completed') {
+            // 条数取服务端全量 total；当前页长度只是本页条数，不能当总数用。
+            var pagination = self.blindLabeling.pagination;
+            var serverTotal = Number(data.total);
+            if (!isFinite(serverTotal) || serverTotal < 0) serverTotal = completed.length;
+            pagination.size = pageSize;
+            pagination.total = serverTotal;
+            pagination.totalPages = Math.max(1, Number(data.total_pages) || Math.ceil(serverTotal / pageSize));
+            if (Number(pagination.page) > pagination.totalPages) {
+              // 筛选后页码越界时回落到最后一页，避免停留在空白页。
+              pagination.page = pagination.totalPages;
+              reloadAfterClamp = true;
+            }
+          } else {
+            self.blindLabeling.pagination.page = 1;
+            self.blindLabeling.pagination.totalPages = 1;
+            self.blindLabeling.pagination.total = self.blindLabeling.assignments.length;
+          }
           self.blindLabeling.updatedAt = self.formatDate(new Date());
           return data;
         })
@@ -8731,7 +8783,10 @@ Vue.createApp({
           if (autoClaim) console.error(error);
           return null;
         })
-        .finally(function() { self.blindLabeling.loading = false; });
+        .finally(function() {
+          self.blindLabeling.loading = false;
+          if (reloadAfterClamp) self.loadBlindLabelAssignments(false);
+        });
     },
     claimBlindLabelBatch: function() {
       var self = this;

@@ -1520,6 +1520,69 @@ def test_my_assignments_date_filter_follows_activity_time_and_rejects_inverted_r
     assert error.value.status_code == 422
 
 
+def test_my_assignments_paginates_beyond_the_first_page(db):
+    """「我的已标注」必须能翻到第一页之后的记录：条数取全量 total，且分页不重不漏。"""
+
+    _seed_extra_business_events(db)
+    assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
+    _, rows = claim_batch(db, "u1")
+    for assignment in rows:
+        submit_assignment(db, assignment, _labels(assignment), task_reason_code="")
+    db.commit()
+
+    user = db.get(User, "u1")
+
+    first = _load_my_assignments(db, user, page=1, page_size=2)
+    assert first["total"] == 3
+    assert first["total_pages"] == 2
+    assert first["page"] == 1
+    assert first["page_size"] == 2
+    assert len(first["items"]) == 2
+
+    second = _load_my_assignments(db, user, page=2, page_size=2)
+    # 第二页同样返回全量 total，前端才能显示「共 N 条」并算出正确页数。
+    assert second["total"] == 3
+    assert second["total_pages"] == 2
+    assert len(second["items"]) == 1
+
+    first_ids = {item["id"] for item in first["items"]}
+    second_ids = {item["id"] for item in second["items"]}
+    assert first_ids & second_ids == set()
+    assert len(first_ids | second_ids) == 3
+
+    # 超出末页返回空页，但 total 仍是筛选后的全量条数。
+    beyond = _load_my_assignments(db, user, page=3, page_size=2)
+    assert beyond["items"] == []
+    assert beyond["total"] == 3
+    assert beyond["total_pages"] == 2
+
+
+def test_my_assignments_pagination_follows_the_date_filter(db):
+    """分页与时间筛选同一口径：页码在筛选后的结果集上生效。"""
+
+    _seed_extra_business_events(db)
+    assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
+    _, rows = claim_batch(db, "u1")
+    for assignment in rows:
+        submit_assignment(db, assignment, _labels(assignment), task_reason_code="")
+    db.commit()
+
+    user = db.get(User, "u1")
+    today = datetime.utcnow().date()
+    past = today - timedelta(days=5)
+
+    # 过去的区间没有活动记录：total 为 0，页数兜底为 1，不会返回上一区间的残留数据。
+    empty = _load_my_assignments(db, user, start_date=past, end_date=past, page=1, page_size=2)
+    assert empty["items"] == []
+    assert empty["total"] == 0
+    assert empty["total_pages"] == 1
+
+    filtered = _load_my_assignments(db, user, start_date=today, end_date=today, page=2, page_size=2)
+    assert filtered["total"] == 3
+    assert filtered["total_pages"] == 2
+    assert len(filtered["items"]) == 1
+
+
 def test_my_assignments_ignores_fastapi_query_placeholders_when_called_directly(db):
     """直接调用路由函数时 Query(None) 占位符不能被当成筛选值。"""
 

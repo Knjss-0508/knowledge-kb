@@ -260,6 +260,8 @@ def list_my_assignments(
         "batch": batch_summary(db, batch) if batch else None,
         "items": [assignment_summary(db, item) for item in assignments[start : start + page_size]],
         "total": total,
+        # 供前端分页条直接使用，避免客户端自行推算页数时与筛选口径不一致。
+        "total_pages": max(1, -(-total // page_size)),
         "page": page,
         "page_size": page_size,
     }
