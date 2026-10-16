@@ -208,6 +208,10 @@ def test_blind_label_my_annotations_paginates_instead_of_truncating_to_200() -> 
     assert '@click="changeBlindLabelMinePage(1)"' in FRONTEND
     assert '@change="changeBlindLabelMinePageSize"' in FRONTEND
     assert 'aria-label="每页条数"' in FRONTEND
+    # 默认每页 50 条（服务端分组取数），避免一次拉太多导致查询变慢。
+    assert "pagination:{page:1,size:50,total:0,totalPages:1}," in FRONTEND
+    assert "pagination.size = Math.max(1, value || Number(pagination.size) || 50);" in FRONTEND
+    assert "var pageSize = Math.max(1, Number(this.blindLabeling.pagination.size) || 50);" in FRONTEND
     # 切换时间范围要回到第一页，否则会停在上一个范围的页码上。
     assert FRONTEND.count("this.blindLabeling.pagination.page = 1;") >= 3
 

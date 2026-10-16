@@ -18,7 +18,7 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -1140,12 +1140,18 @@ def _private_candidate(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def assignment_summary(db: Session, assignment: BlindLabelAssignment) -> dict[str, Any]:
+def assignment_summary(
+    db: Session,
+    assignment: BlindLabelAssignment,
+    annotation_count: int | None = None,
+) -> dict[str, Any]:
     work_order = assignment.work_order
     snapshots = [item for item in (work_order.candidate_snapshot or []) if isinstance(item, dict)]
-    annotation_count = db.query(func.count(BlindLabelAnnotation.id)).filter(
-        BlindLabelAnnotation.assignment_id == assignment.id
-    ).scalar() or 0
+    if annotation_count is None:
+        annotation_count = db.query(func.count(BlindLabelAnnotation.id)).filter(
+            BlindLabelAnnotation.assignment_id == assignment.id
+        ).scalar() or 0
+    annotation_count = int(annotation_count)
     return {
         "id": assignment.id,
         "assignment_id": assignment.id,
@@ -1514,6 +1520,61 @@ def _assignment_matches_activity_range(
         and (end_at is None or value < end_at)
         for value in values
     )
+
+
+def assignment_activity_range_condition(
+    start_at: datetime | None,
+    end_at: datetime | None,
+):
+    """SQL form of :func:`_assignment_matches_activity_range`.
+
+    The same four assignment timestamps plus every annotation timestamp make an
+    assignment an activity hit.  Filtering in SQL keeps the paginated "my
+    annotations" query from loading the annotator's whole history into Python
+    just to discard most of it.
+    """
+
+    if start_at is None and end_at is None:
+        return None
+
+    def within(column):
+        clauses = []
+        if start_at is not None:
+            clauses.append(column >= start_at)
+        if end_at is not None:
+            clauses.append(column < end_at)
+        return and_(*clauses)
+
+    return or_(
+        within(BlindLabelAssignment.assigned_at),
+        within(BlindLabelAssignment.started_at),
+        within(BlindLabelAssignment.completed_at),
+        within(BlindLabelAssignment.released_at),
+        exists().where(
+            and_(
+                BlindLabelAnnotation.assignment_id == BlindLabelAssignment.id,
+                within(BlindLabelAnnotation.created_at),
+            )
+        ),
+    )
+
+
+def annotation_counts_for(db: Session, assignment_ids: Iterable[str]) -> dict[str, int]:
+    """Count annotations for many assignments in one grouped query."""
+
+    ids = [str(assignment_id) for assignment_id in assignment_ids if assignment_id]
+    if not ids:
+        return {}
+    rows = (
+        db.query(
+            BlindLabelAnnotation.assignment_id,
+            func.count(BlindLabelAnnotation.id),
+        )
+        .filter(BlindLabelAnnotation.assignment_id.in_(ids))
+        .group_by(BlindLabelAnnotation.assignment_id)
+        .all()
+    )
+    return {str(assignment_id): int(count or 0) for assignment_id, count in rows}
 
 
 def overview(
