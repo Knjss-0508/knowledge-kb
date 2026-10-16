@@ -182,6 +182,36 @@ def test_blind_label_my_annotations_filters_by_activity_date_and_defaults_to_tod
     assert "暂无已标注工单。完成提交后会显示在这里。" in FRONTEND
 
 
+def test_blind_label_my_annotations_paginates_instead_of_truncating_to_200() -> None:
+    # 「我的已标注」曾经固定第一页 200 条，超过 200 条的历史标注永远看不到。
+    assert "params.set('page_size', '200');" not in FRONTEND
+    assert "params.set('page', '1');\n        params.set('page_size', '200');" not in FRONTEND
+    assert "params.set('page', String(Math.max(1, Number(this.blindLabeling.pagination.page) || 1)));" in FRONTEND
+    assert "params.set('page_size', String(pageSize));" in FRONTEND
+    assert "blindLabelMineTotalPages: function()" in FRONTEND
+    assert "changeBlindLabelMinePage: function(delta)" in FRONTEND
+    assert "changeBlindLabelMinePageSize: function(event)" in FRONTEND
+    # 条数必须取服务端全量 total，不能再用当前页长度冒充总数。
+    assert "blindLabelListTotal: function()" in FRONTEND
+    assert "if (this.blindLabeling.tab === 'completed') return Number(this.blindLabeling.pagination.total) || 0;" in FRONTEND
+    assert "共 <b>{{blindLabelListTotal()}}</b> 条" in FRONTEND
+    # 旧写法把「当前页长度」无条件当成总数；现在只在待标页签保留该口径。
+    assert (
+        "self.blindLabeling.pagination.total = self.blindLabeling.assignments.length;\n          self.blindLabeling.updatedAt"
+        not in FRONTEND
+    )
+    assert "pagination.total = serverTotal;" in FRONTEND
+    assert "pagination.totalPages = Math.max(1, Number(data.total_pages) || Math.ceil(serverTotal / pageSize));" in FRONTEND
+    # 分页条只在「我的已标注」出现，并且能切换每页条数。
+    assert "blindLabeling.tab==='completed' && blindLabelMineTotalPages() > 1" in FRONTEND
+    assert '@click="changeBlindLabelMinePage(-1)"' in FRONTEND
+    assert '@click="changeBlindLabelMinePage(1)"' in FRONTEND
+    assert '@change="changeBlindLabelMinePageSize"' in FRONTEND
+    assert 'aria-label="每页条数"' in FRONTEND
+    # 切换时间范围要回到第一页，否则会停在上一个范围的页码上。
+    assert FRONTEND.count("this.blindLabeling.pagination.page = 1;") >= 3
+
+
 def test_blind_label_annotators_cannot_manually_release_tasks() -> None:
     assert "releaseBlindLabelAssignment: function()" not in FRONTEND
     assert "blindLabeling.releasing" not in FRONTEND
