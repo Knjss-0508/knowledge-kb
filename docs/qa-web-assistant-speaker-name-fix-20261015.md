@@ -65,7 +65,8 @@ p = (i) => { const t = i ? String(i) : "";
   - 修复前同位置为 `答疑员：答疑`；修复后 `答疑员：杨培鹏`（名单里的真名，不再是角色词）。
 - **补丁在某次并发重建后依然存活**：2026-10-15 19:18 与 19:32 该 dist 被他人重建两次
   （入口 hash 从 `index-60714913.js` 变为 `index-DFKASPWw.js`，1,526,947 B），
-  重建后的 bundle 里新表达式仍在（`qaTrainerZzUserId` 命中 1 次，旧的无兜底表达式 0 次），
+  重建后的 bundle 里新表达式仍在（`qaTrainerName` 2 次、`qaTrainerZzUserId` 1 次、
+  `trainerMap` 0 次 —— 前两个数字说明补丁在，`trainerMap` 为 0 说明它不是从源码构建的），
   浏览器复核头部仍为「答疑员：杨培鹏」。可见重建是基于**打补丁后的产物**做的增量改造，
   不是从干净源码重出。
 - **「重建」的性质是手工补丁而非流水线重建**（2026-10-15 复核）：
@@ -111,24 +112,31 @@ p = (i) => { const t = i ? String(i) : "";
 
    也就是说：线上 bundle 里那两个「答疑」兜底（头部 `qaTrainerName` 与气泡 `who()` 第三分支）
    在这份源码里本来就是**同一段逻辑的相邻分支**，我们 18:29 的产物补丁相当于把源码写法原样搬了回去。
-2. **真正待办：线上 dist 是 19:32 的旧构建，缺 19:36 才入库的这行修复**（证据链）：
-   - `server.js` / `package.json` 已是 0.9.6（`package.json` 时间 `10-15 19:36`）；
-   - `frontend/dist/assets/` 里最新产物是 `index-DFKASPWw.js`（`10-15 19:32`），`index.html` 也是 19:32；
-     而 `710866e` 的提交时间是 `19:36:14`；
-   - 线上 bundle 里 `qaTrainerName` 只出现 **1** 次（就是抢修补进去的那次），`trainerMap` **0** 次
-     ——若它真是 19:36 之后从源码构建的，这两个名字至少各出现 2 次（`qaName` 与 `who()` 兜底）。
-   - 所以时间线是：**19:32 前端构建 → 19:36 源码入库（含本修复） → 前端未再构建**。
-3. **建议的收尾方式（按优先级）**：
-   1. 由该仓 owner 在本地 `npm ci && npm run build`（含 tsc/vue-tsc 与 `vite build`）后，
-      把 `frontend/dist` 同步到 `/www/wwwroot/zzdy.powerzhuan.cn/frontend/dist/`；
-      新产物自带修复，可同时撤销我们 18:29 那次手改（两套并存反而难回溯）。
-   2. **重建前必须先确认今天的手改是否已入库**——至少这三项已在线上但**不在 `710866e` 里**：
-      `/im/frames` 帧接口、`closeWay`/`closeWayDesc`（`_backup-closeway-20261015-1845`）、
-      媒体本机直传（`_backup-media-upload-20261015-1257`、`_backup-uploadfix-20261015`）。
-      仓库里只能搜到前端的 `closeWayLabel()`（`frontend/src/response-time-utils.ts:16-19`），
-      `server.js` 里搜不到 `/im/frames`。**若直接拿仓库 HEAD 重建并覆盖 `server.js`，会把这批功能打回去。**
+2. **真正待办：线上前后端都停在 `710866e^`，缺 19:36 才入库的这行修复**（证据链）：
+   - 线上后端目录 `/www/wwwroot/zzdy.powerzhuan.cn/`：`server.js`（203,207 B，`10-15 19:18`）、
+     `package.json`（669 B，`10-15 19:36`，`"version": "0.9.6"`）；nginx `root` 指向该目录，
+     接口走 `proxy_pass http://127.0.0.1:3210`。
+   - `frontend/dist/index.html` 与最新入口 `frontend/dist/assets/index-DFKASPWw.js`（1,526,947 B）都是 `10-15 19:32`；
+     而仓内 `710866e` 的提交时间是 `19:36:14`。
+   - 线上 bundle 关键字计数：`qaTrainerName` **2** 次、`qaTrainerZzUserId` **1** 次、`trainerMap` **0** 次
+     （`qaTrainerName` 的 2 次正好是头部与 `who()` 两处；`trainerMap` 为 0 说明产物不是这份源码构建的）。
+   - 时间线：**19:18 后端 / 19:32 前端构建 → 19:36 源码入库（v0.9.6，含本修复） → 前后端都未再部署**。
+3. **后端可以安全地用仓库版本覆盖（已逐项核对，不必再担心打回功能）**：
+   - 线上 `server.js` 与仓内 `710866e:server.js` 都是 3,470 行、路由数同为 36、全库唯一行各 583 行
+     ——典型的「同一条线上一版 vs 下一版」，仓内版本是**前进方向**而非分叉。
+   - 仓内独有的是 `readWatermark` / 「已读水位」相关（`已读水位` 在 repo 出现 7 次、线上 0 次），
+     正对应该提交说明里的「已读水位线持久化 + 永久已读日志 + 探针 BigInt 修复」。
+   - 曾担心会被打回的 `/im/frames`、`closeWay`、`mediaUpload` 只是 `/www/wwwroot/zzdy.powerzhuan.cn/` 下
+     `_backup-*` 目录名里的说法：`server.js` 里**线上与仓库都是 0 命中**（`/im/` 各 8 次，
+     `closeWay` / `closeReason` / `media-upload` 均 0），说明它们不在这个后端，不会被此次覆盖影响。
+4. **建议的收尾方式（按优先级）**：
+   1. 由该仓 owner 在本地 `npm ci && npm run build` 后，把 `frontend/dist` 同步到
+      `/www/wwwroot/zzdy.powerzhuan.cn/frontend/dist/`；新产物自带修复，可同时撤销我们 18:29 那次手改
+      （两套并存反而难回溯）。
+   2. 顺带把 `server.js` 也同步到 `710866e` 版本并重启（`pm2 restart qa-shell`），
+      让线上拿到「已读水位线持久化」等同一提交里的后端改进。
    3. 打补丁式的线上改动应尽快回植源码，并走该仓自己的分支流程（不要再直接改产物）。
-4. **已确认的相邻事实（避免重复找）**：
+5. **已确认的相邻事实（避免重复找）**：
    - `/opt/voc-workbench/current/frontend` 是 `voc-review-workbench`（Vue 3 + Element Plus），
      源码里没有 `qaTrainerName` / `qaTrainerZzUserId` / `qa-roster`，**是另一个产品，不要改错仓库**。
    - 桌面端「答疑工作台」的源码仓库是私有的 `Cyj-090900/dayigongzuotai`
