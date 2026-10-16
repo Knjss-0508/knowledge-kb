@@ -6,7 +6,7 @@ import uuid
 from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
 from app.models.blind_labeling import (
@@ -26,7 +26,8 @@ from app.schemas.blind_labeling import (
 )
 from app.services.blind_labeling import (
     BLIND_LABEL_BATCH_SIZE,
-    _assignment_matches_activity_range,
+    annotation_counts_for,
+    assignment_activity_range_condition,
     assignment_summary,
     batch_summary,
     claim_batch,
@@ -239,17 +240,25 @@ def list_my_assignments(
         query = query.filter(BlindLabelAssignment.status == assignment_status.strip())
     elif not include_released:
         query = query.filter(BlindLabelAssignment.status != "released")
-    assignments = query.order_by(
-        BlindLabelAssignment.assigned_at.desc(), BlindLabelAssignment.id.desc()
-    ).all()
-    if start_at is not None or end_at is not None:
-        assignments = [
-            item
-            for item in assignments
-            if _assignment_matches_activity_range(item, start_at, end_at)
-        ]
-    total = len(assignments)
+    # 活动时间筛选下推到 SQL：历史标注可能上千条，不能再把全部派发读进内存后
+    # 在 Python 里逐条判断（旧写法每次都拉全量，条目多了必然变慢）。
+    activity_condition = assignment_activity_range_condition(start_at, end_at)
+    if activity_condition is not None:
+        query = query.filter(activity_condition)
+    total = query.order_by(None).count()
+    # 只取当前页：先排序再 offset/limit，条数与页数都来自数据库。
     start = (page - 1) * page_size
+    assignments = (
+        query.options(selectinload(BlindLabelAssignment.work_order))
+        .order_by(BlindLabelAssignment.assigned_at.desc(), BlindLabelAssignment.id.desc())
+        .offset(start)
+        .limit(page_size)
+        .all()
+    )
+    # 标注数一次分组查完，避免每条派发再发一次 COUNT。
+    annotation_counts = annotation_counts_for(
+        db, [assignment.id for assignment in assignments]
+    )
     batch = (
         db.query(BlindLabelBatch)
         .filter(BlindLabelBatch.user_id == current_user.id)
@@ -258,7 +267,10 @@ def list_my_assignments(
     )
     return {
         "batch": batch_summary(db, batch) if batch else None,
-        "items": [assignment_summary(db, item) for item in assignments[start : start + page_size]],
+        "items": [
+            assignment_summary(db, item, annotation_counts.get(item.id, 0))
+            for item in assignments
+        ],
         "total": total,
         # 供前端分页条直接使用，避免客户端自行推算页数时与筛选口径不一致。
         "total_pages": max(1, -(-total // page_size)),

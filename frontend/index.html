@@ -2355,7 +2355,7 @@ Vue.createApp({
         mineFilter:{preset:'today',dateFrom:'',dateTo:''},
         assignments:[],
         completed:[],
-        pagination:{page:1,size:200,total:0,totalPages:1},
+        pagination:{page:1,size:50,total:0,totalPages:1},
         current:{open:false,readOnly:false,assignment:null,detail:null,candidates:[],labels:{},reasonCodes:{},reasonNotes:{},allNotReferable:false,taskReasonCode:'',note:'',error:''},
         overview:{loading:false,error:'',summary:{total:0,pending:0,in_progress:0,partial:0,completed:0,disputed:0,annotations:0,consensus_rate:0,active_annotators:0},cards:[],people:[],workOrders:[],updatedAt:'-',filters:{dateFrom:'',dateTo:'',status:'',dimension:'',annotator:'',keyword:''},datePicker:{kind:'',opening:false,openTimer:null,releaseTimer:null,startedAt:0},pagination:{page:1,size:20,total:0,totalPages:1}},
         adminDetail:{open:false,loading:false,error:'',item:null,workOrder:null,candidates:[],annotations:[],taskReasons:[],consensus:null,arbitration:{},arbitrationReason:'',arbitrating:false}
@@ -8576,7 +8576,7 @@ Vue.createApp({
     changeBlindLabelMinePageSize: function(event) {
       var pagination = this.blindLabeling.pagination;
       var value = Number(event && event.target ? event.target.value : event);
-      pagination.size = Math.max(1, value || Number(pagination.size) || 200);
+      pagination.size = Math.max(1, value || Number(pagination.size) || 50);
       pagination.page = 1;
       return this.loadBlindLabelAssignments(false);
     },
@@ -8732,7 +8732,7 @@ Vue.createApp({
       this.blindLabeling.loading = true;
       this.blindLabeling.error = '';
       var query = '';
-      var pageSize = Math.max(1, Number(this.blindLabeling.pagination.size) || 200);
+      var pageSize = Math.max(1, Number(this.blindLabeling.pagination.size) || 50);
       var reloadAfterClamp = false;
       if (this.blindLabeling.tab === 'completed') {
         // 已标注列表按「标注活动时间」筛选，默认当天；不选范围（全部）时不带日期参数。

@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from inspect import signature
 from unittest.mock import MagicMock
 
@@ -6,8 +6,8 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import create_engine, update
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, func, update
+from sqlalchemy.orm import selectinload, sessionmaker
 
 from app.models.blind_labeling import (
     POOL_STATE_ACTIVE,
@@ -40,6 +40,9 @@ from app.services.blind_labeling import (
     BLIND_LABEL_MAX_ASSIGNMENTS,
     BLIND_LABEL_MAX_TOP1_SCORE_EXCLUSIVE,
     _choose_assignments,
+    _assignment_matches_activity_range,
+    annotation_counts_for,
+    assignment_activity_range_condition,
     batch_summary,
     claim_batch,
     consensus_for_work_order,
@@ -2028,3 +2031,139 @@ def test_starting_an_assignment_released_by_retire_explains_the_reason(db, monke
     with pytest.raises(ValueError, match="系统退池"):
         submit_assignment(db, assignment, _labels(assignment), task_reason_code="")
 
+def _capture_statements(db, callback) -> list[str]:
+    """Return the SQL statements a callback issues on this session."""
+
+    from sqlalchemy import event
+
+    statements: list[str] = []
+    engine = db.get_bind()
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        callback()
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+    return statements
+
+
+def test_my_assignments_pages_in_sql_instead_of_loading_every_row(db):
+    """「我的已标注」必须在 SQL 侧分页：主查询带 LIMIT/OFFSET，标注数一次分组查完。
+
+    旧写法 ``query...all()`` 会把该用户的全部历史派发读进内存、再在 Python 里做
+    时间筛选与切片，条目一多就慢；这里把「分页下推」钉成回归守卫。
+    """
+
+    _seed_extra_business_events(db)
+    assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
+    _, rows = claim_batch(db, "u1")
+    for assignment in rows:
+        submit_assignment(db, assignment, _labels(assignment), task_reason_code="")
+    db.commit()
+
+    user = db.get(User, "u1")
+
+    statements = _capture_statements(
+        db, lambda: _load_my_assignments(db, user, page=1, page_size=2)
+    )
+
+    # 1) 主查询必须把分页下推到数据库，而不是取回全表再切片。
+    page_statements = [
+        statement for statement in statements if "FROM blind_label_assignments" in statement
+    ]
+    assert page_statements, statements
+    assert any(
+        "LIMIT" in statement.upper() and "OFFSET" in statement.upper()
+        for statement in page_statements
+    ), page_statements
+
+    # 2) 标注数只能是「一次 IN 分组查询」，不能每条派发再 COUNT 一次（N+1）。
+    count_statements = [
+        statement
+        for statement in statements
+        if "count(" in statement.lower() and "blind_label_annotations" in statement
+    ]
+    assert len(count_statements) == 1, count_statements
+    assert " IN (" in count_statements[0].upper()
+
+    # 越界页不发「补 COUNT」语句：没有任何行要序列化。
+    beyond = _load_my_assignments(db, user, page=9, page_size=50)
+    assert beyond["items"] == []
+    assert beyond["total"] == 3
+
+
+def test_my_assignments_annotation_count_is_loaded_for_the_page_only(db):
+    """标注数分组查询只覆盖当前页的派发，且结果与逐条 COUNT 相同。"""
+
+    _seed_extra_business_events(db)
+    assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
+    _, rows = claim_batch(db, "u1")
+    for assignment in rows:
+        submit_assignment(db, assignment, _labels(assignment), task_reason_code="")
+    db.commit()
+
+    user = db.get(User, "u1")
+    response = _load_my_assignments(db, user, page=1, page_size=2)
+    ids = [item["id"] for item in response["items"]]
+    assert len(ids) == 2
+
+    counts = annotation_counts_for(db, ids)
+    assert set(counts) <= set(ids)
+    for item in response["items"]:
+        # 接口返回的标注数必须等于单条 COUNT 的结果，批量化不能改变口径。
+        expected = db.query(func.count(BlindLabelAnnotation.id)).filter(
+            BlindLabelAnnotation.assignment_id == item["id"]
+        ).scalar()
+        assert item["annotation_count"] == expected
+        assert item["annotations"] == expected
+
+
+def test_activity_range_condition_matches_the_python_predicate(db):
+    """下推到 SQL 的活动时间条件必须与 Python 判定完全一致（含标注提交时间）。"""
+
+    _seed_extra_business_events(db)
+    assert ensure_work_orders(db, BLIND_LABEL_BATCH_SIZE) == 3
+    _, rows = claim_batch(db, "u1")
+    for assignment in rows:
+        submit_assignment(db, assignment, _labels(assignment), task_reason_code="")
+    db.commit()
+
+    # 让分配/开始/完成都退到 3 天前，只有标注提交时间留在今天。
+    three_days_ago = datetime.utcnow() - timedelta(days=3)
+    for assignment in rows:
+        assignment.assigned_at = three_days_ago
+        assignment.started_at = three_days_ago
+        assignment.completed_at = three_days_ago
+    db.commit()
+    db.expire_all()
+
+    today = datetime.utcnow().date()
+    cases = [
+        (None, None),
+        (datetime.combine(today, time.min), datetime.combine(today + timedelta(days=1), time.min)),
+        (
+            datetime.combine(today - timedelta(days=3), time.min),
+            datetime.combine(today - timedelta(days=2), time.min),
+        ),
+        (datetime.combine(today + timedelta(days=1), time.min), None),
+        (None, datetime.combine(today - timedelta(days=5), time.min)),
+    ]
+    for start_at, end_at in cases:
+        condition = assignment_activity_range_condition(start_at, end_at)
+        query = db.query(BlindLabelAssignment).options(
+            selectinload(BlindLabelAssignment.annotations)
+        )
+        if condition is not None:
+            query = query.filter(condition)
+        sql_ids = {item.id for item in query.all()}
+        python_ids = {
+            item.id
+            for item in db.query(BlindLabelAssignment).options(
+                selectinload(BlindLabelAssignment.annotations)
+            )
+            if _assignment_matches_activity_range(item, start_at, end_at)
+        }
+        assert sql_ids == python_ids, (start_at, end_at, sql_ids, python_ids)
