@@ -4,6 +4,9 @@ from io import BytesIO
 import json
 from pathlib import Path
 
+import pytest
+
+import answer_hub.automation as automation
 import answer_hub.automation_queue as automation_queue
 from answer_hub.automation import AutomationRunStore
 from answer_hub.automation_api import create_automation_api_app
@@ -44,10 +47,143 @@ def _create_job(client):
     )
 
 
+def _standard_scope_request(client, transport, options):
+    if transport == "form":
+        return client.post(
+            "/api/v1/automation/jobs", headers=HEADERS,
+            data={
+                "source_file": (BytesIO(b"source"), "scope.xlsx"),
+                "use_mimo": "false", "clustering_mode": "rule", **options,
+            },
+            content_type="multipart/form-data",
+        )
+    return client.post(
+        "/api/v1/automation/second-part/records:batch", headers=HEADERS,
+        json={
+            "source_system": "offline-test", "idempotency_key": "standard-scope",
+            "options": {"use_mimo": False, "clustering_mode": "rule", **options},
+            "items": [{
+                "event_id": "scope-001", "redaction_status": "redacted",
+                "record": {
+                    "工单ID": "1001", "产品类型": "手机",
+                    "回收业务层级": "自营回收",
+                    "核心问题": "折叠屏手机折叠后关机如何判定",
+                    "聊天内容": "回收师：折叠后关机怎么判\n答疑：判自动关机",
+                },
+            }],
+        },
+    )
+
+
+@pytest.mark.parametrize("transport", ["form", "json"])
+@pytest.mark.parametrize("requested,expected", [(None, False), (True, True), (False, False)])
+def test_standard_scope_api_reaches_pipeline_and_persists_frozen_mode(
+    tmp_path, monkeypatch, transport, requested, expected,
+):
+    client = _app(tmp_path).test_client()
+    options = {}
+    if requested is not None:
+        options["use_standard_references"] = (
+            str(requested).lower() if transport == "form" else requested
+        )
+    created = _standard_scope_request(client, transport, options)
+    assert created.status_code == 202
+    payload = created.get_json()
+    if requested is None:
+        assert "use_standard_references" not in payload["options"]
+    else:
+        assert payload["options"]["use_standard_references"] is requested
+    captured = []
+
+    def workflow(**kwargs):
+        captured.append(kwargs["use_standard_references"])
+        assert kwargs["standards_path"] is None
+        artifact_dir = Path(kwargs["output_dir"])
+        outputs = {
+            "output_file": "review_queue.xlsx",
+            "topic_review_file": "topic_review_queue.xlsx",
+            "candidate_output_file": "candidate_knowledge.xlsx",
+        }
+        for filename in outputs.values():
+            (artifact_dir / filename).write_bytes(b"artifact")
+        return {
+            **{key: str(artifact_dir / name) for key, name in outputs.items()},
+            "source_total_rows": 1, "eligible_rows": 1, "topic_rows": 1,
+            "standard_references_enabled": kwargs["use_standard_references"],
+        }
+
+    monkeypatch.setattr(automation, "initial_label_from_workbook", workflow)
+    summary = automation_queue.process_automation_queue(
+        tmp_path / "queue", None, tmp_path / "runs",
+        use_standard_references=None if requested is None else not requested,
+        use_mimo=False, clustering_mode="rule",
+    )
+    assert summary["succeeded"] == 1
+    assert captured == [expected]
+    completed = client.get(payload["status_url"], headers=HEADERS).get_json()
+    assert completed["options"]["use_standard_references"] is expected
+    manifest = AutomationRunStore(tmp_path / "runs").load(completed["run_id"])
+    assert manifest["options"]["use_standard_references"] is expected
+
+
+@pytest.mark.parametrize("transport,invalid", [
+    ("form", ""), ("form", "maybe"), ("form", "1"), ("form", "0"),
+    ("json", "true"), ("json", "false"), ("json", 1), ("json", 0),
+    ("json", None), ("json", []), ("json", {}),
+])
+def test_standard_scope_api_rejects_invalid_boolean_before_enqueue(
+    tmp_path, transport, invalid,
+):
+    client = _app(tmp_path).test_client()
+    response = _standard_scope_request(
+        client, transport, {"use_standard_references": invalid},
+    )
+    assert response.status_code == 400
+    assert "use_standard_references" in response.get_json()["error"]
+    assert not list((tmp_path / "queue" / "pending").glob("*.xlsx"))
+
+
+@pytest.mark.parametrize("requested", [False, True])
+def test_standard_scope_api_retry_preserves_the_frozen_option(
+    tmp_path, requested,
+):
+    client = _app(tmp_path).test_client()
+    created = _standard_scope_request(
+        client, "json", {"use_standard_references": requested},
+    ).get_json()
+    queue = AutomationQueue(tmp_path / "queue")
+    source = next(queue.pending.glob("*.xlsx"))
+    metadata = read_queue_job_metadata(source)
+    failed = queue.finish(queue.claim(source), succeeded=False)
+    metadata.update(status="failed", final_path=str(failed))
+    write_queue_job_metadata(failed, metadata)
+    response = client.post(created["retry_url"], headers=HEADERS)
+    assert response.status_code == 202
+    assert response.get_json()["options"]["use_standard_references"] is requested
+    requeued = next(queue.pending.glob("*.xlsx"))
+    assert read_queue_job_metadata(requeued)["options"]["use_standard_references"] is requested
+
+
 def test_automation_api_requires_api_key(tmp_path: Path) -> None:
     client = _app(tmp_path).test_client()
 
     response = client.get("/api/v1/automation/jobs/missing")
+
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "unauthorized"
+
+
+def test_draft_prompt_replay_requires_api_key(tmp_path: Path) -> None:
+    client = _app(tmp_path).test_client()
+
+    response = client.post(
+        "/api/v1/draft-prompt-replays",
+        json={
+            "candidate_prompt": "候选草稿 Prompt",
+            "candidate_prompt_version": "draft-v1-candidate",
+            "samples": [],
+        },
+    )
 
     assert response.status_code == 401
     assert response.get_json()["error"] == "unauthorized"

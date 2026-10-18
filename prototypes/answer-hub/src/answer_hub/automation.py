@@ -566,12 +566,24 @@ def automation_run_succeeded(manifest: dict[str, Any]) -> bool:
     }
 
 
+def resolve_standard_references(
+    requested: bool | None,
+    standards_path: str | Path | None,
+) -> bool:
+    if requested is None:
+        return bool(standards_path)
+    if not isinstance(requested, bool):
+        raise ValueError("use_standard_references 必须是布尔值或 None")
+    return requested
+
+
 def run_automation_pipeline(
     source_path: str | Path,
     standards_path: str | Path | None,
     output_root: str | Path,
     *,
     product_type: str = "",
+    use_standard_references: bool | None = None,
     use_mimo: bool = True,
     clustering_mode: str = "direct_mimo",
     semantic_threshold: float = 0.84,
@@ -597,7 +609,9 @@ def run_automation_pipeline(
             raise ValueError("source_row_limit 必须是正整数")
         if not cluster_only:
             raise ValueError("source_row_limit 仅允许用于仅聚类小样本验证")
-    use_standard_references = standards is not None
+    use_standard_references = resolve_standard_references(
+        use_standard_references, standards,
+    )
 
     effective_cluster_media_policy = resolve_cluster_media_policy(
         cluster_media_policy,
@@ -841,6 +855,13 @@ def resume_automation_pipeline(
     if standards_path is not None and not standards_path.is_file():
         raise FileNotFoundError(f"标准输入快照不存在：{standards_path}")
 
+    options = manifest.get("options") or {}
+    use_standard_references = resolve_standard_references(
+        options.get("use_standard_references"), standards_path,
+    )
+    options["use_standard_references"] = use_standard_references
+    manifest["options"] = options
+
     failed_stage_index = next(
         (
             index
@@ -912,7 +933,6 @@ def resume_automation_pipeline(
         )
         notify()
 
-    options = manifest.get("options") or {}
     try:
         summary = initial_label_from_workbook(
             source_path=source_path,
@@ -936,9 +956,7 @@ def resume_automation_pipeline(
             ),
             embedding_client=embedding_client,
             progress_callback=workflow_progress,
-            use_standard_references=bool(
-                options.get("use_standard_references", standards_path is not None)
-            ),
+            use_standard_references=use_standard_references,
             cluster_only=bool(options.get("cluster_only", False)),
             direct_mimo_progress_path=(
                 Path(str(options["direct_mimo_progress_path"]))

@@ -128,6 +128,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional standard catalog path; omit for case-only knowledge generation",
     )
     automate.add_argument(
+        "--use-standard-references",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable standard references, including online retrieval without a local catalog",
+    )
+    automate.add_argument(
         "--output-dir",
         default="outputs/automation-runs",
         help="Automation run root directory",
@@ -191,6 +197,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--standards",
         default="",
         help="Optional standard catalog path; omit for case-only knowledge generation",
+    )
+    automation_queue.add_argument(
+        "--use-standard-references",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Default standard-reference mode for jobs without a frozen option",
     )
     automation_queue.add_argument(
         "--output-dir",
@@ -493,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest = run_automation_pipeline(
             source_path=Path(args.source),
             standards_path=Path(args.standards) if args.standards else None,
+            use_standard_references=args.use_standard_references,
             output_root=Path(args.output_dir),
             product_type=args.product_type,
             use_mimo=not args.rule_only,
@@ -525,6 +538,7 @@ def main(argv: list[str] | None = None) -> int:
                 manifest = run_automation_pipeline(
                     source_path=Path(args.source),
                     standards_path=Path(args.standards) if args.standards else None,
+                    use_standard_references=args.use_standard_references,
                     output_root=Path(args.output_dir),
                     product_type=args.product_type,
                     use_mimo=not args.rule_only,
@@ -551,6 +565,7 @@ def main(argv: list[str] | None = None) -> int:
         summary = process_automation_queue(
             queue_root=Path(args.queue_dir),
             standards_path=Path(args.standards) if args.standards else None,
+            use_standard_references=args.use_standard_references,
             output_root=Path(args.output_dir),
             product_type=args.product_type,
             use_mimo=not args.rule_only,

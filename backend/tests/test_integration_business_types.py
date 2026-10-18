@@ -45,6 +45,8 @@ def _candidate_payload(
         "knowledge": {
             "title": "聚合回收屏幕质检",
             "content": "检查屏幕显示是否正常。",
+            "recommended_reply": "请按步骤检查屏幕显示。",
+            "evidence_excerpt": "来源会话记录：屏幕显示异常后按步骤检查。",
             "knowledge_origin": knowledge_origin,
             "business_type": business_type,
             "category_id": "cat-qc-standard",

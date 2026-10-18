@@ -6,7 +6,7 @@ from typing import Any
 
 
 KNOWLEDGE_VALUE_EVIDENCE_GUARD_VERSION = (
-    "knowledge-value-evidence-guard-v3-question-aware"
+    "knowledge-value-evidence-guard-v6-named-condition-branches"
 )
 
 _GENERIC_RULE_VALUES = {
@@ -66,15 +66,52 @@ _NUMERIC_RULE_PATTERN = re.compile(
     r"\d+(?:\.\d+)?\s*(?:mm|毫米|cm|厘米|%|次|个|GB|TB|分钟|小时|天)",
     flags=re.IGNORECASE,
 )
+_CONCRETE_DISPOSITION_PATTERN = re.compile(
+    r"按(?:照)?(?!照)"
+    r"(?!(?:(?:当前|相关|现有|上述|对应|具体|实际)的?)*"
+    r"(?:实际|具体|标准|来源|情况|现场|事实|证据))"
+    r"(?!(?:正常|异常)(?:类型)?(?:处理|判定))"
+    r"[^，,。；;\n？?]{2,25}(?:处理|扣减|勾选|填写)"
+)
 _EXPLICIT_FUNCTION_FACT_PATTERN = re.compile(
     r"(?<!是否)(?<!只)(?<!仅)(?<!聊天)(?<!来源)(?<!证据)"
     r"(?:不支持|支持|不具备|具备|未配备|配备)"
     r"(?!哪些|什么|与否|情况|查询|确认|核对).{1,40}"
 )
+_CONDITIONAL_DISPOSITION_PATTERN = re.compile(
+    r"(?P<condition>[^，,。；;\n：:！？!?|｜]{2,30}?)"
+    r"(?P<modal>不需要|不用|无需|不必|不要|不需|需要|要|需)"
+    r"(?P<action>[\u4e00-\u9fff]{0,8})"
+)
+_GENERIC_CONDITION_PATTERN = re.compile(
+    r"(?:(?:正常|异常|实际|具体|现场|当前|一般|其他|其它)"
+    r"(?:的)?(?:情况|情形|机器|设备|类型)?|"
+    r"(?:这|那|该|本|此|其|某|另一|某一)(?:个|种|样|台|件|项|类)?"
+    r"(?:的)?(?:情况|情形|机器|设备)?)"
+)
 
 
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def concrete_judgment_label(value: Any) -> str:
+    """Recognize a short, explicit option answer, without generic placeholders."""
+    match = re.fullmatch(
+        r"(?:改判|判定为|判为|判)([^\s，,。；;：:！？!?|｜]{2,20})[。！!]?",
+        _clean_text(value),
+    )
+    if not match:
+        return ""
+    label = match.group(1)
+    if label.startswith((
+        "定", "断", "正常", "异常", "实际", "具体", "情况", "标准",
+        "来源", "现场", "待", "未确认", "未核实", "需核实", "需补充",
+        "不能确认", "不能判断", "无法确认", "无法判断",
+        "未知", "不了", "不清", "不确定",
+    )) or re.search(r"是否|如何|怎么|哪个|什么|[吗呢么]$", label):
+        return ""
+    return label
 
 
 def _is_question_clause(value: str) -> bool:
@@ -111,6 +148,28 @@ def _positive_source_values(values: Iterable[Any]) -> list[str]:
     return positive_values
 
 
+def _has_named_condition_branches(value: str) -> bool:
+    clauses = value.split("，")
+    if len(clauses) != 2:
+        return False
+    conditions: set[str] = set()
+    polarities: set[bool] = set()
+    actions: set[str] = set()
+    for clause in clauses:
+        match = _CONDITIONAL_DISPOSITION_PATTERN.fullmatch(clause)
+        if not match:
+            return False
+        condition = re.sub(r"""[\s“”"'‘’]""", "", match.group("condition"))
+        if len(condition) < 2 or _GENERIC_CONDITION_PATTERN.fullmatch(condition):
+            return False
+        conditions.add(condition)
+        polarities.add(match.group("modal").startswith(("不", "无")))
+        if action := match.group("action"):
+            actions.add(action)
+    # A missing verb is supported only by the other branch in this source.
+    return len(conditions) == 2 and len(polarities) == 2 and len(actions) == 1
+
+
 def has_explicit_reusable_knowledge(
     *,
     source_values: Iterable[Any],
@@ -133,6 +192,12 @@ def has_explicit_reusable_knowledge(
     if _EXPLICIT_FUNCTION_FACT_PATTERN.search(positive_rule_text):
         return True
     if _NUMERIC_RULE_PATTERN.search(positive_rule_text):
+        return True
+    if _CONCRETE_DISPOSITION_PATTERN.search(positive_rule_text):
+        return True
+    if any(concrete_judgment_label(value) for value in positive_source_values):
+        return True
+    if any(_has_named_condition_branches(value) for value in positive_source_values):
         return True
     return bool(_EXPLICIT_REUSABLE_STEP_PATTERN.search(positive_rule_text))
 
@@ -159,5 +224,11 @@ def has_draftable_source_rule(
     if _EXPLICIT_FUNCTION_FACT_PATTERN.search(positive_rule_text):
         return True
     if _NUMERIC_RULE_PATTERN.search(positive_rule_text):
+        return True
+    if _CONCRETE_DISPOSITION_PATTERN.search(positive_rule_text):
+        return True
+    if any(concrete_judgment_label(value) for value in positive_source_values):
+        return True
+    if any(_has_named_condition_branches(value) for value in positive_source_values):
         return True
     return bool(_DRAFTABLE_SOURCE_RULE_PATTERN.search(positive_rule_text))

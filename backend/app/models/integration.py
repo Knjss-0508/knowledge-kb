@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, JSON, String
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, JSON, String, UniqueConstraint, event
 
 from app.core.database import Base
 
@@ -24,7 +24,7 @@ class IntegrationIngestion(Base):
     reviewed_by = Column(String(128), nullable=True)
     reviewed_at = Column(DateTime, nullable=True)
     submitted_at = Column(DateTime, nullable=True)
-    status = Column(String(32), nullable=False, index=True)
+    status = Column(String(64), nullable=False, index=True)
     knowledge_id = Column(String(64), nullable=True, index=True)
     error_code = Column(String(64), nullable=True)
     error_message = Column(String(512), nullable=True)
@@ -74,6 +74,48 @@ class ConfidenceTrainingJob(Base):
     prompt_versions = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class EvaluationSample(Base):
+    """Append-only source snapshot for reproducible model-quality evaluation."""
+
+    __tablename__ = "evaluation_samples"
+
+    id = Column(String(64), primary_key=True)
+    snapshot_id = Column(String(64), nullable=False, index=True)
+    candidate_id = Column(String(64), nullable=False, index=True)
+    source_batch = Column(String(256), nullable=False, default="")
+    topic_group = Column(String(512), nullable=False, index=True)
+    draft_version = Column(String(128), nullable=False)
+    draft_snapshot = Column(JSON, nullable=False, default=dict)
+    published_knowledge_snapshot = Column(JSON, nullable=False, default=dict)
+    draft_revision_history = Column(JSON, nullable=False, default=list)
+    model_output = Column(JSON, nullable=False, default=dict)
+    model_version = Column(String(256), nullable=False, default="")
+    prompt_version = Column(String(128), nullable=False, default="")
+    human_truth = Column(JSON, nullable=False, default=dict)
+    reviewed_at = Column(DateTime, nullable=True)
+    dataset_split = Column(String(16), nullable=False, index=True)
+    sample_hash = Column(String(64), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_id",
+            "candidate_id",
+            name="uq_evaluation_samples_snapshot_candidate",
+        ),
+    )
+
+
+@event.listens_for(EvaluationSample, "before_update")
+def _reject_evaluation_sample_update(_mapper, _connection, _target) -> None:
+    raise ValueError("evaluation_sample records are immutable")
+
+
+@event.listens_for(EvaluationSample, "before_delete")
+def _reject_evaluation_sample_delete(_mapper, _connection, _target) -> None:
+    raise ValueError("evaluation_sample records are immutable")
 
 
 class RetrievalQualityEvent(Base):

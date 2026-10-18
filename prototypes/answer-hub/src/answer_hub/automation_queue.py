@@ -20,6 +20,7 @@ from .auto_review import (
 from .automation import (
     AutomationRunStore,
     automation_run_succeeded,
+    resolve_standard_references,
     run_automation_pipeline,
 )
 from .cz_integration import CzIntegrationAdapter
@@ -628,6 +629,7 @@ def process_automation_queue(
     output_root: str | Path,
     *,
     product_type: str = "",
+    use_standard_references: bool | None = None,
     use_mimo: bool = True,
     clustering_mode: str = "direct_mimo",
     semantic_threshold: float = 0.84,
@@ -761,11 +763,23 @@ def process_automation_queue(
                 summary["attempted"] += 1
 
                 try:
+                    requested_standards = job_options.get("use_standard_references")
+                    effective_standard_references = resolve_standard_references(
+                        use_standard_references
+                        if requested_standards is None
+                        else requested_standards,
+                        standards,
+                    )
+                    # Freeze before execution, including files queued without API metadata.
+                    job_options["use_standard_references"] = effective_standard_references
+                    job_metadata["options"] = job_options
+                    write_queue_job_metadata(claimed_path, job_metadata)
                     manifest = run_automation_pipeline(
                         source_path=claimed_path,
                         standards_path=standards,
                         output_root=output_path,
                         product_type=effective_product_type,
+                        use_standard_references=effective_standard_references,
                         use_mimo=effective_use_mimo,
                         clustering_mode=effective_clustering_mode,
                         semantic_threshold=effective_semantic_threshold,

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+import pytest
 
 from openpyxl import Workbook, load_workbook
 
-from answer_hub.web import create_app
+from answer_hub.web import MEDIA_REVIEW_FIELD, create_app
+from answer_hub.audit import AuditStore
 from answer_hub.workflow import REVIEW_COLUMNS
 
 
@@ -46,6 +48,45 @@ def _review_workbook() -> BytesIO:
         "图片已接收。", "", "否",
         *([""] * len(REVIEW_COLUMNS)),
     ])
+    data = BytesIO()
+    workbook.save(data)
+    data.seek(0)
+    return data
+
+
+def _media_review_workbook() -> BytesIO:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "topic_review_queue"
+    sheet.append(
+        [
+            "主题ID",
+            MEDIA_REVIEW_FIELD,
+            "主题图片链接",
+            "主题视频链接",
+        ]
+    )
+    sheet.append(
+        [
+            "TOP-1",
+            json.dumps(
+                [
+                    {
+                        "媒体证据ID": "ME-VIDEO-1",
+                        "媒体类型": "video",
+                        "媒体链接": "https://example.invalid/unparsed.mp4",
+                        "解析状态": "未解析",
+                        "相关性状态": "unconfirmed",
+                        "审核状态": "human_pending",
+                        "审计风险": "未解析视频",
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            "",
+            "https://example.invalid/unparsed.mp4",
+        ]
+    )
     data = BytesIO()
     workbook.save(data)
     data.seek(0)
@@ -130,3 +171,92 @@ def test_review_workbench_reads_and_exports_cz_changes() -> None:
     assert sheet.cell(2, headers["CZ复核结论"]).value == "修改后通过"
     assert sheet.cell(2, headers["CZ主标题"]).value == "手机屏幕色斑判定标准"
     assert sheet.cell(2, headers["审核人"]).value == "cz"
+
+
+def test_media_review_does_not_expose_human_linked_unparsed_video() -> None:
+    app = create_app()
+    client = app.test_client()
+    changes = [
+        {
+            "row_index": 2,
+            "updates": [
+                {
+                    "媒体证据ID": "ME-VIDEO-1",
+                    "媒体类型": "video",
+                    "媒体链接": "https://attacker.invalid/forged.mp4",
+                    "解析状态": "已解析",
+                    "相关性状态": "unconfirmed",
+                    "审核状态": "human_pending",
+                    "审计风险": "",
+                    "人工复核结论": "关联当前主题",
+                }
+            ],
+        }
+    ]
+
+    export = client.post(
+        "/api/media-review-export",
+        data={
+            "review_file": (_media_review_workbook(), "topic_review_queue.xlsx"),
+            "changes": json.dumps(changes, ensure_ascii=False),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert export.status_code == 200
+    workbook = load_workbook(BytesIO(export.data), data_only=True)
+    sheet = workbook["topic_review_queue"]
+    headers = {str(cell.value): cell.column for cell in sheet[1]}
+    media_items = json.loads(sheet.cell(2, headers[MEDIA_REVIEW_FIELD]).value)
+    assert media_items[0]["相关性状态"] == "relevant"
+    assert media_items[0]["审核状态"] == "human_confirmed"
+    assert media_items[0]["审计风险"] == "未解析视频"
+    assert media_items[0]["解析状态"] == "未解析"
+    assert media_items[0]["媒体链接"] == "https://example.invalid/unparsed.mp4"
+    assert sheet.cell(2, headers["主题视频链接"]).value is None
+
+
+@pytest.mark.parametrize("decision", ["关联当前主题", "不相关", "无法判断"])
+@pytest.mark.parametrize("parse_status", ["已解析", "未解析"])
+@pytest.mark.parametrize("media_type", ["image", "video"])
+def test_sqlite_and_excel_media_review_have_identical_decisions(
+    tmp_path, decision, parse_status, media_type,
+) -> None:
+    item = {
+        "媒体证据ID": "MEDIA-1", "媒体类型": media_type,
+        "媒体链接": "https://example.invalid/media",
+        "解析状态": parse_status, "相关性状态": "unconfirmed",
+        "审核状态": "pending", "审计风险": "",
+        "主题ID": "TOP-1",
+    }
+    store = AuditStore(tmp_path / "audit.db")
+    store.save_media_evidence("RUN-1", [item])
+    db_review = store.review_media_evidence("MEDIA-1", decision)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "topic_review_queue"
+    sheet.append(["主题ID", MEDIA_REVIEW_FIELD, "主题图片链接", "主题视频链接"])
+    sheet.append(["TOP-1", json.dumps([item], ensure_ascii=False), "", ""])
+    source = BytesIO()
+    workbook.save(source)
+    source.seek(0)
+    changes = [{
+        "row_index": 2,
+        "updates": [{"媒体证据ID": "MEDIA-1", "人工复核结论": decision}],
+    }]
+    response = create_app().test_client().post(
+        "/api/media-review-export",
+        data={
+            "review_file": (source, "media.xlsx"),
+            "changes": json.dumps(changes, ensure_ascii=False),
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    exported = load_workbook(BytesIO(response.data))
+    excel_review = json.loads(exported["topic_review_queue"].cell(2, 2).value)[0]
+    assert (
+        excel_review["相关性状态"], excel_review["审核状态"], excel_review["审计风险"],
+    ) == (
+        db_review["relevance_status"], db_review["review_status"], db_review["audit_risk"],
+    )

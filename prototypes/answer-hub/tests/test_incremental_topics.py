@@ -32,6 +32,7 @@ def _row(
         "回收业务层级": business_line,
         "产品类型": product_type,
         "聊天内容": f"{subject}{phenomenon}应该怎么判定？",
+        "实际回复": f"{subject}{phenomenon}按对应质检项处理。",
         "核心问题": f"{subject}{phenomenon}如何判定",
         "模型主题一级分类": "外观问题",
         "模型主题二级分类": "外壳外观",

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import answer_hub.automation as automation
 import answer_hub.cli as cli
 
@@ -13,6 +15,150 @@ def _write_input_files(tmp_path: Path) -> tuple[Path, Path]:
     source.write_bytes(b"source")
     standards.write_text("[]", encoding="utf-8")
     return source, standards
+
+
+def _standard_scope_workflow_output(kwargs) -> dict:
+    artifact_dir = Path(kwargs["output_dir"])
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    outputs = {
+        "output_file": "review_queue.xlsx",
+        "topic_review_file": "topic_review_queue.xlsx",
+        "candidate_output_file": "candidate_knowledge.xlsx",
+    }
+    for filename in outputs.values():
+        (artifact_dir / filename).write_bytes(b"artifact")
+    return {
+        **{key: str(artifact_dir / name) for key, name in outputs.items()},
+        "source_total_rows": 1,
+        "eligible_rows": 1,
+        "topic_rows": 1,
+        "standard_references_enabled": kwargs["use_standard_references"],
+    }
+
+
+@pytest.mark.parametrize("with_file,requested,expected", [
+    (False, None, False), (True, None, True),
+    (False, True, True), (True, True, True),
+    (False, False, False), (True, False, False),
+])
+def test_standard_scope_pipeline_resolves_and_persists_the_requested_mode(
+    tmp_path, monkeypatch, with_file, requested, expected,
+):
+    source, standards = _write_input_files(tmp_path)
+    captured = {}
+
+    def workflow(**kwargs):
+        captured.update(kwargs)
+        return _standard_scope_workflow_output(kwargs)
+
+    monkeypatch.setattr(automation, "initial_label_from_workbook", workflow)
+    output_root = tmp_path / "runs"
+    manifest = automation.run_automation_pipeline(
+        source, standards if with_file else None, output_root,
+        use_mimo=False, clustering_mode="rule", use_standard_references=requested,
+    )
+    assert manifest["status"] == "review_pending"
+    assert captured["use_standard_references"] is expected
+    assert (captured["standards_path"] is not None) is with_file
+    persisted = automation.AutomationRunStore(output_root).load(manifest["run_id"])
+    assert persisted["options"]["use_standard_references"] is expected
+    assert persisted["summary"]["standard_references_enabled"] is expected
+
+
+@pytest.mark.parametrize("with_file,requested,legacy,expected", [
+    (False, True, False, True), (True, False, False, False),
+    (False, None, True, False), (True, None, True, True),
+])
+def test_standard_scope_resume_keeps_frozen_mode_and_resolves_legacy_manifests(
+    tmp_path, monkeypatch, with_file, requested, legacy, expected,
+):
+    source, standards = _write_input_files(tmp_path)
+    captured = []
+
+    def workflow(**kwargs):
+        captured.append(kwargs["use_standard_references"])
+        if len(captured) == 1:
+            kwargs["progress_callback"]("topic_build", "running", "test failure", {})
+            raise RuntimeError("offline retry fixture")
+        assert kwargs["resume"] is True
+        return _standard_scope_workflow_output(kwargs)
+
+    monkeypatch.setattr(automation, "initial_label_from_workbook", workflow)
+    output_root = tmp_path / "runs"
+    failed = automation.run_automation_pipeline(
+        source, standards if with_file else None, output_root,
+        use_mimo=False, clustering_mode="rule", use_standard_references=requested,
+    )
+    assert failed["status"] == "failed"
+    store = automation.AutomationRunStore(output_root)
+    if legacy:
+        failed["options"].pop("use_standard_references")
+        store.save(failed)
+    resumed = automation.resume_automation_pipeline(output_root, failed["run_id"])
+    assert resumed["status"] == "review_pending"
+    assert captured == [expected, expected]
+    assert store.load(failed["run_id"])["options"]["use_standard_references"] is expected
+
+
+@pytest.mark.parametrize("invalid", ["false", 0, 1])
+def test_standard_scope_pipeline_rejects_non_boolean_requests(tmp_path, invalid):
+    source, _ = _write_input_files(tmp_path)
+    with pytest.raises(ValueError, match="use_standard_references"):
+        automation.run_automation_pipeline(
+            source, None, tmp_path / "runs", use_mimo=False,
+            clustering_mode="rule", use_standard_references=invalid,
+        )
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("command", ["automate", "automation-queue"])
+@pytest.mark.parametrize("flag,expected", [
+    (None, None), ("--use-standard-references", True),
+    ("--no-use-standard-references", False),
+])
+def test_standard_scope_cli_passes_three_state_mode(
+    tmp_path, monkeypatch, command, flag, expected,
+):
+    captured = {}
+
+    def run(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "review_pending" if command == "automate" else "completed",
+            "failed": 0,
+        }
+
+    monkeypatch.setattr(
+        cli, "run_automation_pipeline" if command == "automate" else "process_automation_queue",
+        run,
+    )
+    args = [command]
+    if command == "automate":
+        args += ["--source", str(tmp_path / "source.xlsx")]
+    if flag:
+        args.append(flag)
+    assert cli.main(args) == 0
+    assert captured["use_standard_references"] is expected
+
+
+@pytest.mark.parametrize("flag,expected", [
+    ("--use-standard-references", True), ("--no-use-standard-references", False),
+])
+def test_standard_scope_cli_confirmation_rerun_keeps_requested_mode(
+    tmp_path, monkeypatch, flag, expected,
+):
+    calls = []
+
+    def run(**kwargs):
+        calls.append(kwargs)
+        return {"status": "needs_confirmation" if len(calls) == 1 else "review_pending"}
+
+    monkeypatch.setattr(cli, "run_automation_pipeline", run)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    assert cli.main(["automate", "--source", str(tmp_path / "source.xlsx"), flag]) == 0
+    assert [call["use_standard_references"] for call in calls] == [expected, expected]
+    assert calls[1]["continue_on_mimo_unavailable"] is True
 
 
 def test_automation_run_store_retries_transient_windows_replace_error(

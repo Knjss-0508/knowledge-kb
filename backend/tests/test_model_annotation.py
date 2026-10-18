@@ -5,6 +5,61 @@ import pytest
 from app.services import model_annotation, model_connection
 
 
+def _valid_review():
+    return {
+        "knowledge_value": "worthy",
+        "draft_disposition": "revision_required",
+        "confidence": 0.87,
+        "reason": "正文需要补充来源中已明确的处理结论。",
+    }
+
+
+def test_active_annotation_prompt_keeps_candidate_and_output_contract(monkeypatch):
+    captured = {}
+
+    def fake_call(prompt, *, purpose):
+        captured.update(prompt=prompt, purpose=purpose)
+        return _valid_review()
+
+    monkeypatch.setattr(model_annotation, "_call_deepseek_flash", fake_call)
+    result = model_annotation.annotate_transcribed_candidate(
+        {"event_id": "candidate-001", "draft": {"title": "序列号模糊", "recommended_reply": "建议邮寄回收"}, "evidence_excerpt": "来源原文"},
+        review_prompt="人工采纳的审核规则",
+        prompt_version="v2-active",
+    )
+    assert "人工采纳的审核规则" in captured["prompt"]
+    assert "candidate-001" in captured["prompt"]
+    assert "建议邮寄回收" in captured["prompt"]
+    assert "来源原文" in captured["prompt"]
+    assert "knowledge_value" in captured["prompt"]
+    assert result["prompt_version"] == "v2-active"
+    assert result["draft_quality"] == "revision_required"
+    assert result["suggested_action"] == "return_for_revision"
+    assert result["decision"] == "需修改"
+
+
+@pytest.mark.parametrize("invalid", [
+    {"type": "json_object"},
+    {},
+    {"knowledge_value": "worthy"},
+    {**_valid_review(), "confidence": 87},
+    {**_valid_review(), "reason": ""},
+    {**_valid_review(), "knowledge_value": "unworthy"},
+    {**_valid_review(), "suggested_action": "discard"},
+    {**_valid_review(), "confidence": 10 ** 400},
+    {**_valid_review(), "draft_quality": ["approved"]},
+    {**_valid_review(), "draft_quality": {"value": "approved"}},
+])
+def test_annotation_rejects_incomplete_or_conflicting_results(monkeypatch, invalid):
+    monkeypatch.setattr(model_annotation, "_call_deepseek_flash", lambda *_args, **_kwargs: invalid)
+    with pytest.raises(model_annotation.ModelAnnotationError) as error:
+        model_annotation.annotate_transcribed_candidate(
+            {"draft": {"title": "候选", "content": "来源正文"}},
+            review_prompt="启用规则",
+        )
+    assert error.value.error_code == "INVALID_ANNOTATION_RESULT"
+
+
 def test_correction_requires_internal_endpoint(monkeypatch):
     monkeypatch.setattr(
         model_annotation,
@@ -70,7 +125,7 @@ def test_draft_annotation_includes_draft_and_evidence(monkeypatch):
     captured = {}
     def fake_call(prompt, *, purpose):
         captured.update(prompt=prompt, purpose=purpose)
-        return {"knowledge_value": "worthy"}
+        return _valid_review()
     monkeypatch.setattr(model_annotation, "_call_deepseek_flash", fake_call)
     model_annotation.annotate_transcribed_candidate({"draft": {"title": "草稿标题", "content": {"blocks": []}}, "evidence_excerpt": "证据摘要"})
     assert captured["purpose"] == "草稿标注"
@@ -78,18 +133,55 @@ def test_draft_annotation_includes_draft_and_evidence(monkeypatch):
     assert "证据摘要" in captured["prompt"]
 
 
+def test_draft_annotation_prompt_limits_priority_to_explicit_risk(monkeypatch):
+    captured = {}
+
+    def fake_call(prompt, *, purpose):
+        captured.update(prompt=prompt, purpose=purpose)
+        return {**_valid_review(), "knowledge_value": "pending", "draft_disposition": "hold_for_evidence"}
+
+    monkeypatch.setattr(model_annotation, "_call_deepseek_flash", fake_call)
+    model_annotation.annotate_transcribed_candidate(
+        {"draft": {"title": "标题", "content": "正文"}, "evidence_excerpt": "证据"}
+    )
+
+    assert "priority_review" in captured["prompt"]
+    assert "仅需等待人工确认沉淀价值时必须为 false" in captured["prompt"]
+
+
 def test_draft_revision_returns_revised_content_without_overwriting_input(monkeypatch):
     captured = {}
     def fake_call(prompt, *, purpose):
         captured.update(prompt=prompt, purpose=purpose)
-        return {"revised_content": "修改后的正文", "revised_recommended_reply": "修改后的推荐回复", "change_summary": ["收紧结论范围"]}
+        return {"revised_content": "1. 修改后的正文", "revised_recommended_reply": "修改后的推荐回复", "change_summary": ["收紧结论范围"], "evidence_used": ["来源事实"], "limitations": []}
     monkeypatch.setattr(model_annotation, "_call_deepseek_flash", fake_call)
     original = {"draft": {"content": "原正文", "recommended_reply": "原回复"}, "evidence_excerpt": "证据"}
     result = model_annotation.revise_transcribed_candidate_draft(original)
-    assert result["revised_content"] == "修改后的正文"
+    assert result["revised_content"] == "1. 修改后的正文"
+    assert result["prompt_version"] == "topic-evidence-draft-revision-v3"
     assert original["draft"]["content"] == "原正文"
     assert captured["purpose"] == "草稿修订"
     assert "不得补造" in captured["prompt"]
+
+
+@pytest.mark.parametrize("changes", [
+    {"revised_content": {"blocks": [{"type": "image", "external_url": "https://example.invalid/new"}]}},
+    {"revised_content": "适用主题：基本情况\n核验流程：补充截图后判断。"},
+    {"revised_content": "1. 来源核验依据：内部分析报告。"},
+    {"revised_recommended_reply": "回复" * 100},
+    {"evidence_used": "非数组"},
+])
+def test_draft_revision_rejects_templates_media_and_invalid_contract(monkeypatch, changes):
+    result = {
+        "revised_content": "1. 序列号模糊时建议邮寄回收。",
+        "revised_recommended_reply": "建议邮寄回收。",
+        "change_summary": ["保留来源短结论"], "evidence_used": ["F01"], "limitations": [],
+        **changes,
+    }
+    monkeypatch.setattr(model_annotation, "_call_deepseek_flash", lambda *_args, **_kwargs: result)
+    with pytest.raises(model_annotation.ModelAnnotationError) as error:
+        model_annotation.revise_transcribed_candidate_draft({"draft": {"title": "序列号模糊"}})
+    assert error.value.error_code == "INVALID_DRAFT_REVISION"
 
 
 def test_draft_prompt_optimization_uses_human_edit_snapshot(monkeypatch):

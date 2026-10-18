@@ -19,6 +19,91 @@ from answer_hub.cz_integration import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_processing_prompt_version_fits_website_contract_and_preserves_full_version():
+    adapter = CzIntegrationAdapter(CzIntegrationConfig("http://127.0.0.1:8000", "test-key"))
+    candidate = _candidate()
+    version = "multi-category-topic-transcription-v16-source-bounded-single-rule"
+    candidate["主题Prompt版本"] = version
+    item = adapter.build_batch_payload([candidate], {"质检流程": "cat-process"}, require_eligible=False)[0]
+    assert len(item["processing"]["prompt_version"]) <= 64
+    assert any(version in reason for reason in item["selection"]["reasons"])
+    repeated = adapter.build_batch_payload([candidate], {"质检流程": "cat-process"}, require_eligible=False)[0]
+    assert repeated["processing"]["prompt_version"] == item["processing"]["prompt_version"]
+    candidate["主题Prompt版本"] = version + "-next"
+    changed = adapter.build_batch_payload([candidate], {"质检流程": "cat-process"}, require_eligible=False)[0]
+    assert changed["processing"]["prompt_version"] != item["processing"]["prompt_version"]
+
+
+def test_short_processing_prompt_version_is_preserved():
+    adapter = CzIntegrationAdapter(CzIntegrationConfig("http://127.0.0.1:8000", "test-key"))
+    candidate = _candidate()
+    candidate["主题Prompt版本"] = "topic-transcription-v1"
+    item = adapter.build_batch_payload([candidate], {"质检流程": "cat-process"}, require_eligible=False)[0]
+    assert item["processing"]["prompt_version"] == "topic-transcription-v1"
+
+
+def test_completed_topic_model_review_carries_website_draft_action():
+    adapter = CzIntegrationAdapter(CzIntegrationConfig("http://127.0.0.1:8000", "test-key"))
+    for decision, action in (
+        ("通过", "submit_for_human_review"),
+        ("需修改", "return_for_revision"),
+        ("证据不足待补充", "hold_for_evidence"),
+        ("驳回", "discard"),
+    ):
+        candidate = {
+            **_candidate(), "模型初标状态": "topic_initial_reviewed_model",
+            "模型初标结论": decision,
+        }
+        item = adapter.build_batch_payload(
+            [candidate], {"质检流程": "cat-process"}, require_eligible=False,
+        )[0]
+        assert item["model_review"]["suggested_action"] == action
+        assert item["model_review"]["decision"] == decision
+
+
+def test_final_rebuilt_model_review_carries_all_four_website_actions():
+    adapter = CzIntegrationAdapter(CzIntegrationConfig("http://127.0.0.1:8000", "test-key"))
+    for decision, action in (
+        ("通过", "submit_for_human_review"),
+        ("需修改", "return_for_revision"),
+        ("证据不足待补充", "hold_for_evidence"),
+        ("驳回", "discard"),
+    ):
+        candidate = {
+            **_candidate(), "模型初标状态": "topic_initial_reviewed_model_after_rebuild",
+            "模型初标结论": decision,
+        }
+        item = adapter.build_batch_payload(
+            [candidate], {"质检流程": "cat-process"}, require_eligible=False,
+        )[0]
+        assert item["model_review"]["suggested_action"] == action
+
+
+def test_rebuild_rule_or_failed_review_cannot_claim_a_real_model_action():
+    adapter = CzIntegrationAdapter(CzIntegrationConfig("http://127.0.0.1:8000", "test-key"))
+    for status in (
+        "topic_initial_reviewed_rule_after_rebuild",
+        "topic_initial_review_failed_after_rebuild",
+    ):
+        candidate = {**_candidate(), "模型初标状态": status, "模型初标结论": "通过"}
+        item = adapter.build_batch_payload(
+            [candidate], {"质检流程": "cat-process"}, require_eligible=False,
+        )[0]
+        assert item["model_review"]["suggested_action"] is None
+
+
+def test_skipped_topic_review_cannot_be_promoted_to_completed_draft_action():
+    adapter = CzIntegrationAdapter(CzIntegrationConfig("http://127.0.0.1:8000", "test-key"))
+    candidate = {
+        **_candidate(), "模型初标状态": "topic_initial_review_skipped_transcription_failed",
+        "模型初标结论": "通过",
+    }
+    item = adapter.build_batch_payload(
+        [candidate], {"质检流程": "cat-process"}, require_eligible=False,
+    )[0]
+    assert item["model_review"]["suggested_action"] is None
+
+
 def _cz_required_schema_fields(class_name: str) -> set[str]:
     schema_path = (
         PROJECT_ROOT
@@ -29,6 +114,10 @@ def _cz_required_schema_fields(class_name: str) -> set[str]:
         / "schemas"
         / "integration.py"
     )
+    if not schema_path.is_file():
+        # Repository worktrees carry the formal backend alongside prototypes;
+        # the packaged standalone build carries its contract snapshot instead.
+        schema_path = PROJECT_ROOT.parents[1] / "backend" / "app" / "schemas" / "integration.py"
     module = ast.parse(schema_path.read_text(encoding="utf-8"))
     schema_class = next(
         node

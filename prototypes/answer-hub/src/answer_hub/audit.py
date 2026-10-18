@@ -22,6 +22,39 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
+def media_review_decision(
+    decision: str,
+    *,
+    parse_status: str,
+    media_type: str,
+    existing_risk: str = "",
+) -> dict[str, str]:
+    mapping = {
+        "关联当前主题": ("relevant", "human_confirmed"),
+        "不相关": ("irrelevant", "human_confirmed"),
+        "无法判断": ("unconfirmed", "human_pending"),
+    }
+    if decision not in mapping:
+        raise ValueError("媒体复核结论必须是关联当前主题、不相关或无法判断")
+    relevance, review_status = mapping[decision]
+    if relevance == "relevant":
+        audit_risk = (
+            ""
+            if str(parse_status or "").strip() == "已解析"
+            else str(existing_risk or "").strip()
+            or ("未解析视频" if media_type == "video" else "无法读取")
+        )
+    elif relevance == "irrelevant":
+        audit_risk = "不相关"
+    else:
+        audit_risk = str(existing_risk or "").strip() or "无法判断"
+    return {
+        "relevance_status": relevance,
+        "review_status": review_status,
+        "audit_risk": audit_risk,
+    }
+
+
 class AuditStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -161,8 +194,153 @@ class AuditStore:
                 );
                 CREATE INDEX IF NOT EXISTS ix_topic_pending_overlays_topic
                 ON topic_pending_overlays (base_topic_id, status, created_at);
+                CREATE TABLE IF NOT EXISTS media_evidence (
+                    media_evidence_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    media_url TEXT NOT NULL,
+                    source_record_id TEXT NOT NULL DEFAULT '',
+                    atomic_id TEXT NOT NULL DEFAULT '',
+                    topic_id TEXT NOT NULL DEFAULT '',
+                    fact_id TEXT NOT NULL DEFAULT '',
+                    work_order_id TEXT NOT NULL DEFAULT '',
+                    relevance_status TEXT NOT NULL DEFAULT 'unconfirmed',
+                    visible_fact TEXT NOT NULL DEFAULT '',
+                    selection_reason TEXT NOT NULL DEFAULT '',
+                    review_status TEXT NOT NULL DEFAULT 'pending',
+                    parse_status TEXT NOT NULL DEFAULT 'unparsed',
+                    audit_risk TEXT NOT NULL DEFAULT '',
+                    reviewed_by TEXT NOT NULL DEFAULT '',
+                    reviewed_at TEXT NOT NULL DEFAULT '',
+                    UNIQUE (run_id, media_url, topic_id)
+                );
+                CREATE INDEX IF NOT EXISTS ix_media_evidence_topic
+                ON media_evidence (topic_id, audit_risk, review_status);
+                CREATE INDEX IF NOT EXISTS ix_media_evidence_source
+                ON media_evidence (source_record_id, atomic_id);
                 """
             )
+
+    def save_media_evidence(
+        self,
+        run_id: str,
+        items: list[dict[str, Any]],
+    ) -> None:
+        if not items:
+            return
+        with self._connect() as connection:
+            for item in items:
+                connection.execute(
+                    """INSERT INTO media_evidence
+                    (media_evidence_id, run_id, media_type, media_url,
+                     source_record_id, atomic_id, topic_id, fact_id,
+                     work_order_id, relevance_status, visible_fact,
+                     selection_reason, review_status, parse_status, audit_risk,
+                     reviewed_by, reviewed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT DO UPDATE SET
+                        relevance_status=CASE
+                            WHEN media_evidence.review_status LIKE 'human_%'
+                            THEN media_evidence.relevance_status
+                            ELSE excluded.relevance_status
+                        END,
+                        visible_fact=excluded.visible_fact,
+                        selection_reason=excluded.selection_reason,
+                        review_status=CASE
+                            WHEN media_evidence.review_status LIKE 'human_%'
+                            THEN media_evidence.review_status
+                            ELSE excluded.review_status
+                        END,
+                        parse_status=excluded.parse_status,
+                        audit_risk=CASE
+                            WHEN media_evidence.review_status LIKE 'human_%'
+                            THEN media_evidence.audit_risk
+                            ELSE excluded.audit_risk
+                        END""",
+                    (
+                        item.get("媒体证据ID", ""),
+                        run_id,
+                        item.get("媒体类型", ""),
+                        item.get("媒体链接", ""),
+                        item.get("来源记录ID", ""),
+                        item.get("原子问题ID", ""),
+                        item.get("主题ID", ""),
+                        item.get("事实ID", ""),
+                        item.get("工单ID", ""),
+                        item.get("相关性状态", "unconfirmed"),
+                        item.get("可见事实", ""),
+                        item.get("选择原因", ""),
+                        item.get("审核状态", "pending"),
+                        item.get("解析状态", "未解析"),
+                        item.get("审计风险", ""),
+                        item.get("审核人", ""),
+                        item.get("审核时间", ""),
+                    ),
+                )
+
+    def list_media_evidence(
+        self,
+        *,
+        topic_id: str | None = None,
+        risk_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[str] = []
+        if topic_id:
+            clauses.append("topic_id = ?")
+            params.append(topic_id)
+        if risk_only:
+            clauses.append("audit_risk <> ''")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT * FROM media_evidence {where}
+                ORDER BY topic_id, source_record_id, media_evidence_id""",
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def review_media_evidence(
+        self,
+        media_evidence_id: str,
+        decision: str,
+        reviewed_by: str = "",
+    ) -> dict[str, Any]:
+        now = datetime.now().isoformat(timespec="seconds")
+        with self._connect() as connection:
+            original = connection.execute(
+                "SELECT * FROM media_evidence WHERE media_evidence_id = ?",
+                (media_evidence_id,),
+            ).fetchone()
+            if original is None:
+                raise ValueError("找不到媒体证据")
+            outcome = media_review_decision(
+                decision,
+                parse_status=str(original["parse_status"] or ""),
+                media_type=str(original["media_type"] or ""),
+                existing_risk=str(original["audit_risk"] or ""),
+            )
+            cursor = connection.execute(
+                """UPDATE media_evidence
+                SET relevance_status = ?, review_status = ?, reviewed_by = ?,
+                    reviewed_at = ?, audit_risk = ?
+                WHERE media_evidence_id = ?""",
+                (
+                    outcome["relevance_status"],
+                    outcome["review_status"],
+                    reviewed_by,
+                    now,
+                    outcome["audit_risk"],
+                    media_evidence_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("找不到媒体证据")
+            row = connection.execute(
+                "SELECT * FROM media_evidence WHERE media_evidence_id = ?",
+                (media_evidence_id,),
+            ).fetchone()
+            return dict(row)
 
     def record_excluded(
         self,

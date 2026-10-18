@@ -287,11 +287,20 @@ def audit_logic_and_claims(
     recommended_reply: str,
     evidence: TopicEvidence,
     existing_unsupported_claims: Iterable[str] = (),
+    verified_claim_fact_refs: Mapping[str, Iterable[str]] | None = None,
 ) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     refs_by_claim: dict[str, tuple[str, ...]] = {}
     missing: list[str] = []
+    actual_reply_ids = {
+        fact.fact_id for fact in evidence.facts
+        if fact.fact_type == "work_order_actual_reply"
+    }
     for claim in _claims(content, recommended_reply):
-        refs = _fact_refs(claim, evidence)
+        verified_refs = tuple(
+            fact_id for fact_id in (verified_claim_fact_refs or {}).get(claim, ())
+            if fact_id in actual_reply_ids
+        )
+        refs = tuple(dict.fromkeys((*verified_refs, *_fact_refs(claim, evidence))))
         refs_by_claim[claim] = refs
         if _strong_claim_without_ref(claim, refs):
             missing.append(claim)

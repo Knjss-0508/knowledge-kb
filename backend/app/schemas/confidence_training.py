@@ -133,6 +133,8 @@ class ConfidenceTrainingJob(BaseModel):
     resolved_model_version: str = ""
     shadow_evaluation: dict[str, Any] = Field(default_factory=dict)
     regression_reviews: dict[str, Any] = Field(default_factory=dict)
+    regression_rows: list[dict[str, Any]] = Field(default_factory=list)
+    regression_partitions: list[dict[str, Any]] = Field(default_factory=list)
     prompt_versions: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str
     updated_at: str
@@ -157,11 +159,20 @@ class ConfidenceTrainingItem(BaseModel):
     id: str
     event_id: str
     title: str
+    candidate_id: str | None = None
+    evaluation_sample_id: str | None = None
+    snapshot_id: str | None = None
+    source_batch: str = ""
+    topic_group: str = ""
+    draft_version: str = ""
+    reviewed_at: str | None = None
     model_label: str | None = None
     model_confidence: float | None = None
     confidence_band: str | None = None
     model_version: str | None = None
     prompt_version: str | None = None
+    model_output: dict[str, Any] = Field(default_factory=dict)
+    human_truth: dict[str, Any] = Field(default_factory=dict)
     human_label: str | None = None
     human_draft_disposition: str | None = None
     model_draft_disposition: str | None = None
@@ -194,8 +205,12 @@ class ConfidenceTrainingOverview(BaseModel):
     training_candidate_count: int
     model: str
     evaluation_scope: str
+    latest_snapshot_id: str | None = None
+    latest_snapshot_at: str | None = None
+    snapshot_sample_count: int = 0
     production_auto_review_enabled: bool
     bands: list[dict[str, Any]]
+    sample_provenance: list[dict[str, Any]] = []
     split_summary: list[dict[str, Any]] = []
     partitioned_bands: list[dict[str, Any]] = []
     settings: ConfidenceTrainingSettings
