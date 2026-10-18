@@ -10,7 +10,7 @@ from alembic import op
 
 
 revision = "20261013_01_hf_persist"
-down_revision = "20261012_02_evaluation_samples"
+down_revision = "20261018_01_merge_review_heads"
 branch_labels = None
 depends_on = None
 
