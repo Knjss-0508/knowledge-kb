@@ -36,10 +36,13 @@ def test_mobile_layout_returns_sidebar_to_normal_document_flow() -> None:
 
 
 def test_knowledge_sedimentation_keeps_collapsible_child_navigation() -> None:
-    assert "class=\"nav-group\" v-if=\"can('knowledge:submit')\"" in FRONTEND
+    assert "class=\"nav-group\" v-if=\"can('knowledge:view')\"" in FRONTEND
     assert "知识沉淀" in FRONTEND
     assert 'v-show="knowledgeMenuOpen"' in FRONTEND
+    assert "v-if=\"can('knowledge:submit')\" class=\"nav-subitem\"" in FRONTEND
     assert 'title="候选价值复核"' in FRONTEND
     assert 'title="运行监管"' in FRONTEND
+    assert 'title="高频问题"' in FRONTEND
+    assert "view==='highFrequency' && can('knowledge:view')" in FRONTEND
     assert "toggleKnowledgeMenu: function()" in FRONTEND
     assert "sidebarCollapsed" not in FRONTEND

@@ -24,6 +24,7 @@ from app.routes import (
     confidence_training,
     embedding_admin,
     integration,
+    high_frequency,
     knowledge,
     knowledge_origin,
     manhattan,
@@ -37,6 +38,7 @@ from app.services.knowledge_vector_worker import run_knowledge_vector_worker
 from app.services.media_deletion import run_media_deletion_worker
 from app.services.media_storage import _normalize_remote_media_path_prefix
 from app.services.model_connection import refresh_model_config_cache
+from app.services.high_frequency_pipeline import run_high_frequency_worker
 from app.services.work_order_log_verdicts import run_work_order_log_verdict_worker
 
 
@@ -58,6 +60,12 @@ def _background_workers_should_start() -> bool:
     """Return whether this process may consume shared background task tables."""
 
     return bool(settings.BACKGROUND_WORKERS_ENABLED and not settings.MEDIA_GATEWAY_ONLY)
+
+
+def _high_frequency_worker_count() -> int:
+    """Bound concurrent model consumers so a bad setting cannot stampede the gateway."""
+
+    return max(1, min(int(settings.HIGH_FREQUENCY_WORKER_CONCURRENCY), 8))
 
 
 def _gateway_path_allowed(path: str) -> bool:
@@ -97,6 +105,10 @@ async def lifespan(_: FastAPI):
             asyncio.create_task(
                 confidence_training.run_confidence_shadow_rerun_worker(stop_event)
             ),
+            *[
+                asyncio.create_task(run_high_frequency_worker(stop_event))
+                for _ in range(_high_frequency_worker_count())
+            ],
         ]
         if settings.BLIND_LABEL_AUTO_RELEASE_ENABLED:
             workers.append(asyncio.create_task(run_blind_label_auto_release_worker(stop_event)))
@@ -154,6 +166,7 @@ app.include_router(blind_labeling.router, prefix=settings.API_V1_PREFIX)
 app.include_router(answer_hub.router, prefix=settings.API_V1_PREFIX)
 app.include_router(automation_monitor.router, prefix=settings.API_V1_PREFIX)
 app.include_router(integration.router, prefix=settings.API_V1_PREFIX)
+app.include_router(high_frequency.router, prefix=settings.API_V1_PREFIX)
 app.include_router(confidence_training.router, prefix=settings.API_V1_PREFIX)
 app.include_router(embedding_admin.router, prefix=settings.API_V1_PREFIX)
 app.include_router(media.router)

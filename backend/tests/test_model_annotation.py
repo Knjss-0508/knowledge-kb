@@ -342,3 +342,46 @@ def test_explicit_call_config_wins_over_the_saved_override(monkeypatch):
     assert calls[0][0][0] == "http://form/v1/chat/completions"
     assert calls[0][1]["headers"]["Authorization"] == "Bearer sk-form"
     assert result["prompt_version"] == "v1"
+
+
+def test_high_frequency_call_applies_model_timeout_and_token_overrides(monkeypatch):
+    calls = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"items":[]}'}}]}
+
+    monkeypatch.setattr(
+        model_annotation,
+        "settings",
+        SimpleNamespace(
+            DEEPSEEK_BASE_URL="http://internal/v1",
+            DEEPSEEK_API_KEY="test-key",
+            GROUP_LLM_BASE_URL="",
+            GROUP_LLM_API_KEY="",
+            DEEPSEEK_MODEL="deepseek-default",
+            DEEPSEEK_TIMEOUT_SECONDS=5,
+            DEEPSEEK_PROMPT_VERSION="v1",
+        ),
+    )
+    monkeypatch.setattr(model_connection, "_CACHED_OVERRIDES", None)
+    monkeypatch.setattr(
+        model_annotation.httpx,
+        "post",
+        lambda *args, **kwargs: (calls.append((args, kwargs)) or Response()),
+    )
+
+    model_annotation._call_deepseek_flash(
+        "只返回 JSON",
+        purpose="高频问题标准化",
+        model_override="high-frequency-model",
+        timeout_override=37,
+        max_completion_tokens_override=3072,
+    )
+
+    assert calls[0][1]["json"]["model"] == "high-frequency-model"
+    assert calls[0][1]["timeout"] == 37
+    assert calls[0][1]["json"]["max_completion_tokens"] == 3072
+    assert calls[0][1]["json"]["thinking"] == {"type": "disabled"}

@@ -192,16 +192,25 @@ def _call_deepseek_flash(
     *,
     purpose: str,
     config: dict[str, Any] | None = None,
+    model_override: str = "",
+    timeout_override: float | None = None,
+    max_completion_tokens_override: int | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_call_config(config)
     base_url = str(resolved.get("base_url") or "").strip().rstrip("/")
     api_key = str(resolved.get("api_key") or "").strip()
-    model = str(resolved.get("model") or "").strip() or "deepseek-flash"
+    model = (
+        model_override.strip()
+        or str(resolved.get("model") or "").strip()
+        or "deepseek-flash"
+    )
     try:
-        timeout = max(
-            1.0,
-            float(resolved.get("timeout_seconds") or DEFAULT_MODEL_TIMEOUT_SECONDS),
+        configured_timeout = (
+            timeout_override
+            if timeout_override is not None
+            else resolved.get("timeout_seconds") or DEFAULT_MODEL_TIMEOUT_SECONDS
         )
+        timeout = max(1.0, float(configured_timeout))
     except (TypeError, ValueError):
         timeout = DEFAULT_MODEL_TIMEOUT_SECONDS
     if not base_url or not api_key:
@@ -220,7 +229,10 @@ def _call_deepseek_flash(
             {"role": "user", "content": prompt},
         ],
         "response_format": {"type": "json_object"},
+        "thinking": {"type": "disabled"},
     }
+    if max_completion_tokens_override is not None:
+        body["max_completion_tokens"] = max(256, int(max_completion_tokens_override))
     try:
         response = httpx.post(
             url,

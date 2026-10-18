@@ -65,6 +65,17 @@ class Settings(BaseSettings):
     ANSWER_HUB_API_BASE_URL: str = ""
     ANSWER_HUB_API_KEY: str = ""
     ANSWER_HUB_API_TIMEOUT_SECONDS: float = 15.0
+    # Second-part read-only reporting source; credentials stay server-side.
+    SECOND_PART_API_URL: str = ""
+    SECOND_PART_API_TOKEN: str = ""
+    SECOND_PART_API_TIMEOUT_SECONDS: float = 30.0
+    SECOND_PART_API_QUERY_LIMIT: int = 10000
+    HIGH_FREQUENCY_CLASSIFICATION_ENABLED: bool = True
+    HIGH_FREQUENCY_CLASSIFICATION_BATCH_SIZE: int = 8
+    HIGH_FREQUENCY_CLASSIFICATION_TIMEOUT_SECONDS: float = 120.0
+    HIGH_FREQUENCY_CLASSIFICATION_MAX_COMPLETION_TOKENS: int = 4096
+    HIGH_FREQUENCY_CLASSIFICATION_CACHE_PATH: str = "/app/data/high_frequency_classifications.json"
+    HIGH_FREQUENCY_CLASSIFICATION_MODEL: str = ""
     # Internal OpenAI-compatible endpoint used only for shadow evaluation and
     # draft annotation. Empty defaults prevent accidental production calls.
     DEEPSEEK_BASE_URL: str = ""
@@ -153,6 +164,9 @@ class Settings(BaseSettings):
     # import, vector, or media-cleanup workers against the shared database.
     BACKGROUND_WORKERS_ENABLED: bool = True
     MEDIA_GATEWAY_ONLY: bool = False
+    # High-frequency records are independent durable tasks. A small bounded
+    # consumer pool keeps a normal daily sync from becoming a serial model run.
+    HIGH_FREQUENCY_WORKER_CONCURRENCY: int = 4
     # Blind-label assignments are a fixed-time reservation. A background
     # worker reclaims unfinished assignments after the configured timeout so
     # work-order slots cannot remain occupied indefinitely.
