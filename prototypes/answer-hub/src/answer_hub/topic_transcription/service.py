@@ -8,6 +8,20 @@ from .evidence import build_topic_evidence
 from .logic_gate import audit_logic_and_claims
 
 
+def _condition_text(value: str) -> str:
+    text = value.lower()
+    for term, operator in (
+        ("不大于", "<="), ("不超过", "<="), ("至多", "<="),
+        ("不小于", ">="), ("不低于", ">="), ("不少于", ">="),
+        ("大于等于", ">="), ("不少于", ">="), ("至少", ">="), ("≥", ">="),
+        ("小于等于", "<="), ("≤", "<="),
+        ("大于", ">"), ("超过", ">"), ("＞", ">"),
+        ("小于", "<"), ("低于", "<"), ("＜", "<"),
+    ):
+        text = text.replace(term, operator)
+    return re.sub(r"[\s，,。；;：:！？!?（）()“”\"'、]+", "", text)
+
+
 def audit_topic_draft(
     *,
     content: str,
@@ -15,6 +29,7 @@ def audit_topic_draft(
     evidence_package: Mapping[str, Any] | None,
     topic: Mapping[str, Any] | None = None,
     existing_unsupported_claims: Iterable[str] = (),
+    verified_claim_fact_refs: Mapping[str, Iterable[str]] | None = None,
     use_standard_references: bool = True,
     active_standard_refs: str = "",
     preserved_standard_refs: str = "",
@@ -27,7 +42,21 @@ def audit_topic_draft(
         recommended_reply=recommended_reply,
         evidence=evidence,
         existing_unsupported_claims=existing_unsupported_claims,
+        verified_claim_fact_refs=verified_claim_fact_refs,
     )
+    actual_facts = [
+        fact for fact in evidence.facts if fact.fact_type == "work_order_actual_reply"
+    ]
+    # A standard may support a broader rule; one unbacked case cannot.
+    if len(actual_facts) == 1 and not (use_standard_references and active_standard_refs):
+        condition = actual_facts[0].fields.get("source_supported_threshold_or_exception", "")
+        if condition:
+            required = _condition_text(condition)
+            scope = (*scope, *(
+                f"来源条件遗漏：{field}未保留已核验条件“{condition}”，可能扩大适用范围。"
+                for field, value in (("知识内容", content), ("推荐回复", recommended_reply))
+                if value.strip() and required not in _condition_text(value)
+            ))
     issues = [
         *(f"来源事实不支持：{claim}" for claim in missing),
         *logic,

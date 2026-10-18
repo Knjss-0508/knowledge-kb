@@ -28,9 +28,10 @@ from .automation_queue import (
     read_queue_job_metadata,
     write_queue_job_metadata,
 )
+from .draft_prompt_replay import replay_draft_prompts
 from .automation_schedule import normalize_plan
 from .excel_io import write_rows_to_workbook
-from .mimo import load_dotenv
+from .mimo import MimoClient, MimoError, load_dotenv
 from .local_model_config import (
     public_local_model_config,
     write_local_model_config,
@@ -106,6 +107,20 @@ def _bool_value(value: Any, default: bool = False) -> bool:
     if not text:
         return default
     return text in {"1", "true", "yes", "on"}
+
+
+def _standard_reference_option(options: Any, *, form: bool = False) -> dict[str, bool]:
+    field = "use_standard_references"
+    if field not in options:
+        return {}
+    value = options[field]
+    if form and isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "false"}:
+            return {field: text == "true"}
+    elif isinstance(value, bool):
+        return {field: value}
+    raise ValueError(f"{field} 必须是布尔值，表单请使用 true 或 false")
 
 
 def _float_value(value: Any, default: float) -> float:
@@ -554,6 +569,37 @@ def create_automation_api_app(
             }
         )
 
+    @app.post("/api/v1/draft-prompt-replays")
+    @require_api_key
+    def replay_draft_prompt():
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "请求体必须是 JSON 对象。"}), 400
+        candidate_prompt = _text(body.get("candidate_prompt"))
+        candidate_prompt_version = _text(body.get("candidate_prompt_version"))
+        samples = body.get("samples")
+        if not candidate_prompt or not candidate_prompt_version:
+            return jsonify({"error": "candidate_prompt 和 candidate_prompt_version 不能为空。"}), 400
+        if not isinstance(samples, list) or not samples:
+            return jsonify({"error": "samples 必须是非空数组。"}), 400
+        if len(samples) > 30:
+            return jsonify({"error": "单次草稿 Prompt 回放最多 30 条样本。"}), 400
+        if not all(isinstance(sample, dict) for sample in samples):
+            return jsonify({"error": "samples 必须全部为 JSON 对象。"}), 400
+        client = MimoClient.from_env()
+        if client is None:
+            return jsonify({"error": "组内模型未配置，无法执行草稿 Prompt 回放。"}), 409
+        try:
+            result = replay_draft_prompts(
+                client=client,
+                samples=samples,
+                candidate_prompt=candidate_prompt,
+                candidate_prompt_version=candidate_prompt_version,
+            )
+        except MimoError as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify(result)
+
     @app.get("/api/v1/local/model-config")
     @require_api_key
     def get_local_model_config():
@@ -799,6 +845,10 @@ def create_automation_api_app(
         ).strip()
         if clustering_mode not in SUPPORTED_CLUSTERING_MODES:
             return jsonify({"error": "不支持的聚类模式"}), 400
+        try:
+            standard_option = _standard_reference_option(request.form, form=True)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         sync_to_cz_review = _bool_value(
             request.form.get("sync_to_cz_review")
             if request.form.get("sync_to_cz_review") is not None
@@ -806,6 +856,7 @@ def create_automation_api_app(
             False,
         )
         options = {
+            **standard_option,
             "product_type": (request.form.get("product_type") or "").strip(),
             "use_mimo": _bool_value(request.form.get("use_mimo"), True),
             "clustering_mode": clustering_mode,
@@ -872,6 +923,10 @@ def create_automation_api_app(
         raw_options = body.get("options") or {}
         if not isinstance(raw_options, dict):
             return jsonify({"error": "options 必须是 JSON 对象"}), 400
+        try:
+            standard_option = _standard_reference_option(raw_options)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         clustering_mode = _text(
             raw_options.get("clustering_mode") or "direct_mimo"
         )
@@ -955,6 +1010,7 @@ def create_automation_api_app(
             False,
         )
         options = {
+            **standard_option,
             "product_type": _text(raw_options.get("product_type")),
             "use_mimo": _bool_value(raw_options.get("use_mimo"), True),
             "clustering_mode": clustering_mode,

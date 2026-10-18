@@ -97,6 +97,10 @@ class IntegrationSelection(BaseModel):
         None, max_length=128, description="上游去重指纹"
     )
     reasons: list[str] = Field(default=[], description="筛选或质量判断依据")
+    answer_hub_replay_input: dict[str, Any] | None = Field(
+        None,
+        description="Answer Hub 草稿 Prompt 离线回放的冻结主题输入，仅服务端使用",
+    )
 
 
 class IntegrationModelReview(BaseModel):
@@ -259,6 +263,7 @@ class CandidateReviewUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=256)
     subtitles: list[str] | None = None
     content: Any | None = None
+    evidence_excerpt: str | None = Field(None, max_length=4000)
     knowledge_origin: WritableKnowledgeOrigin | None = None
     business_type: BusinessType | None = None
     category_id: str | None = Field(None, min_length=1, max_length=64)
@@ -318,9 +323,15 @@ class CandidateReviewListItem(BaseModel):
     evidence_excerpt: str | None = None
     selection: dict[str, Any] = Field(default_factory=dict)
     model_review: dict[str, Any] = Field(default_factory=dict)
+    model_annotation: dict[str, Any] = Field(default_factory=dict)
     model_draft_revision: dict[str, Any] = Field(default_factory=dict)
     human_review: dict[str, Any] = Field(default_factory=dict)
+    eligible: bool = False
+    blocking_reasons: list[str] = Field(default_factory=list)
+    next_action: str = ""
+    draft_version: int = 1
     priority_review: bool = False
+    priority_reasons: list[str] = Field(default_factory=list)
     deduplication: IntegrationDedupResponse | None = None
     deduplication_confirmed: bool = False
     deduplication_only: bool = False
@@ -355,6 +366,7 @@ class CandidateReviewAnnotateResult(BaseModel):
     ingestion_id: str
     status: Literal["updated", "failed"]
     review_status: str | None = None
+    model_draft_revision_status: str | None = None
     error_code: str | None = None
     error_message: str | None = None
 

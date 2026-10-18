@@ -80,10 +80,16 @@ class MigrationRevisionTests(unittest.TestCase):
 
     def test_history_has_a_single_head(self):
         referenced = {
-            info["down_revision"]
+            parent
             for info in self.revisions.values()
-            if info["down_revision"]
+            for parent in (
+                info["down_revision"]
+                if isinstance(info["down_revision"], (tuple, list))
+                else [info["down_revision"]]
+            )
+            if parent
         }
+        self.assertFalse(referenced - self.revisions.keys(), "迁移依赖不存在")
         heads = sorted(set(self.revisions) - referenced)
         self.assertEqual(len(heads), 1, "迁移链出现分叉：{}".format(heads))
 

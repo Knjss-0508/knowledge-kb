@@ -122,6 +122,69 @@ def _polarizer_evidence() -> dict[str, object]:
     }
 
 
+def test_verified_claim_refs_link_a_natural_rule_to_its_actual_reply() -> None:
+    claim = "折叠屏手机在折叠动作后出现自动关机时，开机情况按自动关机判定"
+    audit = audit_topic_draft(
+        content=claim + "。",
+        recommended_reply="判自动关机。",
+        evidence_package={"facts": [{
+            "fact_id": "F01", "fact_type": "work_order_actual_reply",
+            "historical_actual_reply": "判自动关机",
+        }]},
+        verified_claim_fact_refs={claim: ("F01", "missing-id")},
+        use_standard_references=False,
+    )
+    assert audit.status == "passed"
+    assert audit.claim_fact_refs[claim] == ("F01",)
+
+
+def test_unknown_or_unverified_claim_refs_do_not_satisfy_source_support() -> None:
+    claim = "折叠屏手机在折叠动作后出现自动关机时，开机情况按自动关机判定"
+    audit = audit_topic_draft(
+        content=claim + "。",
+        recommended_reply="",
+        evidence_package={"facts": [{
+            "fact_id": "F01", "fact_type": "model_summary", "observation": "待核实",
+        }]},
+        verified_claim_fact_refs={claim: ("F01", "missing-id")},
+        use_standard_references=False,
+    )
+    assert audit.status == "manual_review"
+    assert claim in audit.unsupported_claims
+
+
+def test_verified_claim_refs_cannot_override_an_explicit_source_failure() -> None:
+    claim = "折叠屏手机在折叠动作后出现自动关机时，开机情况按自动关机判定"
+    audit = audit_topic_draft(
+        content=claim + "。",
+        recommended_reply="",
+        evidence_package={"facts": [{
+            "fact_id": "F01", "fact_type": "work_order_actual_reply",
+            "historical_actual_reply": "判自动关机",
+        }]},
+        verified_claim_fact_refs={claim: ("F01",)},
+        existing_unsupported_claims=(claim,),
+        use_standard_references=False,
+    )
+    assert audit.status == "manual_review"
+    assert claim in audit.unsupported_claims
+
+
+def test_verified_claim_refs_cannot_override_polarity_or_quantifier_checks() -> None:
+    evidence = _polarizer_evidence()
+    evidence["facts"][0]["fact_type"] = "work_order_actual_reply"
+    claim = "只要有一个孔位的颜色与原装示例相符，即可判定为正常"
+    audit = audit_topic_draft(
+        content=claim + "。",
+        recommended_reply="",
+        evidence_package=evidence,
+        verified_claim_fact_refs={claim: ("F01",)},
+        use_standard_references=False,
+    )
+    assert audit.status == "manual_review"
+    assert audit.logic_conflicts
+
+
 def test_mixed_polarity_cannot_be_rewritten_as_any_match_normal() -> None:
     audit = audit_topic_draft(
         content=(
@@ -415,3 +478,60 @@ def test_label_topic_single_attempt_error_does_not_claim_a_retry() -> None:
         assert "已重试一次" not in str(exc)
     else:
         raise AssertionError("无效主题 JSON 应触发 MimoError")
+
+
+def test_replay_topic_draft_retries_json_contract_once() -> None:
+    client = MimoClient(
+        MimoConfig(
+            api_key="test-key",
+            base_url="https://example.com/v1",
+            model="draft-replay-attempt-test",
+        )
+    )
+    responses = iter([
+        {"choices": [{"message": {"content": "{\"not_a_topic\": true}"}}]},
+        {
+            "choices": [{
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "title": "笔记本外观如何核验？",
+                            "subtitles": ["笔记本外观异常应如何核验？"],
+                            "content": "1. 核验外观现象。\n2. 根据现场证据处理。",
+                            "content_type": "核验型",
+                            "category_l1": "外观",
+                            "category_l2": "外观异常",
+                            "layer": "L2",
+                            "knowledge_form": "流程方法",
+                            "standard_refs": [],
+                            "applicable_scope": "笔记本",
+                            "applicable_brands": [],
+                            "applicable_models": [],
+                            "recommended_reply": "请先核验笔记本外观异常的具体位置和现场证据，再按核验结果处理。",
+                            "confidence": 0.8,
+                            "reasoning_summary": "来源证据需要现场核验。",
+                            "needs_human_review": True,
+                            "image_evidence_summary": "当前主题不依赖图片证据。",
+                            "requires_images": False,
+                            "image_usage_instruction": "不使用图片。",
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            }]
+        },
+    ])
+
+    client._post = lambda _payload: next(responses)  # type: ignore[method-assign]
+    result = client.replay_topic_draft(
+        {
+            "topic_id": "TOP-REPLAY-001",
+            "产品类型": "笔记本",
+            "主题事实证据包": {"representative_facts": [{"fact_id": "F01"}]},
+        },
+        draft_prompt="候选草稿 Prompt",
+        prompt_version="draft-v1-candidate",
+    )
+
+    assert result.candidate["title"] == "笔记本外观如何核验？"
+    assert result.request_audit["attempt"] == 2

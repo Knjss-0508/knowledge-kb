@@ -476,6 +476,39 @@ def _candidate_evidence_excerpt(candidate: dict[str, Any]) -> str | None:
     return excerpt or None
 
 
+def _candidate_answer_hub_replay_input(
+    candidate: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Preserve the exact case-only topic evidence needed for future replay."""
+    try:
+        evidence_package = json.loads(_text(candidate.get("主题事实证据包")))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(evidence_package, dict) or not (
+        evidence_package.get("facts")
+        or evidence_package.get("representative_facts")
+    ):
+        return None
+    topic_id = _text(candidate.get("主题ID")) or _text(candidate.get("知识ID"))
+    product_type = _text(candidate.get("适用范围"))
+    if not topic_id or not product_type:
+        return None
+    return {
+        "topic_id": topic_id,
+        "产品类型": product_type,
+        "回收业务层级": _text(candidate.get("回收业务层级")),
+        "主题问题意图": _text(candidate.get("主题问题意图")),
+        "主题对象/部位": _text(candidate.get("主题对象/部位")),
+        "主题异常现象": _text(candidate.get("主题异常现象")),
+        "主题解题方式": _text(candidate.get("主题解题方式")),
+        "主题事实证据包": evidence_package,
+        "主题事实引用": _text(candidate.get("主题事实引用")),
+        "主题证据摘要": _text(candidate.get("主题证据摘要")),
+        "主题图片链接": _text(candidate.get("主题图片链接")),
+        "主题视频链接": _text(candidate.get("主题视频链接")),
+    }
+
+
 def _candidate_validated_media_trace(
     candidate: dict[str, Any],
     *,
@@ -560,6 +593,29 @@ def _candidate_category_id(
         if category_id:
             return category_id
     return ""
+
+
+def _processing_prompt_version(version: str) -> str | None:
+    if not version:
+        return None
+    if len(version) <= 64:
+        return version
+    digest = hashlib.sha256(version.encode("utf-8")).hexdigest()[:12]
+    return f"{version[:51]}-{digest}"
+
+
+def _candidate_model_suggested_action(candidate: dict[str, Any]) -> str | None:
+    if _text(candidate.get("模型初标状态")) not in {
+        "topic_initial_reviewed_model",
+        "topic_initial_reviewed_model_after_rebuild",
+    }:
+        return None
+    return {
+        "通过": "submit_for_human_review",
+        "需修改": "return_for_revision",
+        "证据不足待补充": "hold_for_evidence",
+        "驳回": "discard",
+    }.get(_text(candidate.get("模型初标结论")))
 
 
 def _candidate_applicable_categories(
@@ -1186,7 +1242,9 @@ class CzIntegrationAdapter:
                         or "answer-hub",
                         "plugin_name": PROCESSING_PLUGIN_NAME,
                         "plugin_version": PROCESSING_PLUGIN_VERSION,
-                        "prompt_version": _text(candidate.get("主题Prompt版本")) or None,
+                        "prompt_version": _processing_prompt_version(
+                            _text(candidate.get("主题Prompt版本"))
+                        ),
                         "model_name": _text(candidate.get("主题模型名称")) or None,
                     },
                     "selection": {
@@ -1196,6 +1254,12 @@ class CzIntegrationAdapter:
                         "reasons": [
                             value
                             for value in (
+                                (
+                                    "转写Prompt完整版本："
+                                    + _text(candidate.get("主题Prompt版本"))
+                                    if len(_text(candidate.get("主题Prompt版本"))) > 64
+                                    else ""
+                                ),
                                 f"人工审核：{decision}" if decision else "",
                                 (
                                     f"沉淀价值：{knowledge_value}"
@@ -1255,10 +1319,14 @@ class CzIntegrationAdapter:
                             )
                             if value
                         ],
+                        "answer_hub_replay_input": (
+                            _candidate_answer_hub_replay_input(candidate)
+                        ),
                     },
                     "model_review": {
                         "status": _text(candidate.get("模型初标状态")) or None,
                         "decision": _text(candidate.get("模型初标结论")) or None,
+                        "suggested_action": _candidate_model_suggested_action(candidate),
                         "knowledge_value": (
                             "worthy"
                             if _text(candidate.get("模型初标是否值得沉淀")).lower()

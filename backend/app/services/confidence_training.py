@@ -7,6 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models.integration import ConfidenceTrainingSettingsRecord
+from app.services.candidate_review import current_draft_version, normalize_human_review
 
 
 MODEL_NAME = "deepseek-flash"
@@ -81,7 +82,7 @@ def _human_review(item) -> dict[str, Any]:
 def model_label(item) -> str | None:
     model = _model_review(item)
     value = model.get("knowledge_value") or model.get("decision")
-    return str(value).strip() or None
+    return str(value or "").strip() or None
 
 
 def human_label(item) -> str | None:
@@ -94,6 +95,21 @@ def human_draft_disposition(item) -> str | None:
     human = _human_review(item)
     if human_label(item) == "unworthy":
         return "not_applicable"
+    review = normalize_human_review(human)
+    if review["usability"] == "unusable" or review["decision"] in {"rejected", "bad_case"}:
+        return "revision_required"
+    if review["usability"] == "usable" or review["decision"] in {
+        "approved", "approved_with_changes"
+    }:
+        return "approved"
+    metadata = dict(item.review_metadata or {})
+    if (
+        "human_review_draft_version" in metadata
+        or metadata.get("draft_revision_history")
+        or current_draft_version(metadata) != 1
+    ):
+        return None
+    # Only unchanged, unversioned legacy reviews may use the retired field.
     value = str(human.get("draft_disposition") or "").strip()
     return value if value in {"approved", "revision_required", "hold_for_evidence"} else None
 
@@ -107,25 +123,70 @@ def model_draft_disposition(item) -> str | None:
         return "revision_required"
     if action == "hold_for_evidence":
         return "hold_for_evidence"
+    if action == "discard":
+        return "not_applicable"
     quality = str(model.get("draft_quality") or "").strip()
     return {
+        "approved": "approved",
+        "revision_required": "revision_required",
+        "hold_for_evidence": "hold_for_evidence",
+        "not_applicable": "not_applicable",
+        "rejected": "not_applicable",
         "合格": "approved",
         "需修改": "revision_required",
         "待补证据": "hold_for_evidence",
     }.get(quality)
 
 
+def _review_version_matches(value: Any, draft_version: int) -> bool:
+    if isinstance(value, bool):
+        return False
+    try:
+        return int(str(value)) == draft_version
+    except (TypeError, ValueError):
+        return False
+
+
+def _human_truth_is_current(item) -> bool:
+    metadata = dict(item.review_metadata or {})
+    draft_version = current_draft_version(metadata)
+    legacy_v1 = draft_version == 1 and not metadata.get("draft_revision_history")
+    if "human_review_draft_version" in metadata:
+        if not _review_version_matches(
+            metadata["human_review_draft_version"], draft_version
+        ):
+            return False
+    elif not legacy_v1:
+        return False
+
+    annotation = dict(metadata.get("model_annotation") or {})
+    if annotation.get("status") not in {None, "", "completed"}:
+        return False
+    if "draft_version" in annotation:
+        if not _review_version_matches(annotation["draft_version"], draft_version):
+            return False
+    elif not legacy_v1:
+        return False
+    # Missing markers are compatible only with an unchanged legacy v1 draft.
+    return model_label(item) in {"worthy", "unworthy", "pending"}
+
+
 def _derived_evaluation(item) -> dict[str, Any]:
     """Compare the post-transcription model result with the one human review.
 
-    Human reviewers never reconfirm a value in this module.  The comparison is
-    derived from their candidate-review conclusion and draft disposition.
+    Human reviewers never reconfirm a value in this module. The comparison is
+    derived from their candidate-review value, usability and decision.
     """
     truth = human_label(item)
     human_draft = human_draft_disposition(item)
     model = model_label(item)
     model_draft = model_draft_disposition(item)
-    if not truth or (truth == "worthy" and not human_draft) or not model:
+    if (
+        not _human_truth_is_current(item)
+        or not truth
+        or (truth == "worthy" and not human_draft)
+        or not model
+    ):
         return {"model_correctness": "not_evaluable", "strict_correct": None, "acceptable_correct": None}
     same_value = truth == model
     same_draft = truth == "unworthy" or model_draft is None or model_draft == human_draft
@@ -148,7 +209,11 @@ def item_payload(item) -> dict[str, Any]:
     human_draft = human_draft_disposition(item)
     model_draft = model_draft_disposition(item)
     derived = _derived_evaluation(item)
-    confirmed = bool(truth) and (truth == "unworthy" or bool(human_draft))
+    confirmed = (
+        _human_truth_is_current(item)
+        and bool(truth)
+        and (truth == "unworthy" or bool(human_draft))
+    )
     training_recommended = (
         "recommended"
         if str(human.get("training_eligible") or "").strip() == "是" and confirmed
@@ -169,16 +234,28 @@ def item_payload(item) -> dict[str, Any]:
         "human_draft_disposition": human_draft,
         "model_draft_disposition": model_draft,
         "truth_status": ("confirmed" if confirmed else "pending"),
-        "model_correctness": evaluation.get("model_correctness") or derived["model_correctness"],
-        "strict_correct": evaluation.get("strict_correct", derived["strict_correct"]),
-        "acceptable_correct": evaluation.get("acceptable_correct", derived["acceptable_correct"]),
+        "model_correctness": (
+            evaluation.get("model_correctness") or derived["model_correctness"]
+            if confirmed else "not_evaluable"
+        ),
+        "strict_correct": (
+            evaluation.get("strict_correct", derived["strict_correct"])
+            if confirmed else None
+        ),
+        "acceptable_correct": (
+            evaluation.get("acceptable_correct", derived["acceptable_correct"])
+            if confirmed else None
+        ),
         "error_type": list(evaluation.get("error_type") or []),
         "error_severity": evaluation.get("error_severity"),
         "review_note": str(evaluation.get("review_note") or ""),
         "correction_status": evaluation.get("correction_status") or "not_started",
         "correction_round": int(evaluation.get("correction_round") or 0),
         "corrected_model_review": evaluation.get("corrected_model_review"),
-        "training_candidate_status": evaluation.get("training_candidate_status") or training_recommended,
+        "training_candidate_status": (
+            evaluation.get("training_candidate_status") or training_recommended
+            if confirmed else "not_recommended"
+        ),
         "dataset_split": evaluation.get("dataset_split"),
         "review_status": item.review_status or "pending",
     }
@@ -193,6 +270,18 @@ def _wilson_lower(correct: int, total: int) -> float | None:
     centre = p + z * z / (2 * total)
     spread = z * math.sqrt((p * (1 - p) + z * z / (4 * total)) / total)
     return round(max(0.0, (centre - spread) / denominator), 4)
+
+
+def _metric_sample_provenance(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "sample_id": item.get("evaluation_sample_id") or item.get("id"),
+            "candidate_id": item.get("candidate_id") or item.get("id"),
+            "model_version": item.get("model_version"),
+            "prompt_version": item.get("prompt_version"),
+        }
+        for item in items
+    ]
 
 
 def _accuracy_group(items: list[dict[str, Any]], *, split: str, band: str) -> dict[str, Any]:
@@ -220,12 +309,13 @@ def _accuracy_group(items: list[dict[str, Any]], *, split: str, band: str) -> di
         "fatal_error_rate": round(sum(item.get("error_severity") == "fatal" for item in valid) / len(valid), 4) if valid else 0,
         "major_error_rate": round(sum(item.get("error_severity") == "major" for item in valid) / len(valid), 4) if valid else 0,
         "sample_warning": "样本不足，仅供观察" if 0 < len(valid) < 10 else ("暂无样本" if not group else ""),
+        "sample_provenance": _metric_sample_provenance(group),
     }
 
 
 def aggregate(items: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     scored = [item for item in items if item.get("confidence_band")]
-    valid = [item for item in scored if item.get("truth_status") == "confirmed"]
+    valid = [item for item in items if item.get("truth_status") == "confirmed"]
     strict = [item for item in valid if item.get("strict_correct") is True]
     acceptable = [item for item in valid if item.get("acceptable_correct") is True]
     fatal = [item for item in valid if item.get("error_severity") == "fatal"]
@@ -249,6 +339,7 @@ def aggregate(items: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[st
             "fatal_error_rate": round(sum(i.get("error_severity") == "fatal" for i in group_valid) / len(group_valid), 4) if group_valid else 0,
             "major_error_rate": round(sum(i.get("error_severity") == "major" for i in group_valid) / len(group_valid), 4) if group_valid else 0,
             "recommended_action": "全检（影子评测不放行）",
+            "sample_provenance": _metric_sample_provenance(group),
         })
     split_names = ("train", "validation", "test", "unassigned")
     partitioned_bands = [
@@ -258,7 +349,7 @@ def aggregate(items: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[st
     ]
     split_summary = []
     for split in split_names:
-        split_items = [item for item in scored if (item.get("dataset_split") or "unassigned") == split]
+        split_items = [item for item in items if (item.get("dataset_split") or "unassigned") == split]
         split_valid = [item for item in split_items if item.get("truth_status") == "confirmed"]
         split_strict = [item for item in split_valid if item.get("strict_correct") is True]
         split_acceptable = [item for item in split_valid if item.get("acceptable_correct") is True]
@@ -271,6 +362,7 @@ def aggregate(items: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[st
             "acceptable_accuracy": round(len(split_acceptable) / len(split_valid), 4) if split_valid else None,
             "accuracy_ci95_lower": _wilson_lower(len(split_strict), len(split_valid)),
             "sample_warning": "样本不足，仅供观察" if 0 < len(split_valid) < 10 else ("暂无样本" if not split_items else ""),
+            "sample_provenance": _metric_sample_provenance(split_items),
         })
     overview = {
         "total": len(items),
@@ -280,8 +372,8 @@ def aggregate(items: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[st
         "pending": len(items) - len(valid),
         "strict_accuracy": round(len(strict) / len(valid), 4) if valid else None,
         "acceptable_accuracy": round(len(acceptable) / len(valid), 4) if valid else None,
-        "coverage": round(len(valid) / len(scored), 4) if scored else 0,
-        "not_evaluable_rate": round((len(scored) - len(valid)) / len(scored), 4) if scored else 0,
+        "coverage": round(len(valid) / len(items), 4) if items else 0,
+        "not_evaluable_rate": round((len(items) - len(valid)) / len(items), 4) if items else 0,
         "fatal_error_rate": round(len(fatal) / len(valid), 4) if valid else 0,
         "training_candidate_count": sum(item.get("training_candidate_status") in {"recommended", "qualified"} for item in items),
         "model": MODEL_NAME,
@@ -289,6 +381,7 @@ def aggregate(items: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[st
         "production_auto_review_enabled": False,
         "split_summary": split_summary,
         "partitioned_bands": partitioned_bands,
+        "sample_provenance": _metric_sample_provenance(items),
     }
     return overview, bands
 
@@ -379,7 +472,13 @@ def update_item(item, values: dict[str, Any]) -> dict[str, Any]:
     if evaluation.get("model_correctness") in (None, "not_evaluable"):
         evaluation.update(derived)
     truth = human_label(item)
-    evaluation["truth_status"] = "confirmed" if truth and (truth == "unworthy" or human_draft_disposition(item)) else "pending"
+    evaluation["truth_status"] = (
+        "confirmed"
+        if _human_truth_is_current(item)
+        and truth
+        and (truth == "unworthy" or human_draft_disposition(item))
+        else "pending"
+    )
     metadata["confidence_training"] = evaluation
     item.review_metadata = metadata
     return item_payload(item)

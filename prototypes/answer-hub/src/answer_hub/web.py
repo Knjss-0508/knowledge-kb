@@ -19,7 +19,7 @@ except ModuleNotFoundError:
     Flask = None  # type: ignore[assignment,misc]
 from openpyxl import load_workbook
 
-from .audit import AuditStore
+from .audit import AuditStore, media_review_decision
 from .catalog import load_standard_catalog
 from .excel_io import read_workbook_rows
 from .mimo import MimoClient
@@ -35,6 +35,8 @@ from .workflow import (
 
 MAX_PREVIEW_ROWS = 200
 MAX_REVIEW_ROWS = 500
+MEDIA_REVIEW_DECISIONS = {"关联当前主题", "不相关", "无法判断"}
+MEDIA_REVIEW_FIELD = "媒体证据包"
 PACKAGE_DIR = Path(__file__).resolve().parent
 
 
@@ -100,6 +102,36 @@ def _review_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "focus_review_rows": sum(str(row.get("是否重点复核") or "").strip() == "是" for row in rows),
         "decision_counts": {decision: decisions.get(decision, 0) for decision in REVIEW_DECISIONS},
     }
+
+
+def _media_review_payload(upload: _MemoryUpload) -> dict[str, Any]:
+    with TemporaryDirectory(prefix="answer-hub-media-review-") as temp_dir:
+        path = _review_upload(upload, Path(temp_dir))
+        workbook = load_workbook(path, data_only=True)
+        if "topic_review_queue" not in workbook.sheetnames:
+            raise ValueError("媒体复核需要包含 topic_review_queue 工作表")
+        worksheet = workbook["topic_review_queue"]
+        values = list(worksheet.iter_rows(values_only=True))
+        if not values:
+            return {"rows": [], "total_rows": 0}
+        headers = [str(value).strip() if value is not None else "" for value in values[0]]
+        try:
+            media_index = headers.index(MEDIA_REVIEW_FIELD)
+        except ValueError as exc:
+            raise ValueError("复核工作簿缺少媒体证据包列，请先重新生成工作簿") from exc
+        rows: list[dict[str, Any]] = []
+        for row_index, values_row in enumerate(values[1:], start=2):
+            raw = values_row[media_index] if media_index < len(values_row) else ""
+            try:
+                media_items = json.loads(str(raw or ""))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                media_items = []
+            if not isinstance(media_items, list):
+                continue
+            for media_item in media_items:
+                if isinstance(media_item, dict):
+                    rows.append({**_as_json(media_item), "_review_row_index": row_index})
+        return {"rows": rows, "total_rows": len(rows)}
 
 
 def _review_upload(upload, directory: Path) -> Path:
@@ -268,6 +300,113 @@ def _export_review_workbook(upload: _MemoryUpload, raw_changes: str) -> bytes:
         return output.getvalue()
 
 
+def _export_media_review_workbook(upload: _MemoryUpload, raw_changes: str) -> bytes:
+    try:
+        changes = json.loads(raw_changes or "[]")
+    except json.JSONDecodeError as exc:
+        raise ValueError("媒体复核修改内容不是有效 JSON") from exc
+    if not isinstance(changes, list):
+        raise ValueError("媒体复核修改内容必须是数组")
+    with TemporaryDirectory(prefix="answer-hub-media-review-export-") as temp_dir:
+        path = _review_upload(upload, Path(temp_dir))
+        workbook = load_workbook(path)
+        if "topic_review_queue" not in workbook.sheetnames:
+            raise ValueError("复核工作簿缺少 topic_review_queue 工作表")
+        worksheet = workbook["topic_review_queue"]
+        header_map = {
+            str(cell.value).strip(): cell.column
+            for cell in worksheet[1]
+            if cell.value is not None and str(cell.value).strip()
+        }
+        if MEDIA_REVIEW_FIELD not in header_map:
+            raise ValueError("复核工作簿缺少媒体证据包列")
+        image_column = header_map.get("主题图片链接")
+        video_column = header_map.get("主题视频链接")
+        for change in changes:
+            if not isinstance(change, dict):
+                raise ValueError("每条媒体复核修改必须是对象")
+            row_index = change.get("row_index")
+            updates = change.get("updates")
+            if not isinstance(row_index, int) or not 2 <= row_index <= worksheet.max_row:
+                raise ValueError("媒体复核修改包含无效行号")
+            if not isinstance(updates, list):
+                raise ValueError("媒体复核修改必须提供媒体数组")
+            raw_original_items = worksheet.cell(
+                row=row_index,
+                column=header_map[MEDIA_REVIEW_FIELD],
+            ).value
+            try:
+                original_items = json.loads(str(raw_original_items or "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError("原工作簿媒体证据包不是有效 JSON") from exc
+            if not isinstance(original_items, list):
+                raise ValueError("原工作簿媒体证据包必须是数组")
+            original_by_id = {
+                str(item.get("媒体证据ID") or "").strip(): item
+                for item in original_items
+                if isinstance(item, dict)
+                and str(item.get("媒体证据ID") or "").strip()
+            }
+            if len(original_by_id) != len(original_items):
+                raise ValueError("原工作簿媒体证据包存在缺失或重复的媒体证据ID")
+            reviewed_items: list[dict[str, Any]] = []
+            reviewed_ids: set[str] = set()
+            for submitted_item in updates:
+                if not isinstance(submitted_item, dict):
+                    raise ValueError("媒体复核项必须是对象")
+                media_id = str(submitted_item.get("媒体证据ID") or "").strip()
+                if not media_id or media_id not in original_by_id:
+                    raise ValueError("媒体复核项不属于原工作簿当前主题")
+                if media_id in reviewed_ids:
+                    raise ValueError("媒体复核项包含重复媒体证据ID")
+                reviewed_ids.add(media_id)
+                item = dict(original_by_id[media_id])
+                decision = str(submitted_item.get("人工复核结论") or "").strip()
+                if decision not in MEDIA_REVIEW_DECISIONS:
+                    raise ValueError("不支持的媒体复核结论")
+                outcome = media_review_decision(
+                    decision,
+                    parse_status=str(item.get("解析状态") or ""),
+                    media_type=str(item.get("媒体类型") or ""),
+                    existing_risk=str(item.get("审计风险") or ""),
+                )
+                item["相关性状态"] = outcome["relevance_status"]
+                item["审核状态"] = outcome["review_status"]
+                item["审计风险"] = outcome["audit_risk"]
+                reviewed_items.append(item)
+            if reviewed_ids != set(original_by_id):
+                raise ValueError("媒体复核修改必须包含当前主题的完整媒体证据集合")
+            updates = reviewed_items
+            worksheet.cell(
+                row=row_index,
+                column=header_map[MEDIA_REVIEW_FIELD],
+                value=json.dumps(updates, ensure_ascii=False),
+            )
+            visible_images = [
+                str(item.get("媒体链接") or "")
+                for item in updates
+                if item.get("媒体类型") == "image"
+                and item.get("相关性状态") == "relevant"
+                and item.get("审核状态") in {"model_confirmed", "human_confirmed"}
+                and not item.get("审计风险")
+            ]
+            visible_videos = [
+                str(item.get("媒体链接") or "")
+                for item in updates
+                if item.get("媒体类型") == "video"
+                and item.get("相关性状态") == "relevant"
+                and item.get("审核状态") in {"model_confirmed", "human_confirmed"}
+                and not item.get("审计风险")
+            ]
+            if image_column:
+                worksheet.cell(row=row_index, column=image_column, value="\n".join(visible_images))
+            if video_column:
+                worksheet.cell(row=row_index, column=video_column, value="\n".join(visible_videos))
+        output = BytesIO()
+        workbook.save(output)
+        return output.getvalue()
+
+
 def _review_workbook_bytes(
     source_upload: _MemoryUpload,
     standards_upload: _MemoryUpload | None,
@@ -381,6 +520,12 @@ class _FallbackRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError("请上传 review_queue.xlsx")
                 self._send_json(_review_queue_payload(upload))
                 return
+            if self.path == "/api/media-review":
+                upload = files.get("review_file")
+                if upload is None:
+                    raise ValueError("请上传包含主题候选的复核工作簿")
+                self._send_json(_media_review_payload(upload))
+                return
             if self.path == "/api/review-export":
                 upload = files.get("review_file")
                 if upload is None:
@@ -390,6 +535,20 @@ class _FallbackRequestHandler(BaseHTTPRequestHandler):
                     workbook,
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     "多品类-已复标候选知识表.xlsx",
+                )
+                return
+            if self.path == "/api/media-review-export":
+                upload = files.get("review_file")
+                if upload is None:
+                    raise ValueError("请上传包含主题候选的复核工作簿")
+                workbook = _export_media_review_workbook(
+                    upload,
+                    fields.get("changes") or "[]",
+                )
+                self._send_bytes(
+                    workbook,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "多品类-媒体复核结果.xlsx",
                 )
                 return
             self._send_json({"error": "未找到接口"}, 404)
@@ -475,6 +634,33 @@ def create_app() -> Flask:
             }
         )
         return jsonify(payload)
+
+    @app.post("/api/media-review")
+    def media_review():
+        upload = request.files.get("review_file")
+        if upload is None or not upload.filename:
+            return jsonify({"error": "请上传包含主题候选的复核工作簿"}), 400
+        return jsonify(
+            _media_review_payload(
+                _MemoryUpload(upload.filename, upload.read())
+            )
+        )
+
+    @app.post("/api/media-review-export")
+    def media_review_export():
+        upload = request.files.get("review_file")
+        if upload is None or not upload.filename:
+            return jsonify({"error": "请上传包含主题候选的复核工作簿"}), 400
+        workbook = _export_media_review_workbook(
+            _MemoryUpload(upload.filename, upload.read()),
+            request.form.get("changes") or "[]",
+        )
+        return send_file(
+            BytesIO(workbook),
+            as_attachment=True,
+            download_name="多品类-媒体复核结果.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
     @app.post("/api/review-export")
     def review_export():

@@ -387,6 +387,10 @@
     .review-form-grid .span-2{grid-column:1/-1}
     .review-gate{margin-right:auto;display:flex;align-items:center;gap:8px;max-width:620px;color:#667085;font-size:12px;line-height:1.5}
     .review-gate .review-badge{flex-shrink:0}
+    .review-gate span:last-child{min-width:0;overflow-wrap:anywhere}
+    .review-status-pending_model_annotation,.review-status-draft_incomplete{background:#fff4e5;color:#a15c00}
+    .review-status-revision_required,.review-status-hold_for_evidence,.review-status-discard_review{background:#fff2e8;color:#a84d11}
+    @media(max-width:760px){.review-gate{display:flex;align-items:flex-start;max-width:none;margin:0 0 10px;flex:1 1 100%}}
     .review-readonly-note{padding:10px 12px;border-radius:6px;background:#e8f3ff;color:#245bdb;font-size:12px;margin-bottom:13px}
     .review-error{margin-top:6px;color:#c83827;font-size:11px}
     @media(min-width:900px){.review-dialog .review-detail-grid{grid-template-columns:minmax(300px,.88fr) minmax(420px,1.12fr)}}
@@ -545,7 +549,7 @@
         <div class="nav-subitems" v-show="knowledgeMenuOpen">
           <div class="nav-subitem" :class="{on:view==='automationMonitor'}" title="运行监管" @click="openAutomationMonitor"><span class="nav-subdot" aria-hidden="true"></span>运行监管</div>
           <div class="nav-subitem" :class="{on:view==='candidateReviews'}" title="候选价值复核" @click="openCandidateReviews"><span class="nav-subdot" aria-hidden="true"></span>候选价值复核</div>
-          <div class="nav-subitem" :class="{on:view==='confidenceTraining'}" title="置信度训练" @click="openConfidenceTraining"><span class="nav-subdot" aria-hidden="true"></span>置信度训练</div>
+          <div class="nav-subitem" :class="{on:view==='confidenceTraining'}" title="标注质量评测与 Prompt 优化" @click="openConfidenceTraining"><span class="nav-subdot" aria-hidden="true"></span>标注质量评测</div>
         </div>
       </div>
       <div class="nav-item" :class="{on:view==='embeddingModel'}" @click="openEmbeddingModel()"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4.5a3 3 0 0 1 5.2-2A3.5 3.5 0 0 1 18 5.8a3.2 3.2 0 0 1 1.2 5.9A3.5 3.5 0 0 1 17 18a3 3 0 0 1-5 2.2A3 3 0 0 1 7 18a3.5 3.5 0 0 1-2.2-6.3A3.2 3.2 0 0 1 6 5.8 3.5 3.5 0 0 1 8 4.5z"></path><path d="M12 4v16M8.5 8.5c1.5.3 2.5 1.2 3.5 2.5M15.5 8.5c-1.5.3-2.5 1.2-3.5 2.5M8.5 15.5c1.5-.3 2.5-1.2 3.5-2.5M15.5 15.5c-1.5-.3-2.5-1.2-3.5-2.5"></path></svg></span>向量模型</div>
@@ -863,26 +867,26 @@
     <section class="overview">
       <div>
         <h2>候选知识价值复核</h2>
-        <p>基于转写草稿、来源证据和模型标注，人工一次确认沉淀价值与草稿处理动作；只有草稿合格的候选才能进入知识待审核队列。</p>
+        <p>人工确认是否值得沉淀；草稿修订、补充证据和送审路径由模型初标与完整性门禁驱动，已送审候选保持只读。</p>
       </div>
       <div class="overview-status">数据更新时间：<b>{{candidateReviews.updatedAt}}</b></div>
     </section>
     <div class="cards review-metric-cards">
       <div class="card" :class="{active:!candidateReviews.filter.status&&!candidateReviews.filter.priorityOnly}" @click="setCandidateReviewFilter('',false)"><div class="lb">候选总量</div><div class="vl bl">{{candidateReviews.summary.total}}</div><div class="metric-note"><b>全部</b> 已同步候选</div></div>
-      <div class="card" :class="{active:candidateReviews.filter.status==='pending'}" @click="setCandidateReviewFilter('pending',false)"><div class="lb">待人工确认</div><div class="vl og">{{candidateReviews.summary.pending}}</div><div class="metric-note"><b>待处理</b> 尚未通过门禁</div></div>
-      <div class="card" :class="{active:candidateReviews.filter.status==='revision_required'}" @click="setCandidateReviewFilter('revision_required',false)"><div class="lb">退回转写</div><div class="vl og">{{candidateReviews.summary.revision_required}}</div><div class="metric-note"><b>待修改</b> 主题有价值但草稿未合格</div></div>
+      <div class="card" :class="{active:candidateReviews.filter.status==='pending'}" @click="setCandidateReviewFilter('pending',false)"><div class="lb">人工待复核</div><div class="vl og">{{candidateReviews.summary.human_pending}}</div><div class="metric-note"><b>人工队列</b> 等待价值确认</div></div>
+      <div class="card" :class="{active:candidateReviews.filter.status==='revision_required'}" @click="setCandidateReviewFilter('revision_required',false)"><div class="lb">退回转写</div><div class="vl og">{{candidateReviews.summary.revision_required}}</div><div class="metric-note"><b>待修改</b> 模型要求修订草稿</div></div>
       <div class="card" :class="{active:candidateReviews.filter.status==='ready'}" @click="setCandidateReviewFilter('ready',false)"><div class="lb">可批量送审</div><div class="vl gn">{{candidateReviews.summary.ready}}</div><div class="metric-note"><b>已通过</b> 可进入知识审核</div></div>
       <div class="card" :class="{active:candidateReviews.filter.status==='rejected'}" @click="setCandidateReviewFilter('rejected',false)"><div class="lb">不沉淀</div><div class="vl" style="color:#ef6d5b!important">{{candidateReviews.summary.rejected}}</div><div class="metric-note"><b style="color:#ef6d5b">已拒绝</b> 人工门禁拦截</div></div>
       <div class="card" :class="{active:candidateReviews.filter.status==='submitted'}" @click="setCandidateReviewFilter('submitted',false)"><div class="lb">已进入发布审核</div><div class="vl bl">{{candidateReviews.summary.submitted}}</div><div class="metric-note"><b>已提交</b> 等待正式发布</div></div>
       <div class="card" :class="{active:candidateReviews.filter.status==='failed'}" @click="setCandidateReviewFilter('failed',false)"><div class="lb">送审失败</div><div class="vl" style="color:#c83827!important">{{candidateReviews.summary.failed}}</div><div class="metric-note"><b style="color:#c83827">需处理</b> 分类、查重或服务异常</div></div>
-      <div class="card" :class="{active:candidateReviews.filter.priorityOnly}" @click="setCandidateReviewFilter('',true)"><div class="lb">重点复核</div><div class="vl" style="color:#765be6!important">{{candidateReviews.summary.priority}}</div><div class="metric-note"><b style="color:#765be6">高优先级</b> 模型标记风险项</div></div>
+      <div class="card" :class="{active:candidateReviews.filter.priorityOnly}" @click="setCandidateReviewFilter('',true)"><div class="lb">模型重点复核</div><div class="vl" style="color:#765be6!important">{{candidateReviews.summary.model_priority}}</div><div class="metric-note"><b style="color:#765be6">明确风险</b> 模型或证据风险</div></div>
       <div class="card" :class="{active:candidateReviews.filter.deduplicationRequired}" @click="setCandidateReviewDeduplicationFilter(true)"><div class="lb">疑似重复确认</div><div class="vl og">{{candidateReviews.summary.deduplication_required}}</div><div class="metric-note"><b>待核对</b> 确认内容是否确实不同</div></div>
     </div>
     <section class="candidate-filter-card" aria-label="审核队列筛选条件">
       <div class="candidate-filter-head">审核队列 · 筛选条件</div>
       <div class="candidate-filter-grid">
         <label class="candidate-filter-field keyword"><span>关键词（标题 / 事件 ID / 来源会话）</span><input class="inp" v-model="candidateReviews.filter.keyword" placeholder="⌕ 输入后回车搜索" @keyup.enter="loadCandidateReviews(true)"></label>
-        <label class="candidate-filter-field"><span>审核状态</span><select class="inp" v-model="candidateReviews.filter.status" @change="loadCandidateReviews(true)"><option value="">全部状态</option><option value="pending">待人工确认</option><option value="revision_required">退回转写</option><option value="ready">可批量送审</option><option value="rejected">不沉淀</option><option value="submitted">已进入发布审核</option><option value="failed">送审失败</option></select></label>
+        <label class="candidate-filter-field"><span>审核状态</span><select class="inp" v-model="candidateReviews.filter.status" @change="loadCandidateReviews(true)"><option value="">全部状态</option><option value="pending">人工待复核</option><option value="pending_model_annotation">待模型重新标注</option><option value="draft_incomplete">草稿信息不完整</option><option value="revision_required">退回转写</option><option value="hold_for_evidence">待补充证据</option><option value="discard_review">模型建议不沉淀</option><option value="ready">可批量送审</option><option value="rejected">不沉淀</option><option value="submitted">已进入发布审核</option><option value="failed">送审失败</option></select></label>
         <label class="candidate-filter-field"><span>查重状态</span><select class="inp" v-model="candidateReviews.filter.deduplicationRequired" @change="loadCandidateReviews(true)"><option :value="false">全部查重状态</option><option :value="true">疑似重复确认</option></select></label>
         <label class="candidate-filter-field"><span>品类</span><select class="inp" v-model="candidateReviews.filter.productCategory" @change="loadCandidateReviews(true)"><option value="">全部品类</option><option v-for="category in candidateReviews.productCategories" :key="category.value" :value="category.value">{{category.label}}</option></select></label>
         <label class="candidate-filter-field"><span>标注状态</span><select class="inp" v-model="candidateReviews.filter.annotationStatus" @change="loadCandidateReviews(true)"><option value="">全部标注状态</option><option value="annotated">已标注</option><option value="unannotated">未标注</option></select></label>
@@ -892,7 +896,7 @@
       </div>
       <div class="candidate-filter-actions">
         <span class="review-selected-note">已选 <b>{{candidateReviews.selected.length}}</b> 条</span>
-        <label class="candidate-training-toggle"><input type="checkbox" v-model="candidateReviews.includeInTraining"> 作为训练样本</label>
+        <label class="candidate-training-toggle"><input type="checkbox" v-model="candidateReviews.includeInTraining"> 纳入标注质量评测候选</label>
         <button class="btn bd" @click="loadCandidateReviews" :disabled="candidateReviews.loading">{{candidateReviews.loading?'加载中...':'↻ 刷新'}}</button>
         <button class="btn bd" @click="resetCandidateReviewFilters" :disabled="candidateReviews.loading">重置筛选</button>
         <button class="btn br" @click="batchAnnotateCandidateReviews('unworthy')" :disabled="candidateReviews.annotating||!candidateReviews.selected.length">批量标为不沉淀</button>
@@ -908,13 +912,13 @@
         <tbody>
           <tr v-for="item in candidateReviews.items" :key="item.id">
             <td><input class="review-checkbox" type="checkbox" :disabled="!reviewSelectable(item)" :checked="isReviewSelected(item.id)" @change="toggleReviewSelection(item.id)"></td>
-            <td><div class="review-title"><strong :title="item.title">{{item.title || '未命名候选'}}</strong><small>{{item.event_id}} · {{contentPreview(item.content)}}</small></div></td>
+            <td><div class="review-title"><strong :title="item.title">{{item.title || '未命名候选'}}</strong><small>{{item.event_id}} · 草稿 v{{item.draft_version}} · {{candidateNextActionLabel(item.next_action)}}</small></div></td>
             <td><span class="tg tg-l">{{knowledgeOriginLabel(item.knowledge_origin)}}</span></td>
             <td><span class="tg tg-l">{{businessTypeLabel(item.business_type)}}</span></td>
-            <td><span class="review-badge" :class="reviewStatusClass(item.review_status)">{{reviewStatusLabel(item.review_status)}}</span><div class="review-error" v-if="item.error_message" :title="item.error_message">{{item.error_code || '送审失败'}}</div></td>
+            <td><span class="review-badge" :class="reviewStatusClass(item.review_status)">{{reviewStatusLabel(item.review_status)}}</span><div class="review-error" v-if="item.blocking_reasons && item.blocking_reasons.length" :title="item.blocking_reasons.join('；')">{{item.blocking_reasons.join('；')}}</div><div class="review-error" v-else-if="item.error_message" :title="item.error_message">{{item.error_code || '送审失败'}}</div></td>
             <td><div class="review-model-summary"><b>{{reviewKnowledgeValueLabel(item.model_review && item.model_review.knowledge_value)}}</b><br>{{reviewModelDraftDispositionLabel(item.model_review)}} · {{reviewConfidence(item.model_review && item.model_review.confidence)}}</div></td>
             <td><div class="review-human-summary"><b>{{reviewKnowledgeValueLabel(item.human_review && item.human_review.knowledge_value)}}</b><br>{{reviewDecisionLabel(item.human_review && item.human_review.decision)}}</div></td>
-            <td><span class="priority-flag" v-if="item.priority_review">重点复核</span><span v-else style="color:#98a2b3">常规</span></td>
+            <td><span class="priority-flag" v-if="item.priority_review" :title="item.priority_reasons.join('；')">模型重点</span><span v-else style="color:#98a2b3">常规</span></td>
             <td><div class="review-source"><a v-if="item.source_conversation_url" :href="item.source_conversation_url" target="_blank" rel="noopener noreferrer">{{item.source_system}} · {{item.source_conversation_id}}</a><span v-else>{{item.source_system}} · {{item.source_conversation_id}}</span></div></td>
             <td>{{formatDate(item.updated_at)}}</td>
             <td style="text-align:right"><button class="btn bd bsm" @click="openCandidateReview(item)">{{item.review_status==='submitted'?'查看':'审核'}}</button></td>
@@ -1025,22 +1029,22 @@
   </div>
   <div class="mn confidence-page" v-if="view==='confidenceTraining' && can('knowledge:submit')">
     <section class="confidence-hero">
-      <div><div class="confidence-breadcrumb">工作台<span>/</span>知识沉淀<span>/</span>置信度训练</div><h2>置信度训练</h2><p>模型判断质量改进闭环 · 基于人工真值的可重复评测与可追溯决策</p></div>
+      <div><div class="confidence-breadcrumb">工作台<span>/</span>知识沉淀<span>/</span>标注质量评测与 Prompt 优化</div><h2>标注质量评测与 Prompt 优化</h2><p>基于冻结人工真值评测并比较候选 Prompt；不训练或替换模型权重，也不自动切换生产 Prompt。</p></div>
       <div class="confidence-actions"><button class="btn bd" @click="loadConfidenceTraining" :disabled="confidenceTraining.loading">{{confidenceTraining.loading?'加载中…':'刷新'}}</button><button class="btn bd" @click="testConfidenceTrainingConnection" :disabled="confidenceTraining.connectionTesting">{{confidenceTraining.connectionTesting?'测试中…':'测试模型连接'}}</button><button class="btn bd" @click="openConfidenceModelConnection" :disabled="confidenceTraining.modelConnection.loading">模型连接配置</button><button class="btn bp" @click="createConfidenceTrainingJob('review')" :disabled="confidenceTraining.jobCreating">开始新一轮优化</button><button class="btn bd" @click="createConfidenceTrainingJob('draft_generation')" :disabled="confidenceTraining.jobCreating">优化草稿 Prompt</button></div>
     </section>
-    <section class="confidence-panel"><div class="confidence-panel-title">{{confidenceTrainingCurrentJob() ? '当前任务：'+confidenceTrainingJobTargetLabel(confidenceTrainingCurrentJob())+' · '+confidenceTrainingStatusLabel(confidenceTrainingCurrentJob().status) : '当前任务：暂无进行中的 Prompt 优化任务'}}</div><div class="confidence-steps"><div v-for="(step,index) in confidenceTrainingSteps()" :key="step.label" class="confidence-step" :class="{done:step.state==='done',current:step.state==='current'}"><span class="confidence-step-mark">{{step.state==='done'?'✓':index+1}}</span><span class="confidence-step-label">{{step.label}}</span></div></div></section>
-    <section class="confidence-kpis"><div class="confidence-kpi"><div class="confidence-kpi-label">当前模型严格准确率</div><div class="confidence-kpi-value">{{confidenceTrainingPercent(confidenceTraining.overview.strict_accuracy)}}</div><div class="confidence-kpi-note">{{confidenceTraining.overview.valid_truth || 0}} 条有效人工真值 · {{confidenceTraining.overview.model || '当前模型'}}</div></div><div class="confidence-kpi"><div class="confidence-kpi-label">候选 Prompt 严格准确率</div><div class="confidence-kpi-value purple">{{confidenceTrainingCandidateAccuracy()}}</div><div class="confidence-kpi-note">{{confidenceTrainingCurrentJob() ? confidenceTrainingStatusLabel(confidenceTrainingCurrentJob().status) : '暂无候选复跑结果'}}</div></div><div class="confidence-kpi"><div class="confidence-kpi-label">回归样本通过率</div><div class="confidence-kpi-value green">{{confidenceTrainingRegressionRate()}}</div><div class="confidence-kpi-note">{{confidenceTrainingRegressionSummary()}}</div></div><div class="confidence-kpi"><div class="confidence-kpi-label">累计版本 / 优化任务</div><div class="confidence-kpi-value blue">{{confidenceTrainingVersionCount()}}</div><div class="confidence-kpi-note">版本仅展示系统已保存的 Prompt 快照</div></div></section>
-    <div class="confidence-tabs" role="tablist" aria-label="置信度训练页面"><button v-for="tab in confidenceTrainingTabs" :key="tab.key" class="confidence-tab" :class="{active:confidenceTraining.tab===tab.key}" role="tab" :aria-selected="confidenceTraining.tab===tab.key" @click="setConfidenceTrainingTab(tab.key)">{{tab.label}}</button></div>
-    <template v-if="confidenceTraining.tab==='overview'"><section class="confidence-panel"><div class="confidence-section-head"><h3>评测数据分区</h3><span class="confidence-pill gray">全部真实评测数据</span></div><div class="tw" v-if="confidenceTrainingSplitSummary().length"><table class="review-table"><thead><tr><th>数据分区</th><th>样本数</th><th>有效真值</th><th>严格准确率</th><th>可接受准确率</th><th>95% 置信下界</th><th>状态 / 提示</th></tr></thead><tbody><tr v-for="row in confidenceTrainingSplitSummary()" :key="row.dataset_split"><td>{{row.split_label}}</td><td>{{row.sample_count}}</td><td>{{row.n_valid_truth}}</td><td>{{confidenceTrainingPercent(row.strict_accuracy)}}</td><td>{{confidenceTrainingPercent(row.acceptable_accuracy)}}</td><td>{{confidenceTrainingPercent(row.accuracy_ci95_lower)}}</td><td>{{row.sample_warning || '已完成统计'}}</td></tr></tbody></table></div><div v-else class="confidence-empty">暂无按数据分区统计的评测结果；请先完成人工真值确认并运行评测。</div><div class="confidence-hint">风险控制：候选 Prompt 仅用于影子评测，不会自动替换线上版本。需经过退化样本复核与采用门禁校验，再由人工决定是否采纳。</div></section><section class="confidence-panel" v-if="confidenceTrainingPartitionedBands().length"><div class="confidence-section-head"><h3>置信度分层表现</h3><span class="confidence-pill">按真实评测数据展示</span></div><div class="tw"><table class="review-table"><thead><tr><th>数据分区</th><th>置信度区间</th><th>样本数</th><th>有效真值</th><th>严格准确率</th><th>可接受准确率</th><th>提示</th></tr></thead><tbody><tr v-for="row in confidenceTrainingPartitionedBands()" :key="row.dataset_split+'-'+row.band"><td>{{row.split_label}}</td><td>{{row.label}}</td><td>{{row.n_scored}}</td><td>{{row.n_valid_truth}}</td><td>{{confidenceTrainingPercent(row.strict_accuracy)}}</td><td>{{confidenceTrainingPercent(row.acceptable_accuracy)}}</td><td>{{row.sample_warning || '-'}}</td></tr></tbody></table></div></section></template>
-    <template v-if="confidenceTraining.tab==='versions'"><section class="confidence-panel"><div class="confidence-section-head"><h3>Prompt 版本与优化任务</h3><button class="btn bd bsm" @click="exportConfidenceTraining('evaluation')">导出版本评测记录</button></div><div v-if="confidenceTraining.jobs.length"><article class="confidence-job-card" v-for="job in confidenceTraining.jobs" :key="job.id"><div class="confidence-job-head"><div><div class="confidence-job-title">{{confidenceTrainingJobTargetLabel(job)}} · {{job.id}}</div><div class="confidence-job-meta">{{confidenceTrainingJobTime(job.created_at)}} · 抽样 {{job.sample_count}} 条（问题发现 {{job.train_count}} / 验证 {{job.validation_count}} / 测试 {{job.test_count}}） · {{confidenceTrainingStatusLabel(job.status)}}</div><div class="confidence-job-meta">{{job.stage}}<span v-if="job.resolved_model_version"> · 模型 {{job.resolved_model_version}}</span></div></div><div class="confidence-actions"><button class="btn bp bsm" v-if="(!job.analysis_result || job.analysis_result.optimization_target!=='draft_generation') && ['prompt_review_pending','shadow_rerun_interrupted','shadow_rerun_failed'].indexOf(job.status)!==-1" @click="startConfidenceShadowRerun(job,'validation')">先跑验证集 {{job.validation_count}} 条</button><button class="btn bp bsm" v-if="job.status==='shadow_validation_review_pending' && job.shadow_evaluation && job.shadow_evaluation.comparison && job.shadow_evaluation.comparison.gate_passed" @click="startConfidenceShadowRerun(job,'test')">验证通过，进入测试集</button><button class="btn bd bsm" v-if="canGeneratePromptRevision(job)" @click="createConfidencePromptRevision(job)">生成修订候选 Prompt</button><button class="btn bs bsm" v-if="confidenceTrainingCanDecide(job)" @click="decideConfidencePrompt(job,'accept')">人工采纳并启用</button><button class="btn br bsm" v-if="confidenceTrainingCanDecide(job)" @click="decideConfidencePrompt(job,'reject')">不采纳</button><button class="btn bd bsm" v-if="confidenceTrainingCanDecide(job)" @click="decideConfidencePrompt(job,'defer')">暂缓决定</button></div></div><pre class="confidence-prompt" v-if="job.candidate_prompt">{{job.candidate_prompt}}</pre><div v-if="job.shadow_evaluation && job.shadow_evaluation.comparison" class="confidence-stats-line"><span>当前 Prompt 严格准确率：{{confidenceTrainingPercent(job.shadow_evaluation.comparison.baseline && job.shadow_evaluation.comparison.baseline.strict_accuracy)}}</span><span>候选严格准确率：{{confidenceTrainingPercent(job.shadow_evaluation.comparison.candidate && job.shadow_evaluation.comparison.candidate.strict_accuracy)}}</span><span>退化样本：{{job.shadow_evaluation.comparison.regressed_count == null ? '-' : job.shadow_evaluation.comparison.regressed_count}}</span><span>采用门禁：{{job.shadow_evaluation.comparison.gate_passed ? '通过' : '未通过'}}</span></div><div class="confidence-hint">{{job.status==='prompt_accepted'?'该候选 Prompt 已人工采纳，后续模型标注将使用 active 版本。':'候选 Prompt 只会在人工采纳后切换为 active，不会因为影子评测完成而自动替换。'}}</div></article></div><div v-else class="confidence-empty">暂无 Prompt 优化任务。点击“开始新一轮优化”创建真实后台任务。</div></section></template>
-    <template v-if="confidenceTraining.tab==='gold'"><section class="confidence-panel"><div class="confidence-section-head"><h3>人工真值集（评测基准）</h3><div class="confidence-actions"><select class="inp" v-model="confidenceTraining.truthFilter"><option value="">全部真值状态</option><option value="confirmed">已确认</option><option value="pending">待确认</option></select><button class="btn bd bsm" @click="exportConfidenceTraining('review')">导出真值数据</button></div></div><div class="confidence-stats-line"><span>总样本 <b>{{confidenceTraining.items.length}}</b></span><span>已确认 <b>{{confidenceTrainingConfirmedCount()}}</b></span><span>待复核 <b>{{confidenceTraining.items.length-confidenceTrainingConfirmedCount()}}</b></span><span>评测快照：{{confidenceTraining.overview.evaluation_scope || '按现有评测范围'}}</span></div><div class="tw"><table class="review-table"><thead><tr><th>样本 ID</th><th>问题摘要</th><th>人工真值</th><th>草稿处理</th><th>分区</th><th>确认状态</th><th>模型判断</th><th>操作</th></tr></thead><tbody><tr v-for="item in confidenceTrainingFilteredItems()" :key="item.id"><td>{{item.id}}</td><td>{{item.title || '-'}}</td><td><span class="confidence-pill" :class="confidenceTrainingLabelClass(item.human_label)">{{item.human_label || '未记录'}}</span></td><td><span class="confidence-pill" :class="confidenceTrainingLabelClass(item.human_draft_disposition)">{{item.human_draft_disposition || '未记录'}}</span></td><td>{{confidenceTrainingSplitLabel(item.dataset_split)}}</td><td>{{item.truth_status==='confirmed'?'已确认':item.truth_status || '待确认'}}</td><td>{{item.model_label || '-'}}</td><td><button class="btn bd bsm" @click="correctConfidenceTrainingItem(item)">影子纠错</button></td></tr><tr v-if="!confidenceTrainingFilteredItems().length"><td colspan="8" class="review-empty">暂无符合条件的人工真值样本</td></tr></tbody></table></div><div class="bar"><span>第 {{confidenceTrainingPageStart()}}-{{confidenceTrainingPageEnd()}} 条 / 共 {{confidenceTrainingFilteredItems().length}} 条</span><button class="btn bd bsm" @click="changeConfidenceTrainingPage(confidenceTraining.candidatePage-1)">上一页</button><button class="btn bd bsm" @click="changeConfidenceTrainingPage(confidenceTraining.candidatePage+1)">下一页</button><label class="review-check-label"><input type="checkbox" v-model="confidenceTraining.settings.training_candidate_collection_enabled"> 收集训练候选</label><label class="review-check-label"><input type="checkbox" v-model="confidenceTraining.settings.training_snapshot_enabled"> 冻结训练快照</label><button class="btn bd bsm" @click="saveConfidenceTrainingSettings">保存设置</button><button class="btn bd bsm" @click="exportConfidenceTraining('training')">导出训练候选</button><button class="btn bd bsm" @click="exportConfidenceTraining('evaluation')">导出评测结果</button></div></section></template>
-    <template v-if="confidenceTraining.tab==='regression'"><section class="confidence-panel"><div class="confidence-section-head"><h3>回归错误集（影子复跑退化样本）</h3><span class="confidence-pill orange">仅展示现有复跑结果</span></div><div class="confidence-stats-line"><span>影子评测任务 <b>{{confidenceTrainingRegressionJobs().length}}</b></span><span>退化样本 <b>{{confidenceTrainingRegressionCount()}}</b></span><span>已有复核 <b>{{confidenceTrainingRegressionReviewedCount()}}</b></span></div><div v-if="confidenceTrainingRegressionJobs().length"><article class="confidence-job-card" v-for="job in confidenceTrainingRegressionJobs()" :key="job.id"><div class="confidence-job-title">{{job.id}} · {{confidenceTrainingJobTargetLabel(job)}} · {{confidenceTrainingStatusLabel(job.status)}}</div><div class="confidence-job-meta">{{job.stage}}</div><div v-for="row in shadowRegressedRows(job)" :key="row.id" class="confidence-regression-row"><div class="confidence-job-head"><div><b>{{row.id}}</b><div class="confidence-job-meta">{{row.title || row.input || '退化样本'}} · {{row.dataset_split || '未标明分区'}}</div><div class="confidence-job-meta">旧版：{{row.baseline_output || row.baseline_label || '-'}} · 候选：{{row.candidate_output || row.candidate_label || '-'}}</div></div><span class="confidence-pill" :class="row.regression_review && row.regression_review.classification ? 'orange' : 'gray'">{{row.regression_review && row.regression_review.classification || '待复核'}}</span></div><div v-if="job.inspectionOnly" class="confidence-job-meta">样本原始数据：{{row.input || row.title || '-'}}<br>旧 Prompt 输出：{{row.baseline_output || row.baseline_label || '-'}}<br>候选 Prompt 输出：{{row.candidate_output || row.candidate_label || '-'}}</div><div class="confidence-actions" style="margin-top:9px"><button class="btn bd bsm" @click="toggleShadowSampleDetail(job)">{{job.inspectionOnly?'收起数据详情':'查看数据详情'}}</button><button class="btn bd bsm" @click="saveConfidenceRegression(job,row,'not_regression','与真值一致或可接受')">确认非退化</button><button class="btn bw bsm" @click="saveConfidenceRegression(job,row,'accepted_regression','保留为重要回归样本')">确认回归并保留</button></div></div><div v-if="!shadowRegressedRows(job).length" class="confidence-empty">该任务目前没有检测到退化样本；复跑通过状态与准确率请以上方任务详情为准。</div></article></div><div v-else class="confidence-empty">暂无影子复跑记录，因此没有可展示的回归错误样本。</div><div class="confidence-hint">门禁规则：如果任何回归样本被人工确认需要阻断，即使整体准确率提升，也不能通过采用门禁。复核结果会保存到现有影子评测任务。</div></section></template>
+    <section class="confidence-panel"><div class="confidence-panel-title">{{confidenceTrainingCurrentJob() ? '当前任务：'+confidenceTrainingJobTargetLabel(confidenceTrainingCurrentJob())+' · '+confidenceTrainingStatusLabel(confidenceTrainingCurrentJob().status) : '当前任务：暂无进行中的 Prompt 优化任务'}}</div><div class="confidence-steps"><div v-for="(step,index) in confidenceTrainingSteps()" :key="step.label" class="confidence-step" :class="{done:step.state==='done',current:step.state==='current'}"><span class="confidence-step-mark">{{step.state==='done'?'✓':index+1}}</span><span class="confidence-step-label">{{step.label}}</span></div></div><div class="confidence-hint" v-if="confidenceTrainingCurrentJob() && confidenceTrainingCurrentJob().analysis_result && confidenceTrainingCurrentJob().analysis_result.optimization_target==='draft_generation'">知识草稿 Prompt 已接入 Answer Hub 离线回放。只有冻结的完整主题证据包可以执行新旧对比；结果仅供人工复核，不会批准、应用或替换生产转写 Prompt。</div></section>
+    <section class="confidence-kpis"><div class="confidence-kpi"><div class="confidence-kpi-label">冻结样本严格准确率</div><div class="confidence-kpi-value">{{confidenceTrainingPercent(confidenceTraining.overview.strict_accuracy)}}</div><div class="confidence-kpi-note">{{confidenceTraining.overview.valid_truth || 0}} 条有效人工真值 · {{confidenceTraining.overview.model || '当前模型'}}<details v-if="confidenceTraining.overview.sample_provenance && confidenceTraining.overview.sample_provenance.length"><summary>追溯样本与模型 / Prompt</summary><div v-for="sample in confidenceTraining.overview.sample_provenance" :key="sample.sample_id">{{sample.sample_id}} · 候选 {{sample.candidate_id || '-'}} · {{sample.model_version || '-'}} / {{sample.prompt_version || '-'}}</div></details></div></div><div class="confidence-kpi"><div class="confidence-kpi-label">候选 Prompt 严格准确率</div><div class="confidence-kpi-value purple">{{confidenceTrainingCandidateAccuracy()}}</div><div class="confidence-kpi-note">{{confidenceTrainingCurrentJob() ? confidenceTrainingStatusLabel(confidenceTrainingCurrentJob().status) : '暂无候选复跑结果'}}<details v-if="confidenceTrainingCurrentJob() && confidenceTrainingCurrentJob().shadow_evaluation && confidenceTrainingCurrentJob().shadow_evaluation.comparison && confidenceTrainingCurrentJob().shadow_evaluation.comparison.candidate && confidenceTrainingCurrentJob().shadow_evaluation.comparison.candidate.sample_provenance"><summary>追溯对比样本与模型 / Prompt</summary><div v-for="sample in confidenceTrainingCurrentJob().shadow_evaluation.comparison.candidate.sample_provenance" :key="sample.sample_id">{{sample.sample_id}} · {{sample.model_version || '-'}} / {{sample.prompt_version || '-'}}</div></details></div></div><div class="confidence-kpi"><div class="confidence-kpi-label">退化样本已复核率</div><div class="confidence-kpi-value green">{{confidenceTrainingRegressionRate()}}</div><div class="confidence-kpi-note">{{confidenceTrainingRegressionSummary()}}<details v-if="confidenceTrainingRegressionCount()"><summary>查看退化样本与版本</summary><template v-for="job in confidenceTrainingRegressionJobs()" :key="job.id"><div v-for="row in shadowRegressedRows(job)" :key="row.id">{{row.evaluation_sample_id || row.id}} · 候选 {{row.candidate_id || '-'}} · 对照 {{row.baseline && row.baseline.resolved_model_version || '-'}} / {{row.baseline && row.baseline.prompt_version || '-'}} · 候选 {{row.candidate && row.candidate.resolved_model_version || '-'}} / {{row.candidate && row.candidate.prompt_version || '-'}}</div></template></details></div></div><div class="confidence-kpi"><div class="confidence-kpi-label">Prompt 版本 / 评测任务</div><div class="confidence-kpi-value blue">{{confidenceTrainingVersionCount()}}</div><div class="confidence-kpi-note">版本仅展示系统已保存的 Prompt 快照</div></div></section>
+    <div class="confidence-tabs" role="tablist" aria-label="标注质量评测与 Prompt 优化页面"><button v-for="tab in confidenceTrainingTabs" :key="tab.key" class="confidence-tab" :class="{active:confidenceTraining.tab===tab.key}" role="tab" :aria-selected="confidenceTraining.tab===tab.key" @click="setConfidenceTrainingTab(tab.key)">{{tab.label}}</button></div>
+    <template v-if="confidenceTraining.tab==='overview'"><section class="confidence-panel"><div class="confidence-section-head"><h3>评测数据分区</h3><span class="confidence-pill gray">全部真实评测数据</span></div><div class="tw" v-if="confidenceTrainingSplitSummary().length"><table class="review-table"><thead><tr><th>数据分区</th><th>样本数</th><th>有效真值</th><th>严格准确率</th><th>可接受准确率</th><th>95% 置信下界</th><th>状态 / 样本与版本追溯</th></tr></thead><tbody><tr v-for="row in confidenceTrainingSplitSummary()" :key="row.dataset_split"><td>{{row.split_label}}</td><td>{{row.sample_count}}</td><td>{{row.n_valid_truth}}</td><td>{{confidenceTrainingPercent(row.strict_accuracy)}}</td><td>{{confidenceTrainingPercent(row.acceptable_accuracy)}}</td><td>{{confidenceTrainingPercent(row.accuracy_ci95_lower)}}</td><td><details v-if="row.sample_provenance && row.sample_provenance.length"><summary>{{row.sample_provenance.length}} 条样本</summary><div v-for="sample in row.sample_provenance" :key="sample.sample_id">{{sample.sample_id}} · 模型 {{sample.model_version || '-'}} · Prompt {{sample.prompt_version || '-'}}</div></details><span v-else>{{row.sample_warning || '已完成统计'}}</span></td></tr></tbody></table></div><div v-else class="confidence-empty">暂无已确认人工真值，因此还没有可冻结的评测样本。确认真值后刷新即可创建不可变快照。</div><div class="confidence-hint">风险控制：候选 Prompt 仅用于影子评测，不会自动替换线上版本。需经过退化样本复核与采用门禁校验，再由人工决定是否采纳。</div></section><section class="confidence-panel" v-if="confidenceTrainingPartitionedBands().length"><div class="confidence-section-head"><h3>置信度分层表现</h3><span class="confidence-pill">按真实评测数据展示</span></div><div class="tw"><table class="review-table"><thead><tr><th>数据分区</th><th>置信度区间</th><th>样本数</th><th>有效真值</th><th>严格准确率</th><th>可接受准确率</th><th>提示</th></tr></thead><tbody><tr v-for="row in confidenceTrainingPartitionedBands()" :key="row.dataset_split+'-'+row.band"><td>{{row.split_label}}</td><td>{{row.label}}</td><td>{{row.n_scored}}</td><td>{{row.n_valid_truth}}</td><td>{{confidenceTrainingPercent(row.strict_accuracy)}}</td><td>{{confidenceTrainingPercent(row.acceptable_accuracy)}}</td><td><details v-if="row.sample_provenance && row.sample_provenance.length"><summary>{{row.sample_provenance.length}} 条样本</summary><div v-for="sample in row.sample_provenance" :key="sample.sample_id">{{sample.sample_id}} · 模型 {{sample.model_version || '-'}} · Prompt {{sample.prompt_version || '-'}}</div></details><span v-else>{{row.sample_warning || '-'}}</span></td></tr></tbody></table></div></section></template>
+    <template v-if="confidenceTraining.tab==='versions'"><section class="confidence-panel"><div class="confidence-section-head"><h3>Prompt 版本与优化任务</h3><button class="btn bd bsm" @click="exportConfidenceTraining('evaluation')">导出版本评测记录</button></div><div v-if="confidenceTraining.jobs.length"><article class="confidence-job-card" v-for="job in confidenceTraining.jobs" :key="job.id"><div class="confidence-job-head"><div><div class="confidence-job-title">{{confidenceTrainingJobTargetLabel(job)}} · {{job.id}}</div><div class="confidence-job-meta">{{confidenceTrainingJobTime(job.created_at)}} · 抽样 {{job.sample_count}} 条（问题发现 {{job.train_count}} / 验证 {{job.validation_count}} / 测试 {{job.test_count}}） · {{confidenceTrainingStatusLabel(job.status)}}</div><div class="confidence-job-meta">{{job.stage}}<span v-if="job.resolved_model_version"> · 模型 {{job.resolved_model_version}}</span></div></div><div class="confidence-actions"><button class="btn bp bsm" v-if="['prompt_review_pending','validation_pending','draft_prompt_replay_required','shadow_rerun_interrupted','shadow_rerun_failed'].indexOf(job.status)!==-1" @click="startConfidenceShadowRerun(job,'validation')">先跑验证集 {{job.validation_count}} 条</button><button class="btn bp bsm" v-if="job.status==='shadow_validation_review_pending' && job.shadow_evaluation && job.shadow_evaluation.comparison && job.shadow_evaluation.comparison.gate_passed" @click="startConfidenceShadowRerun(job,'test')">验证通过，进入测试集</button><button class="btn bd bsm" v-if="canGeneratePromptRevision(job)" @click="createConfidencePromptRevision(job)">生成修订候选 Prompt</button><button class="btn bs bsm" v-if="confidenceTrainingCanDecide(job)" @click="decideConfidencePrompt(job,'accept')">批准后续新候选使用</button><button class="btn br bsm" v-if="confidenceTrainingCanDecide(job)" @click="decideConfidencePrompt(job,'reject')">不采纳</button><button class="btn bd bsm" v-if="confidenceTrainingCanDecide(job)" @click="decideConfidencePrompt(job,'defer')">暂缓决定</button></div></div><pre class="confidence-prompt" v-if="job.candidate_prompt">{{job.candidate_prompt}}</pre><div v-if="job.shadow_evaluation && job.shadow_evaluation.comparison" class="confidence-stats-line"><span>对照 Prompt {{job.shadow_evaluation.baseline_prompt_version || '-'}}：{{confidenceTrainingPercent(job.shadow_evaluation.comparison.baseline && job.shadow_evaluation.comparison.baseline.strict_accuracy)}}</span><span>候选 Prompt {{job.shadow_evaluation.candidate_prompt_version || '-'}}：{{confidenceTrainingPercent(job.shadow_evaluation.comparison.candidate && job.shadow_evaluation.comparison.candidate.strict_accuracy)}}</span><span>退化样本：{{job.shadow_evaluation.comparison.regressed_count == null ? '-' : job.shadow_evaluation.comparison.regressed_count}}</span><span>采用门禁：{{job.shadow_evaluation.comparison.gate_passed ? '通过' : '未通过'}}</span></div><details class="confidence-hint" v-if="job.shadow_evaluation && job.shadow_evaluation.comparison && job.shadow_evaluation.comparison.baseline && job.shadow_evaluation.comparison.baseline.sample_provenance && job.shadow_evaluation.comparison.baseline.sample_provenance.length"><summary>展开评测样本与模型 / Prompt 版本来源</summary><div v-for="(sample,index) in job.shadow_evaluation.comparison.baseline.sample_provenance" :key="sample.sample_id">样本 {{sample.sample_id}} · 候选 {{sample.candidate_id || '-'}} · 原始 {{sample.source_model_version || '-'}} / {{sample.source_prompt_version || '-'}} · 对照 {{sample.model_version || '-'}} / {{sample.prompt_version || '-'}} · 候选 {{job.shadow_evaluation.comparison.candidate.sample_provenance[index] && job.shadow_evaluation.comparison.candidate.sample_provenance[index].model_version || '-'}} / {{job.shadow_evaluation.comparison.candidate.sample_provenance[index] && job.shadow_evaluation.comparison.candidate.sample_provenance[index].prompt_version || '-'}}</div></details><div class="confidence-hint">{{job.analysis_result && job.analysis_result.optimization_target==='draft_generation'?'草稿 Prompt 回放结果仅供人工复核，不会批准、应用或替换生产转写 Prompt。':job.status==='prompt_approved_for_future_candidates'?'该 Prompt 已人工批准，仅应用于批准时间后新建的候选。':'影子结果不会自动应用；批准前既有候选和生产 Prompt 保持不变。'}}</div></article></div><div v-else class="confidence-empty">暂无 Prompt 优化任务。点击“开始新一轮优化”创建真实后台任务。</div></section></template>
+    <template v-if="confidenceTraining.tab==='gold'"><section class="confidence-panel"><div class="confidence-section-head"><h3>冻结评测样本（人工真值基准）</h3><div class="confidence-actions"><select class="inp" v-model="confidenceTraining.truthFilter"><option value="">全部真值状态</option><option value="confirmed">已确认</option></select><button class="btn bd bsm" @click="exportConfidenceTraining('review')">导出真值数据</button></div></div><div class="confidence-stats-line"><span>冻结样本 <b>{{confidenceTraining.items.length}}</b></span><span>已确认真值 <b>{{confidenceTrainingConfirmedCount()}}</b></span><span>主题组 <b>{{confidenceTrainingTopicGroupCount()}}</b></span><span>不可变快照：{{confidenceTraining.overview.latest_snapshot_id || '暂无已确认样本'}} · {{confidenceTraining.overview.latest_snapshot_at || '-'}}</span></div><div class="tw"><table class="review-table"><thead><tr><th>快照样本 / 候选 ID</th><th>问题摘要</th><th>人工真值</th><th>草稿处理</th><th>分区</th><th>确认状态</th><th>冻结模型初标</th><th>模型版本</th><th>Prompt 版本</th><th>操作</th></tr></thead><tbody><tr v-for="item in confidenceTrainingFilteredItems()" :key="item.evaluation_sample_id || item.id"><td>{{item.evaluation_sample_id || '-'}}<br><small>候选 {{item.candidate_id || item.id}}</small></td><td>{{item.title || '-'}}</td><td><span class="confidence-pill" :class="confidenceTrainingLabelClass(item.human_label)">{{item.human_label || '未记录'}}</span></td><td><span class="confidence-pill" :class="confidenceTrainingLabelClass(item.human_draft_disposition)">{{item.human_draft_disposition || '未记录'}}</span></td><td>{{confidenceTrainingSplitLabel(item.dataset_split)}}</td><td>{{item.truth_status==='confirmed'?'已确认':item.truth_status || '待确认'}}</td><td>{{item.model_label || '-'}}</td><td>{{item.model_version || '-'}}</td><td>{{item.prompt_version || '-'}}</td><td><button class="btn bd bsm" @click="correctConfidenceTrainingItem(item)">影子纠错</button></td></tr><tr v-if="!confidenceTrainingFilteredItems().length"><td colspan="10" class="review-empty">暂无冻结的人工真值样本</td></tr></tbody></table></div><div class="bar"><span>第 {{confidenceTrainingPageStart()}}-{{confidenceTrainingPageEnd()}} 条 / 共 {{confidenceTrainingFilteredItems().length}} 条</span><button class="btn bd bsm" @click="changeConfidenceTrainingPage(confidenceTraining.candidatePage-1)">上一页</button><button class="btn bd bsm" @click="changeConfidenceTrainingPage(confidenceTraining.candidatePage+1)">下一页</button><label class="review-check-label"><input type="checkbox" v-model="confidenceTraining.settings.training_candidate_collection_enabled"> 收集评测样本</label><label class="review-check-label"><input type="checkbox" v-model="confidenceTraining.settings.training_snapshot_enabled"> 启用不可变快照</label><button class="btn bd bsm" @click="saveConfidenceTrainingSettings">保存设置</button><button class="btn bd bsm" @click="exportConfidenceTraining('training')">导出评测样本</button><button class="btn bd bsm" @click="exportConfidenceTraining('evaluation')">导出评测结果</button></div></section></template>
+    <template v-if="confidenceTraining.tab==='regression'"><section class="confidence-panel"><div class="confidence-section-head"><h3>回归错误集（影子复跑退化样本）</h3><span class="confidence-pill orange">仅展示现有复跑结果</span></div><div class="confidence-stats-line"><span>影子评测任务 <b>{{confidenceTrainingRegressionJobs().length}}</b></span><span>退化样本 <b>{{confidenceTrainingRegressionCount()}}</b></span><span>已有复核 <b>{{confidenceTrainingRegressionReviewedCount()}}</b></span></div><div v-if="confidenceTrainingRegressionJobs().length"><article class="confidence-job-card" v-for="job in confidenceTrainingRegressionJobs()" :key="job.id"><div class="confidence-job-title">{{job.id}} · {{confidenceTrainingJobTargetLabel(job)}} · {{confidenceTrainingStatusLabel(job.status)}}</div><div class="confidence-job-meta">{{job.stage}}</div><div class="confidence-stats-line" v-if="job.regression_partitions && job.regression_partitions.length"><span>Prompt {{job.regression_partitions[0].prompt_version}}</span><span v-for="partition in job.regression_partitions" :key="partition.split">{{confidenceTrainingSplitLabel(partition.split)}}：已完成 · 退化 {{partition.regression_count}} 条 · 已复核 {{partition.reviewed_count}} / {{partition.regression_count}}</span></div><div v-for="row in shadowRegressedRows(job)" :key="row.split + ':' + row.id" class="confidence-regression-row"><div class="confidence-job-head"><div><b>{{row.evaluation_sample_id || row.id}}</b> · 候选 {{row.candidate_id || '-'}}<div class="confidence-job-meta">{{row.title || row.input || '退化样本'}} · {{confidenceTrainingSplitLabel(row.split)}} · 来源模型/Prompt {{row.source_model_version || '-'}} / {{row.source_prompt_version || '-'}} · 对照 {{row.baseline && row.baseline.resolved_model_version || '-'}} / {{row.baseline && row.baseline.prompt_version || '-'}} · 候选 {{row.candidate && row.candidate.resolved_model_version || '-'}} / {{row.candidate && row.candidate.prompt_version || '-'}}</div><div class="confidence-job-meta">对照：{{row.baseline && row.baseline.knowledge_value || '-'}} / {{row.baseline && row.baseline.draft_disposition || '-'}} · 候选：{{row.candidate && row.candidate.knowledge_value || '-'}} / {{row.candidate && row.candidate.draft_disposition || '-'}}</div></div><span class="confidence-pill" :class="confidenceTrainingRegressionReview(job,row).classification ? 'orange' : 'gray'">{{confidenceTrainingRegressionReview(job,row).classification || '待复核'}}</span></div><div v-if="job.inspectionOnly" class="confidence-job-meta">样本原始数据：{{row.input || row.title || '-'}}<br>旧 Prompt 输出：{{row.baseline_output || row.baseline_label || '-'}}<br>候选 Prompt 输出：{{row.candidate_output || row.candidate_label || '-'}}</div><div class="confidence-actions" style="margin-top:9px"><button class="btn bd bsm" @click="toggleShadowSampleDetail(job)">{{job.inspectionOnly?'收起数据详情':'查看数据详情'}}</button><button class="btn bd bsm" @click="saveConfidenceRegression(job,row,'candidate_prompt_error','新候选 Prompt 输出退化',true)">确认 Prompt 退化</button><button class="btn bw bsm" @click="saveConfidenceRegression(job,row,'human_truth_correction_required','人工真值需重新复核',true)">真值需要更正</button><button class="btn bd bsm" @click="saveConfidenceRegression(job,row,'exclude_from_evaluation','该退化样本不纳入本轮 Prompt 判定',false)">排除并说明原因</button></div></div><div v-if="!shadowRegressedRows(job).length" class="confidence-empty">该任务目前没有检测到退化样本；复跑通过状态与准确率请以上方任务详情为准。</div></article></div><div v-else class="confidence-empty">暂无影子复跑记录，因此没有可展示的回归错误样本。</div><div class="confidence-hint">门禁规则：如果任何回归样本被人工确认需要阻断，即使整体准确率提升，也不能通过采用门禁。复核结果会保存到现有影子评测任务。</div></section></template>
   </div>
   <div class="mask" v-if="confidenceTraining.modelConnection.open" role="dialog" aria-modal="true" aria-labelledby="confidence-model-connection-title">
     <div class="dlg" style="width:min(640px,94vw)">
       <div class="dlg-h"><h3 id="confidence-model-connection-title">模型连接配置</h3><button class="dlg-x" aria-label="关闭模型连接配置" @click="closeConfidenceModelConnection">&times;</button></div>
       <div class="dlg-b">
-        <div class="model-connection-hint">这里的配置只作用于置信度训练的 DeepSeek-flash 调用，保存后新的模型调用立即使用，无需重启服务。留空的字段继续使用部署环境变量；API Key 不会回传明文，只显示掩码。</div>
+        <div class="model-connection-hint">这里的配置只作用于标注质量评测与 Prompt 优化的 DeepSeek-flash 调用，保存后新的模型调用立即使用，无需重启服务。留空的字段继续使用部署环境变量；API Key 不会回传明文，只显示掩码。</div>
         <div class="model-connection-field"><label>模型地址（Base URL）</label><input class="inp" v-model.trim="confidenceTraining.modelConnection.base_url" placeholder="例如 http://host.docker.internal:8080/v1"></div>
         <div class="model-connection-field"><label>模型名称</label><input class="inp" v-model.trim="confidenceTraining.modelConnection.model" placeholder="deepseek-flash"></div>
         <div class="model-connection-field"><label>超时（秒）</label><input class="inp" type="number" min="1" max="600" v-model.number="confidenceTraining.modelConnection.timeout_seconds" placeholder="60"></div>
@@ -1617,11 +1621,15 @@
                 <div class="review-meta-item"><span>来源会话</span><strong>{{candidateReviews.current.source_conversation_id}}</strong></div>
                 <div class="review-meta-item"><span>同步时间</span><strong>{{formatDate(candidateReviews.current.created_at)}}</strong></div>
               </div>
-              <div class="fg" v-if="candidateReviews.current.evidence_excerpt"><label class="fl">脱敏证据摘要</label><div class="review-content-preview">{{candidateReviews.current.evidence_excerpt}}</div></div>
+              <div class="fg"><label class="fl">来源证据摘要 <span class="hint">（建议填写）</span></label><textarea class="fi" rows="4" v-model="candidateReviews.form.evidence_excerpt" :disabled="reviewReadonly()" placeholder="可粘贴来源会话中的脱敏事实，供模型和人工复核"></textarea><div class="hint">缺少摘要不会阻断保存或送审，但模型仍可将证据不足标记为人工重点复核。</div></div>
               <div class="fg" style="margin-bottom:0"><label class="fl">候选正文预览</label><div class="review-content-preview">{{contentPreview(candidateReviews.current.content)}}</div></div>
             </section>
             <section class="review-panel" style="margin-top:18px">
-              <div class="review-panel-title"><h4>模型初标</h4><span class="priority-flag" v-if="candidateReviews.current.priority_review">重点复核</span></div>
+              <div class="review-panel-title"><h4>模型初标</h4><span class="priority-flag" v-if="candidateReviews.current.priority_review" :title="candidateReviews.current.priority_reasons.join('；')">重点复核</span></div>
+              <div class="hint" style="margin:0 0 10px">当前草稿版本 v{{candidateReviews.current.draft_version}} · 初标版本 v{{candidateReviews.current.model_annotation.draft_version || '—'}}</div>
+              <div class="review-error" v-if="candidateReviews.current.model_annotation.status==='failed'">本次模型标注失败，已保留原有初标：{{candidateReviews.current.model_annotation.reason || '模型没有返回有效的审核结果，请重试。'}}</div>
+              <button v-if="candidateCanAnnotateModel(candidateReviews.current)" class="btn b-template bsm" type="button" @click="annotateCandidateReviewDraft" :disabled="candidateReviews.modelAnnotating || !candidateDraftComplete(candidateReviews.current)">{{candidateReviews.modelAnnotating?'模型标注中...':(candidateReviews.current.next_action==='annotate_model'?'重新模型标注':'执行模型标注')}}</button>
+              <div class="review-error" v-if="!candidateDraftComplete(candidateReviews.current)">请先补齐标题、正文和推荐回复，草稿完整性门禁通过后才能模型标注或送审。</div>
               <div class="review-model-grid">
                 <div class="review-model-item"><span>初标结论</span><b>{{reviewDecisionLabel(candidateReviews.current.model_review.decision)}}</b></div>
                 <div class="review-model-item"><span>沉淀价值</span><b>{{reviewKnowledgeValueLabel(candidateReviews.current.model_review.knowledge_value)}}</b></div>
@@ -1634,8 +1642,9 @@
                 <div class="review-model-item"><span>模型</span><b>{{candidateReviews.current.model_review.model_name || candidateReviews.current.model_review.provider || '-'}}</b></div>
               </div>
               <div class="review-model-reason">{{candidateReviews.current.model_review.reason || '模型未提供初标原因。'}}</div>
-              <div v-if="!reviewReadonly() && reviewModelNeedsRevision(candidateReviews.current.model_review)" style="margin-top:12px"><button class="btn bp bsm" type="button" @click="generateCandidateDraftRevision" :disabled="candidateReviews.modelRevisionLoading">{{candidateReviews.modelRevisionLoading?'模型修订中...':'让模型修改知识草稿'}}</button><span class="hint">只生成修订稿，不直接覆盖原稿。</span></div>
-              <div class="review-panel" v-if="candidateReviews.current.model_draft_revision && candidateReviews.current.model_draft_revision.status==='pending_human_apply'" style="margin-top:12px"><div class="review-panel-title"><h4>模型修订稿（待人工采用）</h4></div><div class="fg"><label class="fl">修改后正文</label><pre class="review-content-preview">{{contentPreview(candidateReviews.current.model_draft_revision.revised_draft.content)}}</pre></div><div class="fg"><label class="fl">修改后推荐回复</label><div class="review-content-preview">{{candidateReviews.current.model_draft_revision.revised_draft.recommended_reply}}</div></div><button class="btn bp bsm" type="button" @click="applyCandidateDraftRevision" :disabled="candidateReviews.modelRevisionLoading">采用模型修改并重新初标</button></div>
+              <div v-if="!reviewReadonly() && reviewModelNeedsRevision(candidateReviews.current.model_review) && (!candidateReviews.current.model_draft_revision || candidateReviews.current.model_draft_revision.status!=='pending_human_apply')" style="margin-top:12px"><button class="btn bp bsm" type="button" @click="generateCandidateDraftRevision" :disabled="candidateReviews.modelRevisionLoading">{{candidateReviews.modelRevisionLoading?'模型修订中...':(candidateReviews.current.model_draft_revision && candidateReviews.current.model_draft_revision.status==='generation_failed'?'重试模型修订':'重新生成模型修订稿')}}</button><span class="hint">初标要求修订时系统会自动尝试；这里可重试。修订仅待人工采用，不直接覆盖原稿。</span></div>
+              <div v-if="candidateReviews.current.model_draft_revision && candidateReviews.current.model_draft_revision.status==='generation_failed'" class="review-error">模型草稿修订未完成：{{candidateReviews.current.model_draft_revision.error_message || '请重试'}}（{{candidateReviews.current.model_draft_revision.error_code || 'MODEL_REVISION_ERROR'}}）</div>
+              <div class="review-panel" v-if="candidateReviews.current.model_draft_revision && candidateReviews.current.model_draft_revision.status==='pending_human_apply'" style="margin-top:12px"><div class="review-panel-title"><h4>模型修订稿 v{{candidateReviews.current.model_draft_revision.revision || '-'}}（基于草稿 v{{candidateReviews.current.model_draft_revision.base_draft_version || candidateReviews.current.draft_version || '-'}}）</h4></div><div class="fg"><label class="fl">修改后正文</label><pre class="review-content-preview">{{contentPreview(candidateReviews.current.model_draft_revision.revised_draft.content)}}</pre></div><div class="fg"><label class="fl">修改后推荐回复</label><div class="review-content-preview">{{candidateReviews.current.model_draft_revision.revised_draft.recommended_reply}}</div></div><button class="btn bp bsm" type="button" @click="applyCandidateDraftRevision" :disabled="candidateReviews.modelRevisionLoading">采用模型修改并重新初标</button></div>
             </section>
           </div>
           <section class="review-panel">
@@ -1697,7 +1706,7 @@
         </div>
       </div>
       <div class="dlg-f">
-        <div class="review-gate" v-if="candidateReviews.current"><span class="review-badge" :class="reviewStatusClass(candidateReviews.current.review_status)">{{reviewStatusLabel(candidateReviews.current.review_status)}}</span><span>{{candidateReviewGateReason(candidateReviews.current)}}</span></div>
+        <div class="review-gate" v-if="candidateReviews.current"><span class="review-badge" :class="reviewStatusClass(candidateReviews.current.review_status)">{{reviewStatusLabel(candidateReviews.current.review_status)}}</span><span>草稿 v{{candidateReviews.current.draft_version}} · 下一步：{{candidateNextActionLabel(candidateReviews.current.next_action)}} · {{candidateReviewGateReason(candidateReviews.current)}}</span></div>
         <button class="btn bd" @click="closeCandidateReview">关闭</button>
         <button class="btn bd" v-if="!reviewReadonly()" @click="saveCandidateReview(false)" :disabled="candidateReviews.saving">{{candidateReviews.saving?'保存中...':'保存审核'}}</button>
         <button class="btn bp" v-if="!reviewReadonly()" @click="saveCandidateReview(false,true)" :disabled="candidateReviews.saving">{{candidateReviews.saving?'保存中...':'保存并下一条'}}</button>
@@ -2403,7 +2412,7 @@ Vue.createApp({
       candidateReviews: {
         items: [],
         total: 0,
-        summary: {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
+        summary: {total:0, pending:0, human_pending:0, pending_model_annotation:0, draft_incomplete:0, hold_for_evidence:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, model_priority:0, deduplication_required:0},
         page: 1,
         pageSize: 20,
         filter: {keyword:'', status:'', priorityOnly:false, deduplicationRequired:false, productCategory:'', annotationStatus:'', modelKnowledgeValue:'', updatedFrom:'', updatedTo:''},
@@ -2413,7 +2422,7 @@ Vue.createApp({
         dlg: false,
         current: null,
         form: {
-          title:'', knowledge_origin:'', business_type:'', category_id:'', contentText:'', originalContentText:'', recommended_reply:'',
+          title:'', knowledge_origin:'', business_type:'', category_id:'', contentText:'', originalContentText:'', recommended_reply:'', evidence_excerpt:'',
           applicableCategories:[], brands:[], models:[],
           knowledge_value:'pending', usability:'pending', modification_notes:'', feedback:'',
           decision:'', error_type:'', training_eligible:'', notes:'', confirmDedupReview:false
@@ -2630,7 +2639,7 @@ Vue.createApp({
         knowledge:'知识库管理',
         candidateReviews:'候选价值复核',
         automationMonitor:'运行监管',
-        confidenceTraining:'置信度训练',
+        confidenceTraining:'标注质量评测',
         embeddingModel:'向量模型',
         changeLogs:'变更日志',
         users:'账号管理',
@@ -2643,7 +2652,7 @@ Vue.createApp({
         knowledge:'知识内容维护与审核',
         candidateReviews:'候选价值判断与批量送审',
         automationMonitor:'自动化队列、异常反馈与运行日志',
-        confidenceTraining:'模型置信度评测、训练候选质检与影子回放',
+        confidenceTraining:'标注质量评测、Prompt 优化与影子对比',
         embeddingModel:'召回分析、上传查重、纠错与离线训练',
         changeLogs:'已发布知识变更追溯',
         users:'创建和查看后台账号',
@@ -4576,11 +4585,11 @@ Vue.createApp({
     },
     loadConfidenceTraining: function() {
       var self=this; self.confidenceTraining.loading=true;
-      Promise.all([
+      fetch(API + '/confidence-training/evaluation-samples/snapshot',{method:'POST',headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'创建评测快照失败');return d;});}).then(function(){return Promise.all([
         fetch(API + '/confidence-training/overview',{headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'加载置信度概览失败');return d;});}),
-        fetch(API + '/confidence-training/items',{headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'加载训练候选失败');return d;});}),
+        fetch(API + '/confidence-training/items',{headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'加载冻结评测样本失败');return d;});}),
         fetch(API + '/confidence-training/jobs',{headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'加载影子任务失败');return d;});})
-      ]).then(function(values){self.confidenceTraining.overview=Object.assign(self.confidenceTraining.overview,values[0]||{});self.confidenceTraining.settings=Object.assign(self.confidenceTraining.settings,(values[0]||{}).settings||{});self.confidenceTraining.items=Array.isArray(values[1])?values[1]:[];self.confidenceTraining.jobs=Array.isArray(values[2])?values[2]:[];self.confidenceTraining.candidatePage=1;}).catch(function(error){alert(error.message);}).finally(function(){self.confidenceTraining.loading=false;});
+      ]);}).then(function(values){self.confidenceTraining.overview=Object.assign(self.confidenceTraining.overview,values[0]||{});self.confidenceTraining.settings=Object.assign(self.confidenceTraining.settings,(values[0]||{}).settings||{});self.confidenceTraining.items=Array.isArray(values[1])?values[1]:[];self.confidenceTraining.jobs=Array.isArray(values[2])?values[2]:[];self.confidenceTraining.candidatePage=1;}).catch(function(error){alert(error.message);}).finally(function(){self.confidenceTraining.loading=false;});
     },
     saveConfidenceTrainingSettings: function() {
       var self=this;
@@ -4606,21 +4615,22 @@ Vue.createApp({
     confidenceTrainingVisibleItems: function() { var start=(this.confidenceTraining.candidatePage-1)*this.confidenceTraining.candidatePageSize;return this.confidenceTraining.items.slice(start,start+this.confidenceTraining.candidatePageSize); },
     confidenceTrainingFilteredItems: function() { var filter=this.confidenceTraining.truthFilter||''; return (this.confidenceTraining.items||[]).filter(function(item){return !filter||item.truth_status===filter;}); },
     confidenceTrainingConfirmedCount: function() { return (this.confidenceTraining.items||[]).filter(function(item){return item.truth_status==='confirmed';}).length; },
+    confidenceTrainingTopicGroupCount: function() { return new Set((this.confidenceTraining.items||[]).map(function(item){return item.topic_group;}).filter(Boolean)).size; },
     confidenceTrainingPercent: function(value) { return value === null || value === undefined || value === '' || isNaN(Number(value)) ? '--' : (Number(value)*100).toFixed(1)+'%'; },
     confidenceTrainingCurrentJob: function() { return (this.confidenceTraining.jobs||[])[0] || null; },
-    confidenceTrainingJobTargetLabel: function(job) { return job && job.analysis_result && job.analysis_result.optimization_target==='draft_generation' ? '聚类转写草稿 Prompt' : '初标审核 Prompt'; },
+    confidenceTrainingJobTargetLabel: function(job) { return job && job.analysis_result && job.analysis_result.optimization_target==='draft_generation' ? '知识草稿 Prompt' : '候选标注 Prompt'; },
     confidenceTrainingJobTime: function(value) { if (!value) return '时间未记录'; var date=new Date(value); return isNaN(date.getTime())?String(value):date.toLocaleString('zh-CN',{hour12:false}); },
-    confidenceTrainingStatusLabel: function(status) { return {analyzing_errors:'模型分析中',prompt_review_pending:'等待人工审核候选 Prompt',analysis_failed:'分析失败',shadow_rerun_queued:'影子复跑排队中',shadow_rerun_running:'影子复跑中',shadow_validation_review_pending:'验证集待复核',shadow_test_review_pending:'测试集待复核',shadow_rerun_review_pending:'影子复跑待复核',shadow_rerun_failed:'影子复跑失败',shadow_rerun_interrupted:'影子复跑可继续',prompt_revision_generating:'生成修订候选中',prompt_revision_ready:'修订候选待确认'}[status] || status || '未开始'; },
+    confidenceTrainingStatusLabel: function(status) { return {analyzing_errors:'模型分析中',prompt_review_pending:'等待人工审核候选 Prompt',draft_prompt_replay_required:'等待可回放的完整证据快照',validation_pending:'修订候选待跑验证集',prompt_approved_for_future_candidates:'已批准后续新候选使用',analysis_failed:'分析失败',shadow_rerun_queued:'影子复跑排队中',shadow_rerun_running:'影子复跑中',shadow_validation_review_pending:'验证集待复核',shadow_test_review_pending:'测试集待复核',shadow_rerun_review_pending:'影子复跑待复核',shadow_rerun_failed:'影子复跑失败',shadow_rerun_interrupted:'影子复跑可继续',prompt_revision_generating:'生成修订候选中',prompt_revision_ready:'修订候选待确认'}[status] || status || '未开始'; },
     confidenceTrainingSteps: function() { var job=this.confidenceTrainingCurrentJob(), status=job&&job.status||''; var current=status.indexOf('shadow')===0?4:(status==='prompt_review_pending'?3:(status==='analyzing_errors'?2:0)); return [{label:'人工真值',state:'done'},{label:'冻结评测集',state:'done'},{label:'错误分析',state:current>=2?'done':'pending'},{label:'候选审核',state:current>=3?'done':'pending'},{label:'影子复跑',state:current===4?'current':(current>4?'done':'pending')},{label:'退化复核',state:'pending'},{label:'修订版',state:'pending'},{label:'采用门禁',state:'pending'},{label:'人工决定',state:'pending'}]; },
     confidenceTrainingCandidateAccuracy: function() { var job=this.confidenceTrainingCurrentJob(), comparison=job&&job.shadow_evaluation&&job.shadow_evaluation.comparison; return this.confidenceTrainingPercent(comparison&&comparison.candidate&&comparison.candidate.strict_accuracy); },
-    confidenceTrainingRegressionJobs: function() { return (this.confidenceTraining.jobs||[]).filter(function(job){return job.shadow_evaluation && (job.shadow_evaluation.rows||[]).length;}); },
-    confidenceTrainingRegressionCount: function() { return this.confidenceTrainingRegressionJobs().reduce(function(total,job){return total + ((job.shadow_evaluation||{}).rows||[]).filter(function(row){return row.regressed;}).length;},0); },
-    confidenceTrainingRegressionReviewedCount: function() { return this.confidenceTrainingRegressionJobs().reduce(function(total,job){return total + ((job.shadow_evaluation||{}).rows||[]).filter(function(row){return row.regressed && row.regression_review && row.regression_review.classification;}).length;},0); },
-    confidenceTrainingRegressionRate: function() { var total=this.confidenceTrainingRegressionCount(), reviewed=this.confidenceTrainingRegressionReviewedCount(); return total ? ((total-reviewed)/total*100).toFixed(1)+'%' : '--'; },
-    confidenceTrainingRegressionSummary: function() { var total=this.confidenceTrainingRegressionCount(), reviewed=this.confidenceTrainingRegressionReviewedCount(); return total ? (total-reviewed)+' / '+total+' 条未确认退化' : '暂无影子复跑退化样本'; },
+    confidenceTrainingRegressionJobs: function() { return (this.confidenceTraining.jobs||[]).filter(function(job){return (job.regression_partitions||[]).length || (job.regression_rows||[]).length;}); },
+    confidenceTrainingRegressionCount: function() { return this.confidenceTrainingRegressionJobs().reduce(function(total,job){return total + (job.regression_rows||[]).length;},0); },
+    confidenceTrainingRegressionReviewedCount: function() { return this.confidenceTrainingRegressionJobs().reduce(function(total,job){var reviews=job.regression_reviews||{};return total + (job.regression_rows||[]).filter(function(row){return reviews[row.id] && reviews[row.id].classification;}).length;},0); },
+    confidenceTrainingRegressionRate: function() { var total=this.confidenceTrainingRegressionCount(), reviewed=this.confidenceTrainingRegressionReviewedCount(); return total ? (reviewed/total*100).toFixed(1)+'%' : '--'; },
+    confidenceTrainingRegressionSummary: function() { var total=this.confidenceTrainingRegressionCount(), reviewed=this.confidenceTrainingRegressionReviewedCount(); return total ? (total-reviewed)+' / '+total+' 条退化未复核' : '暂无影子复跑退化样本'; },
     confidenceTrainingVersionCount: function() { return (this.confidenceTraining.jobs||[]).reduce(function(total,job){return total + ((job.prompt_versions||[]).length || (job.candidate_prompt ? 1 : 0));},0); },
-    confidenceTrainingCanDecide: function(job) { var comparison=job&&job.shadow_evaluation&&job.shadow_evaluation.comparison; return !!(job&&job.candidate_prompt&&comparison&&comparison.gate_passed&&['shadow_test_review_pending','shadow_rerun_review_pending','prompt_revision_ready'].indexOf(job.status)!==-1); },
-    decideConfidencePrompt: function(job,decision) { var self=this; if(!job||!decision) return; if(decision==='accept' && !window.confirm('确认采纳该候选 Prompt？采纳后，后续模型标注将使用新的 active Prompt。')) return; fetch(API+'/confidence-training/jobs/'+encodeURIComponent(job.id)+'/decision',{method:'POST',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({decision:decision})}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'保存人工决定失败');return d;});}).then(function(){alert(decision==='accept'?'候选 Prompt 已采纳，后续标注将使用新版本。':decision==='reject'?'候选 Prompt 已记录为不采纳。':'已记录暂缓决定。');return self.loadConfidenceTraining();}).catch(function(error){alert(error.message);}); },
+    confidenceTrainingCanDecide: function(job) { var evaluation=job&&job.shadow_evaluation,comparison=evaluation&&evaluation.comparison; return !!(job&&(!job.analysis_result||job.analysis_result.optimization_target!=='draft_generation')&&job.candidate_prompt&&job.status==='shadow_test_review_pending'&&evaluation.status==='completed'&&evaluation.target_split==='test'&&comparison&&comparison.gate_passed); },
+    decideConfidencePrompt: function(job,decision) { var self=this; if(!job||!decision) return; if(decision==='accept' && !window.confirm('确认人工批准该 Prompt？它只会用于批准时间后新建的候选；不会修改生产 Prompt、已有候选或模型权重。')) return; fetch(API+'/confidence-training/jobs/'+encodeURIComponent(job.id)+'/decision',{method:'POST',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({decision:decision})}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'保存人工决定失败');return d;});}).then(function(){alert(decision==='accept'?'已批准该 Prompt 供后续新建候选使用；生产 Prompt 未变。':decision==='reject'?'候选 Prompt 已记录为不采纳。':'已记录暂缓决定。');return self.loadConfidenceTraining();}).catch(function(error){alert(error.message);}); },
     confidenceTrainingSplitLabel: function(split) { return {train:'问题发现集',validation:'验证集',test:'测试集'}[split] || split || '未分区'; },
     confidenceTrainingLabelClass: function(label) { return {worthy:'',approved:'green',unworthy:'gray',not_applicable:'gray',pending:'orange',hold_for_evidence:'orange'}[String(label||'').toLowerCase()] || 'gray'; },
     confidenceTrainingSplitSummary: function() { return (this.confidenceTraining.overview.split_summary || []).filter(function(row){ return ['train','validation','test'].indexOf(row.dataset_split)!==-1; }); },
@@ -4629,12 +4639,13 @@ Vue.createApp({
     confidenceTrainingPageStart: function() { var total=this.confidenceTraining.tab==='gold'?this.confidenceTrainingFilteredItems().length:this.confidenceTraining.items.length; return total?(this.confidenceTraining.candidatePage-1)*this.confidenceTraining.candidatePageSize+1:0; },
     confidenceTrainingPageEnd: function() { var total=this.confidenceTraining.tab==='gold'?this.confidenceTrainingFilteredItems().length:this.confidenceTraining.items.length; return Math.min(total,this.confidenceTraining.candidatePage*this.confidenceTraining.candidatePageSize); },
     changeConfidenceTrainingPage: function(page) { this.confidenceTraining.candidatePage=Math.max(1,Math.min(Number(page)||1,this.confidenceTrainingPageCount())); },
-    shadowRegressedRows: function(job) { return ((job.shadow_evaluation||{}).rows||[]).filter(function(row){return row.regressed;}); },
+    shadowRegressedRows: function(job) { return job.regression_rows||[]; },
+    confidenceTrainingRegressionReview: function(job,row) { return ((job&&job.regression_reviews)||{})[row.id] || {}; },
     shadowEvaluationVisibleRows: function(job) { return ((job.shadow_evaluation||{}).rows||[]).slice(0,20); },
     shadowEvaluationPageCount: function(job) { return Math.max(1,Math.ceil((((job.shadow_evaluation||{}).rows||[]).length)/20)); },
     toggleShadowSampleDetail: function(job) { job.inspectionOnly=!job.inspectionOnly; },
-    saveConfidenceRegression: function(job, row, decision, note) { return fetch(API + '/confidence-training/jobs/' + encodeURIComponent(job.id) + '/regressions/' + encodeURIComponent(row.id),{method:'PATCH',headers:this.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({classification:decision,note:note||'',keep_as_regression_case:true})}).then(this.loadConfidenceTraining.bind(this)); },
-    canGeneratePromptRevision: function(job) { return !!job && ['shadow_rerun_review_pending','shadow_validation_review_pending','shadow_test_review_pending','prompt_revision_ready'].indexOf(job.status)!==-1; },
+    saveConfidenceRegression: function(job, row, classification, note, keep) { return fetch(API + '/confidence-training/jobs/' + encodeURIComponent(job.id) + '/regressions/' + encodeURIComponent(row.id),{method:'PATCH',headers:this.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({classification:classification,note:note||'',keep_as_regression_case:keep!==false})}).then(this.loadConfidenceTraining.bind(this)); },
+    canGeneratePromptRevision: function(job) { return !!job && (!job.analysis_result||job.analysis_result.optimization_target!=='draft_generation') && ['shadow_rerun_review_pending','shadow_validation_review_pending','shadow_test_review_pending','prompt_revision_ready'].indexOf(job.status)!==-1; },
     openAutomationMonitor: function() {
       if (!this.can('knowledge:submit')) return;
       this.knowledgeMenuOpen = true;
@@ -4851,7 +4862,7 @@ Vue.createApp({
         })
         .then(function(data) {
           self.candidateDashboard.summary = Object.assign(
-            {total:0, pending:0, revision_required:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
+            {total:0, pending:0, human_pending:0, pending_model_annotation:0, draft_incomplete:0, hold_for_evidence:0, revision_required:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, model_priority:0, deduplication_required:0},
             data.summary || {}
           );
           self.candidateDashboard.pending = Array.isArray(data.items) ? data.items : [];
@@ -4911,7 +4922,7 @@ Vue.createApp({
            self.candidateReviews.total = Number(data.total || 0);
            self.candidateReviews.productCategories = Array.isArray(data.product_categories) ? data.product_categories : self.candidateReviews.productCategories;
           self.candidateReviews.summary = Object.assign(
-            {total:0, pending:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, deduplication_required:0},
+            {total:0, pending:0, human_pending:0, pending_model_annotation:0, draft_incomplete:0, hold_for_evidence:0, revision_required:0, ready:0, rejected:0, submitted:0, failed:0, priority:0, model_priority:0, deduplication_required:0},
             data.summary || {}
           );
           var selectable = {};
@@ -4929,8 +4940,12 @@ Vue.createApp({
     },
     reviewStatusLabel: function(value) {
       return {
-        pending:'待人工确认',
+        pending:'人工待复核',
+        pending_model_annotation:'待模型重新标注',
+        draft_incomplete:'草稿信息不完整',
         revision_required:'退回转写',
+        hold_for_evidence:'待补充证据',
+        discard_review:'模型建议不沉淀',
         ready:'可批量送审',
         rejected:'不沉淀',
         submitted:'已进入发布审核',
@@ -4938,7 +4953,21 @@ Vue.createApp({
       }[value] || value || '未知状态';
     },
     reviewStatusClass: function(value) {
-      return 'review-status-' + (['pending','revision_required','ready','rejected','submitted','failed'].indexOf(value) !== -1 ? value : 'unknown');
+      return 'review-status-' + (['pending','pending_model_annotation','draft_incomplete','revision_required','hold_for_evidence','discard_review','ready','rejected','submitted','failed'].indexOf(value) !== -1 ? value : 'unknown');
+    },
+    candidateNextActionLabel: function(value) {
+      return {
+        complete_draft:'补齐草稿与证据',
+        annotate_model:'重新模型标注',
+        revise_draft:'生成修订草稿',
+        add_source_evidence:'补充来源证据',
+        human_review:'人工确认价值',
+        submit_for_publication_review:'送入发布审核',
+        confirm_model_discard:'确认模型建议',
+        fix_and_retry_submission:'修正后重试送审',
+        view_submitted:'只读查看',
+        finish:'已完成'
+      }[value] || value || '等待处理';
     },
     reviewKnowledgeValueLabel: function(value) {
       return {worthy:'值得沉淀', unworthy:'不沉淀', pending:'待确认', '是':'值得沉淀', '否':'不沉淀'}[value] || '待确认';
@@ -4952,7 +4981,7 @@ Vue.createApp({
     reviewModelDraftDispositionLabel: function(modelReview) {
       var model = modelReview || {};
       var action = String(model.suggested_action || '');
-      if (action === 'submit_for_human_review') return '草稿合格';
+      if (action === 'submit_for_human_review') return '建议送人工复核';
       if (action === 'return_for_revision') return '退回转写';
       if (action === 'hold_for_evidence') return '待补证据';
       return {approved:'草稿合格',revision_required:'退回转写',hold_for_evidence:'待补证据',合格:'草稿合格',需修改:'退回转写',待补证据:'待补证据'}[model.draft_quality] || '草稿待评估';
@@ -4977,10 +5006,10 @@ Vue.createApp({
     },
     reviewSelectable: function(item) {
       var reviewPending = item && item.deduplication && item.deduplication.action === 'review_duplicate' && !item.deduplication_confirmed;
-      return !!item && item.review_status === 'ready' && !item.knowledge_id && !reviewPending;
+      return !!item && item.review_status === 'ready' && item.eligible === true && !item.knowledge_id && !reviewPending;
     },
     reviewAnnotatable: function(item) {
-      return !!item && item.review_status !== 'submitted' && !item.knowledge_id;
+      return !!item && item.review_status !== 'submitted' && !item.knowledge_id && !item.submitted_at;
     },
     isReviewSelected: function(id) {
       return this.candidateReviews.selected.indexOf(id) !== -1;
@@ -5018,6 +5047,7 @@ Vue.createApp({
       if (!this.businessTypes.length) this.loadBusinessTypes();
       var current = JSON.parse(JSON.stringify(item || {}));
       current.model_review = current.model_review || {};
+      current.model_annotation = current.model_annotation || {};
       current.model_draft_revision = current.model_draft_revision || {};
       current.human_review = current.human_review || {};
       current.selection = current.selection || {};
@@ -5044,6 +5074,7 @@ Vue.createApp({
         originalContent: JSON.parse(JSON.stringify(originalContent)),
         mediaBlocks: mediaBlocks,
         recommended_reply: current.recommended_reply || '',
+        evidence_excerpt: current.evidence_excerpt || '',
         applicableCategories: Array.isArray(current.applicable_categories) ? current.applicable_categories.slice() : [],
         brands: Array.isArray(current.applicable_brands) ? current.applicable_brands.slice() : [],
         models: Array.isArray(current.applicable_models) ? current.applicable_models.slice() : [],
@@ -5105,10 +5136,44 @@ Vue.createApp({
       return !!item;
     },
     reviewReadonly: function() {
-      return !this.candidateReviews.current || this.candidateReviews.current.review_status === 'submitted';
+      var item=this.candidateReviews.current;
+      return !item || item.review_status === 'submitted' || !!item.knowledge_id || !!item.submitted_at;
     },
-    reviewModelNeedsRevision: function(modelReview) { var model=modelReview||{};return model.suggested_action==='return_for_revision'||model.draft_quality==='revision_required'; },
-    generateCandidateDraftRevision: function() { var self=this,current=self.candidateReviews.current;if(!current||self.candidateReviews.modelRevisionLoading)return;self.candidateReviews.modelRevisionLoading=true;fetch(API + '/integration/candidate-reviews/' + encodeURIComponent(current.id) + '/model-revise',{method:'POST',headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'模型修订草稿失败');return d;});}).then(function(data){self.openCandidateReview(data);}).catch(function(error){alert(error.message);}).finally(function(){self.candidateReviews.modelRevisionLoading=false;}); },
+    candidateDraftComplete: function(item) {
+      if (!item) return false;
+      var preview=this.contentPreview(item.content);
+      return !!String(item.title || '').trim()
+        && !!preview && preview !== '暂无正文'
+        && !!String(item.recommended_reply || '').trim();
+    },
+    candidateCanAnnotateModel: function(item) {
+      if (!this.reviewAnnotatable(item)) return false;
+      return item.next_action === 'annotate_model'
+        || !Object.keys(item.model_review || {}).length;
+    },
+    annotateCandidateReviewDraft: function() {
+      var self=this, current=self.candidateReviews.current;
+      if (!current || self.reviewReadonly() || !self.candidateDraftComplete(current) || self.candidateReviews.modelAnnotating) return;
+      self.candidateReviews.modelAnnotating=true;
+      fetch(API + '/integration/candidate-reviews/' + encodeURIComponent(current.id) + '/model-annotate', {
+        method:'POST',
+        headers:self.authHeaders()
+      }).then(function(response) {
+        return response.json().then(function(data) {
+          if (!response.ok) throw new Error(data.detail || '模型初标失败');
+          return data;
+        });
+      }).then(function(data) {
+        self.openCandidateReview(data);
+        self.loadCandidateReviews();
+        self.loadCandidateReviewDashboard();
+        self.showCandidateReviewNotice('模型初标已完成，候选状态与送审门禁已重新计算。');
+      }).catch(function(error) {
+        self.showCandidateReviewNotice(error.message, 'error');
+      }).finally(function() { self.candidateReviews.modelAnnotating=false; });
+    },
+    reviewModelNeedsRevision: function(modelReview) { var model=modelReview||{},action=String(model.suggested_action||'');if(action==='return_for_revision')return true;if(['submit_for_human_review','hold_for_evidence','discard'].indexOf(action)!==-1)return false;return model.draft_quality==='revision_required'; },
+    generateCandidateDraftRevision: function() { var self=this,current=self.candidateReviews.current;if(!current||self.candidateReviews.modelRevisionLoading)return;self.candidateReviews.modelRevisionLoading=true;fetch(API + '/integration/candidate-reviews/' + encodeURIComponent(current.id) + '/model-revise',{method:'POST',headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'模型修订草稿失败');return d;});}).then(function(data){self.openCandidateReview(data);var revision=data.model_draft_revision||{};if(revision.status==='generation_failed')self.showCandidateReviewNotice('模型初标已保存，但草稿修订失败，可重试。','error');}).catch(function(error){alert(error.message);}).finally(function(){self.candidateReviews.modelRevisionLoading=false;}); },
     applyCandidateDraftRevision: function() { var self=this,current=self.candidateReviews.current;if(!current||self.candidateReviews.modelRevisionLoading)return;if(!confirm('确认采用模型修订的正文和推荐回复？原稿会保留，采用后需要重新模型初标。'))return;self.candidateReviews.modelRevisionLoading=true;fetch(API + '/integration/candidate-reviews/' + encodeURIComponent(current.id) + '/model-revision:apply',{method:'POST',headers:self.authHeaders()}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'采用模型修订稿失败');return d;});}).then(function(data){self.openCandidateReview(data);self.showCandidateReviewNotice('已采用模型修订稿，请重新执行模型初标。','success');}).catch(function(error){alert(error.message);}).finally(function(){self.candidateReviews.modelRevisionLoading=false;}); },
     candidateReviewGateReason: function(item) {
       if (!item) return '';
@@ -5116,9 +5181,14 @@ Vue.createApp({
         return '检测到疑似重复，请打开候选，核对命中知识后勾选“内容确实不同”。';
       }
       if (item.error_message) return item.error_message;
+      if (Array.isArray(item.blocking_reasons) && item.blocking_reasons.length) return item.blocking_reasons.join('；');
       return (item.selection && item.selection.review_reason) || {
-        pending:'等待人工确认沉淀价值与知识草稿处理动作。',
+        pending:'等待人工确认沉淀价值。',
+        pending_model_annotation:'当前草稿尚未完成有效模型初标。',
+        draft_incomplete:'请补齐草稿标题、正文和推荐回复。',
         revision_required:'人工确认主题有价值，但知识草稿需要退回转写修改。',
+        hold_for_evidence:'模型要求补充来源证据或业务确认。',
+        discard_review:'模型建议停止该候选，等待人工确认。',
         ready:'门禁已通过，可以送入知识发布审核队列。',
         rejected:'该候选已被人工判定为不沉淀。',
         submitted:'已生成待发布审核知识，后续在知识库管理中完成发布审核。',
@@ -5133,6 +5203,8 @@ Vue.createApp({
       var nextReviewId = openNext ? self.nextCandidateReviewId(current.id) : '';
       if (form.knowledge_value === 'worthy') {
         if (!form.title.trim()) { alert('请输入知识标题'); return; }
+        if (!form.contentText.trim()) { alert('请输入知识正文'); return; }
+        if (!String(form.recommended_reply || '').trim()) { alert('请填写推荐回复'); return; }
         if (!form.knowledge_origin) { alert('请选择知识来源'); return; }
         if (!form.business_type) { alert('请选择业务类型'); return; }
         if (!form.category_id) { alert('请选择所属分类'); return; }
@@ -5153,6 +5225,7 @@ Vue.createApp({
         applicable_brands: form.brands,
         applicable_models: form.models,
         recommended_reply: form.recommended_reply,
+        evidence_excerpt: form.evidence_excerpt,
         knowledge_value: form.knowledge_value,
         usability: usability,
         decision: decision,
@@ -5183,8 +5256,8 @@ Vue.createApp({
           self.candidateReviews.form.originalContent = JSON.parse(JSON.stringify(candidateContent));
           self.loadCandidateReviewDashboard();
           if (submitAfter) {
-            if (data.review_status !== 'ready') {
-              self.showCandidateReviewNotice('审核已保存，但候选尚未通过送审门禁。请确认“值得沉淀”且草稿合格，或补充复核结论。', 'error');
+            if (data.eligible !== true || data.review_status !== 'ready') {
+              self.showCandidateReviewNotice('审核已保存，但候选尚未通过送审门禁：' + self.candidateReviewGateReason(data), 'error');
               self.loadCandidateReviews();
               return null;
             }
@@ -5262,11 +5335,11 @@ Vue.createApp({
     batchModelAnnotateCandidateReviews: function() {
       var ids=this.candidateReviews.selected.slice();
       if (!ids.length) return;
-      if (!confirm('确认使用当前已采纳的最新 Prompt，对选中的 '+ids.length+' 条候选执行批量模型标注？')) return;
+      if (!confirm('确认按候选创建时间选择适用的已批准 Prompt，对选中的 '+ids.length+' 条候选执行批量模型标注？')) return;
       var self=this; self.candidateReviews.modelAnnotating=true;
       fetch(API+'/integration/candidate-reviews:batch-model-annotate',{method:'POST',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({ingestion_ids:ids})})
         .then(function(response){return response.json().then(function(data){if(!response.ok)throw new Error(data.detail||'批量模型标注失败');return data;});})
-        .then(function(data){var message='批量模型标注完成：成功 '+Number(data.updated||0)+' 条，失败 '+Number(data.failed||0)+' 条。';var failures=(data.results||[]).filter(function(item){return item.status==='failed';});if(failures.length)message+='\n\n失败明细：\n'+failures.slice(0,8).map(function(item){return item.ingestion_id+'：'+(item.error_message||item.error_code||'标注失败');}).join('\n');alert(message);self.candidateReviews.selected=[];self.loadCandidateReviews();self.loadCandidateReviewDashboard();return data;})
+        .then(function(data){var message='批量模型标注完成：成功 '+Number(data.updated||0)+' 条，失败 '+Number(data.failed||0)+' 条。';var revisionFailures=(data.results||[]).filter(function(item){return item.model_draft_revision_status==='generation_failed';});if(revisionFailures.length)message+='\n其中 '+revisionFailures.length+' 条初标要求修订，但模型修订失败；请在候选详情重试。';var failures=(data.results||[]).filter(function(item){return item.status==='failed';});if(failures.length)message+='\n\n失败明细：\n'+failures.slice(0,8).map(function(item){return item.ingestion_id+'：'+(item.error_message||item.error_code||'标注失败');}).join('\n');alert(message);self.candidateReviews.selected=[];self.loadCandidateReviews();self.loadCandidateReviewDashboard();return data;})
         .catch(function(error){alert(error.message);return null;})
         .finally(function(){self.candidateReviews.modelAnnotating=false;});
     },

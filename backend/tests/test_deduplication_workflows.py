@@ -76,6 +76,8 @@ def _candidate_batch() -> IntegrationCandidateBatch:
                     "knowledge": {
                         "title": "按键颜色不符是什么意思",
                         "content": {"blocks": [{"type": "text", "value": "1"}]},
+                        "recommended_reply": "请根据说明核对按键颜色。",
+                        "evidence_excerpt": "来源会话记录：用户反馈按键颜色不符。",
                         "knowledge_origin": "business_accumulation",
                         "business_type": "self_operated",
                         "category_id": "cat-qc-standard",

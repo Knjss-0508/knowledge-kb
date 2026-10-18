@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import answer_hub.automation_queue as automation_queue
 from answer_hub.auto_review import AutoReviewPolicy
 from answer_hub.automation import AutomationRunStore
@@ -50,6 +52,82 @@ def _production_policy() -> AutoReviewPolicy:
         validated_model="mimo-v2.5-pro",
         validated_prompt_version="topic-review-v1",
     )
+
+
+@pytest.mark.parametrize("with_file,worker_mode,job_mode,expected", [
+    (False, None, None, False), (True, None, None, True),
+    (False, True, None, True), (True, False, None, False),
+    (False, False, True, True), (False, True, False, False),
+    (True, True, False, False), (False, None, True, True),
+])
+def test_standard_scope_queue_honors_job_override_and_freezes_before_execution(
+    tmp_path, monkeypatch, with_file, worker_mode, job_mode, expected,
+):
+    queue_root = tmp_path / "queue"
+    queue = AutomationQueue(queue_root)
+    queue.ensure()
+    source = queue.pending / "source.xlsx"
+    source.write_bytes(b"source")
+    if job_mode is not None:
+        write_queue_job_metadata(source, {
+            "job_id": "scope-test", "options": {"use_standard_references": job_mode},
+        })
+    standards = tmp_path / "standards.json"
+    standards.write_text("[]", encoding="utf-8")
+    captured = []
+
+    def pipeline(**kwargs):
+        captured.append(kwargs["use_standard_references"])
+        frozen = read_queue_job_metadata(kwargs["source_path"])
+        assert frozen["options"]["use_standard_references"] is expected
+        return _fake_manifest(
+            kwargs["source_path"], kwargs["output_root"], status="review_pending",
+        )
+
+    monkeypatch.setattr(automation_queue, "run_automation_pipeline", pipeline)
+    summary = automation_queue.process_automation_queue(
+        queue_root, standards if with_file else None, tmp_path / "runs",
+        use_standard_references=worker_mode,
+    )
+    assert summary["status"] == "completed"
+    assert summary["succeeded"] == 1
+    assert captured == [expected]
+    completed = next(queue.completed.glob("*.xlsx"))
+    assert read_queue_job_metadata(completed)["options"]["use_standard_references"] is expected
+
+
+@pytest.mark.parametrize("initial_mode", [False, True])
+def test_standard_scope_queue_retry_ignores_changed_worker_defaults(
+    tmp_path, monkeypatch, initial_mode,
+):
+    queue = AutomationQueue(tmp_path / "queue")
+    queue.ensure()
+    (queue.pending / "source.xlsx").write_bytes(b"source")
+    captured = []
+
+    def pipeline(**kwargs):
+        captured.append(kwargs["use_standard_references"])
+        if len(captured) == 1:
+            frozen = read_queue_job_metadata(kwargs["source_path"])
+            assert frozen["options"]["use_standard_references"] is initial_mode
+            raise RuntimeError("offline first attempt")
+        return _fake_manifest(
+            kwargs["source_path"], kwargs["output_root"], status="review_pending",
+        )
+
+    monkeypatch.setattr(automation_queue, "run_automation_pipeline", pipeline)
+    first = automation_queue.process_automation_queue(
+        queue.root, None, tmp_path / "runs", use_standard_references=initial_mode,
+    )
+    assert first["failed"] == 1
+    failed = next(queue.failed.glob("*.xlsx"))
+    assert read_queue_job_metadata(failed)["options"]["use_standard_references"] is initial_mode
+    second = automation_queue.process_automation_queue(
+        queue.root, None, tmp_path / "runs", retry_failed=True,
+        use_standard_references=not initial_mode,
+    )
+    assert second["succeeded"] == 1
+    assert captured == [initial_mode, initial_mode]
 
 
 def test_queue_moves_successful_workbook_to_completed(

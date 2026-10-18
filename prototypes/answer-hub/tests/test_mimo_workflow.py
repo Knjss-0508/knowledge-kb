@@ -33,6 +33,7 @@ from answer_hub.mimo import (
     _validate_topic_review,
 )
 from answer_hub.workflow import (
+    _bind_ordered_question_reply_pairs,
     _direct_mimo_topic_groups,
     _failed_topic_transcription_row,
     build_cluster_validation_rows,
@@ -188,7 +189,7 @@ def test_online_business_structured_boundary_projection_can_resolve_generic_titl
     assert "object_key=硬盘品牌" in match[6]
 
 
-def test_failed_topic_transcription_keeps_source_backed_recommended_reply() -> None:
+def test_failed_topic_transcription_keeps_source_in_audit_only() -> None:
     rows = [
         {
             "工单ID": "local-test-card-slot-waterproof",
@@ -216,8 +217,9 @@ def test_failed_topic_transcription_keeps_source_backed_recommended_reply() -> N
         use_standard_references=False,
     )
 
-    assert topic["推荐回复"]
-    assert "防水标" in topic["推荐回复"]
+    assert topic["知识内容"] == ""
+    assert topic["推荐回复"] == ""
+    assert "证据不足" in topic["校验备注"]
     assert topic["流程状态"] == "review_pending"
 
 
@@ -228,6 +230,7 @@ def _source_rows() -> list[dict[str, object]]:
                 "序号": 1,
                 "工单ID": "PHONE-001",
                 "聊天内容": "屏幕有色斑，麻烦确认是否属于显示问题。",
+                "实际回复": "色斑属于显示问题。",
                 "图片链接": "https://example.com/phone.jpg",
                 "视频链接": "https://example.com/phone.mp4",
                 "核心问题": "手机屏幕色斑如何判定",
@@ -242,11 +245,14 @@ def _source_rows() -> list[dict[str, object]]:
     )
 
 
-def test_case_only_topic_signal_payload_treats_historical_reply_as_primary_evidence() -> None:
+def test_case_only_topic_signal_payload_keeps_reference_reply_separate() -> None:
     payload = _topic_signal_source_payload(_source_rows()[0])
 
-    assert payload["primary_evidence"]["historical_actual_reply"] == "请拍摄清晰屏幕图片"
-    assert "legacy_script" not in payload["legacy_reference_only"]
+    assert payload["primary_evidence"]["historical_actual_reply"] == "色斑属于显示问题。"
+    assert (
+        payload["legacy_reference_only"]["reference_reply"]
+        == "请拍摄清晰屏幕图片"
+    )
 
 
 def test_topic_signal_prompt_uses_final_judgment_without_notebook_model_example() -> None:
@@ -265,7 +271,7 @@ def test_topic_signal_prompt_uses_final_judgment_without_notebook_model_example(
         use_standard_references=False,
     )
 
-    assert TOPIC_SIGNAL_PROMPT_VERSION == "multi-category-conversation-topic-signal-v9-12-category-taxonomy"
+    assert TOPIC_SIGNAL_PROMPT_VERSION == "multi-category-conversation-topic-signal-v10-actual-resolution"
     assert "以答疑人员的最终判定结论为准" in prompt
     assert "问“是不是漏液”→答“选折痕”" in prompt
     assert "“白光检测”的目的=检查屏幕是否被更换/拆修" in prompt
@@ -311,8 +317,12 @@ def test_cluster_unit_prompt_prioritizes_chat_and_disambiguates_tool_terms() -> 
         )
     )
     assert mimo_module.CLUSTER_UNIT_PROMPT_VERSION == (
-        "multi-category-conversation-cluster-units-v29-12-category-taxonomy"
+        "multi-category-conversation-cluster-units-v32-answer-ownership"
     )
+    assert "standard_question" in prompt
+    assert "source_question_index" in prompt
+    assert "第二部分核心问题的编号和顺序" in prompt
+    assert "不同对象、部件、故障、查询目标、判定诉求或处理动作" in prompt
     assert "系统截图/弹窗中的文字" in prompt
     assert "通常指验机工具或检测结果" in prompt
     assert "不代表屏幕上出现物理线条" in prompt
@@ -648,7 +658,7 @@ def test_atomic_topic_cluster_prompt_uses_shared_terminology() -> None:
     )
 
     assert mimo_module.ATOMIC_TOPIC_CLUSTER_PROMPT_VERSION == (
-        "atomic-knowledge-topic-clustering-v16-classification-catalog-reviewable-recall"
+        "atomic-knowledge-topic-clustering-v17-standard-question-guardrails"
     )
     assert "术语字典（全流程共享）" in prompt
     assert "一根线" in prompt
@@ -659,6 +669,8 @@ def test_atomic_topic_cluster_prompt_uses_shared_terminology() -> None:
     assert "二级分类或标准路径的文字不同，不是绝对拆分条件" in prompt
     assert "review_requests 不等于必须单独成簇" in prompt
     assert "产品品类不同绝对禁止合并" in prompt
+    assert "标准问题相同只是值得比较的辅助信号" in prompt
+    assert "不同对象、异常现象、判定诉求、处理路径或阈值例外" in prompt
     assert '"source_core_problem": "工具读数显示用户判断，应该如何勾选"' in prompt
     assert (
         '"source_judgment_conclusion": "以人工复检确认后的结果为准"'
@@ -874,6 +886,32 @@ def test_direct_mimo_source_signature_tracks_ai_result_conflicts() -> None:
     )
 
 
+def test_direct_mimo_source_signature_tracks_ordered_reference_replies() -> None:
+    base = {
+        "工单ID": "WO-SIGNATURE-PAIR-001",
+        "回收业务层级": "自营回收",
+        "产品类型": "单反机身",
+        "聊天内容": "先问白色掉漆，后问底部发红。",
+        "核心问题": "1. 白色掉漆如何判定？\n2. 发红如何判定？",
+        "参考话术": (
+            "1. 白色掉漆按磕碰掉漆录入。\n"
+            "2. 发红痕迹请单独复核。"
+        ),
+        "AI结果问答配对状态": "paired",
+    }
+    changed = {
+        **base,
+        "参考话术": (
+            "1. 白色掉漆按外观问题录入。\n"
+            "2. 发红痕迹请单独复核。"
+        ),
+    }
+
+    assert workflow_module._direct_mimo_source_signature(base) != (
+        workflow_module._direct_mimo_source_signature(changed)
+    )
+
+
 def test_direct_mimo_progress_signature_tracks_product_taxonomy(
     monkeypatch,
 ) -> None:
@@ -963,13 +1001,13 @@ def test_remaining_mimo_prompts_use_scoped_notebook_terminology() -> None:
     )
 
     assert mimo_module.PROMPT_VERSION == (
-        "multi-category-topic-transcription-v13-recall-subtitles"
+        "multi-category-topic-transcription-v16-source-bounded-single-rule"
     )
     assert mimo_module.TOPIC_REVIEW_PROMPT_VERSION == (
-        "multi-category-topic-content-quality-review-v9-12-category-taxonomy"
+        "multi-category-topic-content-quality-review-v11-single-rule"
     )
     assert mimo_module.TOPIC_STAGE_PROMPT_VERSION == (
-        "multi-category-topic-stage-value-v8-12-category-taxonomy"
+        "multi-category-topic-stage-value-v9-single-rule"
     )
     assert mimo_module.TOPIC_DISPLAY_QUESTION_PROMPT_VERSION == (
         "topic-display-question-v3-12-category-taxonomy"
@@ -987,9 +1025,9 @@ def test_remaining_mimo_prompts_use_scoped_notebook_terminology() -> None:
     assert "applicable_models" in prompts[1]
     assert "来源已经明确机型及功能结论" in prompts[1]
     assert "标题、正文、推荐回复和 applicable_models" in prompts[1]
-    assert "问题背景、判断对象、来源核验依据" in prompts[1]
-    assert "只能回答当前单一原子主题" in prompts[1]
-    assert "历史实际回复中出现过" in prompts[1]
+    assert "问题背景、来源核验依据、人工处理结论" in prompts[1]
+    assert "回复只回答当前原子主题" in prompts[1]
+    assert "不得拼接同会话其他问题的答案" in prompts[1]
     assert "重复问候" in prompts[1]
     assert "事实ID" in prompts[2]
     assert "不能因为这些内容出现在历史实际回复中就判断一致" in prompts[2]
@@ -1165,6 +1203,195 @@ def test_direct_mimo_workflow_applies_local_multi_topic_rescue() -> None:
         group_rows[0]["_原子需要复核"]
         for _key, group_rows in topic_groups
     )
+
+
+def test_direct_mimo_binds_ordered_reference_reply_to_each_atomic_topic() -> None:
+    class OrderedPairMimo:
+        config = SimpleNamespace(model="ordered-pair-test")
+
+        def analyze_cluster_units(self, _row):
+            topics = []
+            for source_question_index, normalized_issue, subject, phenomenon in (
+                (
+                    1,
+                    "单反机身｜外壳边缘｜白色磕碰掉漆｜按磕碰掉漆录入",
+                    "外壳边缘",
+                    "白色磕碰掉漆",
+                ),
+                (
+                    2,
+                    "单反机身｜机身底部｜发红痕迹｜补充证据后复核",
+                    "机身底部",
+                    "发红痕迹",
+                ),
+            ):
+                topics.append(
+                    {
+                        "source_question_index": source_question_index,
+                        "normalized_issue": normalized_issue,
+                        "product_category": "单反机身",
+                        "scope_type": "品类专用",
+                        "platform": "通用",
+                        "brand": "通用",
+                        "model_scope": "通用",
+                        "category_l1": "外观问题",
+                        "category_l2": "中框及外壳外观",
+                        "intent": "标准判定",
+                        "subject": subject,
+                        "phenomenon": phenomenon,
+                        "judgment_target": normalized_issue,
+                        "resolution_mode": "按来源答复处理",
+                        "standard_path": "待确认",
+                        "threshold_or_exception": "无明确阈值",
+                        "evidence_summary": phenomenon,
+                        "confidence": 0.95,
+                        "requires_review": False,
+                    }
+                )
+            return MimoLabelResult(
+                candidate={
+                    "conversation_type": "multi_topic",
+                    "reason": "两个独立问题。",
+                    "topics": topics,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+        def cluster_atomic_units(self, units):
+            return MimoLabelResult(
+                candidate={
+                    "clusters": [
+                        {
+                            "cluster_id": f"C{index:03d}",
+                            "theme_name": unit["normalized_issue"],
+                            "member_atomic_ids": [unit["unit_id"]],
+                            "merge_basis": "分别保留。",
+                        }
+                        for index, unit in enumerate(units, start=1)
+                    ],
+                    "split_requests": [],
+                    "review_requests": [],
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    rows = preprocess_source_rows(
+        [
+            {
+                "数据ID": "ORDERED-PAIR",
+                "工单ID": "ORDERED-PAIR",
+                "产品类型": "单反机身",
+                "聊天内容": "先问白色掉漆，后问底部发红。",
+                "ai_result": {
+                    "核心问题": (
+                        "1. 白色掉漆如何判定？\n"
+                        "2. 底部发红如何判定？"
+                    ),
+                    "参考话术": (
+                        "1. 白色掉漆按磕碰掉漆录入。\n"
+                        "2. 发红痕迹请单独复核。"
+                    ),
+                },
+            }
+        ]
+    )
+
+    groups, _meta = _direct_mimo_topic_groups(rows, OrderedPairMimo())
+    atomic_rows = sorted(
+        (group_rows[0] for _key, group_rows in groups),
+        key=lambda row: row["_原子来源问题序号"],
+    )
+
+    assert [row["_原子来源问题序号"] for row in atomic_rows] == [1, 2]
+    assert atomic_rows[0]["_原子参考话术"] == "白色掉漆按磕碰掉漆录入。"
+    assert atomic_rows[1]["_原子参考话术"] == "发红痕迹请单独复核。"
+    assert "发红" not in atomic_rows[0]["_原子参考话术"]
+    assert "白色掉漆" not in atomic_rows[1]["_原子参考话术"]
+
+
+def test_ordered_pair_binding_repairs_reversed_atomic_topics() -> None:
+    source_row = preprocess_source_rows(
+        [
+            {
+                "数据ID": "ORDERED-REVERSED",
+                "工单ID": "ORDERED-REVERSED",
+                "产品类型": "单反机身",
+                "聊天内容": "先问白色掉漆，后问底部发红。",
+                "ai_result": {
+                    "核心问题": (
+                        "1. 白色掉漆如何判定？\n"
+                        "2. 底部发红如何判定？"
+                    ),
+                    "参考话术": (
+                        "1. 白色掉漆按磕碰掉漆录入。\n"
+                        "2. 发红痕迹请单独复核。"
+                    ),
+                },
+            }
+        ]
+    )[0]
+    topics = [
+        {
+            "source_question_index": 1,
+            "normalized_issue": "单反机身｜机身底部｜发红痕迹｜复核",
+            "subject": "机身底部",
+            "phenomenon": "发红痕迹",
+        },
+        {
+            "source_question_index": 2,
+            "normalized_issue": "单反机身｜外壳边缘｜白色掉漆｜录入",
+            "subject": "外壳边缘",
+            "phenomenon": "白色掉漆",
+        },
+    ]
+
+    bound, status, reason = _bind_ordered_question_reply_pairs(
+        source_row,
+        topics,
+    )
+
+    assert status == "semantic_paired"
+    assert not reason
+    assert "发红" in bound[0]["_source_reference_reply"]
+    assert "掉漆" in bound[1]["_source_reference_reply"]
+
+
+def test_ordered_pair_binding_requires_source_index_for_multiple_topics() -> None:
+    source_row = preprocess_source_rows(
+        [
+            {
+                "数据ID": "ORDERED-MISSING-INDEX",
+                "工单ID": "ORDERED-MISSING-INDEX",
+                "产品类型": "单反机身",
+                "聊天内容": "先问白色掉漆，后问底部发红。",
+                "ai_result": {
+                    "核心问题": (
+                        "1. 白色掉漆如何判定？\n"
+                        "2. 底部发红如何判定？"
+                    ),
+                    "参考话术": (
+                        "1. 白色掉漆按磕碰掉漆录入。\n"
+                        "2. 发红痕迹请单独复核。"
+                    ),
+                },
+            }
+        ]
+    )[0]
+    topics = [
+        {"normalized_issue": "白色掉漆如何判定"},
+        {"normalized_issue": "底部发红如何判定"},
+    ]
+
+    bound, status, reason = _bind_ordered_question_reply_pairs(
+        source_row,
+        topics,
+    )
+
+    assert status == "source_index_missing"
+    assert "source_question_index" in reason
+    assert all(not topic.get("_source_reference_reply") for topic in bound)
 
 
 def test_direct_mimo_marks_unconfirmed_exploratory_first_turn_for_review() -> None:
@@ -1532,8 +1759,8 @@ def test_case_only_topic_generation_rejects_model_standard_references() -> None:
     assert len(topics) == 1
     assert not gaps
     assert not pending
-    assert topics[0]["模型阶段状态"] == "topic_model_quality_failed"
-    assert "标准引用" in topics[0]["校验备注"]
+    assert topics[0]["模型阶段状态"] in {"topic_model_labeled", "topic_model_quality_failed"}
+    assert not topics[0]["关联标准项"]
     assert "质检标准" not in topics[0]["知识内容"]
     assert topics[0]["关联标准项"] == ""
 
@@ -1613,10 +1840,12 @@ def test_case_only_review_ignores_model_request_for_standard_reference() -> None
     assert len(topics) == 1
     assert not gaps
     assert not pending
-    assert topics[0]["模型初标错误类型"] == "场景理解错"
-    assert topics[0]["模型初标结论"] == "需修改"
-    assert topics[0]["模型初标重点复核"] == "是"
-    assert topics[0]["主题无来源内容"]
+    assert topics[0]["模型初标错误类型"] == ""
+    assert topics[0]["模型初标结论"] == "通过"
+    assert "色斑属于显示问题" in topics[0]["知识内容"]
+    assert "补充白屏全景" not in topics[0]["知识内容"]
+    assert topics[0]["模型质量状态"] == "passed"
+    assert not topics[0]["主题无来源内容"]
     assert "已忽略模型提出的标准补充要求" in topics[0]["模型初标原因"]
 
 
@@ -1783,6 +2012,7 @@ def test_mimo_cluster_units_keeps_clear_secondary_topics() -> None:
                             "reason": "会话同时咨询前摄像头状态和按键触发闪屏，需要不同知识回答。",
                             "topics": [
                                 {
+                                    "source_question_index": 1,
                                     "normalized_issue": "前摄像头疑似异物或更换的核验",
                                     "product_category": "手机",
                                     "scope_type": "品类专用",
@@ -1803,6 +2033,7 @@ def test_mimo_cluster_units_keeps_clear_secondary_topics() -> None:
                                     "requires_review": False,
                                 },
                                 {
+                                    "source_question_index": 2,
                                     "normalized_issue": "按开机键触发屏幕闪烁的判定",
                                     "product_category": "手机",
                                     "scope_type": "品类专用",
@@ -2781,6 +3012,7 @@ def test_rule_fallback_recomputes_stale_tag_cluster_keys() -> None:
             "数据ID": record_id,
             "工单ID": record_id,
             "聊天内容": conversation,
+            "实际回复": "AirPods查找功能无需检测。",
             "核心问题": "AirPods 查找功能是否需要检测",
             "产品类型": "耳机",
             "模型主题一级分类": "功能问题",
@@ -2836,7 +3068,7 @@ def test_topic_review_validation_requires_consistent_deposition_value() -> None:
 
 
 def test_topic_review_validation_rejects_unworthy_pass_decision() -> None:
-    with pytest.raises(MimoError, match="decision 必须为驳回"):
+    with pytest.raises(MimoError, match="decision 不能为通过"):
         _validate_topic_review(
             {
                 "decision": "通过",
@@ -3033,15 +3265,24 @@ def test_unworthy_topic_is_classified_before_transcription_and_skips_draft_gener
     assert topics[0]["主题转写状态"] == "skipped_not_worthy"
     assert topics[0]["模型初标状态"] == "topic_initial_review_skipped"
     reply = topics[0]["推荐回复"]
-    assert reply
-    assert "外壳位置是否存在可见磕碰" in reply
-    assert "补拍全景和近景" in reply
-    assert "不可仅凭单张图片确定" in reply
-    assert "当前单个案例结论" not in reply
+    assert reply == ""
+    assert topics[0]["知识内容"] == ""
+    assert "未生成知识草稿" in topics[0]["模型初标原因"]
     assert topics[0]["主题图片链接"] == "https://example.com/case.jpg"
-    assert topics[0]["主题视频链接"] == "https://example.com/case.mp4"
+    assert topics[0]["主题视频链接"] == ""
+    media_items = json.loads(topics[0]["媒体证据包"])
+    assert any(
+        item["媒体类型"] == "video"
+        and "未解析视频" in item["审计风险"]
+        for item in media_items
+    )
     assert topics[0]["主题来源记录ID"] == "SOURCE-CASE-001"
-    assert "SOURCE-CASE-001" in topics[0]["主题视频来源"]
+    assert topics[0]["主题视频来源"] == ""
+    assert any(
+        item["来源记录ID"] == "SOURCE-CASE-001"
+        for item in media_items
+        if item["媒体类型"] == "video"
+    )
     assert topics[0]["关联标准项"] == "历史标准引用需保留"
     assert topics[0]["来源版本"] == "qc-old-v1"
 
@@ -3052,6 +3293,7 @@ def test_single_case_with_reusable_boundary_stays_out_of_pending_cluster() -> No
             "数据ID": "CASE-THRESHOLD-001",
             "工单ID": "CASE-THRESHOLD-001",
             "聊天内容": "屏幕点状瑕疵直径大于1mm怎么处理？",
+            "实际回复": "屏幕点状瑕疵直径大于1mm时按异常处理。",
             "核心问题": "屏幕点状瑕疵直径大于1mm如何判定",
             "产品类型": "手机",
             "问题意图": "标准判定",
@@ -3084,6 +3326,7 @@ def test_single_case_with_explicit_steps_remains_worthy_despite_missing_threshol
             "数据ID": "CASE-STEPS-001",
             "工单ID": "CASE-STEPS-001",
             "聊天内容": "没有明确阈值，但必须先拍摄全景图片，再核对设备型号。",
+            "实际回复": "必须先拍摄全景图片，再核对设备型号。",
             "核心问题": "缺少数值阈值时如何补充核验信息",
             "产品类型": "手机",
             "问题意图": "质检流程",
@@ -3115,6 +3358,7 @@ def _non_reusable_case_rows(count: int) -> list[dict[str, object]]:
             "数据ID": f"CASE-NON-REUSABLE-{index:03d}",
             "工单ID": f"CASE-NON-REUSABLE-{index:03d}",
             "聊天内容": "请看当前这台手机外壳是否正常，客服仅回复这台机器正常。",
+            "实际回复": "当前机器正常。",
             "核心问题": "当前机器外壳是否正常",
             "产品类型": "手机",
             "问题意图": "案例判定",
@@ -3261,6 +3505,7 @@ def test_untranscribed_topic_title_uses_issue_description_not_chat_header() -> N
                 "问题描述：不确定手机外观是不是碎裂 转人工原因：回答内容无法理解\n"
                 "请根据用户上传的设备实物图片，对照系统中的外观选项标准图示。"
             ),
+            "实际回复": "请根据设备实物图片核验外观碎裂。",
             "核心问题": "",
             "产品类型": "手机",
             "问题意图": "案例判定",
@@ -3375,6 +3620,7 @@ def test_untranscribed_topic_title_prefers_direct_cluster_theme_name() -> None:
                 "问题描述：不确定手机外观是不是碎裂 转人工原因：回答内容无法理解\n"
                 "请根据用户上传的设备实物图片判断。"
             ),
+            "实际回复": "请根据设备实物图片核验外观碎裂。",
             "核心问题": "",
             "产品类型": "手机",
             "问题意图": "案例判定",
@@ -3427,6 +3673,7 @@ def test_untranscribed_topic_title_normalizes_duplicate_cluster_label() -> None:
             "数据ID": "CASE-DUPLICATE-TITLE-001",
             "工单ID": "CASE-DUPLICATE-TITLE-001",
             "聊天内容": "中框及外壳外观应该如何核验？",
+            "实际回复": "请核验中框及外壳外观。",
             "产品类型": "手机",
             "问题意图": "检测核验",
             "对象/部位": "中框及外壳外观",
@@ -3478,6 +3725,7 @@ def test_untranscribed_topic_title_keeps_natural_cluster_title() -> None:
             "数据ID": "CASE-NATURAL-TITLE-001",
             "工单ID": "CASE-NATURAL-TITLE-001",
             "聊天内容": "传感器功能应该如何核验？",
+            "实际回复": "请核验传感器功能。",
             "产品类型": "手机",
             "问题意图": "检测核验",
             "对象/部位": "传感器功能",
@@ -3534,6 +3782,7 @@ def test_unexpected_topic_stage_failure_is_isolated_per_topic() -> None:
             "数据ID": "CASE-FAIL-001",
             "工单ID": "CASE-FAIL-001",
             "聊天内容": "请看这张图，这处算正常吗？",
+            "实际回复": "当前机器正常。",
             "核心问题": "当前案例是否正常",
             "产品类型": "手机",
             "问题意图": "案例判定",
@@ -3546,6 +3795,7 @@ def test_unexpected_topic_stage_failure_is_isolated_per_topic() -> None:
             "数据ID": "CASE-OK-002",
             "工单ID": "CASE-OK-002",
             "聊天内容": "请看当前图片，这个位置是什么情况？",
+            "实际回复": "当前机器正常。",
             "核心问题": "当前案例是什么情况",
             "产品类型": "平板",
             "问题意图": "案例判定",
@@ -3661,6 +3911,7 @@ def test_worthy_topic_is_transcribed_then_receives_content_quality_review() -> N
             "数据ID": record_id,
             "工单ID": record_id,
             "聊天内容": conversation,
+            "实际回复": "先进入设备信息页读取配置，再使用检测工具交叉核对。",
             "核心问题": "如何读取并核对设备信息",
             "产品类型": "手机",
             "问题意图": "信息查询",
@@ -3724,6 +3975,7 @@ def test_topic_model_call_budget_keeps_remaining_topics_for_manual_review() -> N
             "数据ID": record_id,
             "工单ID": record_id,
             "聊天内容": f"{product}当前案例怎么处理",
+            "实际回复": "当前机器正常。",
             "核心问题": f"{product}当前案例怎么处理",
             "产品类型": product,
             "问题意图": "案例判定",
@@ -4323,6 +4575,7 @@ def test_mimo_cluster_gate_rejects_false_merge_and_merges_confirmed_topic() -> N
             "数据ID": "A",
             "工单ID": "A",
             "聊天内容": "主板内部标签异常如何判定",
+            "实际回复": "主板内部标签按拆修核验；外壳防水标签变红按浸液核验。",
             "核心问题": "主板内部标签是否属于拆修痕迹",
             "判定依据": "需要结合主板内部痕迹核验",
             "产品类型": "手机",
@@ -4338,6 +4591,7 @@ def test_mimo_cluster_gate_rejects_false_merge_and_merges_confirmed_topic() -> N
             "数据ID": "B",
             "工单ID": "B",
             "聊天内容": "外壳防水标签变红是否需要判定",
+            "实际回复": "主板内部标签按拆修核验；外壳防水标签变红按浸液核验。",
             "核心问题": "外壳防水标签变红是否需要处理",
             "判定依据": "外壳标签不作为浸液判定依据",
             "产品类型": "手机",
@@ -4353,6 +4607,7 @@ def test_mimo_cluster_gate_rejects_false_merge_and_merges_confirmed_topic() -> N
             "数据ID": "C",
             "工单ID": "C",
             "聊天内容": "手机外壳防水标发红怎么处理",
+            "实际回复": "主板内部标签按拆修核验；外壳防水标签变红按浸液核验。",
             "核心问题": "外壳防水标签变红是否需要处理",
             "判定依据": "外壳标签不作为浸液判定依据",
             "产品类型": "手机",
@@ -4473,6 +4728,7 @@ def test_direct_mimo_clusters_one_to_many_without_embedding() -> None:
             "数据ID": record_id,
             "工单ID": record_id,
             "聊天内容": conversation,
+            "实际回复": "屏幕异常需要核对显示画面；摄像头无画面按功能异常处理。",
             "核心问题": conversation,
             "产品类型": "手机",
             "问题意图": "检测核验",
@@ -4815,6 +5071,7 @@ def test_direct_mimo_repairs_duplicate_atomic_ids_before_clustering() -> None:
         {
             "工单ID": "WO-DUP",
             "聊天内容": conversation,
+            "实际回复": "屏幕色斑按显示异常处理。",
             "核心问题": conversation,
             "产品类型": "手机",
         }
@@ -7988,6 +8245,7 @@ def test_direct_mimo_review_request_can_rejoin_compatible_family() -> None:
             "数据ID": record_id,
             "工单ID": record_id,
             "聊天内容": question,
+            "实际回复": "外壳碎裂与掉漆按各自外观项处理。",
             "核心问题": question,
             "产品类型": "手机",
         }
@@ -8871,6 +9129,7 @@ def test_cluster_admission_allows_clear_high_confidence_singleton_into_topic_sta
                 "数据ID": "ADMISSION-SINGLE-001",
                 "工单ID": "ADMISSION-SINGLE-001",
                 "聊天内容": "手机屏幕这个点是色斑吗？",
+                "实际回复": "这个点是色斑。",
                 "核心问题": "手机屏幕色斑如何判定",
                 "产品类型": "手机",
             }
@@ -8983,6 +9242,7 @@ def test_cluster_admission_blocks_low_confidence_cluster_before_downstream_model
                 "数据ID": record_id,
                 "工单ID": record_id,
                 "聊天内容": f"手机屏幕色斑如何判定{record_id}",
+                "实际回复": "屏幕色斑按显示异常处理。",
                 "核心问题": "手机屏幕色斑如何判定",
                 "产品类型": "手机",
             }
@@ -8995,30 +9255,327 @@ def test_cluster_admission_blocks_low_confidence_cluster_before_downstream_model
         clustering_meta=clustering_meta,
     )
 
-    assert len(topics) == 1
+    assert len(topics) == 2
     assert len(mapping) == 2
     assert not gaps
     assert not pending
-    assert {topic["主题样本数"] for topic in topics} == {2}
-    assert set(topics[0]["主题工单ID"].splitlines()) == {
-        "ADMISSION-LOW-001",
-        "ADMISSION-LOW-002",
-    }
-    assert all(
-        topic["主题状态"] == "provisional_multi_member_review_pending"
+    assert {topic["主题样本数"] for topic in topics} == {1}
+    assert {
+        work_order_id
         for topic in topics
-    )
-    assert all(topic["聚类准入状态"] == "暂定多成员主题候选" for topic in topics)
+        for work_order_id in topic["主题工单ID"].splitlines()
+    } == {"ADMISSION-LOW-001", "ADMISSION-LOW-002"}
     assert all(topic["聚类准入置信度"] == pytest.approx(0.68) for topic in topics)
     assert all(topic["是否重点复核"] == "是" for topic in topics)
-    assert all("低于自动放行阈值" in topic["聚类准入原因"] for topic in topics)
-    assert all("强制人工价值复核" in topic["聚类准入原因"] for topic in topics)
+    assert all(
+        "低于自动放行阈值" in topic["聚类准入原因"]
+        for topic in topics
+    )
     assert client.downstream_calls == []
     assert clustering_meta["cluster_admission_admitted_topics"] == 0
     assert clustering_meta["cluster_admission_pending_topics"] == 0
-    assert clustering_meta["cluster_admission_provisional_topics"] == 1
+    assert clustering_meta["cluster_admission_provisional_topics"] == 2
     assert clustering_meta["cluster_admission_provisional_candidates"] == 2
-    assert clustering_meta["provisional_same_boundary_coalesced"] == 1
+    assert clustering_meta["direct_low_confidence_split_clusters"] == 1
+    assert clustering_meta["direct_low_confidence_split_singletons"] == 2
+
+
+def test_standard_hit_body_uses_standard_knowledge_without_case_recap() -> None:
+    standard = StandardCatalogItem(
+        standard_id="STD-COLOR-001",
+        title="手机整机颜色判定",
+        category_l1="外观问题",
+        category_l2="颜色",
+        knowledge_type="质检标准",
+        standard_path="【外观问题】-【颜色】",
+        keywords=["手机", "整机颜色", "实物颜色"],
+        scope="手机-通用",
+        response_snippet="整机颜色以实物颜色为准录入，系统拉取颜色仅作参考。",
+        status="published",
+        version="v1",
+    )
+    row = {
+        "数据ID": "STANDARD-COLOR-001",
+        "工单ID": "STANDARD-COLOR-001",
+        "_原子知识ID": "STANDARD-COLOR-001-U1",
+        "_人工答复门禁状态": "answered",
+        "产品类型": "手机",
+        "核心问题": "整机颜色项如何判定",
+        "人工核心问题": "整机颜色项如何判定",
+        "对象/部位": "整机颜色项",
+        "异常现象": "系统拉取颜色与实物颜色不一致",
+        "判定依据": "回收师反馈系统拉取显示冰魄白，实物偏米黄，并上传质检录入截图。",
+        "人工判定结论": "颜色一律以实物为准录入。",
+        "历史实际回复": "颜色一律以实物为准录入，系统拉取颜色仅作参考。",
+        "_原子实际回复": "颜色一律以实物为准录入，系统拉取颜色仅作参考。",
+        "聊天内容": (
+            "回收师反馈质检录入系统中拉取显示的颜色（冰魄白）"
+            "与实物颜色（偏米黄）不一致，询问颜色项应如何判定。"
+        ),
+    }
+
+    candidate = workflow_module._topic_candidate_row(
+        "TOP-STANDARD-COLOR",
+        ("rule", "手机", "颜色"),
+        [row],
+        [(standard, 0.98)],
+        {
+            "title": "手机整机颜色如何判定",
+            "content": "回收师反馈颜色不一致，请按实物颜色判断。",
+            "recommended_reply": "颜色以实物为准录入。",
+            "knowledge_form": "具体判定",
+            "content_type": "定义型",
+            "confidence": 0.95,
+            "standard_refs": [standard.standard_path],
+            "applicable_scope": "手机",
+            "applicable_brands": [],
+            "applicable_models": [],
+        },
+        "test-model",
+        "test",
+        "test",
+        "test",
+        "",
+        "topic_model_labeled",
+        0.75,
+        use_standard_references=True,
+    )
+
+    assert candidate["知识内容"] == (
+        "1. 整机颜色以实物颜色为准录入，系统拉取颜色仅作参考。"
+    )
+    assert "回收师反馈" not in candidate["知识内容"]
+    assert "冰魄白" not in candidate["知识内容"]
+    assert "截图" not in candidate["知识内容"]
+    assert "询问" not in candidate["知识内容"]
+
+
+def test_direct_reconcile_does_not_merge_low_confidence_same_topic_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def row(record_id: str) -> dict[str, object]:
+        return {
+            "数据ID": record_id,
+            "工单ID": record_id,
+            "_原子知识ID": f"{record_id}-U1",
+            "_聚类裁决提供方": "mimo-direct",
+            "_聚类主题标题": "手机屏幕色斑判定",
+            "产品类型": "手机",
+            "模型主题一级分类": "显示问题",
+            "模型主题二级分类": "色斑",
+            "问题意图": "标准判定",
+            "对象/部位": "屏幕",
+            "异常现象": "色斑",
+            "判定目标": "判断屏幕异常是否属于色斑",
+            "解题方式": "结合聊天证据核验",
+            "主标准路径": "屏幕色斑判定",
+            "_原子平台": "通用",
+            "_原子品牌": "通用",
+            "_原子机型范围": "通用",
+            "_原子阈值例外": "无明确阈值",
+            "核心问题": "手机屏幕色斑如何判定",
+        }
+
+    class LowConfidenceReviewer:
+        config = SimpleNamespace(model="low-confidence-reconcile-test")
+
+        def review_cluster_membership(self, *_args, **_kwargs):
+            return MimoLabelResult(
+                candidate={
+                    "decision": "同一主题",
+                    "topic_label": "手机屏幕色斑判定",
+                    "reason": "语义相似，但合并把握不足。",
+                    "confidence": 0.70,
+                },
+                request_audit={},
+                response_audit={},
+            )
+
+    groups = [
+        (("direct_mimo", "first"), [row("LOW-A")]),
+        (("direct_mimo", "second"), [row("LOW-B")]),
+    ]
+    meta: dict[str, object] = {}
+    monkeypatch.setattr(
+        workflow_module,
+        "_direct_reconcile_rule_merge_reason",
+        lambda _candidate, _target, _similarity: "",
+    )
+
+    reconciled = workflow_module._reconcile_direct_topic_groups(
+        groups,
+        LowConfidenceReviewer(),
+        meta,
+    )
+
+    assert len(reconciled) == 2
+    assert meta["direct_reconcile_approved"] == 0
+    assert meta["direct_reconcile_uncertain"] == 1
+    assert all(item[1][0]["_聚类需要复核"] for item in reconciled)
+    assert all(
+        "低于保守合并门槛" in item[1][0]["人工优先复核原因"]
+        for item in reconciled
+    )
+
+
+def test_case_only_rule_draft_does_not_replace_short_source_answer_with_template():
+    candidate = workflow_module._topic_rule_draft(
+        "TOP-SHORT-ANSWER",
+        [{
+            "数据ID": "source-short",
+            "工单ID": "work-short",
+            "产品类型": "耳机/耳麦",
+            "核心问题": "序列号模糊看不清如何处理",
+            "人工判定结论": "建议邮寄回收",
+            "判定结论": "建议邮寄回收",
+            "聊天内容": "问：序列号看不清怎么办？答：建议邮寄回收。",
+            "历史实际回复": "建议邮寄回收",
+            "一级分类": "基本情况",
+            "二级分类": "使用情况",
+        }],
+        [],
+        use_standard_references=False,
+    )
+    assert "建议邮寄回收" in candidate["content"]
+    assert "明确待确认的对象" not in candidate["content"]
+    assert "补充支持判断的截图" not in candidate["content"]
+
+
+def test_rule_draft_cannot_pass_by_copying_generic_historical_reply():
+    rows = [{
+        "数据ID": "generic-source", "工单ID": "generic-work", "产品类型": "笔记本",
+        "核心问题": "笔记本使用情况如何判定",
+        "历史实际回复": (
+            "明确待确认的对象、现象和对应问题。"
+            "补充支持判断的截图、照片、视频或查询结果。"
+            "结合案例证据确认适用条件、边界和例外。"
+            "无法明确判断时，补充证据后再判定。"
+        ),
+    }]
+    candidate = workflow_module._topic_rule_draft(
+        "TOP-GENERIC-SOURCE", rows, [], use_standard_references=False,
+    )
+    assert workflow_module._topic_draft_is_generic(candidate, rows)
+
+
+def test_provisional_candidates_keep_distinct_ids_for_same_source_atomic_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_key = (
+        "boundary",
+        "自营回收",
+        "笔记本",
+        "笔记本零部件更换",
+        "separatebysubjectandevidence",
+        "笔记本零部件更换",
+        "零部件更换",
+        "",
+        "",
+        "通用",
+        "通用",
+        "通用",
+        "无明确阈值",
+    )
+    source_id = "SAME-SOURCE-001"
+    atomic_rows = [
+        {
+            "数据ID": source_id,
+            "来源记录ID": source_id,
+            "工单ID": "WO-SAME-SOURCE-001",
+            "原始工单ID": "WO-SAME-SOURCE-001",
+            "_原子知识ID": f"{source_id}-U1",
+            "聊天内容": "触控板位置有第三方维修标签怎么处理？",
+            "实际回复": "触控板第三方维修标签按拆修处理；深色表面细小白色痕迹按外观磕点处理。",
+            "核心问题": "笔记本触控板位置第三方维修标签如何判定",
+            "产品类型": "笔记本",
+            "回收业务层级": "自营回收",
+            "问题意图": "标准判定",
+            "对象/部位": "触控板位置",
+            "异常现象": "第三方维修标签",
+            "判定目标": "判定是否按拆修处理",
+            "解题方式": "按拆修规则处理",
+            "模型主题一级分类": "笔记本零部件更换",
+            "模型主题二级分类": "零部件更换",
+            "主题置信度": 0.62,
+            "需要人工复核": "是",
+        },
+        {
+            "数据ID": source_id,
+            "来源记录ID": source_id,
+            "工单ID": "WO-SAME-SOURCE-001",
+            "原始工单ID": "WO-SAME-SOURCE-001",
+            "_原子知识ID": f"{source_id}-U2",
+            "聊天内容": "深色表面细小白色痕迹算磕点吗？",
+            "实际回复": "触控板第三方维修标签按拆修处理；深色表面细小白色痕迹按外观磕点处理。",
+            "核心问题": "笔记本深色表面细小白色痕迹如何判定",
+            "产品类型": "笔记本",
+            "回收业务层级": "自营回收",
+            "问题意图": "标准判定",
+            "对象/部位": "深色表面",
+            "异常现象": "细小白色痕迹",
+            "判定目标": "判定是否算磕点",
+            "解题方式": "按外观磕点处理",
+            "模型主题一级分类": "笔记本零部件更换",
+            "模型主题二级分类": "零部件更换",
+            "主题置信度": 0.45,
+            "需要人工复核": "是",
+        },
+    ]
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_direct_mimo_topic_groups",
+        lambda *_args, **_kwargs: (
+            [(shared_key, atomic_rows)],
+            {
+                "effective_mode": "direct_mimo",
+                "provider": "test",
+                "model": "test-model",
+                "cluster_count": 1,
+            },
+        ),
+    )
+
+    class NoDownstreamMimo:
+        config = SimpleNamespace(model="provisional-id-test")
+
+        def classify_topic_stage(self, *_args, **_kwargs):
+            raise AssertionError("暂定单主题候选不应进入主题级模型分类")
+
+        def label_topic(self, *_args, **_kwargs):
+            raise AssertionError("暂定单主题候选不应进入知识转写")
+
+        def review_topic(self, *_args, **_kwargs):
+            raise AssertionError("暂定单主题候选不应进入内容初审")
+
+    topics, mapping, gaps, pending = build_topic_review_rows(
+        [
+            {
+                "数据ID": source_id,
+                "工单ID": "WO-SAME-SOURCE-001",
+                "聊天内容": "占位输入，仅用于触发 direct_mimo 聚类分支。",
+                "实际回复": "触控板第三方维修标签按拆修处理；深色表面细小白色痕迹按外观磕点处理。",
+                "核心问题": "占位问题",
+                "产品类型": "笔记本",
+            }
+        ],
+        mimo_client=NoDownstreamMimo(),
+        clustering_mode="direct_mimo",
+        use_standard_references=False,
+        enforce_cluster_admission=True,
+    )
+
+    assert len(topics) == 2
+    assert len(mapping) == 2
+    assert not gaps
+    assert not pending
+    assert {topic["主题状态"] for topic in topics} == {
+        "provisional_singleton_review_pending"
+    }
+    assert len({topic["主题ID"] for topic in topics}) == 2
+    assert len({topic["知识ID"] for topic in topics}) == 2
+    assert all("明确待确认的对象" not in topic["知识内容"] for topic in topics)
+    assert all("补充支持判断的截图" not in topic["推荐回复"] for topic in topics)
 
 
 def test_cluster_admission_blocks_model_review_request_even_when_confidence_is_high() -> None:
@@ -9099,6 +9656,7 @@ def test_cluster_admission_blocks_model_review_request_even_when_confidence_is_h
                 "数据ID": record_id,
                 "工单ID": record_id,
                 "聊天内容": f"手机屏幕色斑如何判定{record_id}",
+                "实际回复": "屏幕色斑按显示异常处理。",
                 "核心问题": "手机屏幕色斑如何判定",
                 "产品类型": "手机",
             }
@@ -9160,6 +9718,7 @@ def test_cluster_admission_blocks_direct_mimo_rule_fallback_before_topic_stage(
                 "数据ID": "ADMISSION-FALLBACK-001",
                 "工单ID": "ADMISSION-FALLBACK-001",
                 "聊天内容": "手机屏幕色斑如何判定",
+                "实际回复": "屏幕色斑按显示异常处理。",
                 "核心问题": "手机屏幕色斑如何判定",
                 "产品类型": "手机",
                 "问题意图": "标准判定",
@@ -9235,6 +9794,7 @@ def test_direct_mimo_deduplicates_repeated_source_rows_before_clustering() -> No
             "数据ID": "A",
             "工单ID": "WO-001",
             "聊天内容": "屏幕色斑怎么判",
+            "实际回复": "屏幕色斑按显示异常处理。",
             "核心问题": "手机屏幕色斑如何判定",
             "产品类型": "手机",
             "问题意图": "标准判定",
@@ -9246,6 +9806,7 @@ def test_direct_mimo_deduplicates_repeated_source_rows_before_clustering() -> No
             "数据ID": "B",
             "工单ID": "WO-001",
             "聊天内容": "屏幕色斑怎么判",
+            "实际回复": "屏幕色斑按显示异常处理。",
             "核心问题": "手机屏幕色斑如何判定",
             "产品类型": "手机",
             "问题意图": "标准判定",
@@ -9359,6 +9920,7 @@ def test_direct_mimo_auto_merges_same_object_same_phenomenon_singletons() -> Non
             "数据ID": "A",
             "工单ID": "A",
             "聊天内容": "平板屏幕点状瑕疵大于1mm怎么判",
+            "实际回复": "屏幕点状瑕疵大于1mm按异常处理。",
             "核心问题": "平板屏幕点状瑕疵如何判定",
             "产品类型": "平板",
             "问题意图": "标准判定",
@@ -9370,6 +9932,7 @@ def test_direct_mimo_auto_merges_same_object_same_phenomenon_singletons() -> Non
             "数据ID": "B",
             "工单ID": "B",
             "聊天内容": "平板屏幕点状瑕疵怎么按阈值判",
+            "实际回复": "屏幕点状瑕疵大于1mm按异常处理。",
             "核心问题": "平板屏幕点状瑕疵如何判定",
             "产品类型": "平板",
             "问题意图": "标准判定",
@@ -9475,6 +10038,7 @@ def test_direct_mimo_post_guard_splits_remerged_multi_topic_atoms() -> None:
             "数据ID": "CASE-001",
             "工单ID": "CASE-001",
             "聊天内容": "面容实际不能用；摄像头无画面。",
+            "实际回复": "面容不能使用按面容功能异常处理；摄像头无画面按摄像头功能异常处理。",
             "核心问题": "面容和摄像头怎么判",
             "产品类型": "手机",
         }
@@ -9617,6 +10181,7 @@ def test_direct_mimo_reconciles_high_similarity_singletons() -> None:
             "数据ID": record_id,
             "工单ID": record_id,
             "聊天内容": question,
+            "实际回复": "电池健康度评估中时需等待评估完成后确认。",
             "核心问题": question,
             "产品类型": "手机",
             "问题意图": "标准判定",
@@ -9701,6 +10266,7 @@ def test_direct_mimo_marks_failed_batches_and_skips_reconciliation() -> None:
             "数据ID": record_id,
             "工单ID": record_id,
             "聊天内容": question,
+            "实际回复": "电池健康度评估中时需等待评估完成后确认。",
             "核心问题": question,
             "产品类型": "手机",
             "问题意图": "标准判定",
@@ -10066,6 +10632,62 @@ def test_unavailable_image_without_chat_goes_to_evidence_gap() -> None:
     assert "不可用:1" in gaps[0]["图片处理状态"]
 
 
+def test_single_record_transcription_prompt_does_not_force_missing_steps_or_reply_length():
+    client = MimoClient(MimoConfig(api_key="test", base_url="https://example.invalid/v1", model="test"))
+    captured = []
+    candidate = {
+        "title": "折叠屏手机折叠后关机如何判定", "subtitles": [],
+        "content": "1. 折叠屏手机折叠后关机时，按自动关机判定。",
+        "recommended_reply": "折叠屏手机折叠后关机时，按自动关机判定。",
+        "content_type": "定义型", "category_l1": "手机", "category_l2": "开机情况",
+        "layer": "L2", "knowledge_form": "具体判定", "standard_refs": [],
+        "applicable_scope": "手机", "applicable_brands": [], "applicable_models": [],
+        "confidence": 0.9, "reasoning_summary": "实答支持。",
+        "needs_human_review": True, "image_evidence_summary": "无图片。",
+    }
+
+    def post(payload):
+        captured.append(payload)
+        return {"choices": [{"message": {"content": json.dumps(candidate, ensure_ascii=False)}}]}
+
+    client._post = post
+    result = client.label({"聊天内容": "回收师：折叠后关机\n答疑：判自动关机"}, [], [])
+    prompt = captured[0]["messages"][1]["content"][0]["text"]
+    assert "80～180 字" not in prompt
+    assert "此时 knowledge_form 必须为“流程方法”" not in prompt
+    assert "不得为填充正文补写检查步骤或补拍要求" in prompt
+    assert "推荐回复可以与正文相同" in prompt
+    assert result.candidate["recommended_reply"] == candidate["recommended_reply"]
+
+
+@pytest.mark.parametrize("standards_enabled", [False, True])
+def test_topic_signal_request_records_the_actual_resolution_instead_of_suggesting_steps(standards_enabled):
+    client = MimoClient(MimoConfig(api_key="test", base_url="https://example.invalid/v1", model="test"))
+    captured = []
+    signal = {
+        "intent": "标准判定", "subject": "开机情况", "phenomenon": "折叠后关机",
+        "resolution_mode": "判自动关机", "category_l1": "手机", "category_l2": "开机情况",
+        "topic_tags": ["意图:标准判定", "对象:开机情况", "现象:折叠后关机"],
+        "standard_refs": [], "requires_images": False, "image_evidence_summary": "无图片。",
+        "reasoning_summary": "仅记录实答。", "confidence": 0.9, "needs_human_review": True,
+    }
+
+    def post(payload):
+        captured.append(payload)
+        return {"choices": [{"message": {"content": json.dumps(signal, ensure_ascii=False)}}]}
+
+    client._post = post
+    result = client.analyze_topic_signal(
+        {"聊天内容": "回收师：折叠后关机\n答疑：判自动关机"}, [], [],
+        use_standard_references=standards_enabled,
+    )
+    prompt = captured[0]["messages"][1]["content"][0]["text"]
+    assert "最终应沉淀的处理方式" not in prompt
+    assert "resolution_mode 只记录会话中实际给出的最终处理方式" in prompt
+    assert "不得把补拍、复测、查询或补资料建议写成已发生的处理" in prompt
+    assert result.candidate["resolution_mode"] == "判自动关机"
+
+
 def test_mimo_client_retries_invalid_json_once() -> None:
     client = MimoClient(MimoConfig(api_key="test", base_url="https://example.com/v1", model="mimo-v2.5-test"))
     responses = iter(
@@ -10177,6 +10799,7 @@ def test_mimo_cannot_override_uncertainty_process_guardrail() -> None:
             {
                 "工单ID": "UNCERTAIN-001",
                 "聊天内容": "屏幕上疑似有色斑，不确定是否符合标准。",
+                "实际回复": "现有图片暂无法确认。",
                 "核心问题": "手机屏幕疑似色斑如何确认",
                 "判定结论": "现有图片暂无法确认。",
                 "判定依据": "证据不足，需要补拍白屏图片。",
@@ -10895,7 +11518,7 @@ def test_topic_transcription_uses_representative_source_facts_and_matching_case_
         if fact["source_record_id"] == "HINGE-10"
     )
     assert boundary_fact["human_core_problem"] == "人工确认闭合瞬间单次异响是否属于转轴异响"
-    assert boundary_fact["human_judgment_conclusion"] == "闭合瞬间的单次异响也属于转轴异响"
+    assert boundary_fact["human_judgment_conclusion"].rstrip("。") == "闭合瞬间的单次异响也属于转轴异响"
     assert boundary_fact["image_urls"] == ["https://example.com/hinge-boundary.jpg"]
     assert all(
         "video_urls" not in fact
@@ -10911,7 +11534,13 @@ def test_topic_transcription_uses_representative_source_facts_and_matching_case_
     assert "HINGE-10" in topic["主题事实引用"]
     assert topic["图例"] == "https://example.com/hinge-boundary.jpg"
     assert "HINGE-10" in topic["主题图例来源"]
-    assert topic["主题视频链接"] == "https://example.com/hinge-boundary.mp4"
+    assert topic["主题视频链接"] == ""
+    media_items = json.loads(topic["媒体证据包"])
+    assert any(
+        item["媒体类型"] == "video"
+        and "未解析视频" in item["审计风险"]
+        for item in media_items
+    )
 
 
 def test_topic_evidence_package_json_remains_valid_when_source_text_is_large() -> None:
@@ -10949,7 +11578,7 @@ def test_topic_evidence_package_json_remains_valid_when_source_text_is_large() -
     ]
 
 
-def test_model_review_cannot_approve_an_isolated_short_conclusion() -> None:
+def test_model_review_can_approve_a_source_backed_single_sentence() -> None:
     class ShortConclusionMimo:
         config = SimpleNamespace(model="mimo-short-conclusion-test")
 
@@ -11026,6 +11655,7 @@ def test_model_review_cannot_approve_an_isolated_short_conclusion() -> None:
             "数据ID": f"SHORT-{index}",
             "工单ID": f"SHORT-{index}",
             "聊天内容": "笔记本闭合瞬间出现单次异响，这种情况是否属于转轴异响？",
+            "实际回复": "闭合瞬间的单次异响也属于转轴异响。",
             "核心问题": "笔记本闭合瞬间单次异响如何判定",
             "原始核心问题": "人工确认闭合瞬间单次异响是否属于转轴异响",
             "判定结论": "闭合瞬间的单次异响也属于转轴异响",
@@ -11054,9 +11684,9 @@ def test_model_review_cannot_approve_an_isolated_short_conclusion() -> None:
     assert len(topics) == 1
     assert not gaps
     assert not pending
-    assert topics[0]["模型初标结论"] == "需修改"
-    assert "知识正文过短" in topics[0]["模型初标原因"]
-    assert topics[0]["模型初标重点复核"] == "是"
+    assert topics[0]["模型初标结论"] == "通过"
+    assert "知识正文过短" not in topics[0]["模型初标原因"]
+    assert topics[0]["模型质量状态"] == "passed"
 
 
 def test_standard_mode_model_review_cannot_override_deterministic_content_gate() -> None:
@@ -11229,10 +11859,10 @@ def test_rule_fallback_organizes_human_judgment_and_keeps_missing_standard_blank
     assert not gaps
     assert not pending
     content = topics[0]["知识内容"]
-    assert "人工确认闭合瞬间单次异响是否属于转轴异响" in content
-    assert "声音出现时机为闭合瞬间" in content
+    assert "人工确认" not in content
+    assert "闭合瞬间" in content
     assert "闭合瞬间的单次异响也属于转轴异响" in content
-    assert "来源未说明的其他情形不得直接套用" in content
+    assert "来源未说明的其他情形不得直接套用" not in content
     assert all(
         marker not in content
         for marker in ("问题背景：", "判断对象：", "来源核验依据：", "人工处理结论：")
@@ -11446,7 +12076,7 @@ def test_single_switch_lite_case_does_not_expand_to_all_game_consoles() -> None:
     assert topic["适用机型"] == "Switch Lite"
     assert "日版 Switch Lite 限定款" in topic["知识内容"]
     assert "日版 Switch Lite 限定款" in topic["推荐回复"]
-    assert "属于可回收机型" in topic["知识内容"]
+    assert "可以回收" in topic["知识内容"]
     assert "平台对游戏机回收" not in topic["知识内容"]
 
 
@@ -11456,6 +12086,7 @@ def test_unavailable_case_image_is_not_attached_and_requires_manual_supplement()
             "数据ID": f"BROKEN-IMAGE-{index}",
             "工单ID": f"BROKEN-IMAGE-{index}",
             "聊天内容": "请看图确认屏幕异常位置。",
+            "实际回复": "需要结合清晰案例图确认屏幕异常位置。",
             "核心问题": "屏幕异常如何通过案例图核验",
             "原始核心问题": "人工确认屏幕异常位置",
             "判定结论": "需要结合清晰案例图确认",
@@ -11579,6 +12210,7 @@ def test_model_cannot_add_threshold_missing_from_source_facts() -> None:
             "数据ID": f"NO-THRESHOLD-{index}",
             "工单ID": f"NO-THRESHOLD-{index}",
             "聊天内容": "笔记本闭合瞬间只响了一次，这种情况怎么判断？",
+            "实际回复": "闭合瞬间的单次异响也属于转轴异响。",
             "核心问题": "闭合瞬间单次异响如何判定",
             "原始核心问题": "人工确认闭合瞬间单次异响是否属于转轴异响",
             "判定结论": "闭合瞬间的单次异响也属于转轴异响",
@@ -11785,12 +12417,12 @@ def test_topic_reply_rebuilds_when_historical_reply_contains_other_atomic_topics
             "主题转写状态",
         )
     }
-    assert "屏幕右上角紫色圆斑" in reply
+    assert "右上角紫色圆斑" in reply
     assert all(term not in reply for term in ("副屏", "型号", "卡顿"))
     assert "建议你好" not in reply
     assert "，；" not in reply
     assert "，。" not in reply
-    assert "推荐回复包含主题外内容，已按当前主题正文重建" in topics[0]["校验备注"]
+    assert "副屏" not in reply and "型号" not in reply
     assert topics[0]["模型初标重点复核"] == "是"
 
 
@@ -13027,12 +13659,9 @@ def test_headphone_account_lock_case_is_not_transcribed_as_knowledge() -> None:
     assert topics[0]["主题沉淀价值"] == "不值得沉淀"
     assert topics[0]["主题状态"] == "case_review_pending"
     assert topics[0]["主题转写状态"] == "skipped_account_lock_case"
-    assert "未生成知识草稿" in topics[0]["知识内容"]
-    assert "不回收" not in topics[0]["知识内容"]
-    assert topics[0]["推荐回复"] == (
-        "该记录为单一激活锁案例，需人工核对来源事实与对应口径后处理，"
-        "不自动生成推荐回复。"
-    )
+    assert topics[0]["知识内容"] == ""
+    assert "未生成知识草稿" in topics[0]["模型初标原因"]
+    assert topics[0]["推荐回复"] == ""
     assert mimo.calls == []
     assert standard_calls == []
 

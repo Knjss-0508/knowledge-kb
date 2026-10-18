@@ -26,7 +26,18 @@ from .auto_review import (
     apply_auto_review_annotation,
 )
 from .audit import AuditStore
-from .ai_result import AI_RESULT_FIELDS, parse_ai_result
+from .answer_evidence import (
+    fragment_matches,
+    has_any_human_answer,
+    source_answer_coverage_issues,
+    split_answer_fragments,
+    verify_human_answer,
+)
+from .ai_result import (
+    AI_RESULT_FIELDS,
+    parse_ai_result,
+    parse_ai_result_question_reply_pairs,
+)
 from .business_taxonomy import (
     AGGREGATE_BUSINESS_LINE_CODE,
     SELF_OPERATED_BUSINESS_LINE_CODE,
@@ -58,12 +69,15 @@ from .cz_integration import (
 from .draft_quality import (
     assess_case_only_draft,
     has_source_specific_case_content,
+    strip_case_audit_boilerplate,
 )
 from .embedding import EmbeddingClient, EmbeddingError
 from .excel_io import read_workbook_rows, write_rows_to_workbook
 from .images import ImageDownloader, ImageEvidence, split_image_urls
 from .knowledge_categories import knowledge_category_from_topic_stage
 from .knowledge_value import (
+    KNOWLEDGE_VALUE_EVIDENCE_GUARD_VERSION,
+    concrete_judgment_label,
     has_draftable_source_rule,
     has_explicit_reusable_knowledge,
 )
@@ -91,6 +105,14 @@ from .product_taxonomy import (
     product_taxonomy_metadata,
     resolve_product_category,
 )
+from .question_standardization import (
+    QUESTION_STANDARDIZATION_VERSION,
+    standard_question_conflict_reason,
+    standard_question_sort_key,
+    standardize_atomic_question,
+    threshold_conflict_reason,
+    thresholds_need_evidence_review,
+)
 from .terminology import ensure_terminology_loaded
 from .topic_registry import TopicRegistry, TopicResolution
 from .topic_transcription import audit_topic_draft
@@ -114,7 +136,7 @@ DEFAULT_CLUSTER_AUTO_MERGE_THRESHOLD = 0.92
 DEFAULT_CLUSTER_REVIEW_LIMIT = 100
 DEFAULT_CLUSTER_ADMISSION_MIN_CONFIDENCE = 0.75
 CLUSTER_ADMISSION_POLICY_VERSION = (
-    "cluster-admission-v2-hard-scope-gate-provisional-singleton"
+    "cluster-admission-v4-human-answer-required"
 )
 MAX_CLUSTER_REVIEW_CANDIDATES = 3
 DEFAULT_DIRECT_RECONCILE_FLOOR = 0.40
@@ -128,12 +150,13 @@ DEFAULT_DIRECT_MIMO_MAX_WORKERS = 4
 DEFAULT_DIRECT_ATOMIC_BATCH_SIZE = 4
 DEFAULT_DIRECT_ATOMIC_BATCH_MAX_CHARS = 16000
 DIRECT_MIMO_PROGRESS_VERSION = 3
-DIRECT_RECONCILE_ALGORITHM_VERSION = "direct-reconcile-v8-brand-waterproof-and-duplicate-boundaries"
+DIRECT_RECONCILE_ALGORITHM_VERSION = "direct-reconcile-v9-atomic-evidence-and-candidate-recall"
 DIRECT_LOCAL_RESCUE_ALGORITHM_VERSION = (
-    "direct-local-rescue-v6-atomic-completeness-protection"
+    "direct-local-rescue-v7-rebuild-component-standard-question"
 )
 DIRECT_RECONCILE_QUERY_RULE_FLOOR = 0.25
 DIRECT_RECONCILE_FAMILY_RULE_FLOOR = 0.40
+TOPIC_OUTPUT_EVIDENCE_VERSION = "topic-output-evidence-v11-final-draft-review"
 DEFAULT_TOPIC_MODEL_CALL_LIMIT = 1000
 CLASSIFICATION_CATALOG_ENV = "ANSWER_HUB_CLUSTERING_CLASSIFICATION_CATALOG"
 CLUSTER_V1_ACCURACY_THRESHOLD = 0.80
@@ -676,6 +699,11 @@ CASE_KNOWLEDGE_COLUMNS = [
 
 KNOWLEDGE_REVIEW_EXTENSION_COLUMNS = [
     "推荐回复",
+    "推荐回复来源类型",
+    "推荐回复来源记录ID",
+    "推荐回复是否模型改写",
+    "推荐回复原文",
+    "推荐回复改写文本",
     "是否值得沉淀",
     "是否可用",
     "如何修改",
@@ -716,6 +744,8 @@ TOPIC_CANDIDATE_COLUMNS = [
     "主题图例来源",
     "主题视频来源",
     "主题视频链接",
+    "媒体证据包",
+    "媒体风险数",
     "主题检索标准Top5",
     "主题初标复核标准Top5",
     "主题标准版本",
@@ -749,6 +779,11 @@ CLUSTER_ONLY_COLUMNS = [
     "主题对象/部位",
     "主题异常现象",
     "主题解题方式",
+    "标准问题",
+    "标准问题归一键",
+    "标准问题标准化状态",
+    "标准问题标准化原因",
+    "标准问题标准化版本",
     "主题来源记录ID",
     "主题工单ID",
     "历史主题处理结果",
@@ -796,6 +831,13 @@ TOPIC_SOURCE_MAPPING_COLUMNS = [
     "图片链接",
     "案例图引用",
     "视频链接",
+    "媒体证据ID",
+    "原子问题ID",
+    "媒体相关性状态",
+    "媒体可见事实",
+    "媒体选择原因",
+    "媒体审核状态",
+    "媒体审计风险",
     "图片处理状态",
     "视频处理状态",
     "回收业务层级",
@@ -835,6 +877,21 @@ TOPIC_SOURCE_MAPPING_COLUMNS = [
     "主标准路径",
     "关联标准项",
     "模型运行ID",
+]
+
+MEDIA_EVIDENCE_COLUMNS = [
+    "媒体证据ID",
+    "媒体类型",
+    "媒体链接",
+    "来源记录ID",
+    "原子问题ID",
+    "主题ID",
+    "相关性状态",
+    "可见事实",
+    "选择原因",
+    "审核状态",
+    "解析状态",
+    "审计风险",
 ]
 
 TOPIC_MODEL_DRAFT_COLUMNS = [
@@ -959,6 +1016,12 @@ def _apply_ai_result_fields(row: dict[str, Any]) -> list[str]:
     elif raw_value not in (None, ""):
         row["ai_result"] = raw_value
     parsed = parse_ai_result(raw_value)
+    pairing = parse_ai_result_question_reply_pairs(raw_value)
+    row["_AI结果有序问答对"] = pairing["pairs"]
+    row["AI结果问答配对状态"] = pairing["status"]
+    row["AI结果核心问题数"] = pairing["question_count"]
+    row["AI结果参考回复数"] = pairing["reply_count"]
+    row["AI结果问答配对说明"] = pairing["reason"]
     conflicts: list[str] = []
     for field in AI_RESULT_FIELDS:
         parsed_value = _clean_text(parsed.get(field))
@@ -1154,19 +1217,69 @@ def _human_evidence_conflict_reason(source_row: dict[str, Any]) -> str:
     return ""
 
 
-def _historical_actual_reply(row: dict[str, Any]) -> str:
+def _explicit_work_order_actual_reply(row: dict[str, Any]) -> str:
     for field in (
-        "历史实际回复",
         "实际回复",
         "答疑回复",
         "回复内容",
         "客服回复",
-        "参考话术",
     ):
         value = _normalize_lines(row.get(field))
         if value:
             return value
+    historical = _normalize_lines(row.get("历史实际回复"))
+    if (
+        historical
+        and _clean_text(row.get("历史实际回复来源类型"))
+        != "second_part_reference_reply"
+    ):
+        return historical
     return ""
+
+
+def _historical_actual_reply(row: dict[str, Any]) -> str:
+    if row.get("_人工答复门禁状态") == "answered":
+        return _normalize_lines(row.get("_原子实际回复"))
+    return _explicit_work_order_actual_reply(row)
+
+
+def _has_ordered_atomic_reply_contract(row: dict[str, Any]) -> bool:
+    return bool(
+        _clean_text(row.get("_原子知识ID") or row.get("原子知识ID"))
+        and (
+            "_原子问答配对状态" in row
+            or "_原子参考话术" in row
+        )
+    )
+
+
+def _ordered_atomic_source_ids(rows: list[dict[str, Any]]) -> set[str]:
+    return {
+        _reply_source_record_id(row)
+        for row in rows
+        if _has_ordered_atomic_reply_contract(row)
+        and _reply_source_record_id(row)
+    }
+
+
+def _atomic_reply_requires_scoping(row: dict[str, Any]) -> bool:
+    return _has_ordered_atomic_reply_contract(row) and not (
+        row.get("_原子来源问题数") == 1
+        and not _clean_text(row.get("_原子问答配对状态"))
+    )
+
+
+def _topic_reference_reply(row: dict[str, Any]) -> str:
+    if _has_ordered_atomic_reply_contract(row):
+        return _normalize_lines(
+            row.get("_原子参考话术") or row.get("原子参考话术")
+        )
+    reference_reply = _normalize_lines(row.get("参考话术"))
+    if reference_reply:
+        return reference_reply
+    return _normalize_lines(
+        parse_ai_result(_ai_result_source_value(row)).get("参考话术")
+    )
 
 
 def _split_keywords(value: Any) -> list[str]:
@@ -1338,6 +1451,11 @@ def _untranscribed_topic_title(query: dict[str, Any], rows: list[dict[str, Any]]
             natural_title = _as_natural_question_title(title)
             if natural_title:
                 return natural_title
+
+    if any(row.get("_原子知识ID") for row in rows):
+        structured_title = _structured_topic_question_title(query, rows)
+        if structured_title:
+            return structured_title
 
     core_question_mismatch = bool(
         _clean_text(query.get("核心问题"))
@@ -3058,7 +3176,20 @@ def _finalize_topic_subtitles(
             if not rebuilt:
                 continue
             value = rebuilt
-        value = _strip_specific_models_from_text(value, models)
+        if models is None:
+            value = _strip_specific_models_from_text(value)
+        else:
+            mentioned_models = _source_specific_model_values([value])
+            if any(
+                not _applicability_value_is_source_supported(model, models)
+                for model in mentioned_models
+            ):
+                continue
+            if models and not any(
+                _normalized_topic_claim(model) in _normalized_topic_claim(value)
+                for model in models
+            ):
+                continue
         value = re.sub(r"^(?:意图|对象|现象|处理|标准)\s*[:：]\s*", "", value)
         if not value:
             continue
@@ -3082,48 +3213,88 @@ def _finalize_topic_subtitles(
         if len(normalized) >= 3:
             break
 
-    if not normalized:
+    if not normalized and raw_subtitles is None:
         normalized = _fallback_recall_subtitles(title, content, content_type)
     # 副标题只是检索辅助，不再输出多个问题，避免一个候选混入不同主题。
     return normalized[0] if normalized else ""
 
 
 def _build_experience_review_content(query: dict[str, Any]) -> str:
-    """Build a conservative body when no authoritative standard is available."""
-    subject = _safe_join(
+    """Build a short source-backed rule when standard lookup misses.
+
+    A standard miss is not the same as an unanswered question.  Only the
+    verified answer/conclusion is allowed into this body; the question,
+    screenshot narration and audit restrictions stay in evidence fields.
+    """
+    verified_answer_exists = bool(
+        _clean_text(query.get("人工判定结论"))
+        or _clean_text(query.get("历史实际回复"))
+    )
+    candidates = [
+        _clean_text(query.get("人工判定结论")),
+        _clean_text(query.get("参考话术")) if verified_answer_exists else "",
+        _clean_text(query.get("历史实际回复")),
+        _clean_text(query.get("判定结论")),
+        _clean_text(query.get("解题方式")),
+    ]
+    context = _safe_join(
         [
-            _clean_text(query.get("对象/部位")),
+            _clean_text(query.get("产品类型")),
             _clean_text(query.get("异常现象")),
         ],
-        "的",
-    )
-    method = _clean_text(query.get("解题方式"))
-    # 来源案例中的阈值只能证明该案例曾这样处理，不能在无标准时被
-    # 转写成可复用规则。因此经验补充只保留核验动作，去掉数值和阈值对照。
-    method = re.sub(
-        r"(?:并)?与[^，。；;\n]*(?:阈值|标准)(?:比较|对照)?",
         "",
-        method,
     )
-    method = re.sub(
-        r"(?:大于|小于|超过|不少于|不超过|高于|低于|至少|至多|不低于|不大于|"
-        r"≤|≥|>=|>|<)\s*"
-        r"(?:\d+(?:\.\d+)?|[一二三四五六七八九十百千万]+)"
-        r"\s*(?:mm|毫米|cm|厘米|%|％|颗|个|处|次|秒)?",
-        "",
-        method,
-        flags=re.IGNORECASE,
-    )
-    method = method.replace("补充证据后再判定", "")
-    method = re.sub(r"[，,；;：:]+\s*$", "", method).strip()
-    if not method:
-        method = "补充清晰照片、视频、系统截图或检测结果"
-    subject_text = subject or "当前问题"
-    return (
-        "当前来源未提供可直接套用的明确规则，不能据此作出确定结论。\n"
-        f"核验对象：{subject_text}。\n"
-        f"核验方法：{method}。\n"
-        "处理边界：证据不足、现象无法复现或与来源情形不一致时，补充证据后转人工审核。"
+    if not context:
+        context = _safe_join(
+            [
+                _clean_text(query.get("对象/部位")),
+                _clean_text(query.get("异常现象")),
+            ],
+            "",
+        )
+    points: list[str] = []
+    for raw in candidates:
+        cleaned = strip_case_audit_boilerplate(raw)
+        cleaned = re.sub(
+            r"^\s*(?:答疑|答疑人员|人工客服|客服|老师|您好|你好)"
+            r"\s*[：:，,]?\s*",
+            "",
+            cleaned,
+        )
+        for fragment in re.split(r"[\n。；;！？!?]+", cleaned):
+            fragment = re.sub(r"^\s*\d+[.、)]\s*", "", fragment).strip()
+            if not fragment or re.search(
+                r"回收师反馈|用户反馈|关键事实|询问|如何|怎么|什么|"
+                r"稍等|稍后|确认一下|补充(?:清晰)?(?:图片|照片|截图|视频|信息|证据)",
+                fragment,
+            ):
+                continue
+            if not re.search(
+                r"按|判|处理|勾选|选择|填写|录入|以.{0,12}为准|"
+                r"建议|支持|不支持|可以|不能|可回收|不回收|属于|归为|"
+                r"规格|型号|查看|查询|核验|确认|没有|不具备",
+                fragment,
+            ):
+                continue
+            fragment = fragment.strip("“”\"' ")
+            if re.match(r"^判(?:定)?\s*", fragment):
+                fragment = re.sub(r"^判(?:定)?\s*", "按", fragment, count=1)
+                if not re.search(r"判定|处理|勾选|选择", fragment):
+                    fragment += "判定"
+            if context and not any(
+                _normalized_topic_claim(anchor)
+                and _normalized_topic_claim(anchor) in _normalized_topic_claim(fragment)
+                for anchor in (
+                    query.get("异常现象"),
+                    query.get("对象/部位"),
+                )
+            ):
+                fragment = f"{context}时，{fragment}"
+            fragment = fragment.rstrip("。；;，, ") + "。"
+            if fragment not in points:
+                points.append(fragment)
+    return "\n".join(
+        f"{index}. {point}" for index, point in enumerate(points[:4], start=1)
     )
 
 
@@ -3338,8 +3509,10 @@ def filter_source_rows_by_product_type(
 
     selected: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
-    for row in source_rows:
-        actual_value = row.get("产品类型编码") or row.get("产品类型")
+    for source_row in source_rows:
+        row = dict(source_row)
+        _apply_raw_second_part_aliases(row)
+        actual_value = row.get("类目") or row.get("产品类型编码") or row.get("产品类型")
         if not _clean_text(actual_value):
             actual_value = parse_ai_result(
                 _ai_result_source_value(row)
@@ -3355,9 +3528,21 @@ def filter_source_rows_by_product_type(
 
 
 def _normalize_image_links(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        return "\n".join(dict.fromkeys(
+            link for item in value if isinstance(item, str)
+            for link in _normalize_image_links(item).splitlines() if link
+        ))
     text = _clean_text(value)
     if not text:
         return ""
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return _normalize_image_links(parsed)
     parts = [part.strip() for part in re.split(r"[\n,，;；\s]+", text) if part.strip()]
     return "\n".join(dict.fromkeys(parts))
 
@@ -3368,10 +3553,33 @@ def _missing_fields(row: dict[str, Any]) -> list[str]:
     return ["聊天内容或图片链接"]
 
 
+def _apply_raw_second_part_aliases(row: dict[str, Any]) -> None:
+    aliases = {
+        "数据ID": ("id",),
+        "工单ID": ("ticket_id",),
+        "回收单号": ("order_no",),
+        "分析时间": ("analyze_time",),
+        "上传者": ("uploaded_by",),
+        "类目": ("category",),
+        "聊天内容": ("chat_content",),
+        "图片链接": ("chat_images",),
+        "视频链接": ("chat_videos",),
+    }
+    for target, source_names in aliases.items():
+        if _clean_text(row.get(target)):
+            continue
+        for source_name in source_names:
+            value = row.get(source_name)
+            if _clean_text(value):
+                row[target] = value
+                break
+
+
 def preprocess_source_rows(source_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     processed_rows: list[dict[str, Any]] = []
     for index, source_row in enumerate(source_rows, start=1):
         row = dict(source_row)
+        _apply_raw_second_part_aliases(row)
         ai_result_conflicts = _apply_ai_result_fields(row)
         row["序号"] = _clean_text(row.get("序号") or index)
         row["上传者"] = _clean_text(row.get("上传者"))
@@ -3443,7 +3651,13 @@ def preprocess_source_rows(source_rows: list[dict[str, Any]]) -> list[dict[str, 
         row["一级分类"] = _clean_text(row.get("一级分类"))
         row["二级分类"] = _clean_text(row.get("二级分类"))
         row["参考话术"] = _normalize_lines(row.get("参考话术"))
-        row["历史实际回复"] = _historical_actual_reply(row)
+        explicit_actual_reply = _explicit_work_order_actual_reply(row)
+        row["历史实际回复"] = explicit_actual_reply
+        row["历史实际回复来源类型"] = (
+            "work_order_actual_reply"
+            if explicit_actual_reply
+            else ""
+        )
 
         missing = _missing_fields(row)
         notes = []
@@ -4768,6 +4982,20 @@ def _topic_evidence(row: dict[str, Any]) -> tuple[str, bool, str]:
 
 def _clustering_source_context(row: dict[str, Any]) -> str:
     """Keep source-only scope evidence available to every clustering boundary."""
+    if row.get("_原子知识ID") or row.get("unit_id"):
+        # Full conversations remain available to evidence review. A boundary
+        # must only consume facts bound to this atom, not its sibling questions.
+        return _safe_join(
+            [
+                _clean_text(row.get(field))
+                for field in (
+                    "机型", "产品型号", "source_model", "品牌", "适用品牌",
+                    "source_brand", "_原子核心问题", "_原子参考话术",
+                    "语义标注依据", "evidence_summary",
+                )
+            ],
+            "\n",
+        )
     return _safe_join(
         [
             _clean_text(row.get("机型")),
@@ -5190,6 +5418,210 @@ def _direct_atomic_fallback(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_SOURCE_QUESTION_REPLY_PAIRING_ERROR_STATUSES = {
+    "count_mismatch",
+    "invalid_numbering",
+}
+_QUESTION_REPLY_PAIRING_REVIEW_STATUSES = {
+    *_SOURCE_QUESTION_REPLY_PAIRING_ERROR_STATUSES,
+    "source_index_missing",
+    "source_index_mismatch",
+    "topic_count_mismatch",
+    "topic_order_mismatch",
+}
+
+
+def _bind_ordered_question_reply_pairs(
+    source_row: dict[str, Any],
+    topics: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str, str]:
+    pairing_status = _clean_text(source_row.get("AI结果问答配对状态"))
+    raw_pairs = source_row.get("_AI结果有序问答对")
+    pairs = raw_pairs if isinstance(raw_pairs, list) else []
+    if not pairing_status:
+        pairing = parse_ai_result_question_reply_pairs(
+            _ai_result_source_value(source_row)
+        )
+        pairing_status = _clean_text(pairing.get("status"))
+        pairs = pairing.get("pairs") if isinstance(pairing.get("pairs"), list) else []
+        pairing_reason = _clean_text(pairing.get("reason"))
+    else:
+        pairing_reason = _clean_text(
+            source_row.get("AI结果问答配对说明")
+        )
+
+    bound_topics = [
+        {
+            key: value for key, value in topic.items()
+            if key not in {
+                "_source_question_index", "_source_core_problem",
+                "_source_reference_reply",
+            }
+        }
+        for topic in topics
+    ]
+    # Numbering is only provenance. A component split may produce more atoms
+    # than source questions, and reply numbering may have a different order.
+    # Accept a fragment only when it has one unambiguous atomic owner.
+    reference_texts = [_normalize_lines(pair.get("reference_reply")) for pair in pairs]
+    if not reference_texts:
+        reference_texts = [_topic_reference_reply(source_row)]
+    fragments = list(dict.fromkeys(
+        fragment for text in reference_texts
+        for fragment in split_answer_fragments(text)
+    ))
+    semantic_bindings: list[list[str]] = [[] for _ in bound_topics]
+    for fragment in fragments:
+        owners = [
+            i for i, topic in enumerate(bound_topics)
+            if fragment_matches(
+                " ".join(_clean_text(topic.get(field)) for field in (
+                    "normalized_issue", "standard_question", "subject",
+                    "phenomenon", "judgment_target",
+                )),
+                fragment,
+            )
+        ]
+        if len(owners) == 1:
+            semantic_bindings[owners[0]].append(fragment)
+    if (
+        len(bound_topics) > 1 and semantic_bindings
+        and all(semantic_bindings)
+        and (
+            len(pairs) != len(bound_topics)
+            or any(not fragment_matches(
+                _clean_text(pair.get("core_problem")),
+                _normalize_lines(pair.get("reference_reply")),
+            ) for pair in pairs)
+            or any(
+                not fragment_matches(
+                    _clean_text(topic.get("normalized_issue")),
+                    _clean_text(pairs[i].get("core_problem")),
+                )
+                for i, topic in enumerate(bound_topics)
+                if i < len(pairs)
+            )
+        )
+    ):
+        for topic, answer_fragments in zip(bound_topics, semantic_bindings):
+            topic["_source_question_index"] = topic.get("source_question_index")
+            topic["_source_core_problem"] = _clean_text(topic.get("normalized_issue"))
+            topic["_source_reference_reply"] = "\n".join(answer_fragments)
+            topic["_source_question_pairing_status"] = "semantic_paired"
+            topic["_source_question_pairing_reason"] = "按对象语义绑定，来源序号仅作审计"
+        return bound_topics, "semantic_paired", ""
+    if pairing_status == "unavailable":
+        return bound_topics, pairing_status, pairing_reason
+    if pairing_status in _SOURCE_QUESTION_REPLY_PAIRING_ERROR_STATUSES:
+        reason = pairing_reason or "多个核心问题与参考话术无法按顺序配对"
+        for topic in bound_topics:
+            topic["_source_question_pairing_status"] = pairing_status
+            topic["_source_question_pairing_reason"] = reason
+        return bound_topics, pairing_status, reason
+    if len(pairs) != len(bound_topics):
+        reason = (
+            f"第二部分有序问答对数量为{len(pairs)}，"
+            f"原子问题数量为{len(bound_topics)}，无法安全按序绑定"
+        )
+        for topic in bound_topics:
+            topic["_source_question_pairing_status"] = "topic_count_mismatch"
+            topic["_source_question_pairing_reason"] = reason
+        return bound_topics, "topic_count_mismatch", reason
+
+    pair_by_index = {
+        int(pair["question_index"]): pair
+        for pair in pairs
+        if str(pair.get("question_index", "")).isdigit()
+    }
+    explicit_indices: list[int] = []
+    for topic in bound_topics:
+        raw_index = topic.get("source_question_index")
+        try:
+            explicit_indices.append(int(raw_index))
+        except (TypeError, ValueError):
+            explicit_indices = []
+            break
+    if len(bound_topics) > 1 and not explicit_indices:
+        reason = (
+            "多个原子问题缺少 source_question_index，"
+            "无法确认其与第二部分核心问题的顺序对应关系"
+        )
+        for topic in bound_topics:
+            topic["_source_question_pairing_status"] = (
+                "source_index_missing"
+            )
+            topic["_source_question_pairing_reason"] = reason
+        return bound_topics, "source_index_missing", reason
+    if explicit_indices:
+        if (
+            len(set(explicit_indices)) != len(explicit_indices)
+            or set(explicit_indices) != set(pair_by_index)
+        ):
+            reason = "原子问题返回的来源问题序号重复、缺失或超出范围"
+            for topic in bound_topics:
+                topic["_source_question_pairing_status"] = (
+                    "source_index_mismatch"
+                )
+                topic["_source_question_pairing_reason"] = reason
+            return bound_topics, "source_index_mismatch", reason
+        ordered_pairs = [pair_by_index[index] for index in explicit_indices]
+    else:
+        ordered_pairs = pairs
+
+    for position, (topic, pair) in enumerate(
+        zip(bound_topics, ordered_pairs)
+    ):
+        topic_text = " ".join(
+            _clean_text(topic.get(field))
+            for field in (
+                "normalized_issue",
+                "standard_question",
+                "subject",
+                "phenomenon",
+                "judgment_target",
+                "resolution_mode",
+                "evidence_summary",
+            )
+        )
+        topic_bigrams = _recommended_reply_meaningful_bigrams(topic_text)
+        scores = [
+            len(
+                topic_bigrams
+                & _recommended_reply_meaningful_bigrams(
+                    candidate.get("core_problem")
+                )
+            )
+            for candidate in pairs
+        ]
+        intended_index = pairs.index(pair)
+        best_score = max(scores, default=0)
+        best_indices = [
+            index for index, score in enumerate(scores)
+            if score == best_score
+        ]
+        if (
+            best_score >= 2
+            and intended_index not in best_indices
+        ):
+            reason = (
+                f"第{position + 1}个原子问题与第二部分第"
+                f"{pair.get('question_index')}个核心问题不一致，"
+                "疑似原子主题顺序变化"
+            )
+            for candidate_topic in bound_topics:
+                candidate_topic["_source_question_pairing_status"] = (
+                    "topic_order_mismatch"
+                )
+                candidate_topic["_source_question_pairing_reason"] = reason
+            return bound_topics, "topic_order_mismatch", reason
+
+    for topic, pair in zip(bound_topics, ordered_pairs):
+        topic["_source_question_index"] = pair.get("question_index")
+        topic["_source_core_problem"] = _clean_text(pair.get("core_problem"))
+        topic["_source_reference_reply"] = _normalize_lines(pair.get("reference_reply"))
+        topic["_source_question_pairing_status"] = pairing_status
+        topic["_source_question_pairing_reason"] = ""
+    return bound_topics, pairing_status, ""
 def _is_recoverable_atomic_validation_failure(
     source_row: dict[str, Any],
     failure_reason: str,
@@ -5464,6 +5896,7 @@ def _direct_local_split_notebook_brand_topics(
     )
     templates = {
         "memory": {
+            "standard_question": "笔记本内存是否为品牌件",
             "normalized_issue": "笔记本｜内存｜品牌属性查询｜确认内存是否为品牌件",
             "category_l1": "信息查询",
             "category_l2": "内存品牌属性",
@@ -5475,6 +5908,7 @@ def _direct_local_split_notebook_brand_topics(
             "standard_path": "内存品牌属性查询",
         },
         "storage": {
+            "standard_question": "笔记本硬盘是否为品牌件",
             "normalized_issue": "笔记本｜硬盘｜品牌属性查询｜确认硬盘是否为品牌件",
             "category_l1": "信息查询",
             "category_l2": "硬盘品牌属性",
@@ -6487,7 +6921,9 @@ def _runtime_clustering_rule_match(
         normalized_issue=_clean_text(
             row.get("normalized_issue") or row.get("核心问题")
         ),
-        conversation=_safe_join(
+        conversation=_clustering_source_context(row)
+        if row.get("_原子知识ID") or row.get("unit_id")
+        else _safe_join(
             [
                 _clean_text(
                     row.get("source_conversation") or row.get("聊天内容")
@@ -6622,6 +7058,15 @@ def _direct_atomic_bucket_key(unit: dict[str, Any]) -> tuple[str, ...]:
                 "聚类规则冲突",
                 _clean_text(unit.get("unit_id")),
             )
+        fingerprint = _direct_reconcile_fingerprint(unit)
+        target = fingerprint.query_target or fingerprint.detection_target
+        if target and fingerprint.object_key:
+            # This is a comparison batch, not a merge decision. Keep explicit
+            # scope/threshold conflicts in the downstream evidence guards.
+            return (
+                business_line, product_category, "语义目标候选比较",
+                fingerprint.object_key, target,
+            )
         # Prefer the model's structured match for normal batching.  The
         # source pre-match remains available in the prompt and as a fallback
         # only when the model did not provide enough structured fields.
@@ -6681,6 +7126,9 @@ def _direct_mimo_source_signature(row: dict[str, Any]) -> tuple[str, ...] | None
         _clean_text(row.get("核心问题") or row.get("原始核心问题")),
         _clean_text(row.get("判定结论") or row.get("原始判定结论")),
         _clean_text(row.get("AI结果冲突字段")),
+        _clean_text(row.get("参考话术")),
+        _clean_text(row.get("AI结果问答配对状态")),
+        _clean_text(row.get("AI结果问答配对说明")),
         chat,
         image_links,
         video_links,
@@ -6786,6 +7234,7 @@ def _direct_mimo_progress_signatures(
         ),
         "product_taxonomy_version": _clean_text(products.get("version")),
         "product_taxonomy_digest": _clean_text(products.get("digest")),
+        "question_standardization_version": QUESTION_STANDARDIZATION_VERSION,
     }
     reviewer_config = getattr(reviewer, "config", None)
     model = _clean_text(getattr(reviewer_config, "model", ""))
@@ -6943,6 +7392,12 @@ def _direct_mimo_cluster_progress_key(batch: list[dict[str, Any]]) -> str:
         "source_conversation",
         "evidence_summary",
         "normalized_issue",
+        "standard_question",
+        "standard_question_key",
+        "standardization_status",
+        "standardization_review_reason",
+        "standardization_source",
+        "standardization_version",
         "product_category",
         "scope_type",
         "platform",
@@ -7169,6 +7624,9 @@ def _direct_reconcile_fingerprint(
             "\n",
         ),
     )
+    atomic_subject = _clean_text(row.get("对象/部位") or row.get("subject"))
+    if "胶条" in atomic_subject and "屏幕" in atomic_subject:
+        fingerprint = replace(fingerprint, query_target="screen_edge_glue")
     if fingerprint_cache is not None:
         fingerprint_cache[cache_key] = fingerprint
     return fingerprint
@@ -7529,6 +7987,8 @@ def _direct_reconcile_rule_merge_reason(
     similarity: float,
 ) -> str:
     if not cluster_rows:
+        return ""
+    if thresholds_need_evidence_review([candidate_row, *cluster_rows]):
         return ""
     candidate_scope = _direct_reconcile_scope_values(candidate_row)
     shared_target = _direct_reconcile_shared_target(
@@ -8201,6 +8661,10 @@ def _direct_cluster_hard_conflict_reason(rows: list[dict[str, Any]]) -> str:
     if len(product_categories) > 1:
         return "产品品类不同，绝对不能自动聚类合并"
 
+    standard_question_conflict = standard_question_conflict_reason(rows)
+    if standard_question_conflict:
+        return standard_question_conflict
+
     trusted_targets = [
         target
         if target in _DIRECT_RECONCILE_TRUSTED_TARGETS
@@ -8246,6 +8710,7 @@ def _direct_cluster_hard_conflict_reason(rows: list[dict[str, Any]]) -> str:
         if (
             _direct_clustering_rule_allows_comparison(rows)
             or waterproof_indicator_discoloration_cluster
+            or bool(_direct_reconcile_shared_target(rows))
         )
         else (
             ("模型主题二级分类", "二级分类不同"),
@@ -8397,12 +8862,12 @@ def _reconcile_direct_topic_groups(
             # automatic acceptance.
             if (
                 similarity >= candidate_floor
-                or shared_target == "waterproof_indicator_discoloration"
+                or bool(shared_target)
             ):
                 candidates.append(
                     (
                         max(similarity, candidate_floor)
-                        if shared_target == "waterproof_indicator_discoloration"
+                        if shared_target
                         else similarity,
                         left_index,
                         right_index,
@@ -8661,6 +9126,33 @@ def _reconcile_direct_topic_groups(
                 cache_update_callback(cached_reconcile_results)
 
         decision = _clean_text(review.get("decision"))
+        review_confidence = _float_or_default(
+            review.get("confidence"),
+            1.0,
+        )
+        approval_confidence_floor = max(
+            review_floor,
+            DEFAULT_CLUSTER_REVIEW_FLOOR,
+        )
+        if (
+            decision == "同一主题"
+            and review_confidence < approval_confidence_floor
+        ):
+            decision = "不确定"
+            review = {
+                **review,
+                "reason": _safe_join(
+                    [
+                        _clean_text(review.get("reason")),
+                        (
+                            f"二次归并置信度 {review_confidence:.3f} "
+                            f"低于保守合并门槛 {approval_confidence_floor:.3f}，"
+                            "不自动合并"
+                        ),
+                    ],
+                    "；",
+                ),
+            }
         if decision == "同一主题":
             candidate_row.update(
                 {
@@ -8689,6 +9181,7 @@ def _reconcile_direct_topic_groups(
             meta["direct_reconcile_rejected"] += 1
         else:
             meta["direct_reconcile_uncertain"] += 1
+            uncertainty_reason = _clean_text(review.get("reason"))
             for review_row in [candidate_row, *target_rows]:
                 review_row["_聚类需要复核"] = True
                 review_row["人工优先复核原因"] = _safe_join(
@@ -8697,6 +9190,7 @@ def _reconcile_direct_topic_groups(
                             review_row.get("人工优先复核原因")
                         ),
                         "同品类二次归并裁决不确定",
+                        uncertainty_reason,
                     ],
                     "；",
                 )
@@ -8974,6 +9468,8 @@ def _direct_mimo_topic_groups(
         "direct_cluster_failed": 0,
         "direct_cluster_failure_reasons": [],
         "direct_cluster_failure_category_counts": {},
+        "direct_low_confidence_split_clusters": 0,
+        "direct_low_confidence_split_singletons": 0,
         "direct_cluster_circuit_open": False,
         "direct_cluster_retry_splits": 0,
         "direct_cluster_retry_succeeded": 0,
@@ -8996,6 +9492,11 @@ def _direct_mimo_topic_groups(
         "atomic_human_evidence_conflict_samples": [],
         "atomic_completeness_review": 0,
         "atomic_completeness_review_samples": [],
+        "atomic_question_reply_pairing_ready": 0,
+        "atomic_question_reply_pairing_review": 0,
+        "question_standardization_ready": 0,
+        "question_standardization_needs_review": 0,
+        "question_standardization_version": QUESTION_STANDARDIZATION_VERSION,
         "atomic_exploratory_first_turn_unconfirmed": 0,
         "atomic_exploratory_first_turn_samples": [],
         "local_multi_topic_rescue": 0,
@@ -9549,6 +10050,16 @@ def _direct_mimo_topic_groups(
         topics, completeness_review_reason = (
             _apply_atomic_topic_completeness_protection(source_row, topics)
         )
+        topics, pairing_status, pairing_review_reason = (
+            _bind_ordered_question_reply_pairs(source_row, topics)
+        )
+        pairing_requires_review = (
+            pairing_status in _QUESTION_REPLY_PAIRING_REVIEW_STATUSES
+        )
+        if pairing_requires_review:
+            meta["atomic_question_reply_pairing_review"] += len(topics)
+        elif pairing_status in {"paired", "single"}:
+            meta["atomic_question_reply_pairing_ready"] += len(topics)
         base_id = (
             _clean_text(source_row.get("数据ID"))
             or _clean_text(source_row.get("工单ID"))
@@ -9683,6 +10194,7 @@ def _direct_mimo_topic_groups(
                 or business_line_requires_review
                 or exploratory_first_turn_unconfirmed
                 or bool(atomic_completeness_review_reason)
+                or pairing_requires_review
                 or topic_confidence < 0.75
                 or model_requires_review
             )
@@ -9742,6 +10254,7 @@ def _direct_mimo_topic_groups(
                         else ""
                     ),
                     atomic_completeness_review_reason,
+                    pairing_review_reason if pairing_requires_review else "",
                     "模型要求人工复核" if model_requires_review else "",
                     _clean_text(topic.get("_local_multi_topic_rescue_reason")),
                 ],
@@ -9761,8 +10274,12 @@ def _direct_mimo_topic_groups(
                     "first_turn_speaker", "unknown"
                 ),
                 "source_core_problem": _clean_text(
-                    source_row.get("核心问题")
+                    topic.get("_source_core_problem")
+                    or source_row.get("核心问题")
                     or source_row.get("原始核心问题")
+                ),
+                "source_question_index": topic.get(
+                    "_source_question_index", ""
                 ),
                 "source_judgment_conclusion": _clean_text(
                     source_row.get("判定结论")
@@ -9772,7 +10289,7 @@ def _direct_mimo_topic_groups(
                     source_row.get("判定依据")
                 ),
                 "source_reference_reply": _clean_text(
-                    source_row.get("参考话术")
+                    topic.get("_source_reference_reply")
                 ),
                 "source_model": _clean_text(
                     source_row.get("机型") or source_row.get("产品型号")
@@ -9783,7 +10300,9 @@ def _direct_mimo_topic_groups(
                 "ai_result_conflict_fields": _clean_text(
                     source_row.get("AI结果冲突字段")
                 ),
-                "historical_actual_reply": _historical_actual_reply(source_row),
+                "historical_actual_reply": _explicit_work_order_actual_reply(
+                    source_row
+                ),
                 **topic,
                 "business_line": effective_business_line,
                 "business_line_code": (
@@ -9791,6 +10310,22 @@ def _direct_mimo_topic_groups(
                 ),
                 "_原子需要复核": atomic_requires_review,
                 "_原子提取恢复原因": atomic_recovery_reason,
+                "_原子来源问题序号": topic.get(
+                    "_source_question_index", ""
+                ),
+                "_原子来源问题数": len(topics),
+                "_原子核心问题": _clean_text(
+                    topic.get("_source_core_problem")
+                ),
+                "_原子参考话术": _normalize_lines(
+                    topic.get("_source_reference_reply")
+                ),
+                "_原子问答配对状态": _clean_text(
+                    topic.get("_source_question_pairing_status")
+                ),
+                "_原子问答配对说明": _clean_text(
+                    topic.get("_source_question_pairing_reason")
+                ),
                 "_原子品类冲突": product_conflict,
                 "_原子品类冲突说明": (
                     f"模型识别品类为{model_product}，源数据品类为{source_product}。"
@@ -9830,7 +10365,20 @@ def _direct_mimo_topic_groups(
             )
             source_rule_match = (
                 find_status_rule_match
-                or _source_clustering_rule_match(source_row)
+                or _source_clustering_rule_match(
+                    {
+                        "产品类型": effective_product,
+                        "回收业务层级": effective_business_line,
+                        "核心问题": (
+                            topic.get("_source_core_problem")
+                            or topic.get("normalized_issue")
+                        ),
+                        "聊天内容": topic.get("evidence_summary", ""),
+                        "判定结论": topic.get("_source_reference_reply", ""),
+                    }
+                    if len(topics) > 1
+                    else source_row
+                )
             )
             model_rule_match = (
                 find_status_rule_match
@@ -9894,6 +10442,21 @@ def _direct_mimo_topic_groups(
                     ],
                     "；",
                 )
+            standardization = standardize_atomic_question(unit)
+            unit.update(standardization)
+            if standardization["standardization_status"] == "needs_review":
+                meta["question_standardization_needs_review"] += 1
+                atomic_requires_review = True
+                unit["_原子需要复核"] = True
+                priority_review_reason = _safe_join(
+                    [
+                        priority_review_reason,
+                        standardization["standardization_review_reason"],
+                    ],
+                    "；",
+                )
+            else:
+                meta["question_standardization_ready"] += 1
             atomic_units.append(unit)
             atomic_row = dict(source_row)
             atomic_row.pop("标签聚类键", None)
@@ -9910,6 +10473,30 @@ def _direct_mimo_topic_groups(
                         unit.get("source_intent_evidence")
                     ),
                     "_原子需要复核": atomic_requires_review,
+                    "_原子来源问题序号": unit.get(
+                        "_原子来源问题序号", ""
+                    ),
+                    "_原子来源问题数": len(topics),
+                    "_原子核心问题": _clean_text(
+                        unit.get("_原子核心问题")
+                    ),
+                    "_原子参考话术": _normalize_lines(
+                        unit.get("_原子参考话术")
+                    ),
+                    "_原子问答配对状态": _clean_text(
+                        unit.get("_原子问答配对状态")
+                    ),
+                    "_原子问答配对说明": _clean_text(
+                        unit.get("_原子问答配对说明")
+                    ),
+                    "历史实际回复": _explicit_work_order_actual_reply(
+                        source_row
+                    ),
+                    "历史实际回复来源类型": (
+                        "work_order_actual_reply"
+                        if _explicit_work_order_actual_reply(source_row)
+                        else ""
+                    ),
                     "_原子品类冲突": product_conflict,
                     "_原子品类冲突说明": (
                         f"模型识别品类为{model_product}，源数据品类为{source_product}。"
@@ -9948,6 +10535,22 @@ def _direct_mimo_topic_groups(
                     ),
                     "_聚类规则冲突原因": _clean_text(
                         unit.get("_聚类规则冲突原因")
+                    ),
+                    "标准问题": _clean_text(unit.get("standard_question")),
+                    "标准问题归一键": _clean_text(
+                        unit.get("standard_question_key")
+                    ),
+                    "标准问题标准化状态": _clean_text(
+                        unit.get("standardization_status")
+                    ),
+                    "标准问题标准化原因": _clean_text(
+                        unit.get("standardization_review_reason")
+                    ),
+                    "标准问题标准化版本": _clean_text(
+                        unit.get("standardization_version")
+                    ),
+                    "_标准问题标准化来源": _clean_text(
+                        unit.get("standardization_source")
                     ),
                     "原始核心问题": _clean_text(
                         unit.get("source_core_problem")
@@ -10224,7 +10827,7 @@ def _direct_mimo_topic_groups(
     ):
         ordered = sorted(
             bucket_units,
-            key=lambda unit: _clean_text(unit.get("unit_id")),
+            key=standard_question_sort_key,
         )
         for batch_index in range(0, len(ordered), max(1, batch_size)):
             batch = ordered[batch_index : batch_index + max(1, batch_size)]
@@ -10542,6 +11145,61 @@ def _direct_mimo_topic_groups(
                                         "direct_mimo",
                                         *bucket_key,
                                         f"post-guard-{cluster_index}",
+                                        atomic_id,
+                                    ),
+                                    [member_row],
+                                )
+                            )
+                        continue
+                    cluster_confidence = _float_or_default(
+                        cluster.get("confidence"),
+                        1.0,
+                    )
+                    if (
+                        len(member_rows) > 1
+                        and cluster_confidence < DEFAULT_CLUSTER_REVIEW_FLOOR
+                    ):
+                        meta["direct_low_confidence_split_clusters"] += 1
+                        split_reason = (
+                            "聚类置信度 "
+                            f"{cluster_confidence:.3f} 低于保守合并门槛 "
+                            f"{DEFAULT_CLUSTER_REVIEW_FLOOR:.3f}，已拆为单成员主题"
+                        )
+                        for atomic_id in member_ids:
+                            meta["direct_low_confidence_split_singletons"] += 1
+                            cluster_index += 1
+                            member_row = row_by_atomic_id[atomic_id]
+                            member_row.update(
+                                {
+                                    "_聚类主题标题": "",
+                                    "_聚类知识定义": "",
+                                    "_聚类决策": "低置信聚类保守拆分为单成员主题",
+                                    "_聚类候选相似度": "",
+                                    "_聚类裁决提供方": (
+                                        "mimo-direct-low-confidence-split"
+                                    ),
+                                    "_聚类裁决原因": split_reason,
+                                    "_聚类裁决置信度": cluster_confidence,
+                                    "_聚类需要复核": True,
+                                    "人工优先复核原因": _safe_join(
+                                        [
+                                            _clean_text(
+                                                member_row.get(
+                                                    "人工优先复核原因"
+                                                )
+                                            ),
+                                            split_reason,
+                                        ],
+                                        "；",
+                                    ),
+                                }
+                            )
+                            topic_groups.append(
+                                (
+                                    (
+                                        "direct_mimo",
+                                        *bucket_key,
+                                        f"low-confidence-{cluster_index}",
                                         atomic_id,
                                     ),
                                     [member_row],
@@ -11846,6 +12504,108 @@ def _atomic_scoped_source_excerpt(
     return _semantic_excerpt(best_section, limit)
 
 
+def _verified_atomic_source_question(
+    row: dict[str, Any],
+    actual_reply: str,
+) -> str:
+    """Recover one source question only when its human reply proves ownership."""
+    from .answer_evidence import _ROLE
+
+    def semantic_question_match(question: str) -> bool:
+        core = _normalized_topic_claim(row.get("核心问题"))
+        normalized_question = _normalized_topic_claim(question)
+        if core and fragment_matches(core, question):
+            return True
+        generic = {
+            "是否", "如何", "怎么", "怎样", "查询", "确认", "判断", "判定",
+            "功能", "识别", "支持", "机器", "设备", "这个", "该", "型号",
+            "机型", "吗",
+        }
+
+        def anchors(value: str) -> set[str]:
+            compact = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", value)
+            terms = {
+                compact[index:index + 2]
+                for index in range(max(0, len(compact) - 1))
+                if compact[index:index + 2] not in generic
+            }
+            return {
+                term
+                for term in terms
+                if not any(generic_term in term for generic_term in generic)
+            }
+
+        source_anchors = anchors(
+            _normalized_topic_claim(
+                " ".join(
+                    [
+                        _clean_text(row.get("对象/部位")),
+                        _clean_text(row.get("异常现象")),
+                        core,
+                    ]
+                )
+            )
+        )
+        question_anchors = anchors(normalized_question)
+        return bool(source_anchors & question_anchors)
+
+    observation = _normalized_topic_claim(row.get("异常现象"))
+    expected_replies = {
+        _normalized_topic_claim(part)
+        for part in split_answer_fragments(actual_reply)
+    }
+    if len(observation) < 4 or not expected_replies:
+        return ""
+    questions: list[str] = []
+    matched_questions: set[str] = set()
+    for turn in _ROLE.finditer(_normalize_lines(row.get("聊天内容"))):
+        role = turn.group("role")
+        text = turn.group("text").strip()
+        if role in {"回收师", "用户", "客户"}:
+            questions = [
+                part.strip()
+                for part in re.split(r"[；;\n]+|(?<=[。！？!?])\s*", text)
+                if part.strip()
+            ]
+            continue
+        if role not in {"答疑", "答疑人员", "人工客服", "客服"}:
+            questions = []
+            continue
+        replies = {
+            _normalized_topic_claim(part)
+            for part in split_answer_fragments(text)
+        }
+        if not all(
+            any(expected in reply or reply in expected for reply in replies)
+            for expected in expected_replies
+        ):
+            continue
+        for question in questions:
+            if (
+                len(question) <= 500
+                and not re.search(
+                    r"另外|还有|此外|顺便|同时|分别|两个问题|两项问题|以及",
+                    question,
+                )
+                and (
+                    observation in _normalized_topic_claim(question)
+                    or semantic_question_match(question)
+                )
+                and (
+                    fragment_matches(_clean_text(row.get("核心问题")), question)
+                    or semantic_question_match(question)
+                )
+                and (
+                    _topic_claim_relations_are_supported(
+                        _clean_text(row.get("异常现象")), question,
+                    )
+                    or semantic_question_match(question)
+                )
+            ):
+                matched_questions.add(question)
+    return next(iter(matched_questions)) if len(matched_questions) == 1 else ""
+
+
 def _topic_source_fact(
     row: dict[str, Any],
     index: int,
@@ -11901,7 +12661,9 @@ def _topic_source_fact(
         800,
     )
     conversation_layers = _conversation_intent_evidence(
-        scoped_conversation or raw_conversation,
+        scoped_conversation
+        if _has_ordered_atomic_reply_contract(row)
+        else scoped_conversation or raw_conversation,
         800,
     )
     conversation = (
@@ -11940,6 +12702,38 @@ def _topic_source_fact(
         row.get("语义标注依据"),
         500,
     )
+    bound_reference_reply = ""
+    source_question_excerpt = ""
+    if _atomic_reply_requires_scoping(row):
+        bound_reference_reply = _topic_reference_reply(row)
+        human_core_problem = _clean_text(row.get("核心问题"))
+        human_judgment = bound_reference_reply or _clean_text(row.get("_原子实际回复"))
+        judgment_basis = ""
+        semantic_basis = ""
+    if row.get("_人工答复门禁状态") == "answered":
+        if row.get("_原子知识ID"):
+            human_core_problem = _clean_text(row.get("核心问题"))
+            issue_parts = re.split(r"[｜|]", human_core_problem)
+            if len(issue_parts) >= 4:
+                # The last normalized slot is an inferred target or action,
+                # not a statement the human actually made.
+                human_core_problem = "｜".join(issue_parts[:3])
+        human_judgment = _normalize_lines(row.get("_原子实际回复"))
+        historical_reply = human_judgment
+        bound_reference_reply = ""
+        judgment_basis = ""
+        semantic_basis = ""
+        if row.get("_原子知识ID"):
+            source_question_excerpt = _verified_atomic_source_question(
+                row, human_judgment,
+            )
+            conversation = (
+                f"回收师：{source_question_excerpt or human_core_problem}"
+                f"\n答疑：{human_judgment}"
+            )
+        # Keep the original full conversation on the source mapping, but do
+        # not let a sibling answer or generated reference establish a fact.
+        conversation_layers = _conversation_intent_evidence(conversation, 800)
     threshold_or_exception = _clean_text(row.get("_原子阈值例外"))
     source_text_without_model_annotations = "\n".join(
         value
@@ -12003,28 +12797,43 @@ def _topic_source_fact(
         "fact_id": f"F{index:02d}",
         "source_record_id": source_id,
         "work_order_id": _original_work_order_id_for_row(row),
-        "atomic_question": _clean_text(row.get("核心问题")),
+        "atomic_question": (
+            human_core_problem
+            if row.get("_人工答复门禁状态") == "answered"
+            else _clean_text(row.get("核心问题"))
+        ),
         # Keep the normalized topic dimensions alongside the original
         # excerpts.  The transcription seam can consume these structured
         # slots without changing the legacy source-claim checker.
         "object": object_value,
-        "condition": _clean_text(
-            row.get("判定目标") or row.get("问题意图")
+        "condition": (
+            source_supported_threshold
+            if row.get("_人工答复门禁状态") == "answered"
+            else _clean_text(row.get("判定目标") or row.get("问题意图"))
         ),
         "observation": observation_value,
-        "action": _clean_text(row.get("解题方式")),
+        "action": (
+            human_judgment if row.get("_人工答复门禁状态") == "answered"
+            else _clean_text(row.get("解题方式"))
+        ),
         "result": human_judgment,
         "boundary": source_supported_threshold,
         "fact_type": (
-            "manual_judgment"
+            "work_order_actual_reply"
+            if row.get("_人工答复门禁状态") == "answered"
+            else "second_part_reference_reply"
+            if bound_reference_reply
+            else "manual_judgment"
             if human_judgment
             else "source_conversation"
         ),
         "human_core_problem": human_core_problem,
+        "source_question_excerpt": source_question_excerpt,
         "human_judgment_conclusion": human_judgment,
         "judgment_basis": judgment_basis,
         "semantic_basis": semantic_basis,
         "historical_actual_reply": historical_reply,
+        "reference_reply": _topic_reference_reply(row),
         "conversation_excerpt": conversation,
         "conversation_full_excerpt": conversation_layers["conversation"],
         "intent_evidence_excerpt": conversation_layers["intent_evidence"],
@@ -12033,7 +12842,11 @@ def _topic_source_fact(
         "first_turn_speaker": conversation_layers.get(
             "first_turn_speaker", "unknown"
         ),
-        "threshold_or_exception": threshold_or_exception,
+        "threshold_or_exception": (
+            source_supported_threshold
+            if row.get("_人工答复门禁状态") == "answered"
+            else threshold_or_exception
+        ),
         "source_supported_threshold_or_exception": (
             source_supported_threshold
         ),
@@ -12047,7 +12860,13 @@ def _topic_source_fact(
         ),
         "image_usable": image_usable,
         "image_processing_status": _clean_text(row.get("图片处理状态")),
-        "image_evidence_summary": _clean_text(row.get("图片证据摘要")),
+        "image_evidence_summary": (
+            "当前原子问题的可用图片见本条图片附件。"
+            if row.get("_人工答复门禁状态") == "answered" and image_usable
+            else "当前原子问题没有可用图片证据。"
+            if row.get("_人工答复门禁状态") == "answered"
+            else _clean_text(row.get("图片证据摘要"))
+        ),
         "evidence_level": evidence_level,
         "evidence_reason": evidence_reason,
         "has_boundary": has_boundary,
@@ -12193,6 +13012,7 @@ def _topic_evidence_package_json(
         "judgment_basis": 400,
         "semantic_basis": 400,
         "historical_actual_reply": 500,
+        "reference_reply": 800,
         "conversation_excerpt": 600,
         "conversation_full_excerpt": 600,
         "intent_evidence_excerpt": 600,
@@ -12215,6 +13035,7 @@ def _topic_evidence_package_json(
         "judgment_basis",
         "semantic_basis",
         "historical_actual_reply",
+        "reference_reply",
         "conversation_excerpt",
         "conversation_full_excerpt",
         "intent_evidence_excerpt",
@@ -12326,6 +13147,11 @@ def _topic_evidence_summary(
                 else ""
             ),
             (
+                f"参考话术（仅作补充候选）：{fact.get('reference_reply')}"
+                if fact.get("reference_reply")
+                else ""
+            ),
+            (
                 "案例图：" + "、".join(fact.get("image_urls") or [])
                 if fact.get("image_urls")
                 else ""
@@ -12340,27 +13166,36 @@ def _topic_case_images(
     evidence_package: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     evidence_package = evidence_package or _topic_evidence_package(rows)
+    media = _topic_media_evidence(rows, topic_id="")
     images: list[dict[str, str]] = []
     seen: set[str] = set()
-    for fact in evidence_package.get("representative_facts") or []:
-        for url in fact.get("image_urls") or []:
-            if not url or url in seen:
-                continue
-            seen.add(url)
-            images.append(
-                {
-                    "url": url,
-                    "fact_id": _clean_text(fact.get("fact_id")),
-                    "source_record_id": _clean_text(
-                        fact.get("source_record_id")
-                    ),
-                    "work_order_id": _clean_text(
-                        fact.get("work_order_id")
-                    ),
-                }
-            )
-            if len(images) >= 4:
-                return images
+    representative_ids = {
+        _clean_text(fact.get("fact_id"))
+        for fact in evidence_package.get("representative_facts") or []
+    }
+    for item in media:
+        if (
+            item["媒体类型"] != "image"
+            or item["相关性状态"] != "relevant"
+            or item["审核状态"] not in {"model_confirmed", "human_confirmed"}
+            or item["审计风险"]
+            or _clean_text(item["事实ID"]) not in representative_ids
+        ):
+            continue
+        url = item["媒体链接"]
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        images.append(
+            {
+                "url": url,
+                "fact_id": _clean_text(item["事实ID"]),
+                "source_record_id": _clean_text(item["来源记录ID"]),
+                "work_order_id": _clean_text(item["工单ID"]),
+            }
+        )
+        if len(images) >= 4:
+            return images
     return images
 
 
@@ -12392,28 +13227,152 @@ def _topic_case_videos(
     evidence_package: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     evidence_package = evidence_package or _topic_evidence_package(rows)
+    media = _topic_media_evidence(rows, topic_id="")
     videos: list[dict[str, str]] = []
     seen: set[str] = set()
-    for fact in evidence_package.get("representative_facts") or []:
-        for url in fact.get("video_urls") or []:
-            if not url or url in seen:
-                continue
-            seen.add(url)
-            videos.append(
-                {
-                    "url": url,
-                    "fact_id": _clean_text(fact.get("fact_id")),
-                    "source_record_id": _clean_text(
-                        fact.get("source_record_id")
-                    ),
-                    "work_order_id": _clean_text(
-                        fact.get("work_order_id")
-                    ),
-                }
-            )
-            if len(videos) >= 2:
-                return videos
+    representative_ids = {
+        _clean_text(fact.get("fact_id"))
+        for fact in evidence_package.get("representative_facts") or []
+    }
+    for item in media:
+        if (
+            item["媒体类型"] != "video"
+            or item["相关性状态"] != "relevant"
+            or item["审核状态"] not in {"model_confirmed", "human_confirmed"}
+            or item["审计风险"]
+            or _clean_text(item["事实ID"]) not in representative_ids
+        ):
+            continue
+        url = item["媒体链接"]
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        videos.append(
+            {
+                "url": url,
+                "fact_id": _clean_text(item["事实ID"]),
+                "source_record_id": _clean_text(item["来源记录ID"]),
+                "work_order_id": _clean_text(item["工单ID"]),
+            }
+        )
+        if len(videos) >= 2:
+            return videos
     return videos
+
+
+def _media_relevance_status(row: dict[str, Any], media_type: str) -> tuple[str, str]:
+    value = _clean_text(
+        row.get(f"{media_type}相关性状态")
+        or row.get("媒体相关性状态")
+        or row.get(f"{media_type}相关性结论")
+    ).casefold()
+    if value in {"相关", "relevant", "confirmed_relevant", "模型确认相关", "人工确认相关"}:
+        return "relevant", "human_confirmed" if "人工" in value else "model_confirmed"
+    if value in {"不相关", "irrelevant", "confirmed_irrelevant", "模型确认不相关", "人工确认不相关"}:
+        return "irrelevant", "human_confirmed" if "人工" in value else "model_confirmed"
+    if (
+        media_type == "image"
+        and _clean_text(row.get("语义标注图片必要性")) == "需要"
+        and _clean_text(row.get("图片处理状态")).startswith("可用:")
+    ):
+        return "relevant", "model_confirmed"
+    return "unconfirmed", "pending"
+
+
+def _topic_media_evidence(
+    rows: list[dict[str, Any]],
+    topic_id: str,
+) -> list[dict[str, str]]:
+    """Build media evidence rows; only confirmed, risk-free rows are displayable."""
+    package = _topic_evidence_package(rows)
+    result: list[dict[str, str]] = []
+    for index, fact in enumerate(package.get("facts") or []):
+        row = rows[index] if index < len(rows) else {}
+        source_id = _clean_text(fact.get("source_record_id"))
+        atomic_id = _clean_text(
+            row.get("_原子知识ID")
+            or row.get("原子知识ID")
+            or source_id
+        )
+        for media_type, urls in (
+            (
+                "image",
+                list(
+                    dict.fromkeys(
+                        [
+                            *(fact.get("image_urls") or []),
+                            *(fact.get("unavailable_image_urls") or []),
+                        ]
+                    )
+                ),
+            ),
+            ("video", fact.get("video_urls") or []),
+        ):
+            relevance, review_status = _media_relevance_status(row, media_type)
+            parsed = media_type == "image" and (
+                _clean_text(row.get("图片处理状态")).startswith("可用:")
+                and bool(fact.get("image_usable"))
+            )
+            if media_type == "video":
+                video_status = _clean_text(row.get("视频处理状态"))
+                parsed = any(marker in video_status for marker in ("已解析", "抽帧完成", "字幕完成", "语音解析完成"))
+            for url_index, url in enumerate(urls, start=1):
+                media_id = f"ME-{hashlib.sha1(f'{source_id}|{atomic_id}|{topic_id}|{media_type}|{url}'.encode('utf-8')).hexdigest()[:12].upper()}"
+                risks: list[str] = []
+                if not source_id or not atomic_id:
+                    risks.append("未绑定")
+                if relevance == "irrelevant":
+                    risks.append("不相关")
+                if media_type == "image" and not parsed:
+                    risks.append("无法读取")
+                if media_type == "video" and not parsed:
+                    risks.append("未解析视频")
+                if relevance == "unconfirmed":
+                    risks.append("未确认")
+                result.append(
+                    {
+                        "媒体证据ID": media_id,
+                        "媒体类型": media_type,
+                        "媒体链接": _clean_text(url),
+                        "来源记录ID": source_id,
+                        "原子问题ID": atomic_id,
+                        "主题ID": topic_id,
+                        "事实ID": _clean_text(fact.get("fact_id")),
+                        "工单ID": _clean_text(fact.get("work_order_id")),
+                        "相关性状态": relevance,
+                        "可见事实": _clean_text(fact.get("observation") or fact.get("evidence_reason")),
+                        "选择原因": "主题代表性证据" if _clean_text(fact.get("fact_id")) in {
+                            _clean_text(item.get("fact_id"))
+                            for item in package.get("representative_facts") or []
+                        } else "来源媒体待审计",
+                        "审核状态": review_status,
+                        "解析状态": "已解析" if parsed else "未解析",
+                        "审计风险": "、".join(dict.fromkeys(risks)),
+                    }
+                )
+    return result
+
+
+def audit_topic_media_evidence(
+    rows: list[dict[str, Any]],
+    topic_id: str,
+) -> dict[str, Any]:
+    """Run a read-only historical media audit; never deletes media or rows."""
+    items = _topic_media_evidence(rows, topic_id)
+    risk_items = [item for item in items if item.get("审计风险")]
+    return {
+        "topic_id": topic_id,
+        "total_media": len(items),
+        "risk_media": len(risk_items),
+        "risk_by_reason": {
+            reason: sum(
+                reason in _clean_text(item.get("审计风险")).split("、")
+                for item in risk_items
+            )
+            for reason in ("未绑定", "不相关", "无法读取", "未解析视频")
+        },
+        "items": items,
+    }
 
 
 def _topic_video_links(
@@ -12538,43 +13497,6 @@ def _topic_image_measurement_gate(
     }
 
 
-def _measurement_review_content(query: dict[str, Any]) -> str:
-    subject = _safe_join(
-        [
-            _clean_text(query.get("对象/部位")),
-            _clean_text(query.get("异常现象")),
-        ],
-        "的",
-    ) or "当前异常"
-    return "\n".join(
-        [
-            f"1. 先确认{subject}是否能在图片中清晰复现。",
-            "2. 当前图片只能辅助确认异常位置，不能直接确认具体尺寸、数量或处理档位。",
-            "3. 请补充带量尺或可比对尺寸的近景照片，并记录实际测量结果。",
-            "4. 取得尺寸证据后，再对照对应标准确定处理项。",
-        ]
-    )
-
-
-def _append_measurement_evidence_boundary(
-    content: str,
-    *,
-    query: dict[str, Any],
-) -> str:
-    """保留来源规则，只阻止未测量图片直接变成个案结论。"""
-    normalized = _compact_knowledge_content(content, limit=800)
-    if not normalized:
-        return _measurement_review_content(query)
-    boundary = (
-        "当前案例图片未提供可核验的尺寸、数量或测量结果，"
-        "以上规则只能作为判定口径，不能据此直接确定本案例的档位或结论；"
-        "补充测量证据后再判定。"
-    )
-    if boundary not in normalized:
-        normalized = f"{normalized}\n{boundary}"
-    return normalized
-
-
 def _topic_platform_from_source(rows: list[dict[str, Any]]) -> str:
     structured_platform = _merge_unique_text(
         [
@@ -12663,12 +13585,49 @@ def _topic_platform_from_source(rows: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _verified_topic_source_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Keep reusable metadata within the same verified atomic question."""
+    if (
+        row.get("_人工答复门禁状态") != "answered"
+        or not row.get("_原子知识ID")
+    ):
+        return row
+    fact = _topic_source_fact(row, 1)
+    question = _clean_text(fact.get("human_core_problem"))
+    actual = _clean_text(fact.get("historical_actual_reply"))
+    source_values = [question, actual, _clean_text(fact.get("source_question_excerpt"))]
+    scoped = {
+        **row,
+        "核心问题": question,
+        "原始核心问题": question,
+        "聊天内容": _clean_text(fact.get("conversation_excerpt")),
+        "判定结论": actual,
+        "原始判定结论": actual,
+        "历史实际回复": actual,
+        "判定依据": "",
+        "解题方式": actual,
+        "_原子阈值例外": _clean_text(fact.get("source_supported_threshold_or_exception")),
+    }
+    for field in (
+        "适用品牌", "品牌", "_原子品牌",
+        "适用机型", "机型", "_原子机型范围",
+        "平台", "系统类型", "_原子平台",
+    ):
+        scoped[field] = _merge_unique_text([
+            value for value in _split_applicability_values(row.get(field))
+            if _applicability_value_is_source_supported(value, source_values)
+        ], separator="；")
+    return scoped
+
+
 def _topic_query(
     rows: list[dict[str, Any]],
     evidence_package: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    base = rows[0]
     evidence_package = evidence_package or _topic_evidence_package(rows)
+    rows = [_verified_topic_source_row(row) for row in rows]
+    base = rows[0]
+    ordered_atomic_source_ids = _ordered_atomic_source_ids(rows)
     representative_facts = evidence_package.get("representative_facts") or []
     scoped_facts = representative_facts or evidence_package.get("facts") or []
     questions = [
@@ -12752,13 +13711,10 @@ def _topic_query(
         ),
         "参考话术": _merge_unique_text(
             [
-                _atomic_scoped_source_excerpt(
-                    row,
-                    row.get("参考话术"),
-                    400,
-                )
-                or _clean_text(row.get("参考话术"))
+                _topic_reference_reply(row)
                 for row in rows
+                if _has_ordered_atomic_reply_contract(row)
+                or _reply_source_record_id(row) not in ordered_atomic_source_ids
             ],
             separator="\n",
         ),
@@ -12772,8 +13728,24 @@ def _topic_query(
         "问题意图": _clean_text(base.get("问题意图")),
         "对象/部位": _clean_text(base.get("对象/部位")),
         "异常现象": _clean_text(base.get("异常现象")),
-        "解题方式": _clean_text(base.get("解题方式")),
-        "标准关键词": _merge_unique_keywords([row.get("主题标签") for row in rows]),
+        "解题方式": (
+            _merge_unique_text(
+                [fact.get("action") for fact in scoped_facts],
+                separator="；",
+            )
+            if base.get("_人工答复门禁状态") == "answered"
+            else _clean_text(base.get("解题方式"))
+        ),
+        "标准关键词": _merge_unique_keywords([
+            _safe_join([
+                _clean_text(row.get("对象/部位")),
+                _clean_text(row.get("异常现象")),
+                _normalize_lines(row.get("_原子实际回复")),
+            ], " | ")
+            if row.get("_人工答复门禁状态") == "answered"
+            else row.get("主题标签")
+            for row in rows
+        ]),
         "来源事实引用": _topic_fact_references(evidence_package),
     }
 
@@ -12800,6 +13772,7 @@ def _classify_topic_content_type(
     matches: list[tuple[StandardCatalogItem, float]],
 ) -> str:
     """Choose the compact body template from supported source evidence."""
+    rows = [_verified_topic_source_row(row) for row in rows]
     fields = (
         "核心问题",
         "人工核心问题",
@@ -12836,15 +13809,29 @@ def _classify_topic_content_type(
     text = "\n".join(part for part in source_parts if part)
     if any(marker in text for marker in _CONTENT_TYPE_DISTINCTION_MARKERS):
         return CONTENT_TYPE_DISTINCTION
+    method_source = text
+    if any(
+        row.get("_人工答复门禁状态") == "answered" and row.get("_原子知识ID")
+        for row in rows
+    ):
+        method_source = "\n".join([
+            *[
+                _clean_text(row.get("历史实际回复"))
+                if row.get("_人工答复门禁状态") == "answered"
+                else _clean_text(row.get("聊天内容"))
+                for row in rows
+            ],
+            *[_clean_text(standard.response_snippet) for standard, _score in matches],
+        ])
     method_text = re.sub(
         r"(?:检测|核验|测试|测量)方法\s*[：:]\s*(?:/|无|暂无|未提供)",
         "",
-        text,
+        method_source,
     )
     actions = {
         marker
         for marker in _CONTENT_TYPE_ACTION_MARKERS
-        if marker in text
+        if marker in method_text
     }
     has_explicit_method = any(
         marker in method_text
@@ -12853,7 +13840,7 @@ def _classify_topic_content_type(
     if has_explicit_method and actions:
         return CONTENT_TYPE_VERIFICATION
     if len(actions) >= 2 and any(
-        marker in text
+        marker in method_text
         for marker in ("方法", "步骤", "操作", "核验", "检测", "测试")
     ):
         return CONTENT_TYPE_VERIFICATION
@@ -13025,6 +14012,74 @@ def _merge_standard_and_source_content(
     return "\n".join(
         f"{index}. {point}"
         for index, point in enumerate(points, start=1)
+    )
+
+
+def _standard_source_fact_content(
+    query: dict[str, Any],
+    standard_content: str,
+    content_type: str,
+) -> str:
+    """Keep reusable source facts without copying the case narrative."""
+    standard_claims = [
+        _normalized_topic_claim(point)
+        for point in _compact_standard_rule_points(
+            standard_content,
+            content_type,
+        )
+        if _normalized_topic_claim(point)
+    ]
+    source_values = (
+        query.get("判定依据"),
+        query.get("人工判定结论"),
+        query.get("历史实际回复"),
+        query.get("解题方式"),
+    )
+    rejected_markers = (
+        "回收师反馈",
+        "用户反馈",
+        "回收师指出",
+        "询问",
+        "截图",
+        "上传",
+        "系统拉取显示",
+        "系统拉取值",
+        "仅覆盖上述来源事实",
+        "来源未说明",
+        "补充对应事实",
+    )
+    points: list[str] = []
+    for raw_value in source_values:
+        cleaned = strip_case_audit_boilerplate(raw_value)
+        if not cleaned:
+            continue
+        for point in _compact_standard_rule_points(cleaned, content_type):
+            point = _clean_text(point).strip("。；; ")
+            if not point or any(marker in point for marker in rejected_markers):
+                continue
+            if (
+                "系统拉取" in point
+                and any(marker in point for marker in ("实物", "颜色", "显示", "值"))
+            ):
+                continue
+            normalized = _normalized_topic_claim(point)
+            if not normalized:
+                continue
+            if any(
+                normalized in claim or claim in normalized
+                for claim in standard_claims
+            ):
+                continue
+            if normalized not in {
+                _normalized_topic_claim(existing)
+                for existing in points
+            }:
+                points.append(point)
+    if not points:
+        return ""
+    return "\n".join(
+        f"{index}. {point}。"
+        for index, point in enumerate(points[:4], start=1)
     )
 
 
@@ -13400,7 +14455,10 @@ def _build_topic_source_fact_content(
     sections: list[str] = []
     if issue:
         sections.append(f"适用情形：{issue}")
+    resolution = _clean_text(query.get("解题方式"))
     verification_points = [subject, basis]
+    if resolution and not judgment and not historical_reply:
+        verification_points.append(resolution)
     normalized_judgment = _normalized_topic_claim(judgment)
     normalized_reply = _normalized_topic_claim(historical_reply)
     if (
@@ -13422,16 +14480,14 @@ def _build_topic_source_fact_content(
         sections.append(f"处理结论：{judgment}")
     elif historical_reply:
         sections.append(f"处理方式：{historical_reply}")
-    sections.append(
-        "适用边界：仅覆盖上述来源事实明确记录的对象、条件和结论；"
-        "来源未说明的其他情形不得直接套用，需要补充对应事实后再判断。"
-    )
     return "\n".join(sections)
 
 
 def _template_style_knowledge_content(value: Any) -> str:
     """Format an auditable draft like the bulk-import template's body examples."""
-    content, _embedded_reply = _split_embedded_recommended_reply(value)
+    content, _embedded_reply = _split_embedded_recommended_reply(
+        strip_case_audit_boilerplate(_clean_text(value))
+    )
     if not content:
         return ""
     if content.startswith("判定要点："):
@@ -13439,16 +14495,17 @@ def _template_style_knowledge_content(value: Any) -> str:
     points: list[str] = []
     for line in content.splitlines():
         cleaned = re.sub(
-            r"^(?:适用情形|核验要点|处理结论|处理方式|适用边界)[：:]\s*",
+            r"^\s*(?:\d+[.、]\s*)?(?:适用情形|核验要点|处理结论|处理方式|适用边界|边界)[：:]\s*",
             "",
             line.strip(),
         )
+        cleaned = re.sub(r"^\s*\d+[.、]\s*", "", cleaned)
         if cleaned:
             points.append(cleaned)
     if not points:
         points = [content]
     return "\n".join(
-        f"{index}. {point}" for index, point in enumerate(points[:5], start=1)
+        f"{index}. {point}" for index, point in enumerate(points, start=1)
     )
 
 
@@ -13475,6 +14532,7 @@ def _topic_rule_draft(
         ]
     )
     has_draftable_source_rule = _topic_has_draftable_source_rule(topic_payload)
+    source_rule_content = _build_experience_review_content(query)
     has_substantive_historical_reply = len(
         _clean_text(query.get("历史实际回复"))
     ) >= 12
@@ -13486,7 +14544,7 @@ def _topic_rule_draft(
         (
             use_standard_references
             and not matches
-            and has_draftable_source_rule
+            and bool(source_rule_content)
         )
         or (
             not use_standard_references
@@ -13536,8 +14594,9 @@ def _topic_rule_draft(
             query=query,
         )
     elif use_standard_references and not standard:
-        # No standard means evidence review only; do not manufacture a rule.
-        content = _build_experience_review_content(query)
+        # A missed standard can still yield a reviewable business supplement
+        # when the human answer states a concrete judgment or operation.
+        content = source_rule_content
     else:
         content = (
             _build_model_content(
@@ -13552,21 +14611,60 @@ def _topic_rule_draft(
                 query,
                 use_standard_references=use_standard_references,
             )
-            if has_source_rule
-            else _build_process_content(
-                _clean_text(query.get("核心问题")),
-                "",
-                _clean_text(query.get("判定依据")),
-                _clean_text(query.get("一级分类")),
-                _clean_text(query.get("二级分类")),
-                standard,
-                use_standard_references=use_standard_references,
-            )
         )
     if has_source_rule:
         content = _template_style_knowledge_content(content)
+    if (
+        not use_standard_references
+        and all(row.get("_人工答复门禁状态") == "answered" for row in rows)
+    ):
+        source_answers = list(dict.fromkeys(
+            _normalize_lines(row.get("_原子实际回复")) for row in rows
+            if _normalize_lines(row.get("_原子实际回复"))
+        ))
+        content = _template_style_knowledge_content("\n".join(source_answers))
+    atomic_answer_missing = False
+    if not use_standard_references and any(row.get("_原子知识ID") for row in rows):
+        source_reply = _select_topic_recommended_reply(
+            rows, title=title, content=content,
+            model_reply="", evidence_status="available",
+            use_standard_references=False,
+        )
+        if source_reply.get("source_type") in {
+            "second_part_reference_reply", "work_order_actual_reply",
+        }:
+            answer = re.sub(
+                r"^[“\"']?(?:您好|你好)[，,：:\s]*", "",
+                _clean_text(source_reply.get("reply")),
+            ).strip()
+            for opening, closing in (("“", "”"), ('"', '"'), ("'", "'")):
+                if answer.startswith(opening) and answer.endswith(closing):
+                    answer = answer[1:-1].strip()
+                    break
+            if answer:
+                content = _template_style_knowledge_content(answer)
+        elif any(_atomic_reply_requires_scoping(row) for row in rows):
+            # Ordered multi-question answers are unusable until atom ownership
+            # is established; inherited conclusions can contain sibling answers.
+            atomic_answer_missing = True
+            content = ""
     return {
         "title": title,
+        "source_answer_missing": (
+            atomic_answer_missing
+            or (
+                use_standard_references
+                and not standard
+                and not source_rule_content
+            )
+            or (
+                not use_standard_references
+                and not has_draftable_source_rule
+                and not has_substantive_historical_reply
+                and not concrete_allowed
+                and not _clean_text(query.get("人工判定结论"))
+            )
+        ),
         "subtitles": _fallback_recall_subtitles(
             title,
             content,
@@ -13596,7 +14694,7 @@ def _topic_rule_draft(
             if concrete_allowed
             else "来源会话或历史实际回复包含可复用处理口径，已整理为待人工审核的案例型知识候选。"
             if has_source_rule
-            else "按主题证据沉淀通用核验流程；不将单个工单的个案结论外推。"
+            else "仅整理当前主题的来源事实，处理结论和适用边界需人工复核。"
         ),
         "needs_human_review": not concrete_allowed or has_source_rule,
         "image_evidence_summary": _topic_evidence_summary(rows),
@@ -14144,6 +15242,7 @@ def _supported_topic_applicability_values(
     field: str,
     product_type: str,
 ) -> list[str]:
+    rows = [_verified_topic_source_row(row) for row in rows]
     source_fields = {
         "适用品牌": ("适用品牌", "品牌", "_原子品牌"),
         "适用机型": ("适用机型", "机型", "_原子机型范围"),
@@ -14324,6 +15423,8 @@ def _recommended_reply(
     existing_reply: str = "",
     use_standard_references: bool = True,
 ) -> str:
+    if not _clean_text(content) and not _clean_text(existing_reply):
+        return ""
     source_content = _compact_knowledge_content(existing_reply or content, limit=500)
     raw_points = []
     for line in source_content.splitlines():
@@ -14343,6 +15444,7 @@ def _recommended_reply(
             "",
             value,
         ).strip()
+        value = re.sub(r"(?:您好|你好)[，,：:\s]*(?=$|[。；;])", "", value).strip()
         if value:
             raw_points.append((label, value))
     if existing_reply:
@@ -14373,7 +15475,9 @@ def _recommended_reply(
             head = point[:56]
             boundary = max(head.rfind(marker) for marker in ("。", "；", "，", ","))
             point = head[: boundary + 1] if boundary >= 20 else head
-        short_points.append(point.rstrip("。；;"))
+        point = point.rstrip("。；;，, ")
+        if point:
+            short_points.append(point)
     body = "；".join(short_points)
     if not body:
         body = (
@@ -14389,11 +15493,9 @@ def _recommended_reply(
     # 推荐回复只回答知识点本身，不重复知识标题；标题属于独立字段。
     # 这样可以避免“您好，关于标题……”把候选重新变成案例摘要。
     reply = f"您好，{body}。{closing}"
-    if len(reply) <= 180:
-        return reply
-    head = reply[:180]
-    boundary = max(head.rfind(marker) for marker in ("。", "；", "，", ","))
-    return (head[: boundary + 1] if boundary >= 80 else head).rstrip()
+    # Source replies may put model restrictions or exceptions at the end.
+    # Shortening is a semantic rewrite, never an arbitrary character slice.
+    return reply
 
 
 def _recommended_reply_from_final_content(
@@ -14405,16 +15507,12 @@ def _recommended_reply_from_final_content(
     content = _compact_knowledge_content(final_content, limit=800)
     if not content:
         return ""
-    if evidence_status in {"required_missing", "unusable"}:
-        return (
-            "当前图片只能辅助确认异常位置，不能直接确认具体尺寸、数量或处理档位；"
-            "请补充测量证据后再判定。"
-        )
     points: list[str] = []
     for line in content.splitlines():
         point = re.sub(r"^\s*(?:[-•]|\d+[.、])\s*", "", line).strip()
         point = re.sub(
-            r"^(?:标准定义|检测方法|核验方法|处理步骤|例外与边界)\s*[：:]\s*",
+            r"^(?:标准定义|检测方法|核验方法|处理步骤|例外与边界|"
+            r"适用情形|核验要点|处理结论|处理方式|适用边界|边界)\s*[：:]\s*",
             "",
             point,
         )
@@ -14438,8 +15536,7 @@ def _recommended_reply_from_final_content(
             points.append(point.rstrip("。；;"))
     if not points:
         return ""
-    reply = "；".join(points[:3]) + "。"
-    return reply[:180].rstrip("；，, ")
+    return "；".join(points) + "。"
 
 
 def _draft_status_for_model_result(
@@ -14495,11 +15592,7 @@ def _compact_recommended_reply(value: Any) -> str:
         .replace("转人工复核", "补充证据后再判定")
         .replace("转人工", "补充证据后再判定")
     )
-    if len(reply) <= 180:
-        return reply
-    head = reply[:180]
-    boundary = max(head.rfind(marker) for marker in ("。", "；", "，", ","))
-    return (head[: boundary + 1] if boundary >= 80 else head).rstrip()
+    return reply
 
 
 _RECOMMENDED_REPLY_TOPIC_SWITCH_PATTERN = re.compile(
@@ -14568,6 +15661,9 @@ _RECOMMENDED_REPLY_DANGLING_PATTERN = re.compile(
 
 def _recommended_reply_topic_key(value: Any) -> str:
     text = _clean_text(value)
+    # The source question may say “机型” while its answer says “型号”.
+    # Normalize this synonym without weakening the product/topic boundary.
+    text = text.replace("机型", "型号")
     text = re.sub(
         r"^(?:另一个|其他|其它|相关|对应|当前|本次)",
         "",
@@ -14679,9 +15775,25 @@ def _recommended_reply_quality_issues(
             "判断对象",
             "来源核验依据",
             "人工处理结论",
+            "适用情形：",
+            "核验要点：",
+            "处理结论：",
+            "适用边界：",
+            "边界：",
         )
     ):
         issues.append("包含内部分析标签")
+    normalized_body = re.sub(r"(?m)^\s*\d+[.、]\s*", "", content)
+    body_sentences = [
+        part.strip() for part in re.split(r"[。！？!?；;\n]+", normalized_body)
+        if part.strip()
+    ]
+    if (
+        len(reply) > 100
+        and len(body_sentences) > 1
+        and _normalized_topic_claim(reply) == _normalized_topic_claim(normalized_body)
+    ):
+        issues.append("推荐回复逐段复述正文")
     greeting_count = len(re.findall(r"(?:您好|你好)", reply))
     if greeting_count > 1 or re.search(r"建议\s*(?:您好|你好)", reply):
         issues.append("重复问候")
@@ -14716,6 +15828,586 @@ def _recommended_reply_quality_issues(
     return issues
 
 
+_REPLY_CONFLICT_PATTERNS = (
+    (
+        "回收资格",
+        re.compile(r"(?:不(?:可以|可|支持)?回收|不可回收|拒收|不收)"),
+        re.compile(r"(?<!不)(?:可以|可|正常|支持)回收"),
+    ),
+    ("功能支持", re.compile(r"不支持"), re.compile(r"(?<!不)支持")),
+    ("归类结论", re.compile(r"不属于"), re.compile(r"(?<!不)属于")),
+    ("处理必要性", re.compile(r"(?:无需|不需要)"), re.compile(r"(?<!不)需要")),
+)
+
+
+def _reply_source_record_id(row: dict[str, Any]) -> str:
+    return _clean_text(
+        row.get("来源记录ID")
+        or row.get("数据ID")
+        or row.get("工单ID")
+    )
+
+
+def _reply_source_conflict(
+    entries: list[dict[str, str]],
+) -> str:
+    values = [entry["reply"] for entry in entries]
+    for label, negative, positive in _REPLY_CONFLICT_PATTERNS:
+        if any(negative.search(value) for value in values) and any(
+            positive.search(value) for value in values
+        ):
+            return f"来源回答存在相反的{label}结论"
+    return ""
+
+
+def _reply_information_score(value: Any) -> int:
+    """Prefer a complete source answer over a terse shorthand."""
+    reply = _clean_text(value)
+    if not reply:
+        return 0
+    score = min(len(reply), 360)
+    score += 18 * len(
+        re.findall(r"(?:如果|若|当|出现|仍然|仅当|否则|无法|可以|不能|需|应)", reply)
+    )
+    score += 12 * len(re.findall(r"(?:按|判定|勾选|选择|处理|回收|解绑|关闭|退出)", reply))
+    score += 8 * len(re.findall(r"[。；;！？!?]", reply))
+    return score
+
+
+def _repair_obvious_source_typos(
+    value: Any,
+    *,
+    source_context: str = "",
+) -> tuple[str, list[str]]:
+    """Repair only an unambiguous business typo; leave uncertain text for review."""
+    text = _clean_text(value)
+    if not text:
+        return "", []
+    context = f"{text}\n{_clean_text(source_context)}"
+    repairs: list[str] = []
+    if "外科岁" in text and any(
+        marker in context for marker in ("外壳", "碎裂", "磕碰", "素皮")
+    ):
+        text = text.replace("外科岁", "外壳碎")
+        repairs.append("已将明显错字“外科岁”修正为“外壳碎”")
+    if "外科碎" in text and any(
+        marker in context for marker in ("外壳", "碎裂", "磕碰", "素皮")
+    ):
+        text = text.replace("外科碎", "外壳碎")
+        repairs.append("已将明显错字“外科碎”修正为“外壳碎”")
+    if "按数量尺寸盘" in text:
+        text = text.replace("按数量尺寸盘", "按数量、尺寸判定")
+        repairs.append("已将明显错字“按数量尺寸盘”修正为“按数量、尺寸判定”")
+    before_punctuation = text
+    text = re.sub(r"[，,]\s*[；;。.!！？?]", "。", text)
+    text = re.sub(r"[；;]\s*[；;]+", "；", text)
+    text = re.sub(r"\s+([，,；;。！？!?：:])", r"\1", text)
+    if text != before_punctuation:
+        repairs.append("已规范重复标点及标点前空格")
+    return text, list(dict.fromkeys(repairs))
+
+
+def _text_quality_issues(value: Any) -> list[str]:
+    """Detect text that should be reviewed without guessing its meaning."""
+    text = _clean_text(value)
+    if not text:
+        return []
+    issues: list[str] = []
+    if re.search(r"[，,]\s*[；;。.!！？?]|[；;]\s*[；;]+", text):
+        issues.append("异常标点")
+    if re.search(r"(?:外科岁|外科碎|按数量尺寸盘)", text):
+        issues.append("疑似错别字")
+    if re.search(r"(?:^|[。；;\n])\s*[^\n。；;]{1,3}[。；;]\s*[^\n。；;]{1,3}[。；;]", text):
+        issues.append("疑似碎片化答复")
+    return list(dict.fromkeys(issues))
+
+
+def _reply_conclusion_conflict(
+    reply: str,
+    *,
+    title: str,
+    content: str,
+) -> str:
+    topic_text = f"{title}\n{content}"
+    negative_handling = re.compile(
+        r"(?:不能|不应|不要|不得|无需|不)(?:按|判定为|判为|勾选|属于)"
+        r"([^，。；;\n]{2,30})"
+    )
+    for negative_text, positive_text in ((reply, content), (content, reply)):
+        positive_text = negative_handling.sub("", positive_text)
+        normalized_positive = _normalized_topic_claim(positive_text).replace("碎裂", "碎")
+        for match in negative_handling.finditer(negative_text):
+            label = re.sub(r"(?:处理|判定|勾选|计算)+$", "", match.group(1).strip())
+            label = _normalized_topic_claim(label).replace("碎裂", "碎")
+            if len(label) >= 2 and label in normalized_positive:
+                return "来源回答与当前知识的具体处理项结论相反"
+    for label, negative, positive in _REPLY_CONFLICT_PATTERNS:
+        reply_is_negative = bool(negative.search(reply))
+        reply_is_positive = bool(positive.search(reply))
+        topic_is_negative = bool(negative.search(topic_text))
+        topic_is_positive = bool(positive.search(topic_text))
+        if (
+            reply_is_negative
+            and topic_is_positive
+            or reply_is_positive
+            and topic_is_negative
+        ):
+            return f"来源回答与当前知识的{label}结论相反"
+    return ""
+
+
+def _reply_topic_anchors(
+    rows: list[dict[str, Any]],
+) -> tuple[set[str], set[str]]:
+    scope_anchors: set[str] = set()
+    topic_anchors: set[str] = set()
+    for row in rows:
+        for field in ("产品类型", "品类"):
+            value = _recommended_reply_topic_key(row.get(field))
+            if len(value) >= 2:
+                scope_anchors.add(value)
+        for field in ("对象/部位", "异常现象", "核心问题"):
+            value = _recommended_reply_topic_key(row.get(field))
+            if len(value) >= 2:
+                topic_anchors.add(value)
+    return scope_anchors, topic_anchors
+
+
+def _reply_matches_structured_topic(
+    reply: str,
+    rows: list[dict[str, Any]],
+    *,
+    title: str,
+    content: str,
+) -> bool:
+    scope_anchors, topic_anchors = _reply_topic_anchors(rows)
+    topic_text_key = _recommended_reply_topic_key(f"{title}\n{content}")
+    topic_text_bigrams = _recommended_reply_meaningful_bigrams(topic_text_key)
+    if len(scope_anchors) > 1:
+        return False
+    row_products = {
+        canonical_product_name(
+            row.get("产品类型") or row.get("品类"),
+            unknown="",
+        )
+        for row in rows
+        if canonical_product_name(
+            row.get("产品类型") or row.get("品类"),
+            unknown="",
+        )
+    }
+    title_products = {
+        product_name
+        for product_name in configured_product_names()
+        if any(
+            alias and alias in title
+            for alias in {
+                product_name,
+                re.sub(r"电脑$", "", product_name),
+                *product_name.split("/"),
+            }
+        )
+    }
+    if (
+        title_products
+        and row_products
+        and title_products.isdisjoint(row_products)
+    ):
+        return False
+    if (
+        scope_anchors
+        and title_products
+        and not any(
+            anchor in topic_text_key
+            or len(
+                _recommended_reply_meaningful_bigrams(anchor)
+                & topic_text_bigrams
+            )
+            >= 1
+            for anchor in scope_anchors
+        )
+    ):
+        return False
+    if not topic_anchors:
+        return True
+    reply_key = _recommended_reply_topic_key(reply)
+    reply_bigrams = _recommended_reply_meaningful_bigrams(reply_key)
+    return any(
+        anchor in reply_key
+        or len(
+            _recommended_reply_meaningful_bigrams(anchor) & reply_bigrams
+        )
+        >= 2
+        for anchor in topic_anchors
+    )
+
+
+def _reply_sentence(value: Any) -> str:
+    reply = _compact_recommended_reply(value)
+    if reply and not re.search(r"[。！？!?][”’\"）)\]】]*$", reply):
+        reply = reply.rstrip("；;，, ") + "。"
+    return reply
+
+
+def _select_topic_recommended_reply(
+    rows: list[dict[str, Any]],
+    *,
+    title: str,
+    content: str,
+    model_reply: Any,
+    evidence_status: str,
+    use_standard_references: bool,
+) -> dict[str, Any]:
+    """Select one topic-aligned reply while preserving its source and fallback."""
+
+    if not _clean_text(content):
+        return {
+            "reply": "", "source_type": "human_review_required",
+            "source_record_id": "", "source_record_ids": [],
+            "source_candidates": [], "original": "", "model_rewritten": False,
+            "issues": ["知识内容为空，禁止生成推荐回复"], "conflict": "",
+        }
+    ordered_atomic_source_ids = _ordered_atomic_source_ids(rows)
+    source_entries: list[dict[str, str]] = []
+    field_groups = (
+        (
+            "second_part_reference_reply",
+            ("参考话术",),
+        ),
+        (
+            "work_order_actual_reply",
+            (
+                "_原子实际回复",
+                "实际回复",
+                "答疑回复",
+                "回复内容",
+                "客服回复",
+                "历史实际回复",
+            ),
+        ),
+    )
+    for source_type, fields in field_groups:
+        for row in rows:
+            source_id = _reply_source_record_id(row)
+            for field in fields:
+                if (
+                    source_type == "work_order_actual_reply"
+                    and (
+                        row.get("_人工答复门禁状态") == "answered"
+                        or _has_ordered_atomic_reply_contract(row)
+                    )
+                    and field != "_原子实际回复"
+                ):
+                    continue
+                if (
+                    field == "参考话术"
+                    and source_id in ordered_atomic_source_ids
+                    and not _has_ordered_atomic_reply_contract(row)
+                ):
+                    continue
+                raw = (
+                    _topic_reference_reply(row)
+                    if field == "参考话术"
+                    else _clean_text(row.get(field))
+                )
+                if not raw and field == "参考话术":
+                    continue
+                original_raw = raw
+                raw, _repairs = _repair_obvious_source_typos(
+                    raw,
+                    source_context=f"{title}\n{content}",
+                )
+                reply = _reply_sentence(raw)
+                if not reply:
+                    continue
+                if _recommended_reply_quality_issues(
+                    reply,
+                    title=title,
+                    content=content,
+                ):
+                    continue
+                if not _reply_matches_structured_topic(
+                    reply,
+                    [row],
+                    title=title,
+                    content=content,
+                ):
+                    continue
+                conclusion_conflict = _reply_conclusion_conflict(
+                    reply,
+                    title=title,
+                    content=content,
+                )
+                identity = (source_type, source_id, reply)
+                if not any(
+                    (
+                        entry["source_type"],
+                        entry["source_record_id"],
+                        entry["reply"],
+                    )
+                    == identity
+                    for entry in source_entries
+                ):
+                    source_entries.append(
+                        {
+                            "source_type": source_type,
+                            "source_record_id": source_id,
+                            "original": original_raw,
+                            "reply": reply,
+                            "conclusion_conflict": conclusion_conflict,
+                        }
+                    )
+
+    conflict = _reply_source_conflict(source_entries)
+    eligible_source_entries = [
+        entry
+        for entry in source_entries
+        if not entry.get("conclusion_conflict")
+    ]
+    complete_reply = _recommended_reply_from_final_content(
+        content, evidence_status=evidence_status,
+    )
+    body_sentences = [
+        part.strip() for part in re.split(r"[。！？!?；;\n]+", complete_reply)
+        if part.strip()
+    ]
+    actual_answers = {
+        _clean_text(row.get("_原子实际回复")).rstrip("。！!")
+        for row in rows
+    }
+    # Expand an unambiguous chat shorthand from the final body. The caller
+    # still audits that body and the expanded reply against source evidence.
+    if (
+        rows
+        and all(row.get("_人工答复门禁状态") == "answered" for row in rows)
+        and len(actual_answers) == 1
+        and all(
+            concrete_judgment_label(answer)
+            or re.fullmatch(r"\d+(?:\.\d+)?\s*(?:mm|毫米)?的?", answer, re.IGNORECASE)
+            for answer in actual_answers
+        )
+        and len(body_sentences) == 1
+        and not conflict
+        and not any(entry.get("conclusion_conflict") for entry in source_entries)
+        and not source_answer_coverage_issues(complete_reply, rows)
+        and not _recommended_reply_quality_issues(
+            complete_reply, title=title, content=content,
+        )
+    ):
+        source_ids = list(dict.fromkeys(
+            source_id for row in rows if (source_id := _reply_source_record_id(row))
+        ))
+        return {
+            "source_type": "knowledge_content_generation",
+            "source_record_id": "\n".join(source_ids),
+            "source_record_ids": source_ids,
+            "source_candidates": source_entries,
+            "original": _clean_text(rows[0].get("_原子实际回复")),
+            "reply": complete_reply,
+            "model_rewritten": True,
+            "issues": [],
+            "conflict": "",
+        }
+    actual_entries = [
+        entry
+        for entry in eligible_source_entries
+        if entry["source_type"] == "work_order_actual_reply"
+    ]
+    reference_entries = [
+        entry
+        for entry in eligible_source_entries
+        if entry["source_type"] == "second_part_reference_reply"
+    ]
+    actual_reply_values = {
+        _normalized_topic_claim(entry["reply"])
+        for entry in actual_entries
+        if entry["reply"]
+    }
+    if (
+        reference_entries
+        and actual_entries
+        and len(actual_reply_values) <= 1
+        and not conflict
+    ):
+        enrichments = []
+        for reference in reference_entries:
+            same_source_actuals = [
+                actual
+                for actual in actual_entries
+                if (
+                    not reference["source_record_id"]
+                    or not actual["source_record_id"]
+                    or reference["source_record_id"]
+                    == actual["source_record_id"]
+                )
+            ]
+            if not same_source_actuals:
+                continue
+            if any(
+                _reply_source_conflict([reference, actual])
+                for actual in same_source_actuals
+            ):
+                continue
+            if _reply_information_score(reference["reply"]) <= max(
+                _reply_information_score(actual["reply"])
+                for actual in same_source_actuals
+            ):
+                continue
+            enrichments.append(reference)
+        if enrichments:
+            selected = max(
+                enrichments,
+                key=lambda entry: _reply_information_score(entry["reply"]),
+            )
+            return {
+                **selected,
+                "source_record_ids": [selected["source_record_id"]]
+                if selected["source_record_id"]
+                else [],
+                "source_candidates": source_entries,
+                "model_rewritten": _reply_sentence(selected["original"]) != selected["reply"],
+                "issues": [],
+                "conflict": "",
+            }
+    distinct_replies = {entry["reply"] for entry in eligible_source_entries}
+    if eligible_source_entries and len(distinct_replies) == 1 and not conflict:
+        selected = eligible_source_entries[0]
+        return {
+            **selected,
+            "source_record_ids": [selected["source_record_id"]]
+            if selected["source_record_id"]
+            else [],
+            "source_candidates": [selected],
+            "model_rewritten": _reply_sentence(selected["original"]) != selected["reply"],
+            "issues": [],
+            "conflict": "",
+        }
+
+    normalized_model_reply = _reply_sentence(
+        _filter_standard_path_noise(model_reply)
+        if use_standard_references
+        else model_reply
+    )
+    model_issues = _recommended_reply_quality_issues(
+        normalized_model_reply,
+        title=title,
+        content=content,
+    )
+    model_issues.extend(source_answer_coverage_issues(normalized_model_reply, rows))
+    model_conclusion_conflict = _reply_conclusion_conflict(
+        normalized_model_reply,
+        title=title,
+        content=content,
+    )
+    if model_conclusion_conflict:
+        model_issues.append(model_conclusion_conflict)
+    source_answer_values = [
+        _clean_text(row.get(field))
+        for row in rows
+        for field in (
+            "人工判定结论",
+            "判定结论",
+            "判定依据",
+            "参考话术",
+            "_原子参考话术",
+            "_原子实际回复",
+            "实际回复",
+            "答疑回复",
+            "回复内容",
+            "客服回复",
+            "历史实际回复",
+            "解题方式",
+        )
+        if _clean_text(row.get(field))
+        and (
+            row.get("_人工答复门禁状态") != "answered"
+            or field == "_原子实际回复"
+        )
+        and (
+            not _has_ordered_atomic_reply_contract(row)
+            or field in {"_原子参考话术", "_原子实际回复", "解题方式"}
+        )
+    ]
+    has_source_answer = any(
+        value
+        and not re.search(r"如何|怎么|什么|询问|[？?]", value)
+        and not value.startswith(("回收师反馈", "用户反馈"))
+        for value in source_answer_values
+    )
+    if not use_standard_references and not has_source_answer:
+        model_issues.append("来源没有明确答复，不能接受模型补造的确定回复")
+    if normalized_model_reply and not model_issues and not conflict:
+        return {
+            "source_type": "deepseek_transcription",
+            "source_record_id": "",
+            "source_record_ids": [],
+            "source_candidates": [],
+            "original": _clean_text(model_reply),
+            "reply": normalized_model_reply,
+            "model_rewritten": True,
+            "issues": [conflict] if conflict else [],
+            "conflict": conflict,
+        }
+
+    generated = _reply_sentence(
+        _recommended_reply_from_final_content(
+            content,
+            evidence_status=evidence_status,
+        )
+    )
+    source_conclusion_issues = list(
+        dict.fromkeys(
+            entry["conclusion_conflict"]
+            for entry in source_entries
+            if entry.get("conclusion_conflict")
+        )
+    )
+    human_review_required = bool(conflict or source_conclusion_issues)
+    source_record_ids = (
+        list(
+            dict.fromkeys(
+                entry["source_record_id"]
+                for entry in source_entries
+                if entry["source_record_id"]
+            )
+        )
+        if human_review_required
+        else []
+    )
+    return {
+        "source_type": (
+            "human_review_required"
+            if human_review_required
+            else "knowledge_content_generation"
+        ),
+        "source_record_id": "\n".join(source_record_ids),
+        "source_record_ids": source_record_ids,
+        "source_candidates": source_entries,
+        "original": (
+            json.dumps(
+                source_entries,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if human_review_required
+            else ""
+        ),
+        "reply": generated,
+        "model_rewritten": True,
+        "issues": [
+            *([conflict] if conflict else []),
+            *(
+                ["来源冲突或结论相反，必须人工裁决"]
+                if human_review_required
+                else []
+            ),
+            *source_conclusion_issues,
+            *model_issues,
+        ],
+        "conflict": conflict,
+    }
+
+
 def _unique_topic_values(
     rows: list[dict[str, Any]],
     field: str,
@@ -14746,6 +16438,20 @@ def _topic_stage_payload(
         "representative_facts"
     ) or []
     scoped_facts = representative_facts or evidence_package.get("facts") or []
+    upstream_rows = [
+        {
+            **row,
+            "核心问题": fact.get("atomic_question", ""),
+            "原始核心问题": fact.get("human_core_problem", ""),
+            "原始判定结论": fact.get("human_judgment_conclusion", ""),
+            "解题方式": fact.get("action", ""),
+            "_原子阈值例外": fact.get("source_supported_threshold_or_exception", ""),
+            "语义标注依据": fact.get("semantic_basis", ""),
+        }
+        if row.get("_人工答复门禁状态") == "answered"
+        else row
+        for row, fact in zip(rows, evidence_package["facts"])
+    ]
     return {
         "theme_id": topic_id,
         "member_count": len(rows),
@@ -14753,14 +16459,14 @@ def _topic_stage_payload(
         "source_unit_ids": _unique_topic_values(rows, "_原子知识ID"),
         "product_categories": _unique_topic_values(rows, "产品类型"),
         "scope_types": _unique_topic_values(rows, "_原子适用范围类型"),
-        "normalized_issues": _unique_topic_values(rows, "核心问题", limit=8),
+        "normalized_issues": _unique_topic_values(upstream_rows, "核心问题", limit=8),
         "upstream_core_problems": _unique_topic_values(
-            rows,
+            upstream_rows,
             "原始核心问题",
             limit=8,
         ),
         "upstream_judgment_conclusions": _unique_topic_values(
-            rows,
+            upstream_rows,
             "原始判定结论",
             limit=8,
         ),
@@ -14769,16 +16475,16 @@ def _topic_stage_payload(
         "intents": _unique_topic_values(rows, "问题意图"),
         "subjects": _unique_topic_values(rows, "对象/部位"),
         "phenomena": _unique_topic_values(rows, "异常现象"),
-        "judgment_targets": _unique_topic_values(rows, "核心问题"),
-        "resolution_modes": _unique_topic_values(rows, "解题方式"),
+        "judgment_targets": _unique_topic_values(upstream_rows, "核心问题"),
+        "resolution_modes": _unique_topic_values(upstream_rows, "解题方式"),
         "standard_paths": (
             _unique_topic_values(rows, "主标准路径")
             if use_standard_references
             else []
         ),
-        "thresholds_or_exceptions": _unique_topic_values(rows, "_原子阈值例外"),
+        "thresholds_or_exceptions": _unique_topic_values(upstream_rows, "_原子阈值例外"),
         "evidence_summaries": _unique_topic_values(
-            rows,
+            upstream_rows,
             "语义标注依据",
             limit=6,
             max_chars=800,
@@ -14788,6 +16494,13 @@ def _topic_stage_payload(
                 reply
                 for fact in scoped_facts
                 if (reply := _clean_text(fact.get("historical_actual_reply")))
+            )
+        )[:6],
+        "reference_replies": list(
+            dict.fromkeys(
+                reply
+                for fact in scoped_facts
+                if (reply := _clean_text(fact.get("reference_reply")))
             )
         )[:6],
         "conversation_evidence": list(
@@ -14832,11 +16545,26 @@ def _topic_reusable_source_values(topic_payload: dict[str, Any]) -> list[Any]:
         *topic_payload.get("thresholds_or_exceptions", []),
         *topic_payload.get("evidence_summaries", []),
         *topic_payload.get("historical_replies", []),
+        *topic_payload.get("reference_replies", []),
         *topic_payload.get("conversation_evidence", []),
     ]
 
 
 def _topic_has_explicit_reusable_rule(topic_payload: dict[str, Any]) -> bool:
+    for fact in (topic_payload.get("evidence_package") or {}).get("facts") or []:
+        if fact.get("fact_type") != "work_order_actual_reply":
+            continue
+        subject = _clean_text(fact.get("object"))
+        actual = _clean_text(fact.get("historical_actual_reply"))
+        if (
+            subject
+            and _clean_text(fact.get("observation"))
+            and re.fullmatch(
+                re.escape(subject) + r"功能异常(?:[（(][^？?。；;\n]{1,60}[）)])?[。]?",
+                actual,
+            )
+        ) or _verified_headphone_spec_sentence(fact):
+            return True
     return has_explicit_reusable_knowledge(
         source_values=_topic_reusable_source_values(topic_payload),
         threshold_values=topic_payload.get("thresholds_or_exceptions", []),
@@ -15150,6 +16878,7 @@ def _untranscribed_topic_candidate_row(
         rows,
         evidence_package,
     )
+    media_evidence = _topic_media_evidence(rows, topic_id)
     requires_images = _topic_needs_images(rows)
     preserved_standard_refs = _merge_unique_text(
         [row.get("关联标准项") for row in rows],
@@ -15174,16 +16903,6 @@ def _untranscribed_topic_candidate_row(
             "该主题在知识转写前被标注为不值得沉淀，因此未生成知识草稿。"
             "请在候选价值复核中确认主题价值；如改判为值得沉淀，需要补充完整知识内容后再送审。"
         )
-    reusable_reply_source = _build_topic_source_fact_content(
-        query,
-        use_standard_references=False,
-        conservative=True,
-    )
-    recommended_reply = _recommended_reply(
-        title,
-        reusable_reply_source,
-        use_standard_references=False,
-    )
     return {
         "主题ID": topic_id,
         "知识ID": topic_id,
@@ -15216,6 +16935,8 @@ def _untranscribed_topic_candidate_row(
         "主题视频来源": video_source_trace,
         "主题图片链接": "\n".join(image_links),
         "主题视频链接": "\n".join(video_links),
+        "媒体证据包": json.dumps(media_evidence, ensure_ascii=False),
+        "媒体风险数": sum(bool(item.get("审计风险")) for item in media_evidence),
         "主题图片必要性": (
             "需要保留"
             if requires_images
@@ -15260,9 +16981,9 @@ def _untranscribed_topic_candidate_row(
         "模型初标状态": "topic_initial_review_skipped",
         "主标题": title,
         "副标题": "",
-        "知识内容": note,
+        "知识内容": "",
         "图例": "\n".join(image_links),
-        "推荐回复": recommended_reply,
+        "推荐回复": "",
         "知识分类": knowledge_category_from_topic_stage(
             classification.get("topic_stage"),
         ),
@@ -15356,56 +17077,12 @@ def _failed_topic_source_knowledge_content(
                 start=1,
             )
         )
-    points: list[str] = []
-
-    condition_parts = [part for part in (product, subject, phenomenon) if part]
-    if condition_parts:
-        condition = " ".join(condition_parts)
-        if has_tool_result:
-            points.append(f"{condition}时，先核对验机工具报告中的对应结果。")
-        elif method:
-            points.append(f"{condition}时，按来源记录的核验方式处理。")
-
-    if options:
-        points.append(f"工具或来源结论明确时，{options[0]}。")
-    elif method and not (
-        is_tool_user_judgment
-        and any(
-            marker in method
-            for marker in (
-                "健康度",
-                "最大容量",
-                "支持APP",
-                "支持 App",
-                "无法检测",
-            )
-        )
-    ):
-        clean_method = re.sub(
-            r"^(?:请|需|需要|应当|应|按)",
-            "",
-            method,
-        ).strip("：:。；; ")
-        if clean_method:
-            points.append(f"核验时，{clean_method}。")
-    elif source_text:
-        clean_source = re.sub(
-            r"(?:关键事实|匹配口径|定义|老师|您好|回收师)"
-            r"\s*[：:，,]?\s*",
-            "",
-            source_text,
-        )
-        clean_source = re.sub(r"\s+", " ", clean_source).strip("；;。 ")
-        if clean_source:
-            points.append(f"来源记录的处理方式：{clean_source[:180]}。")
-
-    points.append(
-        "工具报告缺失、结果不明确或对象不一致时，补充对应报告后转人工审核。"
-    )
-    unique_points = list(dict.fromkeys(point for point in points if point))
-    return "\n".join(
-        f"{index}. {point}" for index, point in enumerate(unique_points[:4], start=1)
-    )
+    source_rule = _build_experience_review_content(query)
+    if source_rule:
+        return source_rule
+    # A blocked draft without a concrete human conclusion must remain empty.
+    # Generic verification instructions are audit guidance, not knowledge.
+    return ""
 
 
 def _strip_unverified_standard_language(value: Any) -> str:
@@ -15555,9 +17232,6 @@ def _source_rule_content_from_topic_evidence(topic: dict[str, Any]) -> str:
     unique_points = list(dict.fromkeys(point for point in points if point))
     if not unique_points:
         return ""
-    unique_points.append(
-        "仅适用于来源已明确记录的对象、条件和处理步骤；无法核实对应事实时，补充证据后转人工审核。"
-    )
     return "\n".join(
         f"{index}. {point}"
         for index, point in enumerate(unique_points[:4], start=1)
@@ -15700,22 +17374,64 @@ def _standard_reference_revoked_content(topic: dict[str, Any]) -> str:
     source_rule_content = _source_rule_content_from_topic_evidence(topic)
     if source_rule_content:
         return source_rule_content
-    points = [
-        "当前标准引用已撤销，不能按原标准路径或候选项直接处理。",
-    ]
-    condition = _safe_join([subject, phenomenon], " / ")
-    if condition:
-        points.append(f"请先根据来源事实核对{condition}是否一致。")
-    if method:
-        points.append(f"核验时，{method}。")
-    points.append("来源证据不足、对象不一致或无法复现时，补充证据后转人工审核。")
-    return "\n".join(
-        f"{index}. {point}"
-        for index, point in enumerate(
-            list(dict.fromkeys(point for point in points if point)),
-            start=1,
+    return ""
+
+
+def _repair_final_topic_text(topic: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(topic)
+    context = "\n".join(_clean_text(topic.get(field)) for field in (
+        "主标题", "主题对象/部位", "主题异常现象", "主题事实证据包",
+    ))
+    repairs = []
+    for field in ("知识内容", "推荐回复"):
+        updated[field], notes = _repair_obvious_source_typos(
+            updated.get(field), source_context=context,
         )
-    )
+        repairs.extend(notes)
+    if repairs:
+        updated["校验备注"] = _safe_join(
+            [_clean_text(updated.get("校验备注")), *dict.fromkeys(repairs)], "；",
+        )
+        updated["推荐回复是否模型改写"] = "是"
+    updated["推荐回复改写文本"] = _clean_text(updated.get("推荐回复"))
+    return updated
+
+
+def _reply_rows_from_topic_evidence(topic: dict[str, Any]) -> list[dict[str, Any]]:
+    try:
+        package = json.loads(_clean_text(topic.get("主题事实证据包")))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(package, dict):
+        return []
+    rows = []
+    for fact in package.get("representative_facts") or package.get("facts") or []:
+        if not isinstance(fact, dict) or not fact.get("historical_actual_reply"):
+            continue
+        reference = _clean_text(fact.get("reference_reply"))
+        # A rejected standard cannot justify new numeric grades. Keep the
+        # reference's general measurement/handling guidance in that case.
+        actual = _clean_text(fact.get("historical_actual_reply"))
+        reference = "。".join(
+            segment.strip()
+            for segment in re.split(r"[。；;]+", reference)
+            if segment.strip() and (
+                not _topic_numeric_claim_tokens(segment)
+                or _topic_numeric_claim_tokens(segment).issubset(
+                    _topic_numeric_claim_tokens(actual)
+                )
+            )
+        )
+        rows.append({
+            "数据ID": fact.get("source_record_id", ""),
+            "_人工答复门禁状态": "answered",
+            "_原子实际回复": actual,
+            "参考话术": reference,
+            "核心问题": fact.get("atomic_question", ""),
+            "对象/部位": fact.get("object", ""),
+            "异常现象": fact.get("observation", ""),
+        })
+    return rows
 
 
 def _enforce_standard_reference_consistency(
@@ -15725,7 +17441,7 @@ def _enforce_standard_reference_consistency(
 ) -> dict[str, Any]:
     """Apply the final standard-reference consistency gate before export."""
     if not use_standard_references:
-        return topic
+        return _repair_final_topic_text(topic)
     updated = dict(topic)
     association = _clean_text(updated.get("关联标准项"))
     label = _clean_text(updated.get("标准引用标签"))
@@ -15773,6 +17489,26 @@ def _enforce_standard_reference_consistency(
             if "当前标准引用已撤销" not in revoked_content
             else ""
         )
+        updated["推荐回复来源类型"] = "knowledge_content_generation"
+        updated["推荐回复来源记录ID"] = ""
+        updated["推荐回复是否模型改写"] = "是"
+        updated["推荐回复原文"] = ""
+        updated = _repair_final_topic_text(updated)
+        revoked_content = _clean_text(updated.get("知识内容"))
+        reply_rows = _reply_rows_from_topic_evidence(updated)
+        if reply_rows and revoked_content:
+            selection = _select_topic_recommended_reply(
+                reply_rows, title=_clean_text(updated.get("主标题")),
+                content=revoked_content, model_reply="",
+                evidence_status=_clean_text(updated.get("图片测量门禁状态")),
+                use_standard_references=False,
+            )
+            if selection.get("source_type") == "second_part_reference_reply" and not selection.get("conflict"):
+                updated["推荐回复"] = selection["reply"]
+                updated["推荐回复来源类型"] = selection["source_type"]
+                updated["推荐回复来源记录ID"] = selection["source_record_id"]
+                updated["推荐回复原文"] = selection["original"]
+                updated["推荐回复是否模型改写"] = "是" if selection.get("model_rewritten") else "否"
         updated["校验备注"] = _safe_join(
             [_clean_text(updated.get("校验备注")), blocking_reason],
             "；",
@@ -15800,7 +17536,9 @@ def _enforce_standard_reference_consistency(
                 ],
                 "；",
             )
-    return updated
+    if _clean_text(updated.get("推荐回复")) != _clean_text(topic.get("推荐回复")):
+        updated["推荐回复改写文本"] = _clean_text(updated.get("推荐回复"))
+    return _repair_final_topic_text(updated)
 
 
 def _retarget_battery_user_judgment_query(
@@ -15925,14 +17663,6 @@ def _failed_topic_transcription_row(
         classification,
     )
     failed_query = _retarget_battery_user_judgment_query(_topic_query(rows))
-    # 模型输出校验失败时仍保留可追溯的来源事实，供人工复核；正文必须
-    # 是可阅读的业务知识，而不是“关键事实/匹配口径/老师回复”的案例分析。
-    evidence_content = _failed_topic_source_knowledge_content(failed_query)
-    if not evidence_content:
-        evidence_content = (
-            "当前模型未形成合格知识草稿；请根据主题来源事实、人工判定结论和"
-            "判定依据补充可复用规则后再审核。"
-        )
     failed_title = _rebuild_title_from_structured_fields(failed_query)
     if not failed_title:
         product = _topic_product_type(failed_query, rows)
@@ -15990,17 +17720,8 @@ def _failed_topic_transcription_row(
             "模型初标Prompt版本": "",
             "模型初标运行ID": "",
             "模型初标状态": "topic_initial_review_skipped_transcription_failed",
-            "知识内容": evidence_content,
-            # 模型转写失败仍会进入候选价值复核；不能因为草稿被拦截就丢失
-            # 推荐回复。这里仅从来源事实/历史实际回复生成保守话术，供人工修改。
-            "推荐回复": _recommended_reply(
-                failed_title,
-                evidence_content,
-                existing_reply=_clean_text(
-                    failed_query.get("历史实际回复")
-                ),
-                use_standard_references=use_standard_references,
-            ),
+            "知识内容": "",
+            "推荐回复": "",
             "校验备注": reason,
             "流程状态": "review_pending",
             "模型阶段状态": transcription_status,
@@ -16022,6 +17743,9 @@ def _topic_source_mapping_rows(
         fact.get("fact_id"): fact
         for fact in evidence_package.get("representative_facts") or []
     }
+    media_by_fact: dict[str, list[dict[str, str]]] = {}
+    for item in _topic_media_evidence(rows, topic_id):
+        media_by_fact.setdefault(_clean_text(item.get("事实ID")), []).append(item)
     for index, row in enumerate(rows):
         evidence_level, _eligible, reason = _topic_evidence(row)
         fact = facts[index] if index < len(facts) else {}
@@ -16062,6 +17786,33 @@ def _topic_source_mapping_rows(
                     for url in fact.get("image_urls") or []
                 ),
                 "视频链接": _clean_text(row.get("视频链接")),
+                "媒体证据ID": "\n".join(
+                    _clean_text(item.get("媒体证据ID"))
+                    for item in media_by_fact.get(_clean_text(fact.get("fact_id")), [])
+                ),
+                "原子问题ID": _clean_text(
+                    row.get("_原子知识ID") or row.get("原子知识ID")
+                ),
+                "媒体相关性状态": "\n".join(
+                    _clean_text(item.get("相关性状态"))
+                    for item in media_by_fact.get(_clean_text(fact.get("fact_id")), [])
+                ),
+                "媒体可见事实": "\n".join(
+                    _clean_text(item.get("可见事实"))
+                    for item in media_by_fact.get(_clean_text(fact.get("fact_id")), [])
+                ),
+                "媒体选择原因": "\n".join(
+                    _clean_text(item.get("选择原因"))
+                    for item in media_by_fact.get(_clean_text(fact.get("fact_id")), [])
+                ),
+                "媒体审核状态": "\n".join(
+                    _clean_text(item.get("审核状态"))
+                    for item in media_by_fact.get(_clean_text(fact.get("fact_id")), [])
+                ),
+                "媒体审计风险": "\n".join(
+                    _clean_text(item.get("审计风险"))
+                    for item in media_by_fact.get(_clean_text(fact.get("fact_id")), [])
+                ),
                 "图片处理状态": _clean_text(row.get("图片处理状态")),
                 "视频处理状态": _clean_text(row.get("视频处理状态")),
                 "产品类型": _clean_text(row.get("产品类型")),
@@ -16133,12 +17884,42 @@ def _topic_candidate_row(
     transcription_retry_count: int = 0,
     transcription_retry_reasons: Iterable[str] = (),
 ) -> dict[str, Any]:
+    forbidden_model_standard_refs = (
+        [str(ref) for ref in candidate.get("standard_refs", []) if str(ref).strip()]
+        if not use_standard_references else []
+    )
     evidence_package = _topic_evidence_package(rows)
     query = _retarget_battery_user_judgment_query(
         _topic_query(rows, evidence_package)
     )
     content_rebuild_note = ""
     content_type_note = ""
+    source_context = _safe_join(
+        [
+            _clean_text(query.get("核心问题")),
+            _clean_text(query.get("人工判定结论")),
+            _clean_text(query.get("历史实际回复")),
+            _clean_text(query.get("参考话术")),
+            _clean_text(query.get("判定依据")),
+        ],
+        "；",
+    )
+    repaired_candidate_content, content_repairs = _repair_obvious_source_typos(
+        candidate.get("content"),
+        source_context=source_context,
+    )
+    repaired_candidate_reply, reply_repairs = _repair_obvious_source_typos(
+        candidate.get("recommended_reply"),
+        source_context=source_context,
+    )
+    if content_repairs or reply_repairs:
+        candidate = dict(candidate)
+        candidate["content"] = repaired_candidate_content
+        candidate["recommended_reply"] = repaired_candidate_reply
+        content_rebuild_note = _safe_join(
+            [*content_repairs, *reply_repairs],
+            "；",
+        )
     separated_content, embedded_reply = _split_embedded_recommended_reply(
         candidate.get("content"),
         candidate.get("recommended_reply"),
@@ -16155,8 +17936,21 @@ def _topic_candidate_row(
         candidate,
         use_standard_references=use_standard_references,
     ) and not (
-        not use_standard_references
-        and _topic_draft_has_source_specific_content(candidate, rows)
+        (
+            not use_standard_references
+            or not matches
+        )
+        and (
+            _topic_draft_has_source_specific_content(candidate, rows)
+            or (
+                provider == "mimo"
+                and candidate.get("knowledge_form") == "具体判定"
+                and stage_status in {
+                    "topic_model_labeled", "topic_model_rewritten_for_evidence",
+                }
+                and all(row.get("_人工答复门禁状态") == "answered" for row in rows)
+            )
+        )
     ):
         candidate = _topic_rule_draft(
             topic_id,
@@ -16214,7 +18008,13 @@ def _topic_candidate_row(
         if use_standard_references
         else preserved_standard_refs
     )
-    standard = matches[0][0] if use_standard_references and matches else None
+    selected_standard_refs = {
+        str(ref).strip() for ref in candidate.get("standard_refs", []) if str(ref).strip()
+    }
+    standard = next(
+        (item for item, _score in matches if _standard_reference(item) in selected_standard_refs),
+        matches[0][0] if use_standard_references and matches else None,
+    ) if use_standard_references else None
     has_authoritative_standard = bool(standard)
     matched_existing = bool(standard and standard.knowledge_type == "已有知识")
     source_ids = list(
@@ -16241,6 +18041,7 @@ def _topic_candidate_row(
         rows,
         evidence_package,
     )
+    media_evidence = _topic_media_evidence(rows, topic_id)
     requires_images = _topic_needs_images(rows, candidate)
     image_measurement_gate = _topic_image_measurement_gate(rows, candidate)
     image_note = (
@@ -16294,9 +18095,12 @@ def _topic_candidate_row(
         query=query,
     )
     if compact_standard and standard:
-        source_fact_content = _build_topic_source_fact_content(
+        # 命中标准时，正文以标准知识为主；仅追加经过清洗的、能帮助
+        # 理解标准适用条件的来源事实，不能把会话叙述或审计限制拼回来。
+        source_fact_content = _standard_source_fact_content(
             query,
-            use_standard_references=use_standard_references,
+            compact_standard,
+            content_type,
         )
         content = _merge_standard_and_source_content(
             compact_standard,
@@ -16306,7 +18110,7 @@ def _topic_candidate_row(
         content_rebuild_note = _safe_join(
             [
                 content_rebuild_note,
-                "已按引用标准重建正文，并合并AI/会话中的有效对象、现象和边界。",
+                "已按引用标准知识重建正文，仅保留清洗后的可复用来源事实。",
             ],
             "；",
         )
@@ -16335,16 +18139,25 @@ def _topic_candidate_row(
             )
 
     if use_standard_references and not has_authoritative_standard:
-        # 标准模式下没有真实命中时：优先用来源案例事实重建正文，保留来源中
-        # 明确记录的对象、核验方式和处理方向；但来源里的数值阈值只能证明
-        # 该案例曾这样处理，不能转写成可复用规则，所以走保守模式剥离阈值。
-        # 候选必须标记人工重点复核，不能把来源明确的判定选项剥掉。
-        source_fact_content = _failed_topic_source_knowledge_content(query)
+        # 标准模式未命中时，保留明确人工答复形成的业务补充；没有
+        # 明确答复则留空，不能用核验对象/方法/边界模板制造知识。
+        if (
+            provider == "mimo"
+            and stage_status in {"topic_model_labeled", "topic_model_rewritten_for_evidence"}
+            and all(row.get("_人工答复门禁状态") == "answered" for row in rows)
+            and not _topic_unsupported_source_claims(
+                {"content": content}, evidence_package, [],
+            )
+            and _topic_draft_has_source_specific_content({"content": content}, rows)
+        ):
+            source_fact_content = content
+        else:
+            source_fact_content = _build_experience_review_content(query)
         source_points = _compact_standard_rule_points(
             source_fact_content,
             content_type,
         )
-        if source_points and _topic_source_fact_has_explicit_conclusion(query):
+        if source_points:
             content = chr(10).join(
                 f"{index}. {point}"
                 for index, point in enumerate(source_points, start=1)
@@ -16352,18 +18165,17 @@ def _topic_candidate_row(
             content_rebuild_note = _safe_join(
                 [
                     content_rebuild_note,
-                    "未命中真实标准，已按来源案例事实重建为可复用正文，"
-                    "已剥离无标准支撑的数值阈值，保留来源明确处理方向；"
+                    "未命中真实标准，已按人工答复重建为经验补充候选；"
                     "候选标记人工重点复核。",
                 ],
                 "；",
             )
         else:
-            content = _build_experience_review_content(query)
+            content = ""
             content_rebuild_note = _safe_join(
                 [
                     content_rebuild_note,
-                    "未命中真实标准且来源事实不足，已重建为经验补充人工复核内容。",
+                    "未命中真实标准且没有明确人工答复，知识正文留空并转人工复核。",
                 ],
                 "；",
             )
@@ -16538,7 +18350,7 @@ def _topic_candidate_row(
         )
     # The transcription contract already selects a compact body shape. Do not
     # force every candidate back into the historical three-section template.
-    content = _compact_knowledge_content(content)
+    content = _template_style_knowledge_content(_compact_knowledge_content(content))
     if (
         image_measurement_gate["status"] in {"required_missing", "unusable"}
         and not (
@@ -16547,10 +18359,6 @@ def _topic_candidate_row(
             and content == _compact_knowledge_content(compact_standard)
         )
     ):
-        content = _append_measurement_evidence_boundary(
-            content,
-            query=query,
-        )
         needs_review = True
         content_rebuild_note = _safe_join(
             [
@@ -16560,28 +18368,49 @@ def _topic_candidate_row(
             "；",
         )
     content_structure_issues: tuple[str, ...] = ()
+    content_quality_issues = tuple(_text_quality_issues(content))
+    if content_quality_issues:
+        needs_review = True
+        content_rebuild_note = _safe_join(
+            [
+                content_rebuild_note,
+                "知识正文存在文字质量风险："
+                + "、".join(content_quality_issues)
+                + "，未猜测改写，需人工复核。",
+            ],
+            "；",
+        )
     raw_recommended_reply = _clean_text(candidate.get("recommended_reply"))
-    recommended_reply = _recommended_reply_from_final_content(
-        content,
-        evidence_status=image_measurement_gate["status"],
-    )
-    reply_quality_issues = _recommended_reply_quality_issues(
-        raw_recommended_reply,
+    reply_selection = _select_topic_recommended_reply(
+        rows,
         title=title,
         content=content,
+        model_reply=raw_recommended_reply,
+        evidence_status=image_measurement_gate["status"],
+        use_standard_references=use_standard_references,
     )
-    if not reply_quality_issues and recommended_reply:
-        reply_quality_issues = _recommended_reply_quality_issues(
-            recommended_reply,
-            title=title,
-            content=content,
-        )
+    recommended_reply = _clean_text(reply_selection.get("reply"))
+    reply_quality_issues = list(reply_selection.get("issues") or [])
     reply_rebuild_note = ""
     if reply_quality_issues:
         needs_review = True
-        reply_rebuild_note = (
-            "推荐回复包含主题外内容，已按当前主题正文重建"
-            f"（检测到：{'、'.join(reply_quality_issues)}）。"
+        reply_rebuild_note = _safe_join(
+            [
+                (
+                    "推荐回复包含主题外内容，已按当前主题正文重建。"
+                    if any(
+                        issue.startswith("切换到其他主题")
+                        or issue.startswith("疑似主题外语句")
+                        for issue in reply_quality_issues
+                    )
+                    else ""
+                ),
+                (
+                    "推荐回复来源或模型结果未通过直接复用门禁，已执行受控回退"
+                    f"（检测到：{'、'.join(reply_quality_issues)}）。"
+                ),
+            ],
+            "；",
         )
     if (
         specific_model_conclusion
@@ -16600,6 +18429,32 @@ def _topic_candidate_row(
             content,
             evidence_status=image_measurement_gate["status"],
         )
+        if reply_selection.get("source_type") == "human_review_required":
+            reply_selection = {
+                **reply_selection,
+                "reply": recommended_reply,
+                "model_rewritten": True,
+                "issues": list(
+                    dict.fromkeys(
+                        [
+                            *(reply_selection.get("issues") or []),
+                            "单机型边界触发正文回退，来源冲突仍需人工裁决",
+                        ]
+                    )
+                ),
+            }
+        else:
+            reply_selection = {
+                "source_type": "knowledge_content_generation",
+                "source_record_id": "",
+                "source_record_ids": [],
+                "source_candidates": [],
+                "original": "",
+                "reply": recommended_reply,
+                "model_rewritten": True,
+                "issues": [],
+                "conflict": "",
+            }
 
     final_reply_quality_issues = _recommended_reply_quality_issues(
         recommended_reply,
@@ -16608,6 +18463,8 @@ def _topic_candidate_row(
     )
     if final_reply_quality_issues:
         needs_review = True
+        # Preserve the raw selection in provenance, not in the sendable reply.
+        recommended_reply = ""
         reply_rebuild_note = _safe_join(
             [
                 reply_rebuild_note,
@@ -16626,12 +18483,17 @@ def _topic_candidate_row(
         evidence_package,
         matches if use_standard_references else [],
     )
+    if forbidden_model_standard_refs:
+        unsupported_claims.append("关闭标准引用时模型仍生成标准引用：" + "、".join(forbidden_model_standard_refs))
     draft_audit = audit_topic_draft(
         content=content,
         recommended_reply=recommended_reply,
         evidence_package=evidence_package,
         topic=query,
         existing_unsupported_claims=unsupported_claims,
+        verified_claim_fact_refs=_topic_verified_short_answer_refs(
+            content, recommended_reply, evidence_package,
+        ),
         use_standard_references=use_standard_references,
         active_standard_refs=model_standard_refs,
         preserved_standard_refs=preserved_standard_refs,
@@ -16645,6 +18507,10 @@ def _topic_candidate_row(
         dict.fromkeys(
             [
                 *final_reply_quality_issues,
+                *content_quality_issues,
+                *source_answer_coverage_issues(content, rows),
+                *(["知识内容为空"] if not content else []),
+                *(["推荐回复为空"] if not recommended_reply else []),
                 *(["标题为空"] if not title else []),
                 *(["图片证据不足"] if image_measurement_gate["status"] in {"required_missing", "unusable"} else []),
                 *(["来源事实不支持"] if unsupported_claims else []),
@@ -16672,8 +18538,30 @@ def _topic_candidate_row(
         else "not_run"
     )
     model_quality_status = "failed" if quality_issues else "passed"
-    if quality_issues:
+    if not content:
         recommended_reply = ""
+    elif not recommended_reply and not quality_issues:
+        recommended_reply = _reply_sentence(
+            _recommended_reply_from_final_content(content)
+        )
+        reply_selection = {
+            "source_type": "knowledge_content_generation",
+            "source_record_id": "",
+            "original": "",
+            "reply": recommended_reply,
+            "model_rewritten": True,
+            "issues": final_reply_quality_issues,
+            "conflict": "",
+        }
+    elif quality_issues:
+        needs_review = True
+        reply_rebuild_note = _safe_join(
+            [
+                reply_rebuild_note,
+                "其他转写质量风险仅标记人工复核，未清空已有推荐回复。",
+            ],
+            "；",
+        )
     standard_gate_status = "accepted" if matches else "rejected_or_missing"
     standard_reference_label = (
         "已引用标准知识点"
@@ -16688,7 +18576,12 @@ def _topic_candidate_row(
             _clean_text(query.get("对象/部位")),
             _clean_text(query.get("异常现象")),
             _clean_text(query.get("标准关键词")) if use_standard_references else "",
-            *[_clean_text(row.get("主题标签")) for row in rows],
+            *[
+                _clean_text(row.get("_原子实际回复"))
+                if row.get("_人工答复门禁状态") == "answered"
+                else _clean_text(row.get("主题标签"))
+                for row in rows
+            ],
         ]
     )
     illustration = "\n".join(image_links)
@@ -16722,6 +18615,8 @@ def _topic_candidate_row(
         "主题视频来源": video_source_trace,
         "主题图片链接": illustration,
         "主题视频链接": "\n".join(video_links),
+        "媒体证据包": json.dumps(media_evidence, ensure_ascii=False),
+        "媒体风险数": sum(bool(item.get("审计风险")) for item in media_evidence),
         "主题图片必要性": (
             "需要保留"
             if requires_images
@@ -16849,6 +18744,15 @@ def _topic_candidate_row(
             "；",
         ),
         "推荐回复": recommended_reply,
+        "推荐回复来源类型": _clean_text(reply_selection.get("source_type")),
+        "推荐回复来源记录ID": _clean_text(
+            reply_selection.get("source_record_id")
+        ),
+        "推荐回复是否模型改写": (
+            "是" if reply_selection.get("model_rewritten") else "否"
+        ),
+        "推荐回复原文": _clean_text(reply_selection.get("original")),
+        "推荐回复改写文本": recommended_reply,
         "是否值得沉淀": "",
         "是否可用": "",
         "如何修改": "",
@@ -17481,6 +19385,124 @@ def _topic_claim_is_source_supported(
     return False
 
 
+def _verified_headphone_spec_sentence(fact: dict[str, Any]) -> str:
+    if (
+        fact.get("fact_type") != "work_order_actual_reply"
+        or _clean_text(fact.get("object")) != "耳机孔"
+        or "规格查询" not in _clean_text(fact.get("observation"))
+        or _clean_text(fact.get("condition"))
+        or _clean_text(fact.get("threshold_or_exception"))
+    ):
+        return ""
+    actual = _clean_text(fact.get("historical_actual_reply"))
+    # Only expand the established headphone-jack shorthand. Bare numbers in
+    # other questions must not acquire an inferred unit.
+    if not re.fullmatch(r"3[.]5\s*(?:的|mm|毫米)[。]?", actual, re.IGNORECASE):
+        return ""
+    question = re.split(r"[｜|]", _clean_text(fact.get("human_core_problem")))[-1]
+    scope = re.fullmatch(r"([^，,；;。？?\n]+?)的?耳机孔规格查询", question)
+    if not scope:
+        return ""
+    return f"{scope.group(1)}的耳机孔为3.5mm规格。"
+
+
+def _verified_short_answer_supports_claim(
+    claim: str,
+    fact: dict[str, Any],
+) -> bool:
+    if fact.get("fact_type") != "work_order_actual_reply":
+        return False
+    spec_sentence = _verified_headphone_spec_sentence(fact)
+    if spec_sentence:
+        model = _normalized_topic_claim(spec_sentence).removesuffix("的耳机孔为3.5mm规格")
+        return bool(re.fullmatch(
+            re.escape(model) + r"的?耳机孔(?:"
+            r"(?:为|是)3[.]5(?:mm|毫米)(?:规格|接口(?:规格)?|耳机插孔)"
+            r"(?:即3[.]5(?:mm|毫米)(?:接口|耳机插孔))?"
+            r"|规格(?:为|是)3[.]5(?:mm|毫米))",
+            _normalized_topic_claim(claim),
+        ))
+    label = concrete_judgment_label(fact.get("historical_actual_reply"))
+    if not label:
+        return False
+    normalized = _normalized_topic_claim(claim)
+    escaped_label = re.escape(_normalized_topic_claim(label))
+    match = re.fullmatch(
+        rf"(.*?)(?:按{escaped_label}(?:判定|处理|勾选)|判(?:定)?为?{escaped_label})",
+        normalized,
+    )
+    if not match:
+        return False
+    context = match.group(1)
+    subject = _normalized_topic_claim(fact.get("object"))
+    if subject:
+        context = context.replace(f"{subject}质检项", subject)
+    observation = _normalized_topic_claim(fact.get("observation"))
+    observation_pattern = r"动作|出现|发生|现象|的"
+    observed_event = re.sub(observation_pattern, "", observation)
+    contextual_event = re.sub(observation_pattern, "", context)
+    if len(observed_event) < 2 or observed_event not in contextual_event:
+        return False
+    source_context = _normalized_topic_claim(" ".join(
+        _clean_text(fact.get(field))
+        for field in ("human_core_problem", "object", "observation")
+    ))
+    source = f"{source_context} {fact.get('historical_actual_reply', '')}"
+    if (
+        _topic_numeric_claim_tokens(claim) - _topic_numeric_claim_tokens(source)
+        or _topic_numeric_claim_tokens(source) - _topic_numeric_claim_tokens(claim)
+        or any(
+            token.lower() not in normalized
+            for token in re.findall(r"[A-Za-z]+[A-Za-z0-9+\-]*", source_context)
+        )
+        or re.search(
+            r"仅限|只限|只有|仅当|除外|不适用|超过|低于|大于|小于|"
+            r"不少于|不超过|同时|并且|电量|定时|温度|复测|次数",
+            source_context,
+        )
+        or not _topic_claim_relations_are_supported(claim, source)
+    ):
+        return False
+    # Only add neutral sentence grammar around the existing observation and
+    # exact option. Every other context fragment must occur in this same fact.
+    context = contextual_event
+    source_context = re.sub(observation_pattern, "", source_context)
+    grammar = ("在", "当", "动作", "出现", "发生", "的", "现象", "时", "情况下", "则")
+    reachable = {0}
+    for start in range(len(context)):
+        if start not in reachable:
+            continue
+        for token in grammar:
+            if context.startswith(token, start):
+                reachable.add(start + len(token))
+        for end in range(start + 2, len(context) + 1):
+            if context[start:end] in source_context:
+                reachable.add(end)
+    return len(context) in reachable
+
+
+def _topic_verified_short_answer_refs(
+    content: str,
+    recommended_reply: str,
+    evidence_package: dict[str, Any],
+) -> dict[str, tuple[str, ...]]:
+    refs: dict[str, tuple[str, ...]] = {}
+    for draft in (content, recommended_reply):
+        for raw in re.split(r"[\n。；;！？!?]+", draft):
+            claim = re.sub(r"^\s*\d+[.、)）]\s*", "", raw).strip()
+            if not claim:
+                continue
+            verified = tuple(dict.fromkeys(
+                _clean_text(fact.get("fact_id"))
+                for fact in evidence_package.get("facts") or []
+                if _clean_text(fact.get("fact_id"))
+                and _verified_short_answer_supports_claim(claim, fact)
+            ))
+            if verified:
+                refs[claim] = verified
+    return refs
+
+
 def _topic_unsupported_source_claims(
     candidate: dict[str, Any],
     evidence_package: dict[str, Any],
@@ -17553,6 +19575,11 @@ def _topic_unsupported_source_claims(
         ):
             continue
         if _topic_claim_is_evidence_gap(normalized_claim):
+            continue
+        if any(
+            _verified_short_answer_supports_claim(claim, fact)
+            for fact in evidence_package.get("facts") or []
+        ):
             continue
         if not _topic_claim_is_source_supported(claim, source_texts):
             unsupported.append(claim)
@@ -17755,7 +19782,8 @@ def _rule_topic_initial_review(
             "error_type": "话术不合适",
             "reason": (
                 "知识正文使用了问题背景、判断对象或来源核验依据等内部分析标签；"
-                "请改为可直接使用的适用情形、核验要点、处理结论和适用边界。"
+                "请改为来源明确支持的完整业务句；一句话可以，"
+                "不得补写来源没有的步骤、条件或边界。"
                 + (
                     "来源事实不支持：" + unsupported_note
                     if unsupported_note
@@ -17797,6 +19825,24 @@ def _rule_topic_initial_review(
         title=title,
         content=content,
     )
+    content_quality_issues = _text_quality_issues(content)
+    if content_quality_issues:
+        return {
+            "decision": "需修改",
+            "knowledge_value": "值得沉淀",
+            "error_type": "话术不合适",
+            "reason": (
+                "知识正文存在文字质量问题："
+                + "、".join(content_quality_issues)
+                + "；不能在不确定含义时自动猜改，需人工确认。"
+            ),
+            "standard_consistency": "一致" if matches else "无可信标准",
+            "evidence_sufficiency": "部分充分",
+            "content_consistency": "部分一致",
+            "title_quality": "清晰",
+            "confidence": 0.94,
+            "priority_review": True,
+        }
     if reply_quality_issues:
         return {
             "decision": "需修改",
@@ -17839,8 +19885,8 @@ def _rule_topic_initial_review(
             "reason": (
                 "无标准案例模式的正文使用了"
                 f"“{'、'.join(policy_template_markers)}”等制度条款模板，"
-                "容易把单个案例包装成通用规则；请改为来源对象、"
-                "核验依据、当前处理结论和证据边界。"
+                "容易把单个案例包装成通用规则；请只保留来源明确提供的"
+                "对象、条件和结论，来源没有的步骤与边界不得补写。"
             ),
             "standard_consistency": "无可信标准",
             "evidence_sufficiency": "部分充分",
@@ -17856,26 +19902,6 @@ def _rule_topic_initial_review(
         CONTENT_TYPE_VERIFICATION: 24,
         CONTENT_TYPE_DISTINCTION: 36,
     }
-    if (
-        not use_standard_references
-        and len(numbered_steps := re.findall(
-            r"(?:^|\n)\s*\d+[.、]\s*\S+",
-            content,
-        )) == 1
-        and len(content) < 40
-    ):
-        return {
-            "decision": "需修改",
-            "knowledge_value": "值得沉淀",
-            "error_type": "话术不合适",
-            "reason": "知识正文过短，只有孤立结论，未形成可审核的来源边界或判定依据。",
-            "standard_consistency": "无可信标准",
-            "evidence_sufficiency": "部分充分",
-            "content_consistency": "部分一致",
-            "title_quality": "清晰",
-            "confidence": 0.9,
-            "priority_review": True,
-        }
     if (
         len(content) < minimum_content_lengths.get(content_type, 60)
         and not _topic_content_has_complete_short_structure(content, content_type)
@@ -17936,6 +19962,44 @@ def _apply_topic_initial_review_guard(
         matches,
         use_standard_references=use_standard_references,
     )
+    model_reason = " ".join(
+        _clean_text(review.get(field))
+        for field in ("error_type", "reason")
+    )
+    model_claims_empty = any(
+        marker in model_reason
+        for marker in (
+            "正文与推荐回复为空",
+            "正文与推荐回复均为空",
+            "正文和推荐回复为空",
+            "正文和推荐回复均为空",
+            "知识正文为空",
+            "推荐回复为空",
+            "没有可审核的知识内容",
+            "无正文支撑",
+            "没有正文支撑",
+        )
+    )
+    if (
+        _clean_text(topic.get("知识内容"))
+        and _clean_text(topic.get("推荐回复"))
+        and model_claims_empty
+    ):
+        guarded.update(
+            {
+                "error_type": "模型审核字段误判",
+                "reason": (
+                    "模型初审声称正文或推荐回复为空，但候选字段均有内容；"
+                    "已保留为人工复核，并继续检查标题、事实一致性和回复质量。"
+                ),
+                "knowledge_value": (
+                    _clean_text(deterministic_review.get("knowledge_value"))
+                    or "待确认"
+                ),
+                "content_consistency": "部分一致",
+                "priority_review": True,
+            }
+        )
     if use_standard_references and not matches:
         model_decision = _clean_text(guarded.get("decision"))
         deterministic_review["reason"] = _safe_join(
@@ -18666,6 +20730,41 @@ def _cluster_only_topic_row(
             if _clean_text(row.get("_聚类裁决原因"))
         )
     )
+    standard_questions = list(
+        dict.fromkeys(
+            _clean_text(row.get("标准问题"))
+            for row in rows
+            if _clean_text(row.get("标准问题"))
+        )
+    )
+    standard_question_keys = list(
+        dict.fromkeys(
+            _clean_text(row.get("标准问题归一键"))
+            for row in rows
+            if _clean_text(row.get("标准问题归一键"))
+        )
+    )
+    standardization_statuses = list(
+        dict.fromkeys(
+            _clean_text(row.get("标准问题标准化状态"))
+            for row in rows
+            if _clean_text(row.get("标准问题标准化状态"))
+        )
+    )
+    standardization_reasons = list(
+        dict.fromkeys(
+            _clean_text(row.get("标准问题标准化原因"))
+            for row in rows
+            if _clean_text(row.get("标准问题标准化原因"))
+        )
+    )
+    standardization_versions = list(
+        dict.fromkeys(
+            _clean_text(row.get("标准问题标准化版本"))
+            for row in rows
+            if _clean_text(row.get("标准问题标准化版本"))
+        )
+    )
     raw_title = next(
         (
             _clean_text(row.get("_聚类主题标题"))
@@ -18845,6 +20944,11 @@ def _cluster_only_topic_row(
         "主题对象/部位": _clean_text(query.get("对象/部位")),
         "主题异常现象": _clean_text(query.get("异常现象")),
         "主题解题方式": _clean_text(query.get("解题方式")),
+        "标准问题": "\n".join(standard_questions),
+        "标准问题归一键": "\n".join(standard_question_keys),
+        "标准问题标准化状态": "\n".join(standardization_statuses),
+        "标准问题标准化原因": "\n".join(standardization_reasons),
+        "标准问题标准化版本": "\n".join(standardization_versions),
         "主题来源记录ID": "\n".join(source_ids),
         "主题工单ID": "\n".join(work_order_ids),
         "成员核心问题": "\n\n".join(core_questions),
@@ -18956,6 +21060,12 @@ def build_topic_review_rows(
             gap_row["证据缺口原因"] = reason
             gap_row["证据等级"] = evidence_level
             evidence_gap_rows.append(gap_row)
+            continue
+        if not cluster_only and not has_any_human_answer(row):
+            evidence_gap_rows.append({
+                **row, "证据等级": "人工答复缺失",
+                "证据缺口原因": "来源没有人工实际回答，禁止参与转写沉淀。",
+            })
             continue
         eligible_topic_rows.append(row)
 
@@ -19289,6 +21399,29 @@ def build_topic_review_rows(
             )
         return cluster_rows, [], evidence_gap_rows, []
 
+    # Check ownership before admission and incremental topic registration so
+    # an unanswered sibling cannot become historical evidence for a later run.
+    answered_groups: list[tuple[tuple[str, ...], list[dict[str, Any]]]] = []
+    for key, group_rows in topic_groups:
+        answered_rows: list[dict[str, Any]] = []
+        for source_row in group_rows:
+            answer = verify_human_answer(source_row)
+            if answer.status != "answered":
+                evidence_gap_rows.append({
+                    **source_row,
+                    "证据缺口原因": answer.reason,
+                    "证据等级": "人工答复缺失或归属不明",
+                    "主题ID": _topic_id(key),
+                })
+                continue
+            verified_row = dict(source_row)
+            verified_row["_人工答复门禁状态"] = answer.status
+            verified_row["_原子实际回复"] = answer.answer
+            answered_rows.append(verified_row)
+        if answered_rows:
+            answered_groups.append((key, answered_rows))
+    topic_groups = answered_groups
+
     topic_rows: list[dict[str, Any]] = []
     source_mapping_rows: list[dict[str, Any]] = []
     pending_cluster_rows: list[dict[str, Any]] = []
@@ -19521,9 +21654,50 @@ def build_topic_review_rows(
         if admission.get("provisional"):
             cluster_admission_provisional_topics += 1
             provisional_admission = _provisional_singleton_admission(admission)
+            if (
+                len(rows) > 1
+                and all(
+                    _float_or_default(row.get("_聚类裁决置信度"), 0.0)
+                    >= cluster_admission_min_confidence
+                    and _clean_text(row.get("_聚类裁决提供方"))
+                    in {"mimo-direct", "mimo-direct-reconcile"}
+                    for row in rows
+                )
+                and not _same_source_different_atomic_conflict(rows)
+                and len({_business_line_for_row(row) for row in rows}) == 1
+                and len({_resolved_product_type_for_row(row) for row in rows}) == 1
+                and all(_resolved_product_type_for_row(row) for row in rows)
+                and not _headphone_find_standard_status_conflict(rows)
+                and not any(
+                    _direct_reconcile_object_conflict(left, right)
+                    for index, left in enumerate(rows)
+                    for right in rows[index + 1:]
+                )
+            ):
+                # Evidence risk changes eligibility, not an already confirmed
+                # semantic membership. Keep the original key and all members.
+                cluster_admission_provisional_candidates += len(rows)
+                provisional_groups.append((key, list(rows), provisional_admission))
+                meta["provisional_confirmed_memberships_preserved"] = int(
+                    meta.get("provisional_confirmed_memberships_preserved", 0)
+                ) + 1
+                continue
             for row_index, row in enumerate(rows, start=1):
                 cluster_admission_provisional_candidates += 1
                 boundary_key = _provisional_topic_boundary_key(row)
+                low_confidence_split = (
+                    _clean_text(row.get("_聚类裁决提供方"))
+                    == "mimo-direct-low-confidence-split"
+                )
+                if low_confidence_split:
+                    provisional_groups.append(
+                        (
+                            _provisional_singleton_key(key, row, row_index),
+                            [row],
+                            provisional_admission,
+                        )
+                    )
+                    continue
                 if boundary_key is None:
                     provisional_groups.append(
                         (
@@ -19542,13 +21716,32 @@ def build_topic_review_rows(
                         and not _same_source_different_atomic_conflict(
                             [*existing_rows, row]
                         )
+                        and not any(
+                            _clean_text(existing_row.get("_聚类裁决提供方"))
+                            == "mimo-direct-low-confidence-split"
+                            for existing_row in existing_rows
+                        )
                     ),
                     None,
                 )
                 if matching_index is None:
+                    # A complete boundary can still be shared by distinct atomic
+                    # questions from one source conversation. Keep those review
+                    # candidates separate and give each a stable singleton key.
+                    provisional_key = boundary_key
+                    if any(
+                        existing_key == boundary_key
+                        for existing_key, _existing_rows, _existing_admission
+                        in provisional_groups
+                    ):
+                        provisional_key = _provisional_singleton_key(
+                            key,
+                            row,
+                            row_index,
+                        )
                     provisional_groups.append(
                         (
-                            boundary_key,
+                            provisional_key,
                             [row],
                             provisional_admission,
                         )
@@ -19676,8 +21869,8 @@ def build_topic_review_rows(
                         [
                             provisional_admission.get("reason"),
                             (
-                                "同一批次内已按完整且相同的聚类边界"
-                                f"归并 {len(provisional_rows)} 个成员；"
+                                "保留上游确认或完整相同边界的"
+                                f"{len(provisional_rows)} 个成员关系；"
                                 "因风险门禁未作为可信主题自动放行，"
                                 "仍需重点人工价值复核。"
                             ),
@@ -19715,6 +21908,9 @@ def build_topic_review_rows(
         provisional_singleton,
         incremental_resolution,
     ) in enumerate(execution_groups, start=1):
+        # Full transcription may prepare a draft for soft-risk membership.
+        # Admission, mandatory human review and publication gates still apply.
+        model_draft_allowed = not provisional_singleton or transcribe_all_admitted_topics
         if topic_progress_callback:
             topic_progress_callback(
                 "正在执行聚类准入、历史主题归并与价值分类。",
@@ -19830,7 +22026,7 @@ def build_topic_review_rows(
                 "耳机他人账户或激活锁案例只进入人工价值复核，"
                 "不调用主题模型或标准检索。"
             )
-        elif client and not provisional_singleton and hasattr(
+        elif client and model_draft_allowed and hasattr(
             client, "classify_topic_stage"
         ):
             topic_stage_provider = "mimo"
@@ -19858,7 +22054,7 @@ def build_topic_review_rows(
                     f"主题模型调用达到上限 {topic_model_call_limit}，"
                     "已转人工优先审核。"
                 )
-        elif client and not provisional_singleton:
+        elif client and model_draft_allowed:
             apply_stage_guard = False
             topic_stage.update(
                 {
@@ -19929,10 +22125,7 @@ def build_topic_review_rows(
                 "耳机他人账户或激活锁案例禁止转写为通用知识，"
                 "仅保留来源事实供人工价值复核。"
             )
-            topic["推荐回复"] = (
-                "该记录为单一激活锁案例，需人工核对来源事实与对应口径后处理，"
-                "不自动生成推荐回复。"
-            )
+            topic["推荐回复"] = ""
             topic["模型初标原因"] = _safe_join(
                 [_clean_text(topic.get("模型初标原因")), case_only_note],
                 "；",
@@ -20154,7 +22347,7 @@ def build_topic_review_rows(
         response_audit: dict[str, Any] = {}
         transcription_retry_count = 0
         transcription_retry_reasons: list[str] = []
-        if client and not provisional_singleton and hasattr(client, "label_topic"):
+        if client and model_draft_allowed and hasattr(client, "label_topic"):
             provider = "mimo"
             model_name = client.config.model
             prompt_version = PROMPT_VERSION
@@ -20200,6 +22393,11 @@ def build_topic_review_rows(
                             fact.get("historical_actual_reply")
                             for fact in representative_facts
                             if fact.get("historical_actual_reply")
+                        ],
+                        "reference_replies": [
+                            fact.get("reference_reply")
+                            for fact in representative_facts
+                            if fact.get("reference_reply")
                         ],
                         "source_conclusions": [
                             fact.get("human_judgment_conclusion")
@@ -20257,16 +22455,19 @@ def build_topic_review_rows(
                         retry_reason = (
                             "上一版草稿是对单个案例或本次会话的案例分析，"
                             "不是可复用知识。请依据本次选用的标准依据重写："
-                            "标题改为可检索的判定主题；正文以适用范围、标准条件、"
-                            "核验方法和判定/处理边界为主；推荐回复按该规则答疑。"
+                            "标题改为可检索的判定主题；正文只保留来源明确提供的"
+                            "对象、条件和结论，核验步骤与边界仅在来源或本次命中"
+                            "真实标准明确提供时保留；推荐回复按该规则答疑。"
                             "不得复述回收师、用户、本次会话、现场图片或处理结论。"
                             "案例事实只能作为审核追溯证据。"
                             if is_standard_case_analysis_draft
                             else (
                                 "上一版正文只有通用核验模板，未总结来源聊天、"
-                                "历史实际回复或判定结论。请重写为案例内容分析："
-                                "必须写明具体对象/代际/来源问题、检查项或触发条件、"
-                                "实际结论或处理方式，以及不能适用时的边界。"
+                                "历史实际回复或判定结论。请改写为完整业务句，"
+                                "只保留来源明确提供的对象、必要条件和结论；"
+                                "一句话可以，推荐回复可以与正文相同。"
+                                "来源没有步骤或边界时不得补写；"
+                                "没有可沉淀内容时正文留空，证据缺口写入审核说明。"
                             )
                         )
                         retry_kwargs: dict[str, Any] = {
@@ -20336,6 +22537,11 @@ def build_topic_review_rows(
                                 ),
                                 evidence_package=evidence_package,
                                 topic=query,
+                                verified_claim_fact_refs=_topic_verified_short_answer_refs(
+                                    str(candidate.get("content") or ""),
+                                    str(candidate.get("recommended_reply") or ""),
+                                    evidence_package,
+                                ),
                                 use_standard_references=use_standard_references,
                                 active_standard_refs=(
                                     "、".join(
@@ -20447,21 +22653,73 @@ def build_topic_review_rows(
             stage_status == "topic_model_call_failed"
             and not matches
         ):
-            topic = _failed_topic_transcription_row(
+            fallback_candidate = _topic_rule_draft(
                 topic_id,
-                key,
                 rows,
-                topic_stage,
-                provider=provider,
-                model_name=model_name,
-                prompt_version=prompt_version,
-                model_run_id=model_run_id,
-                transcription_status=stage_status,
-                model_call_status=failed_model_call_status,
-                error=model_error,
-                matches=matches,
+                matches,
                 use_standard_references=use_standard_references,
             )
+            if _clean_text(fallback_candidate.get("content")):
+                # A malformed model response must not discard a source-backed
+                # rule. The deterministic fallback remains blocked for review.
+                topic = _topic_candidate_row(
+                    topic_id,
+                    key,
+                    rows,
+                    matches,
+                    fallback_candidate,
+                    "topic-rule-fallback",
+                    "topic-rule-v1",
+                    "",
+                    model_run_id,
+                    model_error,
+                    stage_status,
+                    min_confidence,
+                    use_standard_references=use_standard_references,
+                    standard_basis_source=_clean_text(
+                        standard_retrieval_audit.get("source")
+                    ),
+                )
+                topic["模型输出校验状态"] = "failed"
+                topic["模型质量状态"] = "failed"
+                topic["知识草稿状态"] = "blocked"
+                topic["模型阶段状态"] = stage_status
+                topic["模型初标结论"] = "未执行"
+                topic["模型初标是否值得沉淀"] = _clean_text(
+                    topic_stage.get("knowledge_value")
+                )
+                topic["模型初标错误类型"] = ""
+                topic["模型初标原因"] = (
+                    "主题模型输出格式失败，已保留确定性来源回退草稿并强制人工复核。"
+                    + model_error
+                )
+                topic["模型初标重点复核"] = "是"
+                topic["模型初标状态"] = (
+                    "topic_initial_review_skipped_transcription_failed"
+                )
+                topic["校验备注"] = _safe_join(
+                    [
+                        _clean_text(topic.get("校验备注")),
+                        "主题模型输出格式失败，已保留确定性来源回退草稿并强制人工复核。",
+                    ],
+                    "；",
+                )
+            else:
+                topic = _failed_topic_transcription_row(
+                    topic_id,
+                    key,
+                    rows,
+                    topic_stage,
+                    provider=provider,
+                    model_name=model_name,
+                    prompt_version=prompt_version,
+                    model_run_id=model_run_id,
+                    transcription_status=stage_status,
+                    model_call_status=failed_model_call_status,
+                    error=model_error,
+                    matches=matches,
+                    use_standard_references=use_standard_references,
+                )
             _attach_incremental_topic(topic, incremental_resolution)
             _attach_cluster_admission(topic, cluster_admission)
             _attach_topic_stage_classification(
@@ -20526,9 +22784,10 @@ def build_topic_review_rows(
 
         if (
             not use_standard_references
-            and _topic_draft_is_generic(candidate, rows)
-            and not _topic_has_unavailable_required_images(rows)
-            and not provisional_singleton
+            and (
+                _topic_draft_is_generic(candidate, rows)
+                or candidate.get("source_answer_missing")
+            )
         ):
             topic_stage = _manual_pending_topic_stage(topic_stage)
             topic = _untranscribed_topic_candidate_row(
@@ -20539,6 +22798,10 @@ def build_topic_review_rows(
             )
             _attach_incremental_topic(topic, incremental_resolution)
             _attach_cluster_admission(topic, cluster_admission)
+            if provisional_singleton:
+                _attach_provisional_singleton_candidate(
+                    topic, cluster_admission
+                )
             _attach_topic_stage_classification(
                 topic,
                 topic_stage,
@@ -20705,7 +22968,7 @@ def build_topic_review_rows(
             "standard_retrieval": standard_retrieval_audit,
         }
         review_response_audit: dict[str, Any] = {}
-        if client and not provisional_singleton and hasattr(client, "review_topic"):
+        if client and model_draft_allowed and hasattr(client, "review_topic"):
             initial_review_provider = "mimo"
             initial_review_model = client.config.model
             initial_review_prompt = TOPIC_REVIEW_PROMPT_VERSION
@@ -20749,7 +23012,14 @@ def build_topic_review_rows(
                                 topic_stage.get("reusable_knowledge")
                             ),
                         },
-                        {field: _clean_text(topic.get(field)) for field in KNOWLEDGE_MASTER_COLUMNS},
+                        {
+                            **{
+                                field: _clean_text(topic.get(field))
+                                for field in KNOWLEDGE_MASTER_COLUMNS
+                            },
+                            "推荐回复": _clean_text(topic.get("推荐回复")),
+                            "图例": _clean_text(topic.get("图例")),
+                        },
                         review_matches,
                     ]
                     review_parameters = inspect.signature(review_topic).parameters
@@ -20804,10 +23074,82 @@ def build_topic_review_rows(
             initial_review_run_id,
             initial_review_status,
         )
+        reviewed_fields = ("主标题", "知识内容", "推荐回复", "关联标准项")
+        reviewed_draft = tuple(_clean_text(topic.get(field)) for field in reviewed_fields)
         topic = _enforce_standard_reference_consistency(
             topic,
             use_standard_references=use_standard_references,
         )
+        if reviewed_draft != tuple(
+            _clean_text(topic.get(field)) for field in reviewed_fields
+        ):
+            # Revoking a standard can rebuild the body after its initial
+            # review. Never attach an old "empty body" judgment to that body.
+            final_matches = review_matches if topic.get("关联标准项") else []
+            initial_review = _rule_topic_initial_review(
+                topic, final_matches, use_standard_references=use_standard_references,
+            )
+            initial_review_status = "topic_initial_reviewed_rule_after_rebuild"
+            initial_review_provider = "review-rule"
+            initial_review_model = "topic-review-rule-v1"
+            initial_review_prompt = ""
+            initial_review_error = ""
+            prior_request = review_request_audit
+            prior_response = review_response_audit
+            review_response_audit = {"before_rebuild": prior_response}
+            final_draft = {
+                **{field: _clean_text(topic.get(field)) for field in KNOWLEDGE_MASTER_COLUMNS},
+                "推荐回复": _clean_text(topic.get("推荐回复")),
+                "图例": _clean_text(topic.get("图例")),
+            }
+            review_request_audit = {
+                "before_rebuild": prior_request,
+                "final_draft": final_draft,
+                "reason": "standard_reference_gate_rebuilt_draft",
+            }
+            if (
+                client and model_draft_allowed and hasattr(client, "review_topic")
+                and topic.get("知识内容") and reserve_topic_model_call()
+            ):
+                try:
+                    parameters = inspect.signature(client.review_topic).parameters
+                    final_kwargs = {}
+                    if "transcription_matches" in parameters:
+                        final_kwargs["transcription_matches"] = final_matches
+                    if "use_standard_references" in parameters:
+                        final_kwargs["use_standard_references"] = use_standard_references
+                    result = client.review_topic(
+                        {
+                            "topic_id": topic_id,
+                            "knowledge_value": topic_stage.get("knowledge_value"),
+                            "features": query,
+                            "evidence_package": model_evidence_package,
+                            "evidence_summary": _topic_evidence_summary(rows, evidence_package),
+                        },
+                        final_draft, final_matches, **final_kwargs,
+                    )
+                    initial_review = result.candidate
+                    initial_review_status = "topic_initial_reviewed_model_after_rebuild"
+                    initial_review_provider = "mimo"
+                    initial_review_model = client.config.model
+                    initial_review_prompt = TOPIC_REVIEW_PROMPT_VERSION
+                    review_request_audit["after_rebuild"] = result.request_audit
+                    review_response_audit = {
+                        "before_rebuild": prior_response,
+                        "after_rebuild": result.response_audit,
+                    }
+                except Exception as exc:
+                    initial_review_status = "topic_initial_review_failed_after_rebuild"
+                    initial_review_error = f"{type(exc).__name__}: {exc}"
+            initial_review = _apply_topic_initial_review_guard(
+                initial_review, topic, final_matches,
+                use_standard_references=use_standard_references,
+            )
+            _attach_topic_initial_review(
+                topic, initial_review,
+                initial_review_provider, initial_review_model, initial_review_prompt,
+                initial_review_run_id, initial_review_status,
+            )
         apply_auto_review_annotation(topic, auto_review_policy)
         topic_rows.append(topic)
         if audit_store:
@@ -20913,6 +23255,21 @@ def build_topic_review_rows(
                 ),
             }
         )
+    if audit_store:
+        media_items: list[dict[str, Any]] = []
+        for topic in topic_rows:
+            raw_media = _clean_text(topic.get("媒体证据包"))
+            if not raw_media:
+                continue
+            try:
+                parsed_media = json.loads(raw_media)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_media = []
+            if isinstance(parsed_media, list):
+                media_items.extend(
+                    item for item in parsed_media if isinstance(item, dict)
+                )
+        audit_store.save_media_evidence(run_id or "", media_items)
     return topic_rows, source_mapping_rows, evidence_gap_rows, pending_cluster_rows
 
 
@@ -21196,6 +23553,17 @@ def write_topic_review_workbook(
         ),
         "clustering_requested_mode": clustering_meta.get("requested_mode", clustering_mode),
         "clustering_effective_mode": clustering_meta.get("effective_mode", clustering_mode),
+        "question_standardization_version": QUESTION_STANDARDIZATION_VERSION,
+        "atomic_prompt_version": CLUSTER_UNIT_PROMPT_VERSION,
+        "cluster_prompt_version": ATOMIC_TOPIC_CLUSTER_PROMPT_VERSION,
+        "knowledge_value_guard_version": KNOWLEDGE_VALUE_EVIDENCE_GUARD_VERSION,
+        "topic_output_evidence_version": TOPIC_OUTPUT_EVIDENCE_VERSION,
+        "question_standardization_ready": clustering_meta.get(
+            "question_standardization_ready", 0,
+        ),
+        "question_standardization_needs_review": clustering_meta.get(
+            "question_standardization_needs_review", 0,
+        ),
         "clustering_provider": clustering_meta.get("provider", ""),
         "clustering_model": clustering_meta.get("model", ""),
         "clustering_threshold": clustering_meta.get("threshold", semantic_threshold),
@@ -21544,6 +23912,10 @@ def _topic_candidate_export_gate_issues(
     )
     if not content:
         issues.append("知识内容为空")
+    if not reply:
+        issues.append("推荐回复为空")
+    if _text_quality_issues(content):
+        issues.append("知识正文文字质量门禁失败")
     if _topic_draft_is_case_analysis({"content": content}):
         issues.append("知识内容仍是案例分析")
     reply_issues = _recommended_reply_quality_issues(
@@ -21779,10 +24151,7 @@ def initial_label_from_workbook(
         if not business_type:
             raise ValueError("主题缺少可映射的回收业务层级，无法检索 CZ 已发布知识。")
         product_type = _clean_text(query.get("产品类型"))
-        model = _merge_unique_text(
-            [row.get("适用机型") or row.get("机型") for row in rows],
-            separator="；",
-        )
+        model = _clean_text(query.get("机型"))
         normalized_question = _safe_join(
             [
                 _clean_text(query.get("核心问题")),
@@ -21899,11 +24268,23 @@ def initial_label_from_workbook(
             == clustering_mode.strip().lower()
         )
     )
+    checkpoint_topic_versions_compatible = all(
+        checkpoint_topic_summary.get(field) == version
+        for field, version in (
+            ("question_standardization_version", QUESTION_STANDARDIZATION_VERSION),
+            ("atomic_prompt_version", CLUSTER_UNIT_PROMPT_VERSION),
+            ("cluster_prompt_version", ATOMIC_TOPIC_CLUSTER_PROMPT_VERSION),
+            ("knowledge_value_guard_version", KNOWLEDGE_VALUE_EVIDENCE_GUARD_VERSION),
+            ("topic_output_evidence_version", TOPIC_OUTPUT_EVIDENCE_VERSION),
+        )
+    )
     if (
         resume
-        and effective_cluster_admission
         and stage_rank.get(checkpoint_stage, 0) >= stage_rank["topic_build"]
-        and not checkpoint_cluster_admission_compatible
+        and not (
+            checkpoint_cluster_admission_compatible
+            and checkpoint_topic_versions_compatible
+        )
         and not checkpoint.get("feature_rows")
     ):
         checkpoint = {}
@@ -22297,6 +24678,7 @@ def initial_label_from_workbook(
         stage_rank.get(checkpoint_stage, 0) >= stage_rank["topic_build"]
         and topic_workbook_path.is_file()
         and checkpoint_cluster_admission_compatible
+        and checkpoint_topic_versions_compatible
     ):
         report("topic_build", "running", "正在从运行检查点恢复主题候选结果。")
         topic_summary = checkpoint_topic_summary

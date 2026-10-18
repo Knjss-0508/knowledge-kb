@@ -82,6 +82,22 @@ _GENERIC_SOURCE_TERMS = frozenset(
     }
 )
 
+_AUDIT_BOUNDARY_MARKERS = (
+    "仅覆盖上述来源事实", "来源未说明的其他情形",
+    "需要补充对应事实后再判断",
+)
+
+
+def strip_case_audit_boilerplate(content: str) -> str:
+    """Keep audit restrictions out of the business answer shown to reviewers."""
+    return "\n".join(
+        "".join(
+            segment for segment in re.split(r"(?<=[。；;])", line)
+            if not any(marker in segment for marker in _AUDIT_BOUNDARY_MARKERS)
+        )
+        for line in str(content or "").splitlines()
+    ).strip()
+
 
 @dataclass(frozen=True)
 class DraftQualityAssessment:
@@ -102,14 +118,83 @@ def assess_case_only_draft(
             decision="manual_review",
             reasons=("正文为空，无法形成可追溯的案例知识。",),
         )
+    answer_text = re.sub(r"(?m)^\s*\d+[.、]\s*", "", content).strip()
+    if re.fullmatch(
+        r"(?:您好[，,]?)?(?:请|建议|需要)?(?:补充|提供|拍摄|补拍)"
+        r"(?:清晰|必要|相关|更多)?(?:图片|照片|截图|视频|信息|证据)"
+        r"(?:后|再|以便)?(?:核验|确认|判断|判定|处理)?[。！!\s]*",
+        answer_text,
+    ):
+        return DraftQualityAssessment(
+            decision="manual_review",
+            reasons=("正文只有补充资料的通用要求，尚无可沉淀的处理答案。",),
+        )
+
+    audit_content = any(
+        marker in content
+        for marker in (*_AUDIT_BOUNDARY_MARKERS, "回收师反馈", "关键事实：")
+    )
+    if audit_content:
+        answer_segments = [
+            segment for segment in re.split(r"[\n。；;]+", content)
+            if not any(marker in segment for marker in _AUDIT_BOUNDARY_MARKERS)
+            and not re.search(
+                r"回收师反馈|用户反馈|关键事实[：:]|如何|怎么|什么|询问|[？?]",
+                segment,
+            )
+        ]
+        if not any(re.search(
+            r"按.{0,24}(?:判|处理|选择|勾选)|判为|属于|归为|"
+            r"请以.{0,60}为准|必须先|先.{0,24}再|时勾选|即为|"
+            r"(?:应|需|建议|可以|可|不能|无需).{0,24}"
+            r"(?:勾选|选择|填写|判定|处理|查询|查看|回收|核验)|"
+            r"处理结论[：:]|处理方式[：:]",
+            segment,
+        ) or _has_source_specific_phrase(
+            _normalize(segment),
+            [
+                value for value in source_values
+                if not re.search(r"如何|怎么|什么|询问|[？?]", str(value or ""))
+            ],
+        )
+            for segment in answer_segments):
+            return DraftQualityAssessment(
+                decision="manual_review",
+                reasons=("正文只有问题摘要和审计说明，缺少来源支持的处理答案。",),
+            )
 
     generic_hits = sum(marker in content for marker in _GENERIC_MARKERS)
     generic_hits += sum(
         bool(re.search(pattern, content)) for pattern in _GENERIC_PATTERNS
     )
+    specific_content = re.sub(
+        r"(?m)^(?:适用主题|适用情形)[：:].*$", "", content,
+    )
+    # Strip whole generic sentences first; partial marker removal can leave a
+    # meaningless suffix that happens to match the copied source.
+    specific_content = re.sub(
+        r"(?:无法明确判断时|结果不稳定或无法复现时)[，,]?\s*"
+        r"补充(?:测试)?证据后再判定",
+        "",
+        specific_content,
+    )
+    for marker in _GENERIC_MARKERS:
+        specific_content = specific_content.replace(marker, "")
+    # A copied question or generic step cannot establish a source-backed answer.
+    specific_content = "。".join(
+        segment
+        for segment in re.split(r"[\n。；;]+", specific_content)
+        if not re.search(r"如何|怎么|[？?]", segment)
+    )
     if generic_hits < 3 or _has_source_specific_phrase(
-        normalized_content,
-        source_values,
+        _normalize(specific_content),
+        [
+            sentence
+            for source in source_values
+            for sentence in re.split(r"[\n。；;]+", str(source or ""))
+            if not any(re.search(pattern, sentence) for pattern in _GENERIC_PATTERNS)
+            and not re.search(r"如何|怎么|[？?]|适用主题[：:]|适用情形[：:]", sentence)
+        ],
     ):
         return DraftQualityAssessment(decision="pass", reasons=())
     return DraftQualityAssessment(

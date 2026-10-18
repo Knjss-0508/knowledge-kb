@@ -42,18 +42,20 @@ from .terminology import (
 )
 
 
-PROMPT_VERSION = "multi-category-topic-transcription-v13-recall-subtitles"
-TOPIC_REVIEW_PROMPT_VERSION = "multi-category-topic-content-quality-review-v9-12-category-taxonomy"
-TOPIC_STAGE_PROMPT_VERSION = "multi-category-topic-stage-value-v8-12-category-taxonomy"
+PROMPT_VERSION = "multi-category-topic-transcription-v16-source-bounded-single-rule"
+TOPIC_REVIEW_PROMPT_VERSION = "multi-category-topic-content-quality-review-v11-single-rule"
+TOPIC_STAGE_PROMPT_VERSION = "multi-category-topic-stage-value-v9-single-rule"
 TOPIC_DISPLAY_QUESTION_PROMPT_VERSION = "topic-display-question-v3-12-category-taxonomy"
 CLUSTER_PAIR_REVIEW_PROMPT_VERSION = (
     "knowledge-cluster-membership-review-v16-12-category-taxonomy"
 )
-TOPIC_SIGNAL_PROMPT_VERSION = "multi-category-conversation-topic-signal-v9-12-category-taxonomy"
-CLUSTER_UNIT_PROMPT_VERSION = "multi-category-conversation-cluster-units-v29-12-category-taxonomy"
+TOPIC_SIGNAL_PROMPT_VERSION = "multi-category-conversation-topic-signal-v10-actual-resolution"
+CLUSTER_UNIT_PROMPT_VERSION = (
+    "multi-category-conversation-cluster-units-v32-answer-ownership"
+)
 CLUSTER_FUSION_PROMPT_VERSION = "multi-category-conversation-cluster-fusion-v9-12-category-taxonomy"
 ATOMIC_TOPIC_CLUSTER_PROMPT_VERSION = (
-    "atomic-knowledge-topic-clustering-v16-classification-catalog-reviewable-recall"
+    "atomic-knowledge-topic-clustering-v17-standard-question-guardrails"
 )
 
 CONTENT_TYPES = frozenset({"定义型", "阈值型", "核验型", "区分型"})
@@ -91,6 +93,8 @@ def candidate_title_style_issue(value: Any) -> str:
 
 def candidate_title_structure_issue(value: Any) -> str:
     title = str(value or "").strip()
+    # The slash is part of this option's name rather than a topic separator.
+    title = re.sub(r"自动重启\s*[/／]\s*关机", "自动重启或关机", title)
     if "｜" in title or "|" in title:
         return "竖线分割"
     if "；" in title or ";" in title:
@@ -738,7 +742,7 @@ def _topic_signal_source_payload(source_row: dict[str, Any]) -> dict[str, Any]:
                 "unrelated_followup_evidence"
             ],
             "historical_actual_reply": _text(
-                source_row.get("历史实际回复") or source_row.get("参考话术"),
+                source_row.get("历史实际回复"),
                 4000,
             ),
             "video_links": _text(source_row.get("视频链接"), 3000),
@@ -748,6 +752,7 @@ def _topic_signal_source_payload(source_row: dict[str, Any]) -> dict[str, Any]:
             "quality_question_description": _text(source_row.get("核心问题")),
             "legacy_judgment": _text(source_row.get("判定结论")),
             "legacy_basis": _text(source_row.get("判定依据")),
+            "reference_reply": _text(source_row.get("参考话术"), 4000),
             "legacy_category_l1": _text(source_row.get("一级分类")),
             "legacy_category_l2": _text(source_row.get("二级分类")),
         },
@@ -791,11 +796,6 @@ def _build_topic_signal_prompt(
         if use_standard_references
         else "【标准引用模式】\n本次关闭标准检索与标准引用，只处理第二部分案例证据。"
     )
-    resolution_examples = (
-        "“对照标准判定”“补拍图片核验”“信息查询与实物核对”“补充证据后再判定”"
-        if use_standard_references
-        else "“结合案例证据判断”“补拍图片核验”“信息查询与实物核对”“补充信息后再处理”"
-    )
     retry_instruction = f"\n【上次输出不合格原因】\n{retry_reason}" if retry_reason else ""
     terminology_prompt_block = _terminology_prompt_block(source_row)
     return f"""你是答疑中台的会话语义标注员。从一条已脱敏的多品类质检会话中提取用于主题聚类的规范化标签。当前生效品类为：{product_category_prompt()}。
@@ -808,7 +808,7 @@ def _build_topic_signal_prompt(
 1. intent 只能为："标准判定"、"检测核验"、"信息查询"、"流程操作"、"其他待确认" 之一。
 2. subject 表示用户实际询问的对象或部位，只使用聊天中明确说出的描述，不过度细化。无法确认时填“待确认”。
    phenomenon 表示异常现象或查询目标。无法确认时填“待确认”，不得从旧分类猜测。
-3. resolution_mode 表示最终应沉淀的处理方式，例如{resolution_examples}。
+3. resolution_mode 只记录会话中实际给出的最终处理方式，如“判自动关机”；没有实际答复时填“待确认”。不得把补拍、复测、查询或补资料建议写成已发生的处理，也不得根据常识或本次检索结果补造答疑人员未提供的步骤。证据缺口仅写入 reasoning_summary 或 image_evidence_summary。
 4. topic_tags 必须是 3 到 6 个可复用的短标签，使用“维度:值”格式，且至少覆盖 intent、subject、phenomenon 或 query_target、resolution_mode。不要复制旧分类名称凑标签。
 5. {standard_rule}
 6. category_l1 和 category_l2 是模型推断的工作分类，必须遵守：
@@ -905,9 +905,9 @@ def _build_prompt(
 4. reasoning_summary 是给审核人的简短依据摘要，不要输出思维过程，不超过 240 字。
 5. title 必须是可复用的知识标题，不得复述“回收师遇到/咨询/希望获得”等会话叙述。subtitles 必须尽可能填写 2～6 个、最多 8 个可检索的自然问句：第一个为覆盖整条知识范围的面问法，其余为覆盖阈值、正反条件、分支、测量或操作要点的点问法。副标题不是主标题的机械同义改写，不得只写品类、部位、范围、标准编号、审核状态或关键词；每条都应保留与主标题一致的对象、现象和适用范围粒度。content 必须采用 content_type 对应的简洁编号格式，总长度不超过 500 字；不得整段复制输入的核心问题、判定依据或参考话术。
 6. content_type 只能为“定义型”“阈值型”“核验型”“区分型”，按以下优先级选择：多个易混淆现象且存在“区分、优先按、转按、分别计数”等关系时为区分型；必须依赖明确操作、测试或取证步骤才能判断时为核验型；单一现象存在尺寸、数量、时长、次数等决定性条件时为阈值型；其余仅解释单一现象含义或优先级时为定义型。定义型通常写 1～2 条；阈值型、核验型按已有证据写 1～3 条或 1～4 条；区分型通常写 2～5 条。只保留解决当前问题的最少要点，没有来源依据的组件不要凑写，也不要使用空占位。
-7. 若会话没有“具体对象 + 明确现象/图片证据 + 可对应标准”中的关键证据，或包含“疑似、不确定、证据不足、未识别、未发现”等表达，不得给出确定性质检结论。此时 knowledge_form 必须为“流程方法”，内容应给出检查步骤、需补充证据和标准对照，并以“补充证据后再判定”收口；本次个案结论不可外推为通用规则。
+7. 只能转写来源已经给出的结论或步骤；缺少关键证据时不得给出确定性质检结论，也不得为填充正文补写检查步骤或补拍要求。来源已提供具体步骤时才可以写为“流程方法”；没有可沉淀知识时 content 留空，证据缺口写入 reasoning_summary 并设 needs_human_review=true。
 8. applicable_scope 只能填写当前生效品类中的正式名称，例如“手机”“笔记本”“平板电脑”，不得包含任何“-通用”“-iOS”“-Windows”或其他后缀。来源明确限制品牌时填写 applicable_brands；来源明确限制具体机型时填写 applicable_models；没有明确来源时两个数组都填 []，不得推测。
-9. recommended_reply 是人工答疑可直接发送的推荐回复，80～180 字，语气简洁，不写内部审核术语，不承诺证据不足时的确定结论。
+9. recommended_reply 是人工答疑可直接发送的完整业务答复，没有最低字数要求。保留来源支持的对象、必要条件和结论；正文只有一句完整知识时，推荐回复可以与正文相同。不得补造步骤、阈值或边界；content 留空时 recommended_reply 也留空。语气简洁，不写内部审核术语。
 10. 只输出一个 JSON 对象，不要 Markdown，不要额外解释。字段必须完整：
 {{
   "title": "string",
@@ -957,7 +957,7 @@ def _build_topic_prompt(
     concrete_rule = (
         "只有同时满足“明确边界问题 +（可引用的本次标准或足够支持的主题来源事实）”时，knowledge_form 才可为“具体判定”；无标准引用时必须标记人工复核，不能把经验补充写成总部标准。"
         if use_standard_references
-        else "只有主题内案例证据清楚、一致且足以支持可复用结论时，knowledge_form 才可为“具体判定”；否则必须为“流程方法”。"
+        else "主题内证据清楚、一致且明确给出对象、现象与具体结论时，knowledge_form 可为“具体判定”；一句完整规则也可以形成知识。只有来源明确提供操作步骤时，才能写“流程方法”；事实不足时标记人工复核，不得补造流程。"
     )
     standard_rule = (
         "standard_refs 只能填写本次检索结果的 standard_ref；knowledge_type 为“已有知识”时优先复用，未覆盖才新增；标准依据来源会在主题输入中说明，只有明确为总部标准时才可称“总部标准”，本地质检标准不得伪装成总部标准；无可信标准时填 []，仍可依据来源事实、历史实际回复和人工判定结论转写为经验补充候选，但必须 needs_human_review=true，且不得编造标准条款、阈值或平台规则。"
@@ -970,11 +970,6 @@ def _build_topic_prompt(
         if use_standard_references
         else "【标准引用模式】\n本次关闭标准检索与标准引用，草稿必须完全来源于主题案例证据。"
     )
-    image_flow_rule = (
-        "确认部位、补充近景/全景/多角度证据、对照有效标准、证据不足时补充证据后再判定"
-        if use_standard_references
-        else "确认部位、补充近景/全景/多角度证据、结合完整会话与案例证据核验、信息不足时补充后再处理"
-    )
     retry_instruction = f"\n【上次输出不合格原因】\n{retry_reason}" if retry_reason else ""
     terminology_prompt_block = _terminology_prompt_block(topic)
     return f"""你是答疑中台的多品类质检知识标注员。输入是已经聚类的 1～N 个原子问题或案例特征，不是固定两两配对。当前生效品类为：{product_category_prompt()}。
@@ -985,16 +980,17 @@ def _build_topic_prompt(
 
 必须遵守：
 1. 主标题必须是自然、清楚、可直接使用的知识标题，优先写成用户会检索的问题或明确判定主题；不得堆砌关键词、使用斜杠串词，也不得直接使用“质检记录规则”“记录要求”“管理规定”等描述文档形式的公文式标题。若主题确实涉及记录要求，应改写成“工单中需要记录哪些信息”一类自然问法。subtitles 不得默认留空：应尽可能输出 2～6 个、最多 8 个可检索的自然问句。第一个必须是覆盖整条知识范围的面问法；其余是覆盖阈值、正反条件、分支、测量或操作要点的点问法。副标题不是主标题的机械同义改写，不得只写品类、部位、范围、标准编号、审核状态或关键词；每条都必须保留与主标题一致的对象、现象和适用范围粒度。
-2. {concrete_rule} 其余情况必须为“流程方法”。
-3. 外观、显示、拆修、胶状物、功能异常等需要现场图片判断的问题，默认沉淀核验过程：{image_flow_rule}。
-4. 只有机型/型号身份或功能结论在来源中无法确认时，才输出查询与核对流程；来源已经明确机型及功能结论时，必须输出该机型的具体事实，不得改写成“查询官网/核对型号”的泛化流程。
+2. {concrete_rule}
+3. 不得因问题涉及图片或功能异常就自动补写核验流程。核验、补拍、复测、查询、记录等步骤必须由当前主题的已核验实答或本次命中的真实标准明确提供；没有步骤来源时，仅保留已知结论，证据缺口只写入 reasoning_summary，不得在正文或推荐回复中新增补资料要求。
+4. 只有来源明确给出查询与核对步骤时，才能输出相应流程；不能仅因机型、型号或功能结论无法确认就自动补写流程。来源已经明确机型及功能结论时，必须输出该机型的具体事实，不得改写成“查询官网/核对型号”的泛化流程。
 5. {standard_rule}
 6. reasoning_summary 只写简短审核依据，不输出思维过程；不要编造聊天细节、图片细节或标准条款。
 7. 文字已经能完整表达规则时，requires_images=false，不能把图片当装饰；只有必须通过外观、部位、颜色、裂纹、坏点或拆修痕迹等视觉差异才能解释时，requires_images=true，并给出 image_usage_instruction。
-8. content_type 只能为“定义型”“阈值型”“核验型”“区分型”，并按以下优先级选择：多个易混淆现象且存在“区分、优先按、转按、分别计数”等关系时为区分型；必须依赖明确操作、测试或取证步骤才能判断时为核验型；单一现象存在尺寸、数量、时长、次数等决定性条件时为阈值型；其余仅解释单一现象含义或优先级时为定义型。content 必须使用对应的简洁编号格式：定义型通常 1～2 条，阈值型和核验型按已有证据写 1～3 条或 1～4 条，区分型通常 2～5 条；只写来源支持的最少规则，不得写空占位或通用流程凑数。不得使用“问题背景、判断对象、来源核验依据、人工处理结论”等内部分析报告标签；应直接写适用情形、核验要点、处理结论和适用边界。applicable_scope 只能填写品类名称，不得带任何后缀；来源明确限制品牌或具体机型时分别填写 applicable_brands、applicable_models，否则都填 []。单机型事实时，标题、正文、推荐回复和 applicable_models 都必须保留该机型，且不得外推到整个品类或其他机型。不得根据常识推测品牌或机型。recommended_reply 为 80～180 字、可直接发送的人工答疑回复，且必须保留正文中的具体对象、结论或处理边界。recommended_reply 只能回答当前单一原子主题，不得把同一会话中其他原子问题、副主题或对应答案拼接进来；即使相关文字在历史实际回复中出现过，也属于当前主题外内容，必须忽略。不得重复问候，不得使用“关于另一问题”“针对其他问题”等标签切换主题，不得输出残句或“，；”“，。”等异常标点。
+8. content_type 只能为“定义型”“阈值型”“核验型”“区分型”，并按以下优先级选择：多个易混淆现象且存在“区分、优先按、转按、分别计数”等关系时为区分型；必须依赖明确操作、测试或取证步骤才能判断时为核验型；单一现象存在尺寸、数量、时长、次数等决定性条件时为阈值型；其余仅解释单一现象含义或优先级时为定义型。content 使用简洁编号要点：定义型 1～2 条，阈值型 1～3 条，核验型 1～4 条，区分型 2～5 条，只写已核验实答或本次命中真实标准支持的规则。每条直接写完整业务句，例如“折叠屏手机在折叠动作后出现自动关机时，按自动关机判定”。禁止使用“适用情形、核验要点、处理结论、适用边界、边界、问题背景、来源核验依据、人工处理结论”等模板标签；没有来源的条件和边界不得补齐。applicable_scope 只能填写品类名称；来源明确限制品牌或机型时填写 applicable_brands、applicable_models，否则填 []。单机型事实的标题、正文、推荐回复和 applicable_models 必须保留该机型，不得外推。recommended_reply 应直接回答问题，保留对象、必要条件、结论和例外，不照抄“判自动关机”“3.5的”等省略上下文的聊天短答，没有最低字数要求。正文只有一句完整知识时，推荐回复可以与正文相同，也可以在保留全部必要事实的前提下改写；正文有多条规则时，应提炼当前问题所需的完整答复，不将各段机械串联。若参考话术比人工短答更完整，且没有引入冲突，可以吸收其表达；必须纠正明显错别字、病句、重复标点和不规范空格，但不能改动机型、标准选项、数值和业务含义。可以按已有事实写详细，不得为凑字补充电量、复测、次数、备注或其他来源没有的要求。回复只回答当前原子主题，不得拼接同会话其他问题的答案，不得重复问候或输出残句。
 9. 无标准引用模式下，正文必须提炼来源聊天、历史实际回复或判定结论中的具体信息，至少覆盖“具体对象/代际/来源问题”“检查项或触发条件”“实际结论或处理方式”“不能适用时的边界”中的 2 项。禁止只输出“适用主题、明确对象、补充截图/视频/查询结果、结合案例、完善资料后再处理”之类的通用四步模板，也不得套用“适用对象、处理原则、记录要求、边界说明”这类制度条款模板把个案包装成通用规则。
-10. 【来源事实证据包】中的 facts 是全部可审计来源，representative_facts 是本轮优先组织知识的代表性证据。人工核心问题和人工判定结论是明确的结构化事实，必须与聊天、历史实际回复共同使用；发生冲突时标记人工复核，不得静默覆盖。
-11. 每个对象、条件、结论、例外和图片说明都必须能回到证据包中的事实ID。没有来源的内容不得补写；来源没有提供核验方式或适用边界时，应明确说明证据缺口并标记人工复核，不能使用模型常识扩写。
+10. 【来源事实证据包】中的 facts 是全部可审计来源，representative_facts 是本轮优先组织知识的代表性证据。人工核心问题和人工判定结论必须分别理解：核心问题说明待判断的对象与现象，不能证明问题中预设的结论；只有已核验的人工答复能够支持处理结论。规范问题中的判定目标、分类路径、推测的处理动作不能替代实答。发生冲突时标记人工复核，不得静默覆盖。
+10a. 只将已经核验归属的人工实际回答作为“已确认事实”。第二部分参考话术不能证明人工已回答，但当它与人工实际回答、主题事实和标准口径一致时，可以作为补充候选，用于把短答改写成更完整的知识正文或推荐回复；不得借参考话术新增来源没有的阈值、步骤、边界或确定结论。参考话术与人工回答冲突时，以人工回答为准并标记人工复核。多来源主题必须覆盖各来源的不同条件、品牌、机型和结论；禁止只取第一条或某一个案的答案代表全部来源。品牌识别不等于原装或第三方更换判定；来源矛盾时需要人工裁决。
+11. 每个对象、条件、结论、例外和图片说明都必须能回到证据包中的事实ID。没有来源的内容不得补写；来源没有提供核验方式或适用边界时，仅在 reasoning_summary 说明证据缺口并标记人工复核，content 和 recommended_reply 只保留已知业务规则，不得写“来源未说明、仅限本案例、需人工复核”等审核说明，不能使用模型常识扩写。只有一项明确答复时，允许一条完整规则；不得补造第二项条件、例外或流程。
 12. 案例图只能使用 case_images 或 representative_facts.image_urls 中与该事实ID对应的链接，不得引用其他主题或其他案例图片。
 13. 只输出一个 JSON 对象，不要 Markdown。字段必须完整：
 {{
@@ -1078,9 +1074,10 @@ def _build_topic_review_prompt(
 审核规则：
 1. {evidence_rule}，不得补充未提供的事实。
 2. {concrete_rule}
-3. 外观、显示、拆修、胶状物、功能等依赖图片的问题，草稿沉淀为核验流程是合理的；不能因为没有个案最终判定而驳回流程型知识。
+3. 只有来源明确提供核验步骤时，才能接受流程型知识。不能仅因问题涉及图片、功能或结论暂不明确就认可补拍、复测、查询等无来源步骤；有来源的流程不要求必须同时提供个案最终判定。
 {standard_rules}
-5. 必须审核知识内容是否准确覆盖规则、处理步骤和限制条件，不能只检查格式和字段完整性。
+5. 必须审核知识内容是否准确覆盖来源已经提供的对象、规则、处理步骤和限制条件，不能只检查格式和字段完整性。正文只有一句或推荐回复与正文相同，不构成质量问题；没有来源的步骤、条件和边界不得要求补齐。历史短答可结合当前问题改写成完整业务句，必要事实与范围必须保留。参考话术可以在与人工答复一致时补充表达，但不得把参考话术独有且未被其他事实支持的规则当成已确认事实。明显错别字、病句、重复标点和不规范空格应标记需修改；不得改动机型、标准选项、数值或业务含义。
+5a. 先读取待审核草稿中的“知识内容”和“推荐回复”字段；字段非空时，不得以“正文为空”“推荐回复为空”“无正文支撑”等理由判定为空。若模型分析与草稿字段不一致，应标记字段误判并进入人工复核。
 6. 必须审核主标题是否自然清楚、副标题是否只是关键词堆砌；直接使用“质检记录规则”“记录要求”“管理规定”等公文式元描述的标题必须标记为需修改，但“工单中需要记录哪些信息”一类自然问法可以保留。主标题清楚时不应强行要求副标题。
 7. 必须审核图片必要性：文字能说清时不应要求图片；依赖视觉差异时没有保留图片，应标记需修改或证据不足。
 9. 本环节只审核标题、正文、分类、推荐回复、证据一致性和图片必要性；不得因为重新评价沉淀价值而驳回草稿。
@@ -1129,7 +1126,7 @@ def _build_topic_stage_prompt(
 {terminology_prompt_block}
 
 证据优先级：
-- conversation_evidence、historical_replies、evidence_summaries，以及从完整会话提取的 intents、subjects、phenomena、resolution_modes 是主要会话证据。
+- conversation_evidence、historical_replies、evidence_summaries，以及从完整会话提取的 intents、subjects、phenomena、resolution_modes 是主要会话证据；reference_replies 只能作为与人工答复一致时的补充表达来源，不能单独证明人工已回答。
 - 若主题输入包含“意图证据”“首轮试探问题”“首轮意图状态”，优先使用意图证据判断可复用主题；首轮试探问题只用于解释冲突，不得单独决定主题标题或聚类边界。
 - 人工校正后的核心问题、产品类型和判定结论是重要结构化证据。产品类型是硬边界；核心问题和判定结论可补充本轮未读取图片时已由第二部分人工确认的对象、现象和结论。
 - normalized_issues 应是会话证据与人工校正字段的综合提炼。若两类证据冲突，必须标记 needs_human_review=true，不得静默选择一方。
@@ -1151,14 +1148,14 @@ def _build_topic_stage_prompt(
 
 沉淀价值规则：
 - 值得沉淀：能形成稳定、清楚、可复用的判定口径、操作流程、查询方法，或为少见案例、特殊案例、标准咨询提供明确边界和处理原则；适用于后续类似问题，而不是只记录一个工单答案。
+- 输入明确提供对象、触发条件与具体选项，或机型与明确规格、功能事实时，一句完整规则也可以沉淀。只有一句话、只有一个来源或没有额外步骤，都不是单独否决理由；不得把模糊的“正常、异常、可以”自动改写成通用规则。
 - 基础常见问题若已有稳定知识覆盖，且当前主题没有新增边界、例外、反例或操作差异，应标“不值得沉淀”，避免重复收集。
-- 不值得沉淀：只有单个案例结论、缺少可复用规则或步骤、证据冲突/严重不足、主题过于模糊，或内容只是“看图后正常/异常”且无法说明可复用依据。
+- 不值得沉淀：结论只能依赖当前案例独有的图像或上下文、无法明确可复用对象与条件、证据冲突/严重不足、主题过于模糊，或内容只是“看图后正常/异常”且无法说明可复用依据。没有可转写的知识内容时，不应沉淀。
 - “案例解析”并不自动等于不值得沉淀。若该案例具有代表性，能够提炼出明确边界、核验要点或反例说明，仍可标“值得沉淀”。
 - 不得为了提高沉淀率而补写输入中没有的标准、事实、阈值或处理步骤。
 - 必须依据当前输入已经包含的信息判断，不能因为“该问题高频、以后补充标准后可能有价值”就标“值得沉淀”。
 - 单成员主题不等于不值得沉淀。少见案例、特殊案例或标准咨询只要输入明确提供了可复用条件、检查步骤、定义、判定边界或例外，就可标“值得沉淀”；不得为了获得多成员簇而强行合并。
-- 单成员主题中的个案回复不能自动外推为平台通用标准。若只有当前机器的“正常/异常/某分类”结论，仍应标“不值得沉淀”。
-- 单成员主题若只是“某个具体现象 → 正常/异常/某分类”的直接映射，且没有可信标准来源、多个适用条件或可执行核验步骤，必须标“不值得沉淀”。“工具结果与人工复核冲突时以谁为准”这类通用冲突处理原则，或包含明确先后步骤的方法，可以作为例外。
+- 单成员主题中的个案回复不能自动外推为平台通用标准。只有当前机器的“正常/异常”等模糊结论且没有可复用依据时，应标“不值得沉淀”；明确对象和现象对应具体判定选项的答复不能仅因来源单一而否决。不得为获得更多条件或步骤而补写事实。
 - 若 standard_paths、thresholds_or_exceptions 等关键字段为“待确认/无明确阈值”，且当前输入没有其他明确规则或方法，应标“不值得沉淀”。
 - reusable_knowledge 只能总结输入中已经出现的规则或步骤。若输入不足，直接说明缺失项，禁止推测可能原因、行业惯例或平台标准。
 - 主题来源字段互相冲突、上游需要复核、或你的结论依赖把单案例外推为通用规则时，needs_human_review 必须为 true。
@@ -1374,7 +1371,15 @@ def _cluster_unit_input_payload(
 
 def _cluster_unit_output_schema(*, batch_mode: bool) -> str:
     topic_schema = {
+        "source_question_index": (
+            "对应第二部分核心问题的序号；有编号时必须保持原编号和顺序，"
+            "单问题或无编号时填1"
+        ),
         "normalized_issue": "可独立聚类的核心问题，不超过80字",
+        "standard_question": (
+            "同品类内用于比较同义问法的标准问题，必须同时表达"
+            "对象/部件、故障或查询目标、判定或处理诉求；不超过120字"
+        ),
         "product_category": (
             f"一级产品品类，只能为{product_category_prompt()}或"
             f"{UNKNOWN_PRODUCT_NAME}"
@@ -1488,6 +1493,9 @@ def _build_cluster_unit_prompt(
 6. normalized_issue 必须结合聊天原子诉求、human_corrected_core_problem 和 human_corrected_judgment_conclusion 提炼，不能只复述其中一个字段。
    若人工校正后的核心问题或判定结论与完整聊天明显冲突，不得静默覆盖；应保留聊天中能确认的主题，并设置 requires_review=true，在 reason/evidence_summary 中说明冲突。
    不得根据结构化字段虚构图片中未写明的细节、阈值或标准。
+   standard_question 用于同品类内归并同义问法，必须写成“对象/部件 + 故障或查询目标 + 判定/处理诉求”的稳定表达。
+   同义措辞应输出相同 standard_question；不同对象、部件、故障、查询目标、判定诉求或处理动作必须输出不同 standard_question。
+   standard_question 不能省略关键故障或诉求，也不能跨产品品类复用。
 
 7. 不得根据旧分类习惯猜测 category_l1 或 category_l2。
 
@@ -1498,6 +1506,14 @@ def _build_cluster_unit_prompt(
 {clustering_rules_prompt_block}
 
 === 主题拆分规则（5条红线）===
+
+0. source_question_index 必须对应第二部分核心问题的编号和顺序。
+   编号仅用于追溯核心问题，不能证明参考话术与同号问题语义对应。
+   参考话术可能错序、包含多问答案或补写人工没有回答的建议；必须按对象、提问目标和原始人工实际回答核对归属。
+   一个核心问题包含内存、硬盘等独立对象时允许拆成多个原子问题并引用同一个来源问题序号。
+   机型、品牌、容量等仅作背景而没有被明确询问或回答时，不得另造一个查询主题。
+   转人工入口的问题描述可能与后续实际答疑不同；不能把后续其他问题的答复嫁接给入口问题。
+   单问题或来源没有编号时填1；无法确认编号时设置 requires_review=true。
 
 1. 同一对象+同一异常的追问、澄清、补充图片或处理过程属于一个主题。
    single_topic 必须只输出 1 个原子问题，不得把同一主题重复拆写。
@@ -1773,6 +1789,20 @@ def _atomic_unit_payload(unit: dict[str, Any]) -> dict[str, Any]:
         ],
         "evidence_summary": _text(unit.get("evidence_summary"), 500),
         "normalized_issue": _text(unit.get("normalized_issue"), 160),
+        "standard_question": _text(unit.get("standard_question"), 240),
+        "standard_question_key": _text(unit.get("standard_question_key"), 1200),
+        "standardization_status": _text(
+            unit.get("standardization_status"),
+            40,
+        ),
+        "standardization_review_reason": _text(
+            unit.get("standardization_review_reason"),
+            300,
+        ),
+        "standardization_version": _text(
+            unit.get("standardization_version"),
+            80,
+        ),
         "source_core_problem": _text(unit.get("source_core_problem"), 1200),
         "source_judgment_conclusion": _text(
             unit.get("source_judgment_conclusion"),
@@ -1898,6 +1928,9 @@ def _build_atomic_topic_cluster_prompt(
 1. 允许单知识点独立成簇。
 2. intent_evidence_excerpt、conversation_evidence_excerpt、evidence_summary、source_core_problem 和 source_judgment_conclusion 共同用于核对真实问题。intent_evidence_excerpt 优先承载首轮之后的确认、澄清和最终答疑；后两项来自第二部分人工校正，尤其用于补充本轮未读取图片时已由人工确认的对象、现象和结论。
 3. 不得按关键词或字面相似直接合并，优先依据真实聊天中的对象、判定目标、标准处理路径和阈值例外。
+   standard_question 是聚类前根据结构化字段生成的标准问题，standard_question_key 是稳定比较键。标准问题相同只是值得比较的辅助信号，不是自动合并依据。
+   不同产品品类绝对不能合并；同品类内不同对象、异常现象、判定诉求、处理路径或阈值例外也不能因为标准标题相近而合并。
+   standardization_status=needs_review 时，必须回看原子字段和来源证据；不得只依据 standard_question 或 standard_question_key 合并。
 4. 若人工校正字段、normalized_issue 与聊天证据明显冲突，不得按任一字段强行合并；应放入 review_requests。
 5. 聊天原文中的“问题类型、问题描述、转人工原因”是系统转人工元数据，可能为快速转人工而乱填，不得作为聚类依据；first_turn_candidate 也可能只是工程师试探，不能单独作为聚类依据。若 first_turn_role 为 exploratory_demoted，优先依据 intent_evidence_excerpt、人工校正字段和最终答疑。
 6. standard_path、resolution_mode 或 threshold_or_exception 的文字不同不代表一定不同；必须判断语义和最终答疑结论是否一致。
@@ -2044,26 +2077,20 @@ def _fallback_recommended_reply(title: str, content: str) -> str:
         re.sub(r"^\s*(?:[-•]|\d+[.、])\s*", "", line).strip()
         for line in str(content or "").splitlines()
     ]
-    points = [line for line in lines if line and not line.endswith("：")][:3]
-    body = "；".join(points)
-    if not body:
-        body = "请先确认具体对象和现象，补充必要的图片、截图或检测结果，再对照当前有效标准判定。"
-    return _text(f"您好，关于“{title}”，建议{body}。若现有证据不能对应标准，请补充证据后再判定。", 240)
+    points = [line for line in lines if line and not line.endswith("：")]
+    if not points:
+        return ""
+    return "；".join(point.rstrip("。；;") for point in points) + "。"
 
 
 def _content_type_has_expected_numbered_points(
     content: str,
     content_type: str,
 ) -> bool:
-    counts = {
-        "定义型": (1, 2),
-        "阈值型": (1, 3),
-        "核验型": (1, 4),
-        "区分型": (2, 5),
-    }
-    minimum, maximum = counts[content_type]
+    # Point counts are writing guidance, not evidence validity. A complete
+    # fourth threshold must not turn an otherwise usable draft into a failure.
     points = re.findall(r"(?:^|\n)\s*\d+[.、]\s*\S+", content)
-    return minimum <= len(points) <= maximum
+    return bool(points) and content_type in CONTENT_TYPES
 
 
 _CONTENT_TYPE_ALIASES = {
@@ -2272,7 +2299,7 @@ def _validate_candidate(value: Any, allowed_refs: set[str]) -> dict[str, Any]:
                 if _text(item, 160)
             )
         ),
-        "recommended_reply": _text(value.get("recommended_reply"), 240)
+        "recommended_reply": _text(value.get("recommended_reply"), 1200)
         or _fallback_recommended_reply(title, content),
         "confidence": round(confidence, 3),
         "reasoning_summary": _text(value["reasoning_summary"], 240),
@@ -2292,8 +2319,8 @@ def _validate_topic_review(value: Any) -> dict[str, Any]:
     knowledge_value = _text(value.get("knowledge_value"), 32)
     if knowledge_value not in {"值得沉淀", "不值得沉淀", "待确认"}:
         raise MimoError("MiMo 初标 knowledge_value 不合法")
-    if knowledge_value == "不值得沉淀" and decision != "驳回":
-        raise MimoError("MiMo 初标标记不值得沉淀时 decision 必须为驳回")
+    if knowledge_value == "不值得沉淀" and decision == "通过":
+        raise MimoError("MiMo 初标标记不值得沉淀时 decision 不能为通过")
     if knowledge_value == "待确认" and decision == "通过":
         raise MimoError("MiMo 初标标记待确认时 decision 不能为通过")
     standard_consistency = _text(value.get("standard_consistency"), 32)
@@ -2545,10 +2572,28 @@ def _validate_cluster_units(
         "其他问题": "其他待确认",
     }
     normalized_topics: list[dict[str, Any]] = []
-    for topic in topics:
+    for topic_position, topic in enumerate(topics, start=1):
         if not isinstance(topic, dict):
             raise MimoError("聚类问题单元 topic 必须为 JSON 对象")
         normalized_issue = _text(topic.get("normalized_issue"), 80)
+        raw_source_question_index = topic.get("source_question_index")
+        if len(topics) > 1 and raw_source_question_index in (None, ""):
+            raise MimoError(
+                "多原子问题必须逐项提供 source_question_index"
+            )
+        try:
+            source_question_index = int(
+                raw_source_question_index or topic_position
+            )
+        except (TypeError, ValueError) as exc:
+            raise MimoError(
+                "聚类问题单元 source_question_index 必须是正整数"
+            ) from exc
+        if source_question_index < 1:
+            raise MimoError(
+                "聚类问题单元 source_question_index 必须是正整数"
+            )
+        standard_question = _text(topic.get("standard_question"), 120)
         raw_product_category = _text(topic.get("product_category"), 80)
         product_category = canonical_product_name(
             raw_product_category,
@@ -2677,7 +2722,9 @@ def _validate_cluster_units(
         )
         normalized_topics.append(
             {
+                "source_question_index": source_question_index,
                 "normalized_issue": normalized_issue,
+                "standard_question": standard_question,
                 "product_category": product_category,
                 "scope_type": scope_type,
                 "platform": platform,
@@ -3845,7 +3892,7 @@ class MimoClient:
         retry_reason: str = "",
         max_attempts: int | None = None,
     ) -> MimoLabelResult:
-        """Generate a reusable draft after clustering, never from a single case."""
+        """Generate a source-supported draft for a clustered topic."""
         allowed_refs = {_standard_ref(item) for item, _score in matches if _standard_ref(item)}
         validation_error = retry_reason
         last_response: dict[str, Any] = {}
@@ -3896,6 +3943,117 @@ class MimoClient:
             except Exception as exc:
                 raise MimoError(f"MiMo 主题调用失败：{exc}") from exc
         raise MimoError(f"MiMo 主题调用未产生有效结果：{last_response}")
+
+    def replay_topic_draft(
+        self,
+        topic: dict[str, Any],
+        *,
+        draft_prompt: str,
+        prompt_version: str,
+    ) -> MimoLabelResult:
+        """Run a candidate transcription prompt against a frozen topic input."""
+        if not _text(draft_prompt, 20000):
+            raise MimoError("候选草稿 Prompt 不能为空")
+        evidence = topic.get("主题事实证据包") or topic.get("evidence_package")
+        evidence_facts = (
+            evidence.get("facts")
+            or evidence.get("representative_facts")
+            or []
+            if isinstance(evidence, dict)
+            else []
+        )
+        if not isinstance(evidence, dict) or not list(evidence_facts):
+            raise MimoError("草稿 Prompt 回放缺少完整主题事实证据包")
+        validation_error = ""
+        last_response: dict[str, Any] = {}
+        for attempt in range(2):
+            retry_instruction = (
+                f"\n上次输出未通过 JSON 契约校验：{validation_error}\n"
+                "请只修正该问题后重新输出完整 JSON。"
+                if validation_error
+                else ""
+            )
+            prompt = f"""你正在进行仅用于影子评测的 Answer Hub 知识转写。不得自动发布、不得修改主题事实、不得补造证据或标准。
+
+严格执行下面这份候选知识转写 Prompt：
+
+{draft_prompt}
+
+下面是不可被候选 Prompt 覆盖的 Answer Hub 硬约束；若候选 Prompt 与其冲突，以硬约束为准：
+1. content_type 只能精确填写“定义型”“阈值型”“核验型”“区分型”之一。
+2. content 必须使用“1. ...”或“1、...”开头的逐行编号要点。定义型 1～2 条，阈值型 1～3 条，核验型 1～4 条，区分型 2～5 条。
+3. applicable_scope 必须沿用冻结主题输入中的产品类型正式名称，不得新增后缀。
+4. subtitles 只能围绕当前主题输出自然问句；不得混入同一工单的其他原子问题。
+5. recommended_reply 必须只回答当前主题，保留来源支持的具体对象、结论或边界，不得拼接其他问题的回复。
+6. 本次关闭标准检索与标准引用，standard_refs 必须为 []。
+{retry_instruction}
+
+最终只能输出一个符合以下 JSON 契约的对象：
+{{
+  "title": "string",
+  "subtitles": ["string"],
+  "content": "string",
+  "content_type": "定义型、阈值型、核验型或区分型",
+  "category_l1": "string",
+  "category_l2": "string",
+  "layer": "L2",
+  "knowledge_form": "具体判定 或 流程方法",
+  "standard_refs": [],
+  "applicable_scope": "当前品类名称",
+  "applicable_brands": ["string"],
+  "applicable_models": ["string"],
+  "recommended_reply": "string",
+  "confidence": 0.0,
+  "reasoning_summary": "string",
+  "needs_human_review": true,
+  "image_evidence_summary": "string",
+  "requires_images": false,
+  "image_usage_instruction": "string"
+}}
+
+【冻结主题输入】
+{json.dumps(topic, ensure_ascii=False, indent=2)}
+"""
+            payload = {
+                "model": self.config.model,
+                "messages": [
+                    {"role": "system", "content": "你是严谨的多品类主题知识转写助手。"},
+                    {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                ],
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+            }
+            request_audit = {
+                "endpoint": self.config.chat_completions_url(),
+                "model": self.config.model,
+                "prompt_version": prompt_version,
+                "topic_id": topic.get("topic_id") or topic.get("主题ID"),
+                "replay_type": "answer_hub_draft_transcription",
+                "attempt": attempt + 1,
+            }
+            try:
+                raw_response = self._post(payload)
+                last_response = raw_response
+                raw_content = _content_from_response(raw_response)
+                candidate = _validate_candidate(
+                    json.loads(_strip_json_fence(raw_content)),
+                    set(),
+                )
+                return MimoLabelResult(
+                    candidate=candidate,
+                    request_audit=request_audit,
+                    response_audit=raw_response,
+                )
+            except (json.JSONDecodeError, MimoError) as exc:
+                validation_error = str(exc)
+                if attempt == 1:
+                    raise MimoError(
+                        "候选草稿 Prompt 回放 JSON 校验失败（已重试一次）："
+                        f"{validation_error}"
+                    ) from exc
+            except Exception as exc:
+                raise MimoError(f"候选草稿 Prompt 回放调用失败：{exc}") from exc
+        raise MimoError(f"候选草稿 Prompt 回放未产生有效结果：{last_response}")
 
     def review_topic(
         self,

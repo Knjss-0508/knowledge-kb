@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 from sqlalchemy.exc import IntegrityError
 
-from app.routes.integration import queue_knowledge_review_candidates
+from app.routes.integration import _refresh_unreviewed_candidate, queue_knowledge_review_candidates
 from app.schemas.integration import IntegrationCandidateBatch
 
 
@@ -79,3 +79,32 @@ def test_queue_reuses_candidate_when_concurrent_insert_wins() -> None:
     assert db.add.call_count == 1
     db.flush.assert_called_once()
     db.commit.assert_called_once()
+
+
+def test_queue_refresh_does_not_rewrite_a_submitted_candidate_snapshot() -> None:
+    original_payload = {"knowledge": {"title": "送审时的标题"}}
+    original_metadata = {"model_review": {"suggested_action": "submit_for_human_review"}}
+    existing = SimpleNamespace(
+        knowledge_id="K-001",
+        review_status=None,
+        status="candidate_ready",
+        submitted_at=None,
+        created_at=None,
+        candidate_payload=original_payload,
+        review_metadata=original_metadata,
+        reviewed_at=None,
+    )
+
+    _refresh_unreviewed_candidate(
+        existing,
+        None,
+        payload={"knowledge": {"title": "上游新标题"}},
+        selection={"eligible": True},
+        review_metadata={"model_review": {"suggested_action": "return_for_revision"}},
+        review_status="revision_required",
+    )
+
+    assert existing.review_status == "submitted"
+    assert existing.status == "review_submitted"
+    assert existing.candidate_payload is original_payload
+    assert existing.review_metadata is original_metadata

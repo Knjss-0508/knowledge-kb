@@ -6,16 +6,17 @@ FRONTEND = (Path(__file__).resolve().parents[2] / "frontend" / "index.html").rea
 
 def test_knowledge_flow_order_and_confidence_training_sections():
     sidebar = FRONTEND[FRONTEND.index("知识沉淀"):FRONTEND.index("</aside>", FRONTEND.index("知识沉淀"))]
-    assert sidebar.index("运行监管") < sidebar.index("候选价值复核") < sidebar.index("置信度训练")
+    assert sidebar.index("运行监管") < sidebar.index("候选价值复核") < sidebar.index("标注质量评测")
     assert "confidenceTraining" in FRONTEND
-    assert "人工真值集（评测基准）" in FRONTEND
-    assert "当前模型严格准确率" in FRONTEND
+    assert "冻结评测样本（人工真值基准）" in FRONTEND
+    assert "冻结样本严格准确率" in FRONTEND
     assert "回归错误集（影子复跑退化样本）" in FRONTEND
-    assert "人工真值集（评测基准）" in FRONTEND
+    assert "退化样本已复核率" in FRONTEND
+    assert "人工真值集" in FRONTEND
     assert "/confidence-training/overview" in FRONTEND
     assert "/confidence-training/export?format=" in FRONTEND
     assert "production_auto_review_enabled:false" in FRONTEND
-    assert "人工真值集（评测基准）" in FRONTEND
+    assert "冻结评测样本（人工真值基准）" in FRONTEND
     assert "候选 Prompt 严格准确率" in FRONTEND
     assert "auto_training_job_enabled" in FRONTEND
     assert "createConfidenceTrainingJob" in FRONTEND
@@ -23,9 +24,12 @@ def test_knowledge_flow_order_and_confidence_training_sections():
     assert "回归错误集（影子复跑退化样本）" in FRONTEND
     assert "查看数据详情" in FRONTEND
     assert "shadowRegressedRows" in FRONTEND
+    assert "return job.regression_rows||[];" in FRONTEND
+    assert "job.regression_partitions" in FRONTEND
     assert "toggleShadowSampleDetail" in FRONTEND
-    assert "确认非退化" in FRONTEND
-    assert "确认回归并保留" in FRONTEND
+    assert "确认 Prompt 退化" in FRONTEND
+    assert "真值需要更正" in FRONTEND
+    assert "排除并说明原因" in FRONTEND
     assert "/regressions/" in FRONTEND
     assert "生成修订候选 Prompt" in FRONTEND
     assert "canGeneratePromptRevision" in FRONTEND
@@ -42,12 +46,21 @@ def test_knowledge_flow_order_and_confidence_training_sections():
     assert "版本仅展示系统已保存的 Prompt 快照" in FRONTEND
     assert "先跑验证集 {{job.validation_count}} 条" in FRONTEND
     assert "验证通过，进入测试集" in FRONTEND
-    assert "人工采纳后切换为 active" in FRONTEND
+    assert "批准后续新候选使用" in FRONTEND
     assert "?split=" in FRONTEND
-    assert "classification:decision" in FRONTEND
+    assert "classification:classification" in FRONTEND
     assert "优化草稿 Prompt" in FRONTEND
     assert "draft_generation" in FRONTEND
-    assert "候选 Prompt 只会在人工采纳后切换为 active" in FRONTEND
+    assert "该 Prompt 已人工批准，仅应用于批准时间后新建的候选。" in FRONTEND
+    assert "/confidence-training/evaluation-samples/snapshot" in FRONTEND
+    assert "不可变快照" in FRONTEND
+    assert "不训练或替换模型权重" in FRONTEND
+    assert "confidenceTraining.overview.sample_provenance" in FRONTEND
+    assert "comparison.candidate.sample_provenance" in FRONTEND
+    assert "等待可回放的完整证据快照" in FRONTEND
+    assert "草稿 Prompt 已接入 Answer Hub 离线回放" in FRONTEND
+    assert "'draft_prompt_replay_required'" in FRONTEND
+    assert "草稿 Prompt 回放结果仅供人工复核" in FRONTEND
 
 
 def test_training_tab_binds_to_initialized_settings_state():
