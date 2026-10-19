@@ -59,8 +59,35 @@ def _source_hash(raw: dict[str, Any]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def _column_limit(model: Any, name: str) -> int:
+    length = getattr(model.__table__.c[name].type, "length", None)
+    return int(length) if length else 0
+
+
+def _bounded(model: Any, name: str, value: Any) -> str:
+    """Clamp a value to the declared column length.
+
+    Upstream prose occasionally lands in a field the schema bounds: one real
+    work order put a whole paragraph into ``一级分类``.  Without this guard a
+    single malformed record raises ``StringDataRightTruncation`` and fails the
+    entire sync batch, so the dashboard silently stops ingesting.  The full
+    value is still kept in ``raw_payload`` for audit.
+    """
+
+    text = clean(value)
+    limit = _column_limit(model, name)
+    return text[:limit] if limit and len(text) > limit else text
+
+
 def _stable_record_id(parsed: dict[str, Any], source_hash: str) -> str:
-    return clean(parsed.get("record_id")) or f"content-{source_hash[:32]}"
+    # `record_id` is the unique sync key. Real ids are ~19 digits, so an
+    # over-long value means the upstream field is malformed: prefer a stable
+    # content hash over truncation, which could merge two distinct work orders.
+    record_id = clean(parsed.get("record_id"))
+    limit = _column_limit(HighFrequencySourceRecord, "record_id")
+    if not record_id or (limit and len(record_id) > limit):
+        return f"content-{source_hash[:32]}"
+    return record_id
 
 
 def _as_day(value: str) -> date | None:
@@ -74,11 +101,20 @@ def _apply_source_fields(
     source_hash: str,
 ) -> None:
     source.source_hash = source_hash
-    source.analyzed_at = clean(parsed.get("analyzed_at"))
+    source.analyzed_at = _bounded(
+        HighFrequencySourceRecord, "analyzed_at", parsed.get("analyzed_at")
+    )
     source.analyzed_on = _as_day(source.analyzed_at)
-    source.category = clean(parsed.get("category")) or "未分类"
-    source.level1 = clean(parsed.get("level1"))
-    source.level2 = clean(parsed.get("level2"))
+    source.category = (
+        _bounded(HighFrequencySourceRecord, "category", parsed.get("category"))
+        or "未分类"
+    )
+    source.level1 = _bounded(
+        HighFrequencySourceRecord, "level1", parsed.get("level1")
+    )
+    source.level2 = _bounded(
+        HighFrequencySourceRecord, "level2", parsed.get("level2")
+    )
     source.chat_content = clean(parsed.get("chat_content"))
     source.core_problem = clean(parsed.get("core_problem"))
     source.judgment = clean(parsed.get("judgment"))
@@ -332,7 +368,12 @@ def _get_or_create_standard_question(
         source.category,
         clean(classification.get("standard_question")),
     )
-    normalized = normalize_atomic_issue(title)
+    normalized = _bounded(
+        HighFrequencyStandardQuestion,
+        "normalized_question",
+        normalize_atomic_issue(title),
+    )
+    title = _bounded(HighFrequencyStandardQuestion, "standard_question", title)
     standard = (
         db.query(HighFrequencyStandardQuestion)
         .filter(
@@ -349,7 +390,14 @@ def _get_or_create_standard_question(
         category=source.category,
         normalized_question=normalized,
         standard_question=title,
-        business_theme=clean(classification.get("business_theme")) or "其他",
+        business_theme=(
+            _bounded(
+                HighFrequencyStandardQuestion,
+                "business_theme",
+                classification.get("business_theme"),
+            )
+            or "其他"
+        ),
         model_name=_classifier_model_id(),
         prompt_version=PROMPT_VERSION,
         rule_version=RULE_VERSION,
@@ -466,7 +514,12 @@ def _process_source(db: Session, source: HighFrequencySourceRecord) -> tuple[str
     for issue in issues:
         normalized = normalize_atomic_issue(issue)
         if normalized:
-            unique_issues.setdefault(normalized, clean(issue))
+            unique_issues.setdefault(
+                _bounded(
+                    HighFrequencyAtomicQuestion, "normalized_question", normalized
+                ),
+                clean(issue),
+            )
     for atomic_index, (normalized, issue) in enumerate(unique_issues.items(), 1):
         deterministic = _deterministic_classification(
             {

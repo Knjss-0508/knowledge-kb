@@ -167,6 +167,35 @@ class HighFrequencyDashboardTests(unittest.TestCase):
         self.assertEqual(parsed["core_problem"], "AI 核心问题原文")
         self.assertNotIn("人工标题", parsed)
 
+    def test_field_citations_inside_judgment_basis_never_overwrite_real_values(self):
+        # Real upstream case: the 判定依据 prose quotes 【产品类型】 and
+        # 【一级分类】 while explaining the rule it applied.  The citation used
+        # to be parsed as a second field marker and overwrote the genuine
+        # 一级分类, filling a bounded column with a whole paragraph and failing
+        # the whole sync batch with StringDataRightTruncation.
+        raw_ai_result = (
+            "【核心问题】\n什么情况下勾选仿冒产品？\n\n"
+            "【产品类型】\n笔记本\n\n"
+            "【一级分类】\n基本信息问题\n\n"
+            "【二级分类】\n不回收类型\n\n"
+            "【判定结论】\n本次答疑未直接回应核心问题。\n\n"
+            "【判定依据】\n平台标准依据：输入规则中，【产品类型】仅能从手机/平板/电脑等"
+            "选项选择；【一级分类】中“基本信息问题”包含“开机情况”“不回收类型”等二级分类。"
+            "输入未提供勾选条件原文，无法引用对应标准。\n\n"
+            "【参考话术】\n请补充证据后核实。"
+        )
+
+        parsed = parse_ai_result(raw_ai_result)
+        source = parse_source_record({"ai_result": raw_ai_result})
+
+        self.assertEqual(parsed["产品类型"], "笔记本")
+        self.assertEqual(parsed["一级分类"], "基本信息问题")
+        self.assertEqual(parsed["二级分类"], "不回收类型")
+        self.assertEqual(source["level1"], "基本信息问题")
+        self.assertEqual(source["level2"], "不回收类型")
+        self.assertEqual(source["category"], "笔记本")
+        self.assertLessEqual(len(source["level1"]), 128)
+
     def test_same_category_model_standard_question_merges_different_wording(self):
         records = [
             _row("1", "手机", "关于本机提示电池为正品部件，如何判定"),

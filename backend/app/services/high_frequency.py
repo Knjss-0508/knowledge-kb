@@ -145,7 +145,13 @@ def parse_ai_result(value: Any) -> dict[str, str]:
     matches = list(_AI_RESULT_SECTION_RE.finditer(text))
     for index, match in enumerate(matches):
         field = FIELD_ALIASES.get(clean(match.group(1)))
-        if not field:
+        if not field or field in result:
+            # The report lists every field once, in template order.  A later
+            # `【field】` inside prose is a *citation*: the judgment basis often
+            # quotes `【产品类型】` / `【一级分类】` when explaining the rule it
+            # applied.  Letting such a citation overwrite the real value used to
+            # fill `level1` with the whole paragraph and overflow the bounded
+            # column, failing the entire sync batch.
             continue
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         result[field] = (
