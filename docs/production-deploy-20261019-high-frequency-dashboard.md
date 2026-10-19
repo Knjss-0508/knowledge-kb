@@ -195,20 +195,86 @@ bash /opt/knowledge-kb-runtime/run-kb-backend.sh \
 Answer Hub 草稿 Prompt 回放不可用，属可预期降级，不会 5xx）。Answer Hub 的发布需按
 `prototypes/answer-hub/docs/answer-hub-本机迁移运行手册.md` 单独排期与执行。
 
-## 9. 已知缺口：看板数据源凭据未配置
+## 9. 看板数据源凭据配置（03:33Z+08 / 11:33+08 完成）
 
-新的高频问题看板依赖 `SECOND_PART_API_URL` / `SECOND_PART_API_TOKEN`，生产 `.env` 中尚未配置，
-因此：
+新的高频问题看板依赖 `SECOND_PART_API_URL` / `SECOND_PART_API_TOKEN`。切换镜像时生产 `.env` 中
+尚无这些配置，因此当时「同步数据 / 检查数据源」返回 503 + 中文提示（看板页面可正常打开，无数据）。
+随后按以下步骤补齐配置：
 
-- 「同步数据」「检查数据源」会返回 503 与中文提示，不会报 5xx；
-- 看板可正常打开，但当前筛选范围内无数据；
-- 服务器上 Answer Hub 已有可用的第二部分凭据（其 `.env` 中 `SECOND_PART_API_TOKEN` 长度 43，
-  数据源同为 `https://qa.powerzhuan.cn/api/records`），可由运维按需复制到
-  `/opt/knowledge-kb/.env` 后重启 `kb-backend`（取值不写入仓库、日志或聊天记录）。
+### 9.1 凭据来源与只读验证
+
+服务器上 Answer Hub（`/opt/knowledge-kb/prototypes/answer-hub/.env`）已持有一份可用的第二部分凭据
+（数据源同为 `https://qa.powerzhuan.cn/api/records`）。使用前先做只读探测：
+
+| 项 | 结果 |
+| --- | --- |
+| 令牌长度 | 43 |
+| sha256 前 12 位 | `2a111ae65a5c`（仅指纹，不留明文） |
+| 上游探测 `GET /api/records?limit=5&from=2026-10-01&to=2026-10-02` | HTTP **200**，返回 5 条 |
+| 返回记录字段 | `ai_result` / `analyze_time` / `category` / `chat_content` / `chat_images` / `chat_videos` / `created_at` / `id` / `model` / `order_no` / `ticket_id` / `uploaded_by` |
+
+字段与看板解析器 `parse_source_record` 的别名表兼容，确认可复用。
+
+### 9.2 配置变更
+
+以**追加**方式写入 `/opt/knowledge-kb/.env`（原文件先备份为
+`/opt/knowledge-kb-runtime/backups/hf-dashboard-20261019/env.before-second-part`，mode 600，
+sha256 前 12 位 `10eb1b4a4175`，68 个键）：
+
+```dotenv
+SECOND_PART_API_URL=https://qa.powerzhuan.cn/api/records
+SECOND_PART_API_TOKEN=<从 Answer Hub 复制，长度 43，不入库不入日志>
+SECOND_PART_API_TIMEOUT_SECONDS=30
+SECOND_PART_API_QUERY_LIMIT=10000
+```
+
+写完后 `.env` 共 72 个键、`SECOND_PART_*` 4 个，权限保持 600。随后用**同一镜像**
+`hf-dashboard-26486fd` 重启 `kb-backend`（`run-kb-backend.sh` 通过 `--env-file` 重新读取配置）：
+
+```bash
+bash /opt/knowledge-kb-runtime/run-kb-backend.sh knowledge-kb-backend:hf-dashboard-26486fd
+# 新容器 48ef3fda4c211aae46d4b4a8a5499d6e80001b0963b7319bbddb70337d7d65ff
+```
+
+切换前后比对：**运行规格 md5 完全不变**（`7a2118458cfc4878af928de6d30ed853`）；
+环境变量 md5 由 `582ccc90ebd2e3b556b88fda70862a1a` 变为 `89cb3c17c7a12154c6aa1fa6c38b6578`
+（预期变化，正是新增的 4 个键）；挂载集合未变。
+
+### 9.3 配置后验收
+
+容器内配置可见：`SECOND_PART_API_URL=https://qa.powerzhuan.cn/api/records`、
+令牌已设置（len 43）、timeout 30、limit 10000。
+
+在容器内以只读方式调用 UI「检查数据源」按钮所走的**同一代码路径**
+（`POST /high-frequency/sync?dry_run=true`，7 天窗口）：
+
+| 项 | 结果 |
+| --- | --- |
+| `fetched` | 6855 |
+| `unique_record_count` | 6855 |
+| `ai_core_problem_count` | 6854 |
+| `category_count` | 31 |
+| `possibly_truncated` | false |
+| `source_request_count` | 3 |
+| 耗时 | 约 40.3s |
+| 返回 message | 「第二部分接口连接和返回字段校验通过；未写入数据库，未调用 DeepSeek。」 |
+
+其他确认：
+
+- 数据源客户端单独调用成功（不再返回 503），降级分支已消除；
+- 无 key 调 `POST /api/v1/high-frequency/sync` 仍返回 **401**（鉴权正常）；
+- 重启后 Traceback 0、`500` 0、`503` 0；`/health`、`/ready`、`/app` 均 200；
+- 其余容器（`kb-redis`、`kb-embedding-qwen`、`appeal-exemption-*`、`voc-workbench-*`）未受影响。
+
+### 9.4 仍存在的前提
 
 `HIGH_FREQUENCY_CLASSIFICATION_ENABLED` 默认 `true`，复用已有 `DEEPSEEK_BASE_URL` /
-`DEEPSEEK_API_KEY`（或「模型连接配置」页保存的连接配置）做多意图归类；未配置时自动降级为
-纯原子问题统计，不影响页面可用性。
+`DEEPSEEK_API_KEY`（或「模型连接配置」页保存的连接配置）做多意图归类。生产已确认
+`resolve_call_config()` 可解析出 base_url / api_key，模型为 `deepseek-flash`；
+若模型不可用，看板会自动降级为纯原子问题统计，不影响页面可用性。
+
+`.env` 回滚：`cp -p /opt/knowledge-kb-runtime/backups/hf-dashboard-20261019/env.before-second-part /opt/knowledge-kb/.env`
+后再执行一次 `run-kb-backend.sh` 即可（该备份不含 `SECOND_PART_*`）。
 
 ## 10. 回滚
 
