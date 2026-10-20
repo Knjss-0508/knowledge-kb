@@ -463,6 +463,36 @@ class HighFrequencyPipelineTests(unittest.TestCase):
         self.assertEqual(payload["meta"]["source_request_count"], 4)
         self.assertEqual(payload["meta"]["quality_status"], "incomplete")
 
+    def test_overlong_bounded_fields_are_clamped_instead_of_failing_the_batch(self):
+        # The column is VARCHAR(128); the record keeps the full text in
+        # raw_payload.  Without the clamp a single malformed work order aborts
+        # the whole sync with StringDataRightTruncation.
+        paragraph = "中“基本信息问题”包含“开机情况”“系统情况”等二级分类。" * 12
+        record = _record("1", "什么情况下勾选仿冒产品？")
+        record["一级分类"] = paragraph
+        record["二级分类"] = paragraph
+        record["工单ID"] = "9" * 400
+
+        summary = pipeline.ingest_records(self.session, [record, _record("2", "电池是否为正品部件")])
+
+        self.assertEqual(summary["queued"], 2)
+        sources = self.session.query(HighFrequencySourceRecord).all()
+        self.assertEqual(len(sources), 2)
+        # A malformed id falls back to a content hash rather than a truncated
+        # id, which could otherwise merge two distinct work orders.
+        hashed = next(source for source in sources if source.record_id.startswith("content-"))
+        self.assertLessEqual(len(hashed.record_id), 256)
+        clamped = hashed
+        self.assertEqual(len(clamped.level1), 128)
+        self.assertEqual(len(clamped.level2), 128)
+        # The untouched record still lands normally.
+        self.assertEqual(
+            self.session.query(HighFrequencyProcessingTask)
+            .filter(HighFrequencyProcessingTask.status == "queued")
+            .count(),
+            2,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
