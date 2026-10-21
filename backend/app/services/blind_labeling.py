@@ -34,6 +34,7 @@ from app.models.blind_labeling import (
 )
 from app.models.integration import RetrievalQualityEvent
 from app.models.knowledge import Category, Knowledge
+from app.models.user import User
 from app.services.work_order_log_verdicts import VERDICT_REAL, VERDICT_SESSION
 from app.services.work_order_log_verdicts import recent_signals as log_tail_signals
 from app.services.work_order_log_verdicts import verdict_for as log_verdict_for
@@ -1575,6 +1576,192 @@ def annotation_counts_for(db: Session, assignment_ids: Iterable[str]) -> dict[st
         .all()
     )
     return {str(assignment_id): int(count or 0) for assignment_id, count in rows}
+
+
+def annotation_ranking(
+    db: Session,
+    *,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    include_retired: bool = False,
+) -> dict[str, Any]:
+    """按标注员聚合的「标注排行」。
+
+    与 ``overview()["people"]`` 的区别是这里只做一件事：把每个标注员的产出按
+    总量从大到小排出来，供标注员自己也能看到的排行榜使用。因此它不加载工单、
+    候选、共识或仲裁 —— 全部用分组查询在 SQL 侧聚合，不受任何分页影响。
+
+    口径说明（与人员统计一致，避免两个页面给出不同数字）：
+    - 统计的是**提交成功的标注**（``blind_label_annotations``，每个候选一条）；
+    - ``released`` 的派发不算「完成」，也不计入工单数，但仍保留在
+      ``assigned_count`` 里用于展示完成率；
+    - 默认排除已退池（会话号）工单，与总览口径保持一致。
+    - 时间范围按「标注活动时间」判定（``completed_at`` / ``assigned_at``），
+      与列表页的日期筛选语义相同。
+    """
+
+    def _annotation_counts(*, referable_only: bool) -> dict[str, int]:
+        """标注数也走同一套过滤（退池 + 活动时间），否则会出现「派发已被排除、
+        标注却还在排行榜上」的自相矛盾。"""
+
+        query = (
+            db.query(
+                BlindLabelAnnotation.user_id,
+                func.count(BlindLabelAnnotation.id),
+            )
+            .join(
+                BlindLabelAssignment,
+                BlindLabelAnnotation.assignment_id == BlindLabelAssignment.id,
+            )
+            .join(
+                BlindLabelWorkOrder,
+                BlindLabelAssignment.work_order_id == BlindLabelWorkOrder.id,
+            )
+        )
+        if referable_only:
+            query = query.filter(BlindLabelAnnotation.verdict == "referable")
+        if not include_retired:
+            query = query.filter(
+                BlindLabelWorkOrder.pool_state != POOL_STATE_RETIRED
+            )
+        # 时间范围按**标注自身的时间**判定。这里刻意不复用
+        # assignment_activity_range_condition()：它内部的 exists() 子查询在外层已经
+        # join 了 annotations/assignments 时会自动关联掉自己的 FROM 子句
+        # （SQLAlchemy 报 "returned no FROM clauses"）。排行榜关心的是「这段时间里
+        # 这个人标了多少条」，用标注创建时间判定既准确又没有这个歧义。
+        if start_at is not None:
+            query = query.filter(BlindLabelAnnotation.created_at >= start_at)
+        if end_at is not None:
+            query = query.filter(BlindLabelAnnotation.created_at < end_at)
+        return {
+            str(user_id): int(count or 0)
+            for user_id, count in query.group_by(BlindLabelAnnotation.user_id).all()
+        }
+
+    annotations_by_user = _annotation_counts(referable_only=False)
+    referable_by_user = _annotation_counts(referable_only=True)
+
+    assignment_query = db.query(
+        BlindLabelAssignment.user_id,
+        BlindLabelAssignment.status,
+        func.count(BlindLabelAssignment.id),
+        func.min(BlindLabelAssignment.assigned_at),
+        func.max(BlindLabelAssignment.completed_at),
+    ).join(
+        BlindLabelWorkOrder,
+        BlindLabelAssignment.work_order_id == BlindLabelWorkOrder.id,
+    )
+    if not include_retired:
+        assignment_query = assignment_query.filter(
+            BlindLabelWorkOrder.pool_state != POOL_STATE_RETIRED
+        )
+    # 派发侧只看派发自身的四个时间戳（不引入标注 exists 子查询），语义是
+    # 「这段时间里这个人领过/完成过多少单」。
+    if start_at is not None:
+        assignment_query = assignment_query.filter(
+            or_(
+                BlindLabelAssignment.assigned_at >= start_at,
+                BlindLabelAssignment.completed_at >= start_at,
+                BlindLabelAssignment.released_at >= start_at,
+            )
+        )
+    if end_at is not None:
+        assignment_query = assignment_query.filter(
+            or_(
+                BlindLabelAssignment.assigned_at < end_at,
+                BlindLabelAssignment.completed_at < end_at,
+                BlindLabelAssignment.released_at < end_at,
+            )
+        )
+    assignment_rows = assignment_query.group_by(
+        BlindLabelAssignment.user_id, BlindLabelAssignment.status
+    ).all()
+
+    stats: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "assigned_count": 0,
+            "completed_count": 0,
+            "released_count": 0,
+            "first_assigned_at": None,
+            "last_activity_at": None,
+        }
+    )
+    for user_id, status, count, first_assigned_at, last_completed_at in assignment_rows:
+        stat = stats[str(user_id)]
+        if status == "released":
+            stat["released_count"] += int(count or 0)
+        else:
+            stat["assigned_count"] += int(count or 0)
+        if status == "completed":
+            stat["completed_count"] += int(count or 0)
+        if first_assigned_at is not None:
+            stat["first_assigned_at"] = (
+                first_assigned_at
+                if stat["first_assigned_at"] is None
+                else min(stat["first_assigned_at"], first_assigned_at)
+            )
+        if last_completed_at is not None:
+            stat["last_activity_at"] = (
+                last_completed_at
+                if stat["last_activity_at"] is None
+                else max(stat["last_activity_at"], last_completed_at)
+            )
+
+    user_ids = set(stats) | {str(key) for key in annotations_by_user}
+    users = {
+        str(user.id): user
+        for user in db.query(User).filter(User.id.in_(user_ids)).all()
+    } if user_ids else {}
+
+    rows: list[dict[str, Any]] = []
+    for user_id in user_ids:
+        stat = stats.get(user_id) or {}
+        assigned = int(stat.get("assigned_count") or 0)
+        completed = int(stat.get("completed_count") or 0)
+        annotation_count = int(annotations_by_user.get(user_id) or 0)
+        referable_count = int(referable_by_user.get(user_id) or 0)
+        user = users.get(user_id)
+        rows.append(
+            {
+                "user_id": user_id,
+                "username": (user.username if user else "") or user_id,
+                "annotation_count": annotation_count,
+                "referable_count": referable_count,
+                "not_referable_count": annotation_count - referable_count,
+                "completed_count": completed,
+                "assigned_count": assigned,
+                "released_count": int(stat.get("released_count") or 0),
+                "completion_rate": round(completed / assigned, 4) if assigned else 0.0,
+                "first_assigned_at": stat.get("first_assigned_at"),
+                "last_activity_at": stat.get("last_activity_at"),
+            }
+        )
+    # 从大到小：标注总数是主口径；同分时用完成工单数、可参考数决定先后，
+    # 最后用姓名/ID 兜底，保证刷新之间顺序稳定。
+    rows.sort(
+        key=lambda item: (
+            item["annotation_count"],
+            item["completed_count"],
+            item["referable_count"],
+            item["username"],
+            item["user_id"],
+        ),
+        reverse=True,
+    )
+    for index, row in enumerate(rows, start=1):
+        row["rank"] = index
+    return {
+        "people": rows,
+        "summary": {
+            "annotators": len(rows),
+            "annotations": sum(item["annotation_count"] for item in rows),
+            "completed_work_orders": sum(item["completed_count"] for item in rows),
+            "referable_count": sum(item["referable_count"] for item in rows),
+            "not_referable_count": sum(item["not_referable_count"] for item in rows),
+            "start_at": start_at,
+            "end_at": end_at,
+        },
+    }
 
 
 def overview(
