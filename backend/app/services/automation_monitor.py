@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -313,6 +314,30 @@ class AutomationMonitorGateway:
         return sanitize_monitor_value(decoded)
 
 
+def _updated_at_seconds(value: Any) -> float:
+    """把 ``updated_at`` 解析成可比较的秒级时间戳，供运行记录排序使用。
+
+    Answer Hub 返回的是带时区的 ISO 8601（例如 ``2026-10-19T16:50:39+08:00``），
+    但历史记录里也出现过无时区、空格分隔乃至空值的形态。解析不了的一律排到最后，
+    不能因为一条脏数据就让整个列表顺序错乱。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return float("-inf")
+    normalized = text.replace("Z", "+00:00").replace("z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized).timestamp()
+    except ValueError:
+        pass
+    # 退回旧格式（``2026/10/19 16:50:39``）：只用于排序，不做展示。
+    for pattern in ("%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, pattern).timestamp()
+        except ValueError:
+            continue
+    return float("-inf")
+
+
 def build_monitor_overview(gateway: AutomationMonitorGateway, limit: int = 100) -> dict[str, Any]:
     empty = {
         "service": {"status": "unavailable", "message": ""},
@@ -364,7 +389,21 @@ def build_monitor_overview(gateway: AutomationMonitorGateway, limit: int = 100) 
                     ),
                     "updated_at": str(job.get("updated_at") or ""),
                 })
-    jobs.sort(key=lambda item: (0 if str(item.get("health_status")) in {"stalled", "failed"} else 1, str(item.get("updated_at") or "")), reverse=False)
+    # 运行记录按「更新时间」倒序：最近的在最上面。
+    #
+    # 旧实现把 failed/stalled 顶到最前、再按 updated_at 升序排，于是列表顶部永远钉着
+    # 几条很早以前的失败记录（本机实测：顶部依次是 09/27、10/02、10/05，之后才是
+    # 08/24 起的其它记录），看起来完全没有按时间排。异常与否已经由「运行状态」「异常
+    # 状态」两列和上方的「异常待关注」卡片表达；列表本身必须是稳定的时间倒序，
+    # 否则「最近跑的那批在哪」要靠用户自己找，等于没有排序。
+    # record_id 只做同秒记录的稳定次序，避免同一时间戳在多次刷新间来回跳动。
+    jobs.sort(
+        key=lambda item: (
+            _updated_at_seconds(item.get("updated_at")),
+            str(item.get("record_id") or ""),
+        ),
+        reverse=True,
+    )
     return {"service": {"status": "online" if health.get("status") == "ok" else "unknown", "message": ""}, "control": control, "summary": summary, "jobs": jobs, "issues": issues}
 
 

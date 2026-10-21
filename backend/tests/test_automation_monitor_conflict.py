@@ -211,3 +211,91 @@ def test_gateway_reads_conflict_body_from_the_error_field(monkeypatch: pytest.Mo
     visible = monitor.monitor_error_detail(error.kind, error.detail)
     assert "AnswerHubAutomationQueue" not in visible
     assert "计划任务" in visible
+
+
+# ---------------------------------------------------------------------------
+# 运行记录排序
+#
+# 线上现象：页面「运行记录」顶部依次是 09/27、10/02、10/05 三条失败/卡住记录，
+# 之后才是 08/24 起的其它记录 —— 看起来完全没有按时间排。
+# 原因是 build_monitor_overview 把 failed/stalled 顶到最前、再按 updated_at 升序，
+# 于是列表顶部永远钉着几条很早以前的异常记录。用户要的是「最近的在最上面」。
+# ---------------------------------------------------------------------------
+
+
+class _OrderingGateway:
+    """只提供排序用例需要的三条响应，不触碰任何真实网络。"""
+
+    def __init__(self, items):
+        self._items = items
+
+    configured = True
+
+    def request(self, method, path, payload=None):  # noqa: ANN001, ANN202
+        if path == "/health":
+            return {"status": "ok"}
+        if path == "/api/v1/automation/control":
+            return {"installed": True, "enabled": True, "running": False}
+        return {"items": list(self._items)}
+
+
+def _job(record_id: str, updated_at: str, health: str = "", state: str = "completed"):
+    return {
+        "record_id": record_id,
+        "updated_at": updated_at,
+        "health_status": health,
+        "effective_status": state,
+        "current_stage": {},
+    }
+
+
+def test_running_records_are_sorted_by_newest_first() -> None:
+    """列表必须严格按更新时间倒序，最近的在最上面。"""
+    gateway = _OrderingGateway([
+        _job("old-0824", "2026-08-24T18:33:15+08:00"),
+        _job("new-1019", "2026-10-19T16:50:39+08:00"),
+        _job("mid-0901", "2026-09-01T11:39:47+08:00"),
+    ])
+    overview = monitor.build_monitor_overview(gateway)
+    assert [job["record_id"] for job in overview["jobs"]] == [
+        "new-1019", "mid-0901", "old-0824",
+    ]
+
+
+def test_stale_failures_no_longer_pin_the_top_of_the_list() -> None:
+    """很早以前的失败/卡住记录不能再被顶到最新记录之前。
+
+    线上实测的原始顺序：09/27(failed)、10/02(stalled)、10/05(failed)、
+    然后是 08/24 起的历史通过记录。修复后 10/19 必须排在最前。
+    """
+    gateway = _OrderingGateway([
+        _job("fail-0927", "2026-09-27T06:59:47+08:00", health="failed", state="failed"),
+        _job("stall-1002", "2026-10-02T11:06:16+08:00", health="stalled", state="running"),
+        _job("fail-1005", "2026-10-05T22:57:14+08:00", health="failed", state="failed"),
+        _job("ok-0824", "2026-08-24T18:33:15+08:00"),
+        _job("ok-1019", "2026-10-19T16:50:39+08:00"),
+    ])
+    overview = monitor.build_monitor_overview(gateway)
+    ids = [job["record_id"] for job in overview["jobs"]]
+    assert ids[0] == "ok-1019", ids
+    assert ids.index("ok-1019") < ids.index("fail-1005") < ids.index("fail-0927")
+    # 全表仍应是严格倒序。
+    times = [monitor._updated_at_seconds(job["updated_at"]) for job in overview["jobs"]]
+    assert times == sorted(times, reverse=True), times
+    # 异常记录一条都没丢，计数照旧。
+    assert overview["summary"]["attention"] == 3
+
+
+def test_missing_or_unparsable_timestamps_sort_last_without_breaking_order() -> None:
+    """脏时间戳只能影响它自己，不能让整个列表顺序错乱。"""
+    gateway = _OrderingGateway([
+        _job("blank", ""),
+        _job("garbage", "not-a-timestamp"),
+        _job("legacy-slash", "2026/10/19 16:50:39"),
+        _job("iso-z", "2026-10-20T01:30:00Z"),
+    ])
+    overview = monitor.build_monitor_overview(gateway)
+    ids = [job["record_id"] for job in overview["jobs"]]
+    # 可解析的按时间倒序在前；解析不了的退到最后。
+    assert ids[:2] == ["iso-z", "legacy-slash"], ids
+    assert set(ids[2:]) == {"blank", "garbage"}, ids
