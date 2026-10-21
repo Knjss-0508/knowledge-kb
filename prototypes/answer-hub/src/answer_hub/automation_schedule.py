@@ -59,6 +59,17 @@ def normalize_plan(payload: dict[str, Any] | None) -> dict[str, Any]:
         "last_successful_to_date": str(raw.get("last_successful_to_date") or ""),
         "last_failure_date": str(raw.get("last_failure_date") or ""),
         "last_failure_reason": str(raw.get("last_failure_reason") or ""),
+        # 区分「真失败」与「本次主动跳过」。
+        #
+        # 队列里还留着未处理的 pending/processing/failed 文件时，定时脚本按设计跳过这一
+        # 次并记下原因。但那不是失败：没有任何环节出错，只是队列还没被清理，本次不拉取。
+        # 旧实现把这条也交给 record_failure()，于是「连续三个晚上队列没清干净」被当成
+        # 「连续三次失败」，auto_advance_paused 被置为 true；之后 prepare_window() 每次
+        # 直接抛错退出，脚本再也走不到队列检查，游标永远停在原地 —— 页面那条「最近失败：
+        # 队列存在未解决的 failed 文件。」也就永远清不掉。
+        # 两种记录分开保存，只有真失败才累积次数并暂停顺延。
+        "last_deferral_date": str(raw.get("last_deferral_date") or ""),
+        "last_deferral_reason": str(raw.get("last_deferral_reason") or ""),
         "consecutive_failure_count": max(0, int(raw.get("consecutive_failure_count") or 0)),
         "auto_advance_paused": bool(raw.get("auto_advance_paused", False)),
     }
@@ -122,6 +133,8 @@ def commit_success(path: str | Path, *, from_date: str, to_date: str) -> dict[st
         "last_successful_to_date": to_date,
         "last_failure_date": "",
         "last_failure_reason": "",
+        "last_deferral_date": "",
+        "last_deferral_reason": "",
         "consecutive_failure_count": 0,
         "auto_advance_paused": False,
     })
@@ -129,6 +142,7 @@ def commit_success(path: str | Path, *, from_date: str, to_date: str) -> dict[st
 
 
 def record_failure(path: str | Path, *, run_date: str, reason: str) -> dict[str, Any]:
+    """记录一次真实失败：累积失败次数，连续三次后暂停自动顺延。"""
     plan = read_plan(path)
     count = int(plan.get("consecutive_failure_count") or 0) + 1
     plan.update({
@@ -140,9 +154,41 @@ def record_failure(path: str | Path, *, run_date: str, reason: str) -> dict[str,
     return write_plan(path, plan)
 
 
+def record_deferral(path: str | Path, *, run_date: str, reason: str) -> dict[str, Any]:
+    """记录一次「本轮主动跳过」：队列还没清干净，本次不拉取。
+
+    跳过不是失败，所以不动 consecutive_failure_count，也不会暂停自动顺延；
+    只把「本次为什么没跑」写进独立字段，页面照常展示，用户清完队列即自动恢复。
+    """
+    plan = read_plan(path)
+    plan.update({
+        "last_deferral_date": run_date,
+        "last_deferral_reason": str(reason)[:512],
+    })
+    return write_plan(path, plan)
+
+
+def resume_plan(path: str | Path) -> dict[str, Any]:
+    """恢复被暂停的自动顺延：清掉失败/跳过记录与暂停标记，游标保持不动。
+
+    用户在页面上处理完失败批次后调用。只清记录类字段，cursor_date 等进度字段一律不碰，
+    否则会重复拉取或跳过日期。
+    """
+    plan = read_plan(path)
+    plan.update({
+        "last_failure_date": "",
+        "last_failure_reason": "",
+        "last_deferral_date": "",
+        "last_deferral_reason": "",
+        "consecutive_failure_count": 0,
+        "auto_advance_paused": False,
+    })
+    return write_plan(path, plan)
+
+
 def _main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("prepare", "commit", "failure"))
+    parser.add_argument("action", choices=("prepare", "commit", "failure", "defer", "resume"))
     parser.add_argument("--plan", required=True)
     parser.add_argument("--today", default="")
     parser.add_argument("--from-date", default="")
@@ -154,8 +200,12 @@ def _main() -> int:
         result = prepare_window(args.plan, today=today)
     elif args.action == "commit":
         result = commit_success(args.plan, from_date=args.from_date, to_date=args.to_date)
-    else:
+    elif args.action == "failure":
         result = record_failure(args.plan, run_date=args.today or _date_text(date.today()), reason=args.reason)
+    elif args.action == "defer":
+        result = record_deferral(args.plan, run_date=args.today or _date_text(date.today()), reason=args.reason)
+    else:
+        result = resume_plan(args.plan)
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

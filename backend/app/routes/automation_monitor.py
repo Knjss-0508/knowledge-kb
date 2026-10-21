@@ -116,6 +116,15 @@ def retry_failed(_: User = Depends(require_permission("account:manage"))) -> dic
         _raise_gateway_error(exc)
 
 
+@router.post("/resume")
+def resume(_: User = Depends(require_permission("account:manage"))) -> dict[str, Any]:
+    """恢复被暂停的自动顺延（清失败/跳过记录，游标不动）。"""
+    try:
+        return _gateway().request("POST", "/api/v1/automation/resume")
+    except AutomationMonitorError as exc:
+        _raise_gateway_error(exc)
+
+
 @router.get("/logs/latest")
 def latest_logs(
     lines: int = Query(120, ge=1, le=200),

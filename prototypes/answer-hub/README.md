@@ -600,6 +600,18 @@ Token 由使用者只填入本机 `.env`，不得粘贴到聊天、命令历史�
 
 `--max-pages 0` 表示不限制游标分页页数，持续读取到接口返回完成。`--exclude-existing-records` 会扫描队列中的 `pending`、`processing`、`completed` 和 `failed` 文件，按 `工单ID`、`数据ID` 或 `来源记录ID` 排除已经出现的记录，适合在一次拉取被截断后补充剩余数据。PowerZhuan QA 接口当前只返回顶层 `records`，没有可用的游标或 `has_more` 字段，因此会用一次 `limit=10000` 请求读取指定日期范围；如果实际记录超过该值，应提高 `SECOND_PART_QUERY_LIMIT`，不得改回固定单页读取。
 
+#### 队列阻塞是「跳过」，不是「失败」
+
+定时脚本在 `pending` / `processing` / `failed` 桶里还留着未清理的文件时，会跳过这一轮并
+记录一条 `defer`（`last_deferral_reason`）。跳过是设计行为，没有任何环节出错：不动
+`consecutive_failure_count`，也不会暂停自动顺延，清完队列后第二天自动恢复。只有真实失败
+（拉取连续 3 次失败、队列消费非零退出码）才走 `failure`，并累积次数。
+
+连续三次真实失败后 `auto_advance_paused` 变成 `true`，此后 `prepare` 会直接抛错退出，
+定时脚本再也不会自己跑起来。处理完失败批次后，在「自动化流程监管」页点
+「清除失败记录并恢复顺延」（或直接调用 `POST /api/v1/automation/resume`）；该操作只清
+失败/跳过记录与暂停标记，**不移动 `cursor_date`**，不会重复拉取或跳过日期。
+
 如果返回“缺少必填字段”，说明 PowerZhuan 的 `records[0]` 字段名与模板别名不同；
 此时应提供一条已脱敏的 `records[0]` JSON 样例调整映射，不得放宽门禁或让空记录入队。
 

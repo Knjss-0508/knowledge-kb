@@ -109,7 +109,10 @@ foreach ($b in @("pending", "processing", "failed")) {
     Log ("  2) 桶 {0,-11} {1} 个 xlsx" -f $b, $n)
     if ($n -gt 0) {
         Log ("  ⛔ 队列有未解决的 {0} 文件，跳过 {1} ~ {2}" -f $b, $from, $to)
-        & $PY -m answer_hub.automation_schedule failure --plan $PLAN --today (Get-Date -Format "yyyy-MM-dd") --reason "队列存在未解决的 $b 文件。" 2>&1 | Out-Null
+        # 这是「本轮跳过」，不是失败：队列还没清干净，本次不拉取而已。用 failure 会累积
+        # consecutive_failure_count，三个晚上就把 auto_advance_paused 置为 true，此后
+        # prepare 直接抛错、脚本再也走不到这里，游标永远不动。
+        & $PY -m answer_hub.automation_schedule defer --plan $PLAN --today (Get-Date -Format "yyyy-MM-dd") --reason "队列存在未解决的 $b 文件。" 2>&1 | Out-Null
         exit 1
     }
 }

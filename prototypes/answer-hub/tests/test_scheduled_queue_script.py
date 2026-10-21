@@ -19,6 +19,27 @@ def test_scheduled_queue_reads_the_window_from_the_saved_plan() -> None:
     assert 'state_file="data/second-part-pull/scheduled-${from_date//-/}-${to_date//-/}-state.json"' in SCRIPT
 
 
+def test_queue_block_is_recorded_as_a_deferral_not_a_failure() -> None:
+    """队列没清干净是「本轮跳过」，必须走 defer，不能走 failure。
+
+    线上故障：两个脚本都把队列阻塞记成 failure，连续三晚之后
+    auto_advance_paused 变成 true，prepare 直接抛错、脚本再也走不到队列检查，
+    游标永远停在原地（本机实测 2026-10-11 起连停 11 天）。
+    """
+    assert "-m answer_hub.automation_schedule defer" in SCRIPT
+    assert "--reason \"队列存在未解决的 $bucket 文件。\"" in SCRIPT
+    # 队列阻塞这一条不能再调用 failure；真失败（拉取三次失败 / 队列退出码）保留。
+    assert 'automation_schedule failure --plan "$plan_path" --today "$(/usr/bin/date +%F)" --reason "队列存在未解决的' not in SCRIPT
+    assert '--reason "第二部分拉取连续 3 次失败。"' in SCRIPT
+    assert '--reason "自动化队列退出码：$exit_code"' in SCRIPT
+
+    assert "automation_schedule defer" in WINDOWS_SCRIPT
+    assert '--reason "队列存在未解决的 $b 文件。"' in WINDOWS_SCRIPT
+    assert 'automation_schedule failure --plan $PLAN --today (Get-Date -Format "yyyy-MM-dd") --reason "队列存在未解决的' not in WINDOWS_SCRIPT
+    assert '--reason "第二部分拉取连续 3 次失败。"' in WINDOWS_SCRIPT
+    assert '--reason "自动化队列退出码：$c"' in WINDOWS_SCRIPT
+
+
 def test_scheduled_queue_pulls_everything_the_interface_returns() -> None:
     """拉取必须显式设置 limit 并读取全部分页。
 

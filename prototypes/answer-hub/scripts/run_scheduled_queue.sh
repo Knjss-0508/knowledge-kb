@@ -13,7 +13,10 @@ to_date="$(printf '%s' "$window_json" | "$python_bin" -c 'import json,sys; print
 for bucket in pending processing failed; do
   if find "data/automation-queue/$bucket" -maxdepth 1 -type f -name '*.xlsx' -print -quit | grep -q .; then
     echo "Queue has unresolved $bucket work; skip $from_date to $to_date."
-    "$python_bin" -m answer_hub.automation_schedule failure --plan "$plan_path" --today "$(/usr/bin/date +%F)" --reason "队列存在未解决的 $bucket 文件。" || true
+    # 这是「本轮跳过」，不是失败：队列还没清干净，本次不拉取而已。
+    # 用 failure 会累积 consecutive_failure_count，三个晚上就把 auto_advance_paused
+    # 置为 true，此后 prepare 直接抛错、脚本再也走不到这里，游标永远不动。
+    "$python_bin" -m answer_hub.automation_schedule defer --plan "$plan_path" --today "$(/usr/bin/date +%F)" --reason "队列存在未解决的 $bucket 文件。" || true
     exit 1
   fi
 done
