@@ -2275,6 +2275,50 @@ def test_annotation_ranking_summary_matches_the_rows(db):
     )
 
 
+def test_annotation_ranking_surfaces_released_count_outside_the_rate_denominator(db):
+    """「已回收」要单独给出，且不能混进完成率的分母。
+
+    真实口径：完成率 = 完成工单数 ÷ 实际派发数（不含回收）。所以 100% 不等于
+    「一单都没被回收」。实测线上邓志成：663 完成 / 663 派发 = 100%，但另被回收 98 单。
+    """
+
+    work_order = _seed_ranking_annotations(db, verdicts_by_user={"u1": ["referable"]})
+    # (work_order_id, user_id) 是唯一约束，所以每个回收单要各占一条工单。
+    for index in range(3):
+        released_order = BlindLabelWorkOrder(
+            id=f"wo-rank-released-{index}",
+            conversation_id=f"conv-rank-released-{index}",
+            query_text="回收用例",
+            category_name="手机",
+            candidate_snapshot=[{"candidate_ref": "cand-1", "title": "候选 1", "knowledge_id": "biz-1"}],
+            assignment_limit=5,
+        )
+        db.add(released_order)
+        db.add(
+            BlindLabelAssignment(
+                id=f"as-u1-released-{index}",
+                batch_id="batch-rank",
+                work_order_id=released_order.id,
+                user_id="u1",
+                status="released",
+                assigned_at=datetime.utcnow(),
+                released_at=datetime.utcnow(),
+                release_reason="系统超时自动回收",
+            )
+        )
+    db.commit()
+
+    result = annotation_ranking(db)
+    person = next(item for item in result["people"] if item["user_id"] == "u1")
+
+    assert person["released_count"] == 3
+    assert person["assigned_count"] == 1        # 回收不进分母
+    assert person["completed_count"] == 1
+    assert person["completion_rate"] == 1.0     # 因此仍是 100%
+    # 汇总要能看到总量，否则页面无从解释这个 100%。
+    assert result["summary"]["released_count"] == 3
+
+
 def test_annotation_ranking_exposes_no_work_order_or_candidate_content(db):
     """排行榜只暴露产出聚合，不泄露工单内容、候选来源或他人的逐条判断。"""
     _seed_ranking_annotations(db, verdicts_by_user={"u1": ["referable"]})

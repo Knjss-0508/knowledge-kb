@@ -1758,6 +1758,9 @@ def annotation_ranking(
             "completed_work_orders": sum(item["completed_count"] for item in rows),
             "referable_count": sum(item["referable_count"] for item in rows),
             "not_referable_count": sum(item["not_referable_count"] for item in rows),
+            # 被系统回收的派发数（超 24 小时未提交等）。完成率的分母**不含**它，
+            # 所以必须单独给出，否则「100%」会被读成「一单都没被回收」。
+            "released_count": sum(item["released_count"] for item in rows),
             "start_at": start_at,
             "end_at": end_at,
         },
