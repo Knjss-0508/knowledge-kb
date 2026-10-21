@@ -315,3 +315,28 @@ def test_blind_label_ranking_loader_calls_the_ranking_endpoint() -> None:
     # 打开排行页签时必须真的拉数据，而不是沿用总览/个人列表的加载器。
     assert "if (this.isBlindLabelRankingTab()) this.loadBlindLabelRanking();" in FRONTEND
     assert ".blind-label-ranking-table{min-width:760px}" in FRONTEND
+
+
+def test_blind_label_ranking_panel_is_not_nested_inside_the_admin_only_wrapper() -> None:
+    """排行面板必须是管理员总览模板的**兄弟节点**。
+
+    线上现象：标注员点开「标注排行」页签，标签高亮但面板整块空白 ——
+    因为面板被写进了 ``<template v-if="isBlindLabelOverviewTab()">`` 里面，
+    而该条件对标注员恒为假（它要求 retrieval:label_overview），
+    于是面板连同汇总卡、时间范围和表格一起被整个条件渲染掉。
+    页签本身在两个角色下都渲染，所以看起来「点了没反应」。
+    """
+
+    admin_wrapper_start = FRONTEND.index("<template v-if=\"isBlindLabelOverviewTab()\">")
+    admin_wrapper_end = _template_end(FRONTEND, admin_wrapper_start)
+    ranking_start = FRONTEND.index("<template v-if=\"blindLabeling.tab==='ranking'\">")
+
+    # 关键断言：排行模板不能落在管理员专属模板的区间内。
+    assert not (admin_wrapper_start < ranking_start < admin_wrapper_end), (
+        "排行面板被嵌套在 isBlindLabelOverviewTab() 里，标注员将看不到任何内容"
+    )
+
+    # 面板与页签按钮仍要存在且各自完整。
+    assert "id=\"blind-label-ranking-tab\"" in FRONTEND
+    assert "id=\"blind-label-ranking-panel\"" in FRONTEND
+    assert FRONTEND[ranking_start:].index("</template>") > 0
