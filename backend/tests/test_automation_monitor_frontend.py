@@ -190,6 +190,20 @@ def test_cursor_plan_is_exposed_without_requiring_legacy_date_fields() -> None:
     assert "window_days:Number(plan.window_days||1)" in FRONTEND
 
 
+def test_deferral_is_shown_as_a_skip_not_as_a_failure() -> None:
+    """队列没清干净只是「本次未执行」，不能显示成「最近失败」。
+
+    线上现象：页面一直挂着「最近失败：队列存在未解决的 failed 文件。；失败时日期游标
+    不会移动。」，而真实原因是每个晚上都按设计跳过了这一轮，游标本来就不该动。
+    两种记录必须分开渲染，否则用户会把「队列还没清」当成「系统坏了」。
+    """
+    assert "本次未执行：" in FRONTEND
+    assert "这是主动跳过，不计入失败次数，日期游标不会移动" in FRONTEND
+    # 跳过提示只在没有真实失败时出现；有失败时仍显示失败。
+    assert 'v-else-if="answerHubMonitor.control.plan.last_deferral_reason"' in FRONTEND
+    assert "last_deferral_reason:''" in FRONTEND
+
+
 # ---------------------------------------------------------------------------
 # 「自动化流程监管」按钮状态
 #
@@ -491,4 +505,69 @@ def test_disabled_buttons_are_visually_neutralised() -> None:
     # 后端返回的提示要能在页面上看到，不能只弹一次 alert
     assert 'class="automation-alert"' in FRONTEND
     assert "automationMonitorAlert()" in FRONTEND
+
+
+def test_resume_button_is_offered_only_while_auto_advance_is_paused() -> None:
+    """只有 auto_advance_paused 为真时才需要「恢复自动顺延」，且它不受开始/运行态约束。
+
+    线上故障：连续三次失败把 auto_advance_paused 置为真之后，prepare 每夜直接抛错，
+    自动化再也不会自己跑起来。用户必须有一个显式恢复入口，而不是去手工改计划文件。
+    """
+    _run_node_script(
+        """
+        // 未暂停：按钮禁用（模板里根本不会渲染它）
+        const normal = buildContext({});
+        assert.strictEqual(normal.automationMonitorActionDisabled('resume'), true);
+
+        // 已暂停：即使自动化处于「已停止」也允许恢复 —— 恢复只清记录，不推进队列。
+        const paused = buildContext({answerHubMonitor: {control: {plan: {auto_advance_paused: true}}}});
+        assert.strictEqual(paused.automationMonitorActionDisabled('resume'), false);
+        assert.ok(paused.automationMonitorActionTitle('resume').indexOf('自动顺延') !== -1);
+
+        // 已暂停 + 正在运行：恢复仍然可点（它不碰队列和计划任务）
+        const pausedRunning = buildContext({
+          answerHubMonitor: {control: {enabled: true, running: true, plan: {auto_advance_paused: true}}}
+        });
+        assert.strictEqual(pausedRunning.automationMonitorActionDisabled('resume'), false);
+        assert.ok(
+          pausedRunning.automationMonitorActionTitle('resume').indexOf('自动顺延') !== -1,
+          '恢复的悬停提示不能讲成「任务运行中」'
+        );
+
+        // 计划任务未安装：恢复仍可用（它只改计划文件，不调用计划任务）
+        const noTask = buildContext({
+          answerHubMonitor: {control: {installed: false, available: false, plan: {auto_advance_paused: true}}}
+        });
+        assert.strictEqual(noTask.automationMonitorActionDisabled('resume'), false);
+        process.exit(0);
+        """
+    )
+
+
+def test_resume_action_posts_to_the_resume_route_then_reloads() -> None:
+    """恢复必须打到 /automation-monitor/resume，成功后刷新真实状态。"""
+    _run_node_script(
+        """
+        const context = buildContext({answerHubMonitor: {control: {plan: {auto_advance_paused: true}}}});
+        let calledUrl = '';
+        sandbox.fetch = function(url, options) {
+          calledUrl = url;
+          return Promise.resolve({
+            ok: true,
+            json: function() { return Promise.resolve({status: 'resumed', control: {}}); }
+          });
+        };
+        context.resumeAutomationMonitor();
+        setTimeout(function() {
+          assert.ok(
+            calledUrl.indexOf('/automation-monitor/resume') !== -1,
+            'restore must hit the resume route, got ' + calledUrl
+          );
+          assert.ok(calledUrl.indexOf('/retry-failed') === -1, 'restore is not a retry');
+          assert.strictEqual(context.reloaded, true, 'restore must re-read the real state afterwards');
+          assert.strictEqual(context.answerHubMonitor.actionLoading, false);
+          process.exit(0);
+        }, 20);
+        """
+    )
 

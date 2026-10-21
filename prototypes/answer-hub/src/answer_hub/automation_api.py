@@ -29,7 +29,7 @@ from .automation_queue import (
     write_queue_job_metadata,
 )
 from .draft_prompt_replay import replay_draft_prompts
-from .automation_schedule import normalize_plan
+from .automation_schedule import normalize_plan, resume_plan
 from .excel_io import write_rows_to_workbook
 from .mimo import MimoClient, MimoError, load_dotenv
 from .local_model_config import (
@@ -665,6 +665,8 @@ def create_automation_api_app(
             "last_successful_to_date": str(plan.get("last_successful_to_date") or ""),
             "last_failure_date": str(plan.get("last_failure_date") or ""),
             "last_failure_reason": str(plan.get("last_failure_reason") or ""),
+            "last_deferral_date": str(plan.get("last_deferral_date") or ""),
+            "last_deferral_reason": str(plan.get("last_deferral_reason") or ""),
             "consecutive_failure_count": int(plan.get("consecutive_failure_count") or 0),
             "auto_advance_paused": bool(plan.get("auto_advance_paused", False)),
         }
@@ -833,6 +835,18 @@ def create_automation_api_app(
                 "content": _public_text(log.get("content")),
             }
         )
+
+    @app.post("/api/v1/automation/resume")
+    @require_api_key
+    def resume_automation_plan():
+        """清除失败/跳过记录并恢复自动顺延，游标保持不动。
+
+        连续三次真失败后 auto_advance_paused 为真，定时脚本的 prepare 会直接抛错，
+        自动化再也不会自己跑起来。用户处理完失败批次后需要一条显式的恢复入口；
+        没有它，页面上那条失败提示只能靠手工改 JSON 才能清掉。
+        """
+        resume_plan(automation_plan_path)
+        return jsonify({"status": "resumed", "control": automation_control_snapshot()})
 
     @app.post("/api/v1/automation/jobs")
     @require_api_key
