@@ -26,6 +26,7 @@ from app.schemas.blind_labeling import (
 )
 from app.services.blind_labeling import (
     BLIND_LABEL_BATCH_SIZE,
+    annotation_ranking,
     annotation_counts_for,
     assignment_activity_range_condition,
     assignment_summary,
@@ -65,6 +66,24 @@ def require_blind_label_release_access():
 
     def checker(user: User = Depends(get_current_user)) -> User:
         if not has_permission(user, "retrieval:label_arbitrate"):
+            raise HTTPException(403, "Permission denied.")
+        return user
+
+    return checker
+
+
+def require_blind_label_viewer():
+    """标注排行对所有能进入召回盲标页的人开放（标注员与管理员都可看）。
+
+    排行榜只暴露聚合产出，不含任何工单内容或他人的逐条判断，所以不需要额外
+    权限；这里只要求「参与盲标」或「查看盲标总览」其中之一，与页面入口一致。
+    """
+
+    def checker(user: User = Depends(get_current_user)) -> User:
+        if not (
+            has_permission(user, "retrieval:blind_label")
+            or has_permission(user, "retrieval:label_overview")
+        ):
             raise HTTPException(403, "Permission denied.")
         return user
 
@@ -401,6 +420,42 @@ def release_assignment_compat(
     if not assignment_id:
         raise HTTPException(status_code=422, detail="assignmentId is required")
     return release_my_assignment(assignment_id, body, db, current_user)
+
+
+@router.get("/ranking")
+def get_blind_label_ranking(
+    start_at: datetime | None = Query(None),
+    end_at: datetime | None = Query(None),
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    date_from: date | None = Query(None, alias="date_from"),
+    date_to: date | None = Query(None, alias="date_to"),
+    include_retired: bool = Query(
+        False,
+        alias="include_retired",
+        description="是否包含已退池（会话号）工单；默认排除",
+    ),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_blind_label_viewer()),
+):
+    """标注排行：按标注员分组、按标注总数从大到小。
+
+    标注员本人也能看，所以只返回产出聚合值（姓名、标注数、完成工单数、
+    可参考/不可参考拆分、最近活动时间），不泄露任何工单内容、候选来源或
+    其他人的逐条判断 —— 盲标的独立性不受影响。
+    """
+    start_at, end_at = _resolve_date_range(
+        start_at,
+        end_at,
+        start_date or date_from,
+        end_date or date_to,
+    )
+    return annotation_ranking(
+        db,
+        start_at=start_at,
+        end_at=end_at,
+        include_retired=include_retired,
+    )
 
 
 @router.get("/overview")

@@ -47,7 +47,8 @@ def test_blind_label_frontend_uses_five_annotators_and_unanimous_consensus() -> 
 def test_admin_blind_labeling_defaults_to_people_and_keeps_shared_filters() -> None:
     assert "isBlindLabelOverviewTab: function()" in FRONTEND
     assert "this.blindLabeling.tab = this.isBlindLabelAdmin() ? 'people' : 'mine';" in FRONTEND
-    assert "['people','workOrders'].indexOf(tab)" in FRONTEND
+    # 管理员可选页签 = 两个管理员总览页 + 共用的「标注排行」。
+    assert "['people','workOrders','ranking'].indexOf(tab)" in FRONTEND
     assert "blindLabeling.overview.filters" in FRONTEND
     assert "changeBlindLabelOverviewPage(-1)" in FRONTEND
 
@@ -271,3 +272,46 @@ def test_blind_label_candidate_cards_and_actions_have_visual_hierarchy() -> None
     assert ".blind-label-choice-buttons .btn{background:#eef9f6" in FRONTEND
     assert ".blind-label-mode-actions .btn{background:#fff3f1" in FRONTEND
     assert ".blind-label-mode-actions .btn.on-unhelpful" in FRONTEND
+
+
+def test_blind_label_ranking_tab_is_available_to_annotators_and_admins() -> None:
+    """「标注排行」页签对标注员和管理员都要出现（截图里那是标注员视角）。"""
+
+    assert "标注排行</button>" in FRONTEND
+    assert "id=\"blind-label-ranking-tab\"" in FRONTEND
+    assert "id=\"blind-label-ranking-panel\"" in FRONTEND
+    assert "blindLabeling.tab==='ranking'" in FRONTEND
+    # 两个角色的可选页签都包含 ranking。
+    assert "['people','workOrders','ranking'].indexOf(tab)" in FRONTEND
+    assert "['mine','completed','ranking'].indexOf(tab)" in FRONTEND
+    # 它不属于管理员专属总览页签，否则标注员会被 isBlindLabelOverviewTab 挡住。
+    assert "isBlindLabelRankingTab: function()" in FRONTEND
+    assert "return this.blindLabeling.tab === 'ranking';" in FRONTEND
+
+
+def test_blind_label_ranking_panel_shows_name_grouped_counts_descending() -> None:
+    """按人名分组，列出标注总数并带名次，从大到小排列由后端保证。"""
+
+    # 从页签按钮定位到面板，避免只截到按钮本身。
+    start = FRONTEND.index("id=\"blind-label-ranking-tab\"")
+    end = FRONTEND.index("id=\"blind-label-ranking-panel\"")
+    end = FRONTEND.index("</table>", end)
+    panel = FRONTEND[start:end]
+
+    assert "标注排行" in panel
+    assert ">排名</th>" in panel
+    assert "<th>标注员</th><th>标注总数</th><th>完成工单数</th>" in panel
+    assert "v-for=\"person in blindLabeling.ranking.people\"" in panel
+    assert "{{person.rank}}" in panel
+    assert "blindLabelRankingAnnotations(person)" in panel
+    assert "当前时间范围内还没有标注记录。" in panel
+
+
+def test_blind_label_ranking_loader_calls_the_ranking_endpoint() -> None:
+    assert "loadBlindLabelRanking: function()" in FRONTEND
+    assert "'/blind-labeling/ranking?'" in FRONTEND
+    assert "blindLabelRankingPeriods: function()" in FRONTEND
+    assert "setBlindLabelRankingPeriod: function(period)" in FRONTEND
+    # 打开排行页签时必须真的拉数据，而不是沿用总览/个人列表的加载器。
+    assert "if (this.isBlindLabelRankingTab()) this.loadBlindLabelRanking();" in FRONTEND
+    assert ".blind-label-ranking-table{min-width:760px}" in FRONTEND

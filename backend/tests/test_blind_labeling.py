@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, time, timedelta
 from inspect import signature
 from unittest.mock import MagicMock
@@ -41,6 +42,7 @@ from app.services.blind_labeling import (
     BLIND_LABEL_MAX_TOP1_SCORE_EXCLUSIVE,
     _choose_assignments,
     _assignment_matches_activity_range,
+    annotation_ranking,
     annotation_counts_for,
     assignment_activity_range_condition,
     batch_summary,
@@ -2167,3 +2169,181 @@ def test_activity_range_condition_matches_the_python_predicate(db):
             if _assignment_matches_activity_range(item, start_at, end_at)
         }
         assert sql_ids == python_ids, (start_at, end_at, sql_ids, python_ids)
+
+
+# ---------------------------------------------------------------------------
+# 标注排行（annotation_ranking）
+#
+# 需求：在召回盲标页新增「标注排行」页签，按人名分组、从大到小排序。
+# 这些用例锁住三件事：分组口径、降序、以及不泄露任何工单/候选内容。
+# ---------------------------------------------------------------------------
+
+
+def _seed_ranking_annotations(db, *, verdicts_by_user, completed_by_user=None):
+    """为每个用户造出指定数量的标注，并让派发处于已完成状态。
+
+    ``verdicts_by_user`` 形如 ``{"u1": ["referable", "not_referable"]}``。
+    """
+
+    batch = BlindLabelBatch(id="batch-rank", user_id="u1", target_count=50, status="active")
+    db.add(batch)
+    work_order = BlindLabelWorkOrder(
+        id="wo-rank",
+        conversation_id="conv-rank",
+        question_form_id="qf-rank",
+        query_text="排序用例",
+        category_name="手机",
+        candidate_snapshot=[
+            {"candidate_ref": f"cand-{index}", "title": f"候选 {index}", "knowledge_id": f"biz-{index}"}
+            for index in range(1, 4)
+        ],
+        assignment_limit=5,
+    )
+    db.add(work_order)
+    completed_by_user = completed_by_user or {}
+    for user_id, verdicts in verdicts_by_user.items():
+        assignment = BlindLabelAssignment(
+            id=f"as-{user_id}",
+            batch_id=batch.id,
+            work_order_id=work_order.id,
+            user_id=user_id,
+            status="completed",
+            assigned_at=datetime.utcnow(),
+            completed_at=datetime.utcnow() if completed_by_user.get(user_id, True) else None,
+        )
+        db.add(assignment)
+        for index, verdict in enumerate(verdicts, start=1):
+            db.add(
+                BlindLabelAnnotation(
+                    id=f"an-{user_id}-{index}",
+                    assignment_id=assignment.id,
+                    work_order_id=work_order.id,
+                    user_id=user_id,
+                    candidate_ref=f"cand-{((index - 1) % 3) + 1}",
+                    verdict=verdict,
+                    created_at=datetime.utcnow(),
+                )
+            )
+    db.commit()
+    return work_order
+
+
+def test_annotation_ranking_groups_by_annotator_and_sorts_descending(db):
+    """按人名分组，并按标注总数从大到小排序；同分再用完成工单数等稳定次序。"""
+    _seed_ranking_annotations(
+        db,
+        verdicts_by_user={
+            "u1": ["referable", "not_referable", "referable"],  # 3
+            "u2": ["referable"],                                # 1
+            "u3": ["referable", "referable"],                   # 2
+        },
+    )
+    result = annotation_ranking(db)
+    people = result["people"]
+
+    assert [item["username"] for item in people] == ["u1", "u3", "u2"]
+    assert [item["annotation_count"] for item in people] == [3, 2, 1]
+    assert [item["rank"] for item in people] == [1, 2, 3]
+
+    top = people[0]
+    assert top["user_id"] == "u1"
+    assert top["completed_count"] == 1
+    assert top["assigned_count"] == 1
+    assert top["referable_count"] == 2
+    assert top["not_referable_count"] == 1
+    assert top["completion_rate"] == 1.0
+
+
+def test_annotation_ranking_summary_matches_the_rows(db):
+    _seed_ranking_annotations(
+        db,
+        verdicts_by_user={
+            "u1": ["referable", "not_referable", "referable"],
+            "u2": ["not_referable"],
+        },
+    )
+    result = annotation_ranking(db)
+
+    assert result["summary"]["annotators"] == 2
+    assert result["summary"]["annotations"] == 4
+    assert result["summary"]["completed_work_orders"] == 2
+    assert result["summary"]["referable_count"] == 2
+    assert result["summary"]["not_referable_count"] == 2
+    # 行内数字与汇总必须自洽，不能一处算人数一处算次数。
+    assert result["summary"]["annotations"] == sum(
+        item["annotation_count"] for item in result["people"]
+    )
+
+
+def test_annotation_ranking_exposes_no_work_order_or_candidate_content(db):
+    """排行榜只暴露产出聚合，不泄露工单内容、候选来源或他人的逐条判断。"""
+    _seed_ranking_annotations(db, verdicts_by_user={"u1": ["referable"]})
+    result = annotation_ranking(db)
+
+    payload = json.dumps(result, ensure_ascii=False, default=str)
+    for leaked in ("排序用例", "conv-rank", "qf-rank", "cand-1", "biz-1", "候选 1"):
+        assert leaked not in payload, leaked
+    # 允许出现的字段只有这些。
+    assert set(result["people"][0]) == {
+        "user_id",
+        "username",
+        "annotation_count",
+        "referable_count",
+        "not_referable_count",
+        "completed_count",
+        "assigned_count",
+        "released_count",
+        "completion_rate",
+        "first_assigned_at",
+        "last_activity_at",
+        "rank",
+    }
+
+
+def test_annotation_ranking_excludes_retired_work_orders_and_released_assignments(db):
+    """退池工单不计入；被回收（released）的派发不算完成，但仍保留在分配数里。"""
+    work_order = _seed_ranking_annotations(db, verdicts_by_user={"u1": ["referable"]})
+    db.add(
+        BlindLabelAssignment(
+            id="as-u2-released",
+            batch_id="batch-rank",
+            work_order_id=work_order.id,
+            user_id="u2",
+            status="released",
+            assigned_at=datetime.utcnow(),
+            released_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+
+    by_user = {item["user_id"]: item for item in annotation_ranking(db)["people"]}
+    assert by_user["u2"]["annotation_count"] == 0
+    assert by_user["u2"]["completed_count"] == 0
+    assert by_user["u2"]["assigned_count"] == 0
+    assert by_user["u2"]["released_count"] == 1
+    assert by_user["u2"]["completion_rate"] == 0.0
+
+    # 退池后整条工单的产出都不再计入。
+    db.execute(
+        update(BlindLabelWorkOrder)
+        .where(BlindLabelWorkOrder.id == work_order.id)
+        .values(pool_state=POOL_STATE_RETIRED)
+    )
+    db.commit()
+    assert annotation_ranking(db)["people"] == []
+    assert annotation_ranking(db, include_retired=True)["people"] != []
+
+
+def test_annotation_ranking_honours_the_activity_date_range(db):
+    """时间范围按标注活动时间筛选，与列表页语义一致。"""
+    _seed_ranking_annotations(db, verdicts_by_user={"u1": ["referable"]})
+    now = datetime.utcnow()
+
+    assert annotation_ranking(db, start_at=now + timedelta(days=1))["people"] == []
+    assert annotation_ranking(db, start_at=now - timedelta(days=1))["people"] != []
+
+    by_user = {
+        item["user_id"]: item
+        for item in annotation_ranking(db, start_at=now - timedelta(days=1))["people"]
+    }
+    assert by_user["u1"]["annotation_count"] == 1
