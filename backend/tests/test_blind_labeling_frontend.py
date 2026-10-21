@@ -314,7 +314,30 @@ def test_blind_label_ranking_loader_calls_the_ranking_endpoint() -> None:
     assert "setBlindLabelRankingPeriod: function(period)" in FRONTEND
     # 打开排行页签时必须真的拉数据，而不是沿用总览/个人列表的加载器。
     assert "if (this.isBlindLabelRankingTab()) this.loadBlindLabelRanking();" in FRONTEND
-    assert ".blind-label-ranking-table{min-width:760px}" in FRONTEND
+    assert ".blind-label-ranking-table{min-width:860px}" in FRONTEND
+
+
+def test_blind_label_ranking_explains_the_completion_rate_denominator() -> None:
+    """完成率的分母不含「已回收」，必须显式展示并解释，否则 100% 会被误读。
+
+    用户反馈：「这个完成率指的是什么」。真实口径是
+    ``完成工单数 ÷ 实际派发数（不含被回收）``，所以邓志成 100% 但实际被回收了 98 单，
+    刘永冰 88.2% 却是 120/136。列表里必须同时给出「已回收」，并说明分母口径。
+    """
+
+    # 列与取值
+    assert ">已回收<span class=\"blind-label-hint-mark\">?</span></th>" in FRONTEND
+    assert "blindLabelRankingReleased(person)" in FRONTEND
+    assert "blindLabelRankingReleased: function(person)" in FRONTEND
+    # 汇总卡也给出总回收量
+    assert "已回收派发" in FRONTEND
+    assert "blindLabeling.ranking.summary.released_count" in FRONTEND
+    # 口径说明（悬停提示 + 段落说明）必须写明分母不含回收
+    assert "blindLabelRankingHint: function(field)" in FRONTEND
+    assert "不含已回收的派发" in FRONTEND
+    assert "不代表没有被回收" in FRONTEND
+    # 空态跨列数要跟着列数从 8 调到 9，否则表格错位
+    assert '<td colspan="9" class="blind-label-empty">' in FRONTEND
 
 
 def test_blind_label_ranking_panel_is_not_nested_inside_the_admin_only_wrapper() -> None:
