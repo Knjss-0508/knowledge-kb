@@ -211,6 +211,25 @@ class AutomationTaskController:
                 ["sudo", "-n", SYSTEMCTL_COMMAND, "start", "--no-block", SYSTEMD_SERVICE_UNIT]
             )
             return {"message": "已请求立即执行自动化队列扫描。"}
+        # 「暂停定时任务」只应阻止自动触发，不应连带禁用「立即执行一次」。
+        # Windows 计划任务在 Disabled 状态下 schtasks /Run 会直接报
+        # `could not run because it is disabled`，所以这里先临时启用、立刻运行，
+        # 再恢复禁用。运行中的实例不会因为随后禁用任务而被中断（已实测），
+        # 因此不会半路杀掉正在跑的长任务。
+        current = self.status()
+        if not current.get("enabled"):
+            self._run_scheduler(
+                ["schtasks.exe", "/Change", "/TN", self.task_name, "/Enable"]
+            )
+            try:
+                self._run_scheduler(["schtasks.exe", "/Run", "/TN", self.task_name])
+            finally:
+                self._run_scheduler(
+                    ["schtasks.exe", "/Change", "/TN", self.task_name, "/Disable"]
+                )
+            return {
+                "message": "已临时启用并请求立即执行自动化队列扫描；定时任务仍保持暂停。"
+            }
         self._run_scheduler(["schtasks.exe", "/Run", "/TN", self.task_name])
         return {"message": "已请求立即执行自动化队列扫描。"}
 

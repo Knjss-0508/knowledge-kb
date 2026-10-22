@@ -22,6 +22,7 @@ data/*.xls
 data/*.csv
 data/compiled_standards/
 data/automation-queue/
+data/second-part-pull/
 data/browser_profiles/
 tools/dify/
 handoff/answer-hub-delivery-*/

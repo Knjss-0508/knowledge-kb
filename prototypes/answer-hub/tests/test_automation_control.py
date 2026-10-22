@@ -124,6 +124,54 @@ def test_gbk_schtasks_output_reports_disabled_task(monkeypatch: pytest.MonkeyPat
     assert status["message"] == "计划任务已暂停，不会自动扫描新任务。"
 
 
+def test_run_now_temporarily_enables_paused_task_and_disables_it_again() -> None:
+    """「暂停定时任务」只阻止自动触发，不能连带禁用「立即执行一次」。
+
+    Windows 计划任务在 Disabled 状态下 schtasks /Run 会直接报
+    ``could not run because it is disabled``，所以必须先临时启用再运行，
+    运行完恢复禁用。
+    """
+
+    calls = []
+    controller = AutomationTaskController(
+        runner=_runner_with_status(calls, running=False),
+        platform_name="nt",
+    )
+    # /Query 返回 Ready + Scheduled Task State: Enabled 时属于「启用」分支；
+    # 这里手工构造「已暂停」状态，验证临时启用/恢复禁用的调用顺序。
+    disabled_status = "Scheduled Task State: Disabled\nStatus: Ready\n"
+
+    def runner(command, **_kwargs):
+        calls.append(command)
+        if command[1] == "/Query":
+            return CompletedProcess(command, 0, stdout=disabled_status, stderr="")
+        return CompletedProcess(command, 0, stdout="", stderr="")
+
+    controller = AutomationTaskController(runner=runner, platform_name="nt")
+    result = controller.run_now()
+
+    assert calls == [
+        ["schtasks.exe", "/Query", "/TN", "AnswerHubAutomationQueue", "/FO", "LIST", "/V"],
+        ["schtasks.exe", "/Change", "/TN", "AnswerHubAutomationQueue", "/Enable"],
+        ["schtasks.exe", "/Run", "/TN", "AnswerHubAutomationQueue"],
+        ["schtasks.exe", "/Change", "/TN", "AnswerHubAutomationQueue", "/Disable"],
+    ]
+    assert "仍保持暂停" in result["message"]
+
+
+def test_run_now_does_not_toggle_when_task_already_enabled() -> None:
+    calls = []
+    controller = AutomationTaskController(
+        runner=_runner_with_status(calls, running=False),
+        platform_name="nt",
+    )
+
+    controller.run_now()
+
+    assert calls[-1] == ["schtasks.exe", "/Run", "/TN", "AnswerHubAutomationQueue"]
+    assert all("/Change" not in call for call in calls)
+
+
 def test_utf8_english_schtasks_output_reports_disabled_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
