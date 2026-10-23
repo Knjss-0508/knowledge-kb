@@ -224,7 +224,25 @@ $staleAfterSeconds = if ($env:ANSWER_HUB_AUTOMATION_STALE_AFTER_SECONDS) {
 } else {
     "7200"
 }
+# 拉取配置：`.env` 里的 SECOND_PART_PULL_PROFILE 为空时，界面上的「立即执行一次」
+# 只会消费队列、不会拉取，用户选完日期却拿不到当天数据。这里按本机既有约定回退：
+#   1) 显式环境变量（服务器/多 profile 场景优先）
+#   2) 本机运行时目录 E:\answer-hub-runtime\config 下的 powerzhuan 配置
+    #      （夜间调度 _scheduler.ps1 用的就是这份，面板与夜间任务行为保持一致）
+#   3) 项目内配置副本
 $secondPartPullProfile = $env:SECOND_PART_PULL_PROFILE
+if (-not $secondPartPullProfile) {
+    $runtimeDir = if ($env:ANSWER_HUB_RUNTIME_DIR) { $env:ANSWER_HUB_RUNTIME_DIR } else { "E:\answer-hub-runtime" }
+    foreach ($candidate in @(
+        (Join-Path $runtimeDir "config\second-part-pull.powerzhuan.local.json"),
+        (Join-Path $ProjectRoot "config\second-part-pull.powerzhuan.local.json")
+    )) {
+        if (Test-Path -LiteralPath $candidate) {
+            $secondPartPullProfile = $candidate
+            break
+        }
+    }
+}
 $secondPartPullState = if ($env:SECOND_PART_PULL_STATE) {
     $env:SECOND_PART_PULL_STATE
 } else {
@@ -346,6 +364,16 @@ if ($submitToCz) {
 
 $pullExitCode = 0
 if ($secondPartPullProfile) {
+    # 拉取 state 里存的是接口分页游标。同一个 state 被不同日期窗口复用会让
+    # 新窗口接着旧游标翻页（表现为「拉了 0 条」），所以按窗口派生独立文件名；
+    # 显式指定 SECOND_PART_PULL_STATE 时仍然尊重用户意图。
+    $pullStatePath = $secondPartPullState
+    if (-not $env:SECOND_PART_PULL_STATE) {
+        $stateDir = Split-Path -Parent $secondPartPullState
+        if (-not $stateDir) { $stateDir = Join-Path $ProjectRoot "data\second-part-pull" }
+        $windowTag = (($secondPartQueryFromDate + "-" + $secondPartQueryToDate) -replace "-", "")
+        $pullStatePath = Join-Path $stateDir ("scheduled-" + $windowTag + "-state.json")
+    }
     $pullArguments = @(
         "-m",
         "answer_hub.cli",
@@ -357,10 +385,19 @@ if ($secondPartPullProfile) {
         "--output-dir",
         $outputDir,
         "--state-file",
-        $secondPartPullState,
+        $pullStatePath,
         "--max-pages",
         $secondPartPullMaxPages
     )
+    # 日志写入不能影响主流程：同一台机器上可能有多个进程同时写当天日志，
+    # 偶发的文件占用（IOException）不能让本次自动化直接失败。
+    try {
+        Add-Content -Path $logPath -Encoding UTF8 -Value (
+            "拉取配置：profile=$secondPartPullProfile 窗口=$secondPartQueryFromDate ~ $secondPartQueryToDate state=$pullStatePath"
+        ) -ErrorAction Stop
+    } catch {
+        Write-Output "（日志写入被占用，已跳过：$($_.Exception.Message)）"
+    }
     & $python @pullArguments *>> $logPath
     $pullExitCode = $LASTEXITCODE
 }

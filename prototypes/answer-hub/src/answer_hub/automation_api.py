@@ -18,6 +18,7 @@ from .automation import AutomationRunStore
 from .automation_control import (
     AutomationTaskControlError,
     AutomationTaskController,
+    configured_task_name,
     read_automation_log_tail,
 )
 from .automation_queue import (
@@ -431,7 +432,9 @@ def create_automation_api_app(
             "outputs/automation-runs",
         ),
     )
-    automation_controller = task_controller or AutomationTaskController()
+    automation_controller = task_controller or AutomationTaskController(
+        task_name=configured_task_name()
+    )
     automation_project_root = Path(project_root or Path(__file__).resolve().parents[2])
     automation_plan_path = Path(
         automation_plan_path
@@ -800,6 +803,9 @@ def create_automation_api_app(
     @require_api_key
     def start_controlled_automation_run():
         control = automation_control_snapshot()
+        # 「启用自动化」与「启用定时任务」是两个开关：用户可以停掉每日自动扫描，
+        # 但仍需要按人工选定的日期手动执行一次。这里只看整体开关；
+        # 计划任务本身处于禁用状态时，控制层会临时启用、运行后恢复禁用。
         if not control.get("enabled"):
             return jsonify({"error": "自动化已暂停，请先启用后再立即执行。"}), 409
         if control.get("running"):

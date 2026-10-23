@@ -42,6 +42,13 @@ from .product_taxonomy import (
 TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
 PASS_DECISIONS = {"通过", "修改后通过"}
 PROCESSING_PLUGIN_NAME = "answer-hub-topic-transcription"
+# 知识草稿明确「未就绪」的状态值。这类候选的正文为空是流程预期内的（转写
+# 被模型调用预算或证据门禁跳过），应送候选价值复核由人工补齐或判不沉淀，
+# 而不是在本地直接判失败。
+DRAFT_INCOMPLETE_STATUSES = {
+    "standard_rule_fallback",
+    "evidence_review_only",
+}
 PROCESSING_PLUGIN_VERSION = "2026-08-06-evidence-facts-v1"
 CZ_HEADQUARTERS_STANDARD_ORIGIN = "headquarters_standard"
 CZ_BUSINESS_ACCUMULATION_ORIGIN = "business_accumulation"
@@ -1107,7 +1114,16 @@ class CzIntegrationAdapter:
         if not _text(candidate.get("主标题")):
             errors.append("缺少主标题。")
         if not _text(candidate.get("知识内容")):
-            errors.append("缺少知识内容。")
+            # 草稿没写完（转写被预算/证据门禁跳过）不是「送审错误」，而是
+            # 「待补全」。这类候选的正确路径是进入 CZ「候选价值复核」：
+            # 那边 evaluate_candidate_state 会判成 draft_incomplete
+            # （草稿信息不完整 → complete_draft），由人工补齐或判定不沉淀。
+            #
+            # 本地直接判失败会让候选在两个系统里都不存在，人工无从处理。
+            # 只对「草稿明确未就绪」的来源放行；其余仍然拦截，避免把流程
+            # 没跑完的脏数据推给下游。
+            if _text(candidate.get("知识草稿状态")) not in DRAFT_INCOMPLETE_STATUSES:
+                errors.append("缺少知识内容。")
         if _has_unfinished_transcription_placeholder(candidate):
             errors.append("未完成知识转写，禁止送审。请先补充可上线知识正文并完成内容质量初标。")
         if (

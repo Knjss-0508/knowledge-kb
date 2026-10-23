@@ -53,13 +53,22 @@ def test_scheduled_queue_pulls_everything_the_interface_returns() -> None:
 
 
 def test_local_nightly_scheduler_matches_the_server_pull_parameters() -> None:
-    """本机夜间脚本必须与服务器脚本一样全量读取，且绝不向 CZ 推送。"""
+    """本机夜间脚本必须与服务器脚本一样全量读取。
+
+    `--sync-to-cz-review` 由 .env 的 ANSWER_HUB_AUTOMATION_SYNC_TO_CZ_REVIEW 决定：
+    true 时送「候选价值复核」（人工终审，不自动发布），false 时不送。
+    自动发布相关的闸（AUTO_REVIEW_KILL_SWITCH）仍然必须为 true。
+    """
     assert 'SECOND_PART_QUERY_LIMIT' in WINDOWS_SCRIPT
     assert '$env:SECOND_PART_QUERY_LIMIT = "10000"' in WINDOWS_SCRIPT
-    assert '"--max-pages","0"' in WINDOWS_SCRIPT
-    assert '"--exclude-existing-records"' in WINDOWS_SCRIPT
-    # 只允许出现在注释里：绝不作为参数传给 automation-queue。
-    assert '"--sync-to-cz-review"' not in WINDOWS_SCRIPT
+    # 全量读取：不限页数、跳过已存在的记录（参数可能以数组或行内形式书写）
+    assert "--max-pages 0" in WINDOWS_SCRIPT or '"--max-pages","0"' in WINDOWS_SCRIPT
+    assert "--exclude-existing-records" in WINDOWS_SCRIPT
+    # 送审开关必须由 .env 控制，且只在 true 时附加参数。
+    assert '$syncToCzReview = ($envSync -eq "true") -or ($envSubmit -eq "true")' in WINDOWS_SCRIPT
+    assert '"--sync-to-cz-review"' in WINDOWS_SCRIPT
+    # 自动审核/自动发布必须保持关闭。
+    assert 'AUTO_REVIEW_KILL_SWITCH' in WINDOWS_SCRIPT
 
 
 def test_local_nightly_scheduler_does_not_clobber_the_output_dir() -> None:

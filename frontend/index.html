@@ -4862,7 +4862,10 @@ Vue.createApp({
       // 先记下改动前的真实状态：请求失败时要能恢复，不能让界面停在假状态上。
       m.controlRollback={enabled:!!m.control.enabled,schedule_enabled:!!m.control.schedule_enabled};
       m.control.enabled=!!enabled;
-      m.control.schedule_enabled=!!enabled;
+      // 「开始自动化流程」只打开整体开关，允许按人工选定日期「立即执行一次」；
+      // 每日定时扫描由上面的「启用定时任务」复选框单独控制。以前这里会把两者
+      // 一起打开，导致只想手动执行一次的人一按「开始」就重新开启了夜间自动运行。
+      if (!enabled) m.control.schedule_enabled=false;
       this.saveAutomationMonitorControl();
     },
     runAutomationMonitorOnce: function(){this.runAutomationMonitorAction('run');},
