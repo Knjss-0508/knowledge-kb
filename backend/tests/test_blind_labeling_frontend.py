@@ -334,8 +334,8 @@ def test_blind_label_ranking_panel_shows_name_grouped_counts_descending() -> Non
 def test_blind_label_ranking_loader_calls_the_ranking_endpoint() -> None:
     assert "loadBlindLabelRanking: function()" in FRONTEND
     assert "'/blind-labeling/ranking?'" in FRONTEND
-    assert "blindLabelRankingPeriods: function()" in FRONTEND
-    assert "setBlindLabelRankingPeriod: function(period)" in FRONTEND
+    assert "blindLabelRankingCurrentMonth: function()" in FRONTEND
+    assert "blindLabelRankingRange: function()" in FRONTEND
     # 打开排行页签时必须真的拉数据，而不是沿用总览/个人列表的加载器。
     assert "if (this.isBlindLabelRankingTab()) this.loadBlindLabelRanking();" in FRONTEND
     assert ".blind-label-ranking-table{min-width:860px}" in FRONTEND
@@ -364,6 +364,26 @@ def test_blind_label_ranking_explains_the_completion_rate_denominator() -> None:
     assert '<td colspan="8" class="blind-label-empty">' in FRONTEND
 
 
+def test_blind_label_ranking_uses_a_month_picker_defaulting_to_current_month() -> None:
+    """排行的时间筛选改成「月份选择器」，默认当月。
+
+    原先只有 全部/近30天/近7天/当日 四个按钮，用户要核对某个月的数据时
+    无法精确取到自然月边界；月份选择器能直接选到任意一个月。
+    """
+
+    assert 'type="month" v-model="blindLabeling.ranking.month"' in FRONTEND
+    assert '@change="applyBlindLabelRankingMonth"' in FRONTEND
+    assert "applyBlindLabelRankingMonth: function()" in FRONTEND
+    assert "blindLabelDateString(0)" in FRONTEND
+    # 默认当月：首次加载时 month 为空则补当前月
+    assert "ranking.month = self.blindLabelRankingCurrentMonth()" in FRONTEND
+    # 取完整自然月：首日 + 当月最后一天
+    assert "new Date(year, mon, 0).getDate()" in FRONTEND
+    # 「全部」仍保留为一次性开关
+    assert "setBlindLabelRankingAll: function()" in FRONTEND
+    assert "blindLabelRankingRangeLabel: function()" in FRONTEND
+
+
 def test_blind_label_ranking_explains_annotation_count_vs_work_order_count() -> None:
     """「标注条数」与「完成工单数」的口径必须在悬停里讲清楚。
 
@@ -376,6 +396,9 @@ def test_blind_label_ranking_explains_annotation_count_vs_work_order_count() -> 
     assert "1 个工单最多 3 条候选" in FRONTEND
     assert "if (field === 'completed') {" in FRONTEND
     assert "按工单计，不按候选计" in FRONTEND
+    # 口径已改为与「我的已标注」一致（包含退池工单），不能再提示「可能更少」
+    assert "与「我的已标注」同一口径" in FRONTEND
+    assert "本表默认不计已退池工单" not in FRONTEND
     # 汇总卡保留「标注条数」，并挂上同一份悬停说明（列已删，口径只能靠这里承载）
     assert (
         ':title="blindLabelRankingHint(\'annotations\')">'

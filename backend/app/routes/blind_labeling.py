@@ -431,9 +431,9 @@ def get_blind_label_ranking(
     date_from: date | None = Query(None, alias="date_from"),
     date_to: date | None = Query(None, alias="date_to"),
     include_retired: bool = Query(
-        False,
+        True,
         alias="include_retired",
-        description="是否包含已退池（会话号）工单；默认排除",
+        description="是否包含已退池（会话号）工单；默认包含，与「我的已标注」同口径",
     ),
     db: Session = Depends(get_db),
     _: User = Depends(require_blind_label_viewer()),
@@ -443,6 +443,9 @@ def get_blind_label_ranking(
     标注员本人也能看，所以只返回产出聚合值（姓名、标注数、完成工单数、
     可参考/不可参考拆分、最近活动时间），不泄露任何工单内容、候选来源或
     其他人的逐条判断 —— 盲标的独立性不受影响。
+
+    默认 ``include_retired=True``：与「我的已标注」同口径（后者不做退池过滤），
+    否则同一人的「完成工单数」会比「我的已标注」的工单数少。
     """
     start_at, end_at = _resolve_date_range(
         start_at,

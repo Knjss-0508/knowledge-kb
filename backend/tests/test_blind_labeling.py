@@ -2344,8 +2344,13 @@ def test_annotation_ranking_exposes_no_work_order_or_candidate_content(db):
     }
 
 
-def test_annotation_ranking_excludes_retired_work_orders_and_released_assignments(db):
-    """退池工单不计入；被回收（released）的派发不算完成，但仍保留在分配数里。"""
+def test_annotation_ranking_includes_retired_work_orders_by_default(db):
+    """默认包含退池工单上的完成记录，与「我的已标注」同口径。
+
+    线上曾出现同一人排行 278、我的已标注 300：差的 22 个正是落在退池工单上
+    的已完成派发。「我的已标注」不做退池过滤，排行也不能排除，否则同一个
+    概念会给出两个数字。
+    """
     work_order = _seed_ranking_annotations(db, verdicts_by_user={"u1": ["referable"]})
     db.add(
         BlindLabelAssignment(
@@ -2367,15 +2372,16 @@ def test_annotation_ranking_excludes_retired_work_orders_and_released_assignment
     assert by_user["u2"]["released_count"] == 1
     assert by_user["u2"]["completion_rate"] == 0.0
 
-    # 退池后整条工单的产出都不再计入。
+    # 退池后默认仍然计入（与「我的已标注」一致）；
+    # 显式 include_retired=False 才排除。
     db.execute(
         update(BlindLabelWorkOrder)
         .where(BlindLabelWorkOrder.id == work_order.id)
         .values(pool_state=POOL_STATE_RETIRED)
     )
     db.commit()
-    assert annotation_ranking(db)["people"] == []
-    assert annotation_ranking(db, include_retired=True)["people"] != []
+    assert annotation_ranking(db)["people"] != []
+    assert annotation_ranking(db, include_retired=False)["people"] == []
 
 
 def test_annotation_ranking_honours_the_activity_date_range(db):
