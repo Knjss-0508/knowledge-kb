@@ -304,7 +304,7 @@ def test_blind_label_ranking_tab_is_available_to_annotators_and_admins() -> None
 
 
 def test_blind_label_ranking_panel_shows_name_grouped_counts_descending() -> None:
-    """按人名分组，列出标注总数并带名次，从大到小排列由后端保证。"""
+    """按人名分组，列出产出并带名次，从大到小排列由后端保证。"""
 
     # 从页签按钮定位到面板，避免只截到按钮本身。
     start = FRONTEND.index("id=\"blind-label-ranking-tab\"")
@@ -314,19 +314,20 @@ def test_blind_label_ranking_panel_shows_name_grouped_counts_descending() -> Non
 
     assert "标注排行" in panel
     assert ">排名</th>" in panel
-    # 「标注条数」是候选级判断条数，「完成工单数」是工单级派发数，单位必须在表头
-    # 就区分开，并且两列都能悬停看到口径。
+    # 表格里不再展示「标注条数（候选判断）」这一列：它是候选级判断条数，
+    # 与「完成工单数」放在同一张表里容易被当成同一口径比较。
+    # 该口径改由汇总卡 + 悬停说明承载，表格只保留工单级指标。
     assert (
         "<th>标注员</th>"
-        "<th :title=\"blindLabelRankingHint('annotations')\">标注条数（候选判断）"
-        "<span class=\"blind-label-hint-mark\">?</span></th>"
         "<th :title=\"blindLabelRankingHint('completed')\">完成工单数"
         "<span class=\"blind-label-hint-mark\">?</span></th>"
     ) in panel
+    assert "标注条数（候选判断）" not in panel
     assert "<th>标注总数</th>" not in panel
     assert "v-for=\"person in blindLabeling.ranking.people\"" in panel
     assert "{{person.rank}}" in panel
-    assert "blindLabelRankingAnnotations(person)" in panel
+    assert "blindLabelRankingAnnotations(person)" not in panel
+    assert "blindLabelRankingCompleted(person)" in panel
     assert "当前时间范围内还没有标注记录。" in panel
 
 
@@ -359,8 +360,8 @@ def test_blind_label_ranking_explains_the_completion_rate_denominator() -> None:
     assert "blindLabelRankingHint: function(field)" in FRONTEND
     assert "不含已回收的派发" in FRONTEND
     assert "不代表没有被回收" in FRONTEND
-    # 空态跨列数要跟着列数从 8 调到 9，否则表格错位
-    assert '<td colspan="9" class="blind-label-empty">' in FRONTEND
+    # 删掉「标注条数」列后列数回到 8，空态跨列数必须同步，否则表格错位
+    assert '<td colspan="8" class="blind-label-empty">' in FRONTEND
 
 
 def test_blind_label_ranking_explains_annotation_count_vs_work_order_count() -> None:
@@ -368,14 +369,19 @@ def test_blind_label_ranking_explains_annotation_count_vs_work_order_count() -> 
 
     用户看到排行 675、我的已标注 300，会以为丢了数据。真实原因是
     675 是候选级判断条数（1 个工单最多 3 条候选），300 是工单数。
+    表格里已不再单列「标注条数」，因此该口径只能靠汇总卡与悬停解释承载。
     """
 
     assert "if (field === 'annotations') {" in FRONTEND
     assert "1 个工单最多 3 条候选" in FRONTEND
     assert "if (field === 'completed') {" in FRONTEND
     assert "按工单计，不按候选计" in FRONTEND
-    # 汇总卡与段落说明也要跟着改，不能同一页出现两种叫法
-    assert '<span class="card-label">标注条数</span>' in FRONTEND
+    # 汇总卡保留「标注条数」，并挂上同一份悬停说明（列已删，口径只能靠这里承载）
+    assert (
+        ':title="blindLabelRankingHint(\'annotations\')">'
+        '<span class="card-label">标注条数'
+        '<span class="blind-label-hint-mark">?</span></span>'
+    ) in FRONTEND
     assert "{{blindLabeling.ranking.summary.annotations || 0}} 条候选判断" in FRONTEND
 
 
