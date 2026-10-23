@@ -441,6 +441,59 @@ def test_run_monitor_preserves_queue_failure_and_manual_run_origin(
     assert manual_record["effective_status"] == "review_pending"
 
 
+def test_long_running_stage_is_not_reported_as_stalled(tmp_path: Path) -> None:
+    """长阶段正常运行时不得被判成「疑似卡住」。
+
+    updated_at 只在阶段切换时更新。会话语义标注在限速 2 req/s、3000+ 条的
+    规模下本身要跑数小时，期间没有任何写入；若按「多久没更新」判断，
+    正常长跑会被误报成卡住。这里改为按阶段耗时与行数预算判断。
+    """
+
+    queue_root = tmp_path / "queue"
+    output_root = tmp_path / "runs"
+    store = AutomationRunStore(output_root)
+
+    manifest = store.create(
+        "job-20261023-120000-abc12345--powerzhuan-qa.xlsx",
+        "",
+        {},
+    )
+    manifest["status"] = "running"
+    manifest["created_at"] = "2026-10-23T02:00:00+08:00"
+    manifest["updated_at"] = "2026-10-23T02:05:00+08:00"
+    store.update_stage(
+        manifest,
+        "semantic_label",
+        "running",
+        "正在从会话、历史回复和案例图中提取语义与证据特征。",
+    )
+    # 模拟「已经跑了 5 小时、但阶段尚未切换」
+    for stage in manifest["stages"]:
+        if stage["id"] == "semantic_label":
+            stage["started_at"] = "2026-10-23T02:05:00+08:00"
+            stage["updated_at"] = "2026-10-23T02:05:00+08:00"
+    manifest["updated_at"] = "2026-10-23T02:05:00+08:00"
+    manifest["current_activity"] = {
+        **manifest["current_activity"],
+        "updated_at": "2026-10-23T02:05:00+08:00",
+    }
+    manifest.setdefault("summary", {})["eligible_rows"] = 3000
+    store.save(manifest)
+
+    records = list_automation_run_records(
+        output_root,
+        queue_root,
+        limit=20,
+        stale_after_seconds=7_200,
+        now=datetime.fromisoformat("2026-10-23T07:05:00+08:00"),
+    )
+    record = next(r for r in records if r["run_id"] == manifest["run_id"])
+
+    assert record["effective_status"] == "running"
+    assert record["health_status"] == "active"
+    assert record["is_stale"] is False
+
+
 def test_run_monitor_deduplicates_manual_queue_file_and_manifest(
     tmp_path: Path,
 ) -> None:

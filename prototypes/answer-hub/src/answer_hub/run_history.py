@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 from pathlib import Path
 from typing import Any
 import re
@@ -172,6 +173,19 @@ def _timestamp_datetime(value: Any) -> datetime | None:
     return parsed
 
 
+def _sla_seconds_per_100_rows() -> int:
+    """单个阶段的耗时预算系数（每 100 行允许的秒数）。
+
+    与 ANSWER_HUB_SLA_SECONDS_PER_100_ROWS 保持一致，默认 900 秒。
+    用于判断「运行中」的批次是否真的超时，而不是只看最后更新时间。
+    """
+
+    try:
+        return max(60, int(os.getenv("ANSWER_HUB_SLA_SECONDS_PER_100_ROWS", "900")))
+    except (TypeError, ValueError):
+        return 900
+
+
 def _run_health(
     record: dict[str, Any],
     *,
@@ -179,22 +193,80 @@ def _run_health(
     stale_after_seconds: int,
 ) -> dict[str, Any]:
     status = str(record.get("effective_status") or "")
+    activity = record.get("current_activity") or {}
+    activity_updated_at = _timestamp_datetime(
+        activity.get("updated_at")
+        if isinstance(activity, dict) and activity.get("updated_at")
+        else ""
+    )
     updated_at = _timestamp_datetime(
         record.get("updated_at") or record.get("created_at")
+    )
+    heartbeat_at = max(
+        (value for value in (updated_at, activity_updated_at) if value is not None),
+        default=None,
     )
     reference_now = now
     if reference_now.tzinfo is None:
         reference_now = reference_now.astimezone()
     stale_seconds = (
-        max(0, int((reference_now - updated_at).total_seconds()))
-        if updated_at is not None
+        max(0, int((reference_now - heartbeat_at).total_seconds()))
+        if heartbeat_at is not None
         else 0
     )
-    is_stale = bool(
-        status in {"pending", "processing", "running"}
-        and updated_at is not None
-        and stale_seconds >= max(60, int(stale_after_seconds))
+    # 关键：不能只按「多久没更新」判卡住。
+    # updated_at 只在阶段切换时更新，而「会话语义标注」这类阶段在限速 2 req/s、
+    # 3000+ 条的规模下本来就要跑数小时，期间完全没有写入。按固定阈值判断必然
+    # 把正常长跑误报成「疑似卡住」。
+    # 因此这里改为「从当前阶段开始到现在的耗时」是否超过该阶段的合理预算：
+    # 预算 = 基础阈值 + 按行数摊薄的 SLA（ANSWER_HUB_SLA_SECONDS_PER_100_ROWS）。
+    current_stage = next(
+        (
+            stage
+            for stage in record.get("stages") or []
+            if str(stage.get("status") or "") == "running"
+        ),
+        None,
     )
+    stage_started_at = _timestamp_datetime(
+        current_stage.get("started_at")
+        if isinstance(current_stage, dict)
+        else ""
+    )
+    # 没有阶段信息（例如排队中、或旧版本清单）时，退回按最后更新时间判断。
+    if stage_started_at is not None:
+        stage_elapsed_seconds = max(
+            0, int((reference_now - stage_started_at).total_seconds())
+        )
+    else:
+        stage_elapsed_seconds = stale_seconds
+    summary = record.get("summary") or {}
+    row_count = 0
+    for key in ("eligible_rows", "total_rows", "topic_rows"):
+        try:
+            value = int(summary.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            row_count = value
+            break
+    stage_budget_seconds = max(60, int(stale_after_seconds))
+    if row_count > 0:
+        stage_budget_seconds += int(row_count / 100 * _sla_seconds_per_100_rows())
+    # 允许 2 倍余量，避免网络抖动/模型排队导致的正常波动被误判。
+    stage_budget_seconds = int(stage_budget_seconds * 2)
+    if stage_started_at is None:
+        # 无阶段信息：沿用「多久没更新」的保守判定。
+        is_stale = bool(
+            status in {"pending", "processing", "running"}
+            and heartbeat_at is not None
+            and stale_seconds >= max(60, int(stale_after_seconds))
+        )
+    else:
+        is_stale = bool(
+            status in {"pending", "processing", "running"}
+            and stage_elapsed_seconds >= stage_budget_seconds
+        )
     if is_stale:
         health_status = "stalled"
     elif status == "failed":
