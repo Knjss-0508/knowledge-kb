@@ -173,6 +173,79 @@ def test_queue_moves_successful_workbook_to_completed(
     assert Path(summary["log_path"]).is_file()
 
 
+def test_explicit_sync_flag_overrides_stale_frozen_option(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """拉取阶段冻结的 sync_to_cz_review=false 不能压过本次显式 --sync-to-cz-review。
+
+    第二部分拉取会把 profile 里的 sync_to_cz_review 写进 job options。若那次
+    拉取时该开关是关的，之后调度脚本再传 --sync-to-cz-review 也会被这个陈旧
+    的 false 覆盖，批次跑完只停在「生成待审核队列」，永远到不了候选价值复核。
+    """
+
+    queue_root = tmp_path / "queue"
+    pending = queue_root / "pending"
+    pending.mkdir(parents=True)
+    source = pending / "job-20261022-020016-0ed86c85--qa.xlsx"
+    source.write_bytes(b"source")
+    write_queue_job_metadata(
+        source,
+        {
+            "job_id": "job-20261022-020016-0ed86c85",
+            "status": "pending",
+            "options": {
+                "sync_to_cz_review": False,
+                "submit_to_cz": False,
+            },
+        },
+    )
+
+    synced: list[int] = []
+
+    def fake_run_automation_pipeline(**kwargs):
+        return _fake_manifest(
+            kwargs["source_path"],
+            kwargs["output_root"],
+            status="review_pending",
+        )
+
+    monkeypatch.setattr(
+        automation_queue,
+        "run_automation_pipeline",
+        fake_run_automation_pipeline,
+    )
+
+    def fake_sync(manifest, output_root, **_kwargs):
+        synced.append(1)
+        manifest["summary"]["cz_candidate_sync"] = {
+            "queued": 1,
+            "ready": 0,
+            "rejected": 0,
+            "reused": 0,
+            "failed": 0,
+        }
+        return manifest
+
+    monkeypatch.setattr(
+        automation_queue,
+        "_run_model_review_and_cz_candidate_sync",
+        fake_sync,
+    )
+
+    summary = automation_queue.process_automation_queue(
+        queue_root,
+        None,
+        tmp_path / "runs",
+        use_mimo=False,
+        clustering_mode="rule",
+        submit_to_cz=True,
+    )
+
+    assert summary["succeeded"] == 1
+    assert synced, "显式开启送审时必须调用候选价值复核同步"
+
+
 def test_queue_blocks_cz_sync_for_cluster_failure_guard(
     tmp_path: Path,
     monkeypatch,
@@ -906,6 +979,13 @@ def test_queue_uses_per_job_options_and_updates_job_metadata(
         automation_queue,
         "run_automation_pipeline",
         fake_run_automation_pipeline,
+    )
+    # 送审开关的优先级由 test_explicit_sync_flag_overrides_stale_frozen_option
+    # 单独覆盖；本用例只关心管线参数（品类/模型/聚类模式）以任务级选项为准。
+    monkeypatch.setattr(
+        automation_queue,
+        "_run_model_review_and_cz_candidate_sync",
+        lambda manifest, *_a, **_k: manifest,
     )
     summary = automation_queue.process_automation_queue(
         queue_root,

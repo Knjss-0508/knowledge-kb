@@ -737,10 +737,36 @@ def process_automation_queue(
                     if "sync_to_cz_review" in job_options
                     else job_options.get("submit_to_cz")
                 )
-                effective_submit_to_cz = _option_bool(
+                # 送审开关以前是「任务冻结参数优先」，而拉取阶段会把
+                # sync_to_cz_review=false 冻结进 job options；于是即使调度脚本
+                # 显式传了 --sync-to-cz-review，也会被这个陈旧的 false 覆盖，
+                # 批次跑完只停在「生成待审核队列」，永远到不了候选价值复核。
+                # 这里改为「任一来源显式开启即开启」：命令行/环境变量是本次运行的
+                # 明确意图，不能被历史冻结值静默关掉。
+                effective_submit_to_cz = submit_to_cz or _option_bool(
                     requested_sync_to_cz,
-                    submit_to_cz,
+                    False,
                 )
+                # 面板「立即执行一次」直接调用队列（不经过 second-part-pull），
+                # 日期只存在于环境变量里，不会被写进 job options，于是运行记录
+                # 只能显示「历史批次（未记录沉淀范围）」。这里把调度窗口补进
+                # 任务参数，保证面板始终能显示本次实际处理的日期。
+                def _date_text(value: Any) -> str:
+                    return str(value).strip() if value is not None else ""
+
+                settle_from = _date_text(
+                    job_options.get("knowledge_settle_from_date")
+                ) or _date_text(os.getenv("SECOND_PART_QUERY_FROM_DATE"))
+                settle_to = _date_text(
+                    job_options.get("knowledge_settle_to_date")
+                ) or _date_text(os.getenv("SECOND_PART_QUERY_TO_DATE"))
+                if settle_from and settle_to:
+                    job_options.setdefault(
+                        "knowledge_settle_from_date", settle_from
+                    )
+                    job_options.setdefault(
+                        "knowledge_settle_to_date", settle_to
+                    )
                 if job_metadata:
                     job_metadata.update(
                         {
@@ -772,6 +798,14 @@ def process_automation_queue(
                     )
                     # Freeze before execution, including files queued without API metadata.
                     job_options["use_standard_references"] = effective_standard_references
+                    # 把「本次实际是否送候选价值复核」写回冻结参数，
+                    # 否则面板会一直显示拉取阶段写入的旧值，与实际执行不符。
+                    job_options["sync_to_cz_review"] = bool(
+                        effective_submit_to_cz
+                    )
+                    job_options["submit_to_cz"] = bool(
+                        effective_submit_to_cz
+                    )
                     job_metadata["options"] = job_options
                     write_queue_job_metadata(claimed_path, job_metadata)
                     manifest = run_automation_pipeline(
