@@ -195,7 +195,12 @@ def test_blind_label_my_annotations_paginates_instead_of_truncating_to_200() -> 
     # 条数必须取服务端全量 total，不能再用当前页长度冒充总数。
     assert "blindLabelListTotal: function()" in FRONTEND
     assert "if (this.blindLabeling.tab === 'completed') return Number(this.blindLabeling.pagination.total) || 0;" in FRONTEND
-    assert "共 <b>{{blindLabelListTotal()}}</b> 条" in FRONTEND
+    # 条数单位必须写「个工单」：这个 total 是工单级派发数，不是候选标注条数，
+    # 否则会被读成与「标注排行」的标注条数同一口径（两者相差 2 倍多）。
+    assert "共 <b>{{blindLabelListTotal()}}</b> 个工单" in FRONTEND
+    assert "页 · 共 {{blindLabeling.pagination.total}} 个工单" in FRONTEND
+    assert "共 <b>{{blindLabelListTotal()}}</b> 条" not in FRONTEND
+    assert "页 · 共 {{blindLabeling.pagination.total}} 条" not in FRONTEND
     # 旧写法把「当前页长度」无条件当成总数；现在只在待标页签保留该口径。
     assert (
         "self.blindLabeling.pagination.total = self.blindLabeling.assignments.length;\n          self.blindLabeling.updatedAt"
@@ -300,7 +305,16 @@ def test_blind_label_ranking_panel_shows_name_grouped_counts_descending() -> Non
 
     assert "标注排行" in panel
     assert ">排名</th>" in panel
-    assert "<th>标注员</th><th>标注总数</th><th>完成工单数</th>" in panel
+    # 「标注条数」是候选级判断条数，「完成工单数」是工单级派发数，单位必须在表头
+    # 就区分开，并且两列都能悬停看到口径。
+    assert (
+        "<th>标注员</th>"
+        "<th :title=\"blindLabelRankingHint('annotations')\">标注条数（候选判断）"
+        "<span class=\"blind-label-hint-mark\">?</span></th>"
+        "<th :title=\"blindLabelRankingHint('completed')\">完成工单数"
+        "<span class=\"blind-label-hint-mark\">?</span></th>"
+    ) in panel
+    assert "<th>标注总数</th>" not in panel
     assert "v-for=\"person in blindLabeling.ranking.people\"" in panel
     assert "{{person.rank}}" in panel
     assert "blindLabelRankingAnnotations(person)" in panel
@@ -338,6 +352,22 @@ def test_blind_label_ranking_explains_the_completion_rate_denominator() -> None:
     assert "不代表没有被回收" in FRONTEND
     # 空态跨列数要跟着列数从 8 调到 9，否则表格错位
     assert '<td colspan="9" class="blind-label-empty">' in FRONTEND
+
+
+def test_blind_label_ranking_explains_annotation_count_vs_work_order_count() -> None:
+    """「标注条数」与「完成工单数」的口径必须在悬停里讲清楚。
+
+    用户看到排行 675、我的已标注 300，会以为丢了数据。真实原因是
+    675 是候选级判断条数（1 个工单最多 3 条候选），300 是工单数。
+    """
+
+    assert "if (field === 'annotations') {" in FRONTEND
+    assert "1 个工单最多 3 条候选" in FRONTEND
+    assert "if (field === 'completed') {" in FRONTEND
+    assert "按工单计，不按候选计" in FRONTEND
+    # 汇总卡与段落说明也要跟着改，不能同一页出现两种叫法
+    assert '<span class="card-label">标注条数</span>' in FRONTEND
+    assert "{{blindLabeling.ranking.summary.annotations || 0}} 条候选判断" in FRONTEND
 
 
 def test_blind_label_ranking_panel_is_not_nested_inside_the_admin_only_wrapper() -> None:
