@@ -474,6 +474,37 @@ def test_run_monitor_deduplicates_manual_queue_file_and_manifest(
     assert records[0]["error"] == "sync failure"
 
 
+def test_interrupted_queue_run_is_labelled_automation_queue_not_streamlit(
+    tmp_path: Path,
+) -> None:
+    """队列批次跑到一半（还没有 queue 字段）时不能被误标成 Streamlit。
+
+    `manifest["queue"]` 只在批次结束后写入；运行中被终止的批次会缺少该字段，
+    旧逻辑因此落入 else 分支显示「Streamlit手动验证」。队列任务文件名恒以
+    `job-` 开头，应据此识别。
+    """
+
+    queue_root = tmp_path / "queue"
+    output_root = tmp_path / "runs"
+    store = AutomationRunStore(output_root)
+
+    interrupted = store.create(
+        "job-20261022-114235-8489bd41--powerzhuan-qa-20261022-114235-d7c392e76e.xlsx",
+        "",
+        {},
+    )
+    interrupted["status"] = "running"
+    store.update_stage(interrupted, "semantic_label", "running", "正在标注")
+    store.save(interrupted)
+    assert "queue" not in interrupted
+
+    records = list_automation_run_records(output_root, queue_root, limit=20)
+    record = next(r for r in records if r["run_id"] == interrupted["run_id"])
+
+    assert record["source_type"] == "automation_queue"
+    assert record["source_label"] == "自动化队列"
+
+
 def test_run_monitor_groups_manually_dropped_queue_retry_attempts(
     tmp_path: Path,
 ) -> None:

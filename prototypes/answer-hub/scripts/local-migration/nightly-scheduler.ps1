@@ -2,9 +2,10 @@
 <#
 Answer Hub 本机夜间调度器（Windows 等价于服务器 run_scheduled_queue.sh）
 
-与服务器版本的唯一差别：
-  1. 第 4 步【不传】--sync-to-cz-review  —— 本机绝不向 CZ 推送
-  2. 运行前硬校验配置与 .env 的推 CZ 开关，任一为真即拒绝运行（安全闸）
+与服务器版本的差别：
+  1. 第 4 步的 --sync-to-cz-review 由 .env 的 ANSWER_HUB_AUTOMATION_SYNC_TO_CZ_REVIEW
+     决定：true 时把候选送入 CZ「候选价值复核」（人工终审，不自动发布）
+  2. 运行前校验安全闸：自动审核/自动发布必须保持关闭（AUTO_REVIEW_KILL_SWITCH=true）
   3. 数据路径指向 E:\answer-hub-runtime
   4. 额外提供 -DryRun：只走到第 3 步参数就绪即退出（冒烟用，不拉取、不消费）
 
@@ -62,12 +63,21 @@ Log ("    .env SYNC_TO_CZ_REVIEW               = {0}" -f $envSync)
 Log ("    .env SUBMIT_TO_CZ                    = {0}" -f $envSubmit)
 Log ("    .env AUTO_REVIEW_KILL_SWITCH         = {0}" -f $kill)
 
-# 配置文件必须是 false 或缺失（缺失=不开启）；.env 必须是 false；kill switch 必须是 true
-if ($cfgSync -eq $true) { Log "  ❌ 安全闸拦截：配置文件 sync_to_cz_review 为 True"; exit 9 }
-if ($envSync -ne "false") { Log "  ❌ 安全闸拦截：.env SYNC_TO_CZ_REVIEW 不是 false"; exit 9 }
-if ($envSubmit -ne "false") { Log "  ❌ 安全闸拦截：.env SUBMIT_TO_CZ 不是 false"; exit 9 }
-if ($kill -ne "true") { Log "  ❌ 安全闸拦截：AUTO_REVIEW_KILL_SWITCH 不是 true"; exit 9 }
-Log "  ✅ 安全闸通过：本次运行不会向 CZ 推送任何数据"
+# 只放行「送候选价值复核」，不放行自动发布：
+#   - 候选进入 CZ 的「候选价值复核」队列后仍需人工终审，不会自动变成已发布知识
+#   - AUTO_REVIEW_KILL_SWITCH 必须保持 true（自动审核/自动发布关闭）
+# 旧实现要求 sync_to_cz_review 必须为 false，导致自动化产物永远到不了候选价值复核。
+if ($cfgSync -eq $true) { Log "  [提示] 配置文件 workflow.sync_to_cz_review = True（仅送候选价值复核）" }
+if ($envSync -ne "true" -and $envSync -ne "false") { Log "  ❌ 安全闸拦截：.env SYNC_TO_CZ_REVIEW 必须是 true 或 false"; exit 9 }
+if ($envSubmit -ne "true" -and $envSubmit -ne "false") { Log "  ❌ 安全闸拦截：.env SUBMIT_TO_CZ 必须是 true 或 false"; exit 9 }
+if ($kill -ne "true") { Log "  ❌ 安全闸拦截：AUTO_REVIEW_KILL_SWITCH 不是 true（自动审核/自动发布必须关闭）"; exit 9 }
+
+$syncToCzReview = ($envSync -eq "true") -or ($envSubmit -eq "true")
+if ($syncToCzReview) {
+    Log "  ✅ 安全闸通过：本次会把候选送入 CZ「候选价值复核」，不会自动发布"
+} else {
+    Log "  ✅ 安全闸通过：本次运行不会向 CZ 推送任何数据"
+}
 
 # ---------- 把 .env 注入子进程环境（与 run_automation_queue.ps1 保持一致） ----------
 # 没有这一步，${SECOND_PART_API_TOKEN} 之类的占位符在子进程里永远展开不了，
@@ -130,11 +140,23 @@ if ($DryRun) {
     exit 0
 }
 $pullOk = $false
+$pulledRecords = 0
+$pullLimit = 0
 for ($i = 1; $i -le 3; $i++) {
-    $c = RunPy @("-m","answer_hub.cli","second-part-pull","--profile",$CFG,"--queue-dir",$QUEUE,
-                 "--output-dir",$OUT,"--state-file",$stateFile,
-                 "--max-pages","0","--exclude-existing-records") "second-part-pull 第 $i/3 次"
-    if ($c -eq 0) { $pullOk = $true; break }
+    $pullOut = & $PY -m answer_hub.cli second-part-pull --profile $CFG --queue-dir $QUEUE `
+        --output-dir $OUT --state-file $stateFile --max-pages 0 --exclude-existing-records 2>&1
+    $c = $LASTEXITCODE
+    $pullOut | Select-Object -Last 12 | ForEach-Object { Log ("     $_") }
+    if ($c -ne 0) { Log ("     (退出码 $c)") }
+    if ($c -eq 0) {
+        $pullOk = $true
+        try {
+            $summary = (($pullOut -join "`n") | ConvertFrom-Json)
+            $pulledRecords = [int]$summary.fetched_records
+            $pullLimit = [int]$env:SECOND_PART_QUERY_LIMIT
+        } catch { }
+        break
+    }
     if ($i -lt 3) { Log "     等待 60 秒后重试"; Start-Sleep -Seconds 60 }
 }
 if (-not $pullOk) {
@@ -143,11 +165,24 @@ if (-not $pullOk) {
     exit 2
 }
 
-# ---------- 4) 消费队列（★ 不传 --sync-to-cz-review） ----------
-Log "  4) 消费队列（★ 不传 --sync-to-cz-review）"
-$c = RunPy @("-m","answer_hub.cli","automation-queue","--queue-dir",$QUEUE,"--standards",$STD,
-             "--output-dir",$OUT,"--clustering-mode","direct_mimo","--max-files","10",
-             "--stale-after-seconds","7200") "automation-queue"
+# 第二部分接口没有分页游标，单次最多返回 SECOND_PART_QUERY_LIMIT 条（硬顶 5000）。
+# 拉满上限时很可能被静默截断，必须显式告警，否则当天数据会悄悄缺失。
+if ($pullLimit -gt 0 -and $pulledRecords -ge $pullLimit) {
+    Log ("  ⚠️ 本窗口拉到 {0} 条，已达到接口上限 {1}；可能存在截断。建议把 window_days 调小后重跑该日期。" -f $pulledRecords, $pullLimit)
+}
+
+# ---------- 4) 消费队列 ----------
+$consumeArgs = @("-m","answer_hub.cli","automation-queue","--queue-dir",$QUEUE,"--standards",$STD,
+                 "--output-dir",$OUT,"--clustering-mode","direct_mimo","--max-files","10",
+                 "--stale-after-seconds","7200")
+if ($syncToCzReview) {
+    # 只送「候选价值复核」队列；发布仍需人工终审。
+    $consumeArgs += "--sync-to-cz-review"
+    Log "  4) 消费队列（★ 送 CZ 候选价值复核）"
+} else {
+    Log "  4) 消费队列（不送 CZ）"
+}
+$c = RunPy $consumeArgs "automation-queue"
 if ($c -ne 0) {
     Log "  ❌ 队列消费失败（退出码 $c），游标停在 $from"
     & $PY -m answer_hub.automation_schedule failure --plan $PLAN --today (Get-Date -Format "yyyy-MM-dd") --reason "自动化队列退出码：$c" 2>&1 | Out-Null

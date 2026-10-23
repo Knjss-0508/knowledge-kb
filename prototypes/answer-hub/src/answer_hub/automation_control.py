@@ -12,6 +12,11 @@ from typing import Any
 
 
 AUTOMATION_TASK_NAME = "AnswerHubAutomationQueue"
+# 本机真正跑「拉取 → 消费 → 推进游标」全流程的是 02:00 的夜间调度任务。
+# 面板以前只看 AnswerHubAutomationQueue（03:00，只消费队列、不推进游标），
+# 会出现「面板说已暂停、实际 02:00 仍在跑」这类误导。这里允许按环境变量切换，
+# 默认仍保持旧行为以便服务器/其他部署不受影响。
+SCHEDULE_TASK_ENV = "ANSWER_HUB_AUTOMATION_TASK_NAME"
 SYSTEMD_TIMER_UNIT = "answer-hub-queue.timer"
 SYSTEMD_SERVICE_UNIT = "answer-hub-queue.service"
 SYSTEMCTL_COMMAND = "/usr/bin/systemctl"
@@ -136,13 +141,12 @@ class AutomationTaskController:
         task_name: str = AUTOMATION_TASK_NAME,
         platform_name: str | None = None,
     ) -> None:
-        if task_name != AUTOMATION_TASK_NAME:
+        if not task_name.startswith("AnswerHub"):
             raise ValueError("只允许控制 Answer Hub 自动化计划任务。")
         self._runner = runner
         self._retry_launcher = retry_launcher
         self.task_name = task_name
         self._platform_name = platform_name or os.name
-
     @property
     def _uses_systemd(self) -> bool:
         return self._platform_name != "nt"
@@ -327,3 +331,17 @@ def read_automation_log_tail(project_root: Path, *, lines: int = 80) -> dict[str
         "name": log_path.name,
         "content": "\n".join(content.splitlines()[-max(1, lines) :]) or "日志文件暂时为空。",
     }
+
+
+def configured_task_name() -> str:
+    """返回面板应监控的计划任务名（默认 AnswerHubAutomationQueue）。
+
+    本机真正跑「拉取 → 消费 → 推进游标」全流程的是 02:00 的夜间调度任务
+    （AnswerHub-Pull-Scheduler）。面板若只看 03:00 的 AnswerHubAutomationQueue，
+    会出现「面板说已暂停、实际 02:00 仍在跑」这类误导，所以允许用环境变量覆盖。
+
+    这里显式提供函数而不是在 __init__ 里读环境变量：隐式依赖会让单元测试
+    受其它用例加载的 .env 影响。
+    """
+
+    return os.getenv(SCHEDULE_TASK_ENV, "").strip() or AUTOMATION_TASK_NAME

@@ -274,10 +274,18 @@ def _record(
         **dict(run.get("options") or {}),
     }
     queue_manifest = run.get("queue") or {}
+    # `queue` 只在批次跑完后才由 automation_queue 写入；运行中或中途被终止的批次
+    # 里没有这个字段，旧逻辑会掉进最后的 else 分支，被误标成「Streamlit手动验证」。
+    # 队列任务的文件名恒为 `job-<时间戳>-<随机>--<原文件名>`，据此兜底识别。
+    looks_like_queue_job = bool(
+        str(run.get("source_name") or job.get("original_filename") or "").startswith(
+            "job-"
+        )
+    )
     if job_id:
         source_type = "online_api"
         source_label = "线上接口"
-    elif queue_manifest or (queue_bucket and source_path is not None):
+    elif queue_manifest or (queue_bucket and source_path is not None) or looks_like_queue_job:
         source_type = "automation_queue"
         source_label = "自动化队列"
     else:

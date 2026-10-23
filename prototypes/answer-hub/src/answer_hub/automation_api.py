@@ -18,6 +18,7 @@ from .automation import AutomationRunStore
 from .automation_control import (
     AutomationTaskControlError,
     AutomationTaskController,
+    configured_task_name,
     read_automation_log_tail,
 )
 from .automation_queue import (
@@ -431,7 +432,9 @@ def create_automation_api_app(
             "outputs/automation-runs",
         ),
     )
-    automation_controller = task_controller or AutomationTaskController()
+    automation_controller = task_controller or AutomationTaskController(
+        task_name=configured_task_name()
+    )
     automation_project_root = Path(project_root or Path(__file__).resolve().parents[2])
     automation_plan_path = Path(
         automation_plan_path
