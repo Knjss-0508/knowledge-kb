@@ -379,9 +379,37 @@ def test_blind_label_ranking_uses_a_month_picker_defaulting_to_current_month() -
     assert "ranking.month = self.blindLabelRankingCurrentMonth()" in FRONTEND
     # 取完整自然月：首日 + 当月最后一天
     assert "new Date(year, mon, 0).getDate()" in FRONTEND
-    # 「全部」仍保留为一次性开关
+    # 「全部」与月份互斥但互不禁用：点过「全部」仍要能改月份
     assert "setBlindLabelRankingAll: function()" in FRONTEND
     assert "blindLabelRankingRangeLabel: function()" in FRONTEND
+
+
+def test_blind_label_ranking_supports_custom_date_range_without_locking_the_month() -> None:
+    """点过「全部」之后仍必须能选回月份；同时支持「某日到某日」。
+
+    线上问题：月份输入框曾绑定 `:disabled="... || ranking.allTime"`，
+    点一次「全部」后月份就变成灰色不可选，只能刷新页面才能恢复。
+    现在改用互斥的 mode（month/range/all），切换时只改 mode，不再禁用控件，
+    也不清空已选值，所以三个模式可以随时互相切回。
+    """
+
+    # 月份输入框不得再被 allTime 之类的状态禁用
+    assert ':disabled="blindLabeling.ranking.loading || blindLabeling.ranking.allTime"' not in FRONTEND
+    assert 'v-model="blindLabeling.ranking.month"' in FRONTEND
+    assert "ranking:{loading:false,error:'',mode:'month'" in FRONTEND
+    assert "ranking.mode = 'month';" in FRONTEND
+    assert "ranking.mode = 'range';" in FRONTEND
+    assert "ranking.mode = 'all';" in FRONTEND
+    # 切换「全部」时不得清空月份或日期，否则切回来还得重选
+    assert "ranking.month = '';" not in FRONTEND.split('setBlindLabelRankingAll')[1][:400]
+    assert "ranking.dateFrom = '';" not in FRONTEND
+    # 自定义日期：两个 date 输入 + 起止联动
+    assert 'type="date" v-model="blindLabeling.ranking.dateFrom"' in FRONTEND
+    assert 'type="date" v-model="blindLabeling.ranking.dateTo"' in FRONTEND
+    assert "applyBlindLabelRankingDates: function()" in FRONTEND
+    assert "toggleBlindLabelRankingRange: function()" in FRONTEND
+    # 单日区间要能正确显示
+    assert "if (range.start === range.end) return this.blindLabelDateDisplay(range.start);" in FRONTEND
 
 
 def test_blind_label_ranking_explains_annotation_count_vs_work_order_count() -> None:
