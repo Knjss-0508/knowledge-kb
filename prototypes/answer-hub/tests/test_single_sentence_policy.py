@@ -111,6 +111,35 @@ def test_empty_body_is_not_exported_even_with_all_approval_fields(tmp_path, stan
 
 
 @pytest.mark.parametrize(
+    "draft_status",
+    ["standard_rule_fallback", "evidence_review_only"],
+)
+def test_draft_incomplete_body_is_sent_to_candidate_review(draft_status):
+    """草稿明确未就绪（转写被预算/证据门禁跳过）时应送候选价值复核。
+
+    这类候选的正文为空是流程预期内的。CZ 端会把它们判成 draft_incomplete
+    （草稿信息不完整 → complete_draft），由人工补齐或判定不沉淀。
+    本地若直接判失败，候选在两边都不存在，人工无从处理。
+    """
+    candidate = {
+        "主题ID": "DRAFT-INCOMPLETE",
+        "主标题": "手机折叠屏副屏保护膜能否撕除，撕除后判定",
+        "知识内容": "",
+        "知识草稿状态": draft_status,
+        "主题转写状态": "topic_model_skipped_budget",
+    }
+    adapter = CzIntegrationAdapter(
+        CzIntegrationConfig("https://example.invalid", "test")
+    )
+
+    errors = adapter.validate_candidate(
+        candidate, "test-category", "draft-incomplete", require_eligible=False,
+    )
+
+    assert "缺少知识内容。" not in errors
+
+
+@pytest.mark.parametrize(
     "interface_location,expected_length",
     [pytest.param("侧面", 100, id="100-characters"),
      pytest.param("左侧面", 101, id="101-characters")],
