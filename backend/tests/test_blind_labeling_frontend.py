@@ -201,6 +201,15 @@ def test_blind_label_my_annotations_paginates_instead_of_truncating_to_200() -> 
     assert "页 · 共 {{blindLabeling.pagination.total}} 个工单" in FRONTEND
     assert "共 <b>{{blindLabelListTotal()}}</b> 条" not in FRONTEND
     assert "页 · 共 {{blindLabeling.pagination.total}} 条" not in FRONTEND
+    # 每页条数选项也要写明单位，否则「50 条/页」仍会被理解成候选标注条数。
+    # 只看盲标分页条那一段：知识库、检索分析等页面另有自己的「条/页」。
+    blind_pagination_start = FRONTEND.index(
+        "blindLabeling.tab==='completed' && blindLabelMineTotalPages() > 1"
+    )
+    blind_pagination_end = FRONTEND.index("</template>", blind_pagination_start)
+    blind_pagination = FRONTEND[blind_pagination_start:blind_pagination_end]
+    assert '<option :value="50">50 个工单/页</option>' in blind_pagination
+    assert "条/页" not in blind_pagination
     # 旧写法把「当前页长度」无条件当成总数；现在只在待标页签保留该口径。
     assert (
         "self.blindLabeling.pagination.total = self.blindLabeling.assignments.length;\n          self.blindLabeling.updatedAt"
