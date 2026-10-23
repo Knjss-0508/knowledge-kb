@@ -1583,7 +1583,7 @@ def annotation_ranking(
     *,
     start_at: datetime | None = None,
     end_at: datetime | None = None,
-    include_retired: bool = False,
+    include_retired: bool = True,
 ) -> dict[str, Any]:
     """按标注员聚合的「标注排行」。
 
@@ -1595,7 +1595,10 @@ def annotation_ranking(
     - 统计的是**提交成功的标注**（``blind_label_annotations``，每个候选一条）；
     - ``released`` 的派发不算「完成」，也不计入工单数，但仍保留在
       ``assigned_count`` 里用于展示完成率；
-    - 默认排除已退池（会话号）工单，与总览口径保持一致。
+    - **默认包含已退池（会话号）工单**，与「我的已标注」保持同一口径：
+      「我的已标注」不做退池过滤，所以标注员完成过的 300 个工单在排行里也必须
+      是 300。此前默认排除退池，同一人排行显示 278、我的已标注 300，差的 22 个
+      正是落在退池工单上的已完成派发。
     - 时间范围按「标注活动时间」判定（``completed_at`` / ``assigned_at``），
       与列表页的日期筛选语义相同。
     """
