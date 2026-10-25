@@ -133,6 +133,81 @@ def test_candidate_review_list_reload_is_awaitable_for_save_and_next() -> None:
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def test_annotation_failure_refreshes_saved_reply_or_blocks_stale_save() -> None:
+    node = shutil.which("node")
+    assert node
+    script = r"""
+        const assert = require('assert');
+        const vm = require('vm');
+        const source = require('fs').readFileSync(0, 'utf8');
+        async function check(refreshOk) {
+          const requests = [], notices = [];
+          const sandbox = {
+            API:'',
+            fetch:(url, options) => {
+              requests.push({url,options});
+              const isPost = options.method === 'POST';
+              return Promise.resolve({
+                ok:!isPost && refreshOk,
+                json:() => Promise.resolve(isPost ? {detail:'初标超时'} : {
+                  id:'candidate-1',recommended_reply:'已根据摘要补充',draft_version:2,
+                  model_annotation:{status:'failed',reason:'初标超时'}
+                })
+              });
+            }
+          };
+          function method(name,next) {
+            const start=source.indexOf('    '+name+': function(');
+            const end=source.indexOf('    '+next+': function(',start);
+            return vm.runInNewContext('('+source.slice(start,end).trim().slice(name.length+2).replace(/,$/,'')+')',sandbox);
+          }
+          const context = {
+            candidateReviews:{current:{id:'candidate-1',recommended_reply:''},form:{recommended_reply:''},refreshRequired:{}},
+            reviewReadonly:() => false, candidateDraftComplete:() => false,
+            candidateCanCompleteReply:() => true, authHeaders:() => ({}),
+            openCandidateReview:data => {
+              context.candidateReviews.current=data;
+              context.candidateReviews.form.recommended_reply=data.recommended_reply;
+            },
+            loadCandidateReviews:() => Promise.resolve(),
+            loadCandidateReviewDashboard:() => {},
+            showCandidateReviewNotice:(message,type) => notices.push({message,type})
+          };
+          method('annotateCandidateReviewDraft','reviewModelNeedsRevision').call(context);
+          await new Promise(setImmediate);
+          assert.strictEqual(requests.length,2,'初标失败后必须读取已持久化详情');
+          assert.strictEqual(requests[1].url,'/integration/candidate-reviews/candidate-1');
+          assert.strictEqual(context.candidateReviews.modelAnnotating,false);
+          assert(notices.some(notice => notice.message.includes('初标超时')));
+          if (refreshOk) {
+            assert.strictEqual(context.candidateReviews.form.recommended_reply,'已根据摘要补充');
+            assert.strictEqual(context.candidateReviews.current.draft_version,2);
+            assert.strictEqual(context.candidateReviews.current.model_annotation.status,'failed');
+            assert(!context.candidateReviews.refreshRequired['candidate-1']);
+          } else {
+            method('saveCandidateReview','submitCandidateReviewIds').call(context,false,false);
+            assert.strictEqual(requests.length,2,'刷新失败时不能用旧空值保存');
+            assert(context.candidateReviews.refreshRequired['candidate-1']);
+            sandbox.fetch=(url,options) => {
+              requests.push({url,options});
+              return Promise.resolve({ok:true,json:() => Promise.resolve({id:'candidate-1',recommended_reply:'重新读取后的回复'})});
+            };
+            method('openCandidateReview','candidateReviewMediaUrl').call(context,{id:'candidate-1',recommended_reply:''});
+            await new Promise(setImmediate);
+            assert.strictEqual(requests[2].options.method,'GET');
+            assert.strictEqual(context.candidateReviews.form.recommended_reply,'重新读取后的回复');
+            assert(!context.candidateReviews.refreshRequired['candidate-1']);
+          }
+        }
+        check(true).then(() => check(false)).catch(error => {console.error(error);process.exit(1);});
+    """
+    completed = subprocess.run(
+        [node, "-e", script], input=FRONTEND,
+        capture_output=True, text=True, encoding="utf-8", check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
 def test_candidate_review_uses_one_human_decision_for_legacy_gate_fields() -> None:
     assert "只需选择一次复核结论" in FRONTEND
     assert "复核说明（选填）" in FRONTEND
@@ -163,7 +238,7 @@ def test_model_annotation_ui_keeps_source_evidence_optional() -> None:
     assert "annotateCandidateReviewDraft" in FRONTEND
     assert "/model-annotate" in FRONTEND
     assert "candidateReviews.form.evidence_excerpt" in FRONTEND
-    assert "请先补齐标题、正文和推荐回复" in FRONTEND
+    assert "推荐回复为空时，模型初标会根据已保存的来源证据摘要补充" in FRONTEND
     assert "缺少摘要不会阻断保存或送审" in FRONTEND
     assert "请补充可回溯的来源证据摘要" not in FRONTEND
     assert "evidence_excerpt: form.evidence_excerpt" in FRONTEND
@@ -215,3 +290,113 @@ def test_candidate_review_final_layout_coexists_with_retrieval_review() -> None:
     assert "resetCandidateReviewFilters: function()" in FRONTEND
     assert "openRetrievalReviewPage" in FRONTEND
     assert "最多各保留 TOP 3" in FRONTEND
+
+
+def test_initial_annotation_can_complete_reply_only_with_saved_evidence_and_unlocked_draft() -> None:
+    node = shutil.which("node")
+    assert node
+    assert "生成缺失的推荐回复" not in FRONTEND
+    script = r"""
+        const assert = require('assert');
+        const vm = require('vm');
+        const source = require('fs').readFileSync(0, 'utf8');
+        const match = source.match(/candidateCanCompleteReply: (function\(item\) \{[\s\S]*?\n    \}),/);
+        assert(match);
+        const canRepair = vm.runInNewContext('(' + match[1] + ')');
+        const context = {contentPreview: function(content) {
+          return typeof content === 'string' && content.trim() ? content : '暂无正文';
+        }};
+        const base = {id:'candidate-1',title:'草稿',content:'正文',recommended_reply:'',evidence_excerpt:'来源明确的答复'};
+        assert.strictEqual(canRepair.call(context, base), true);
+        assert.strictEqual(canRepair.call(context, null), false);
+        [
+          {title:''},{content:''},{recommended_reply:'已有回复'},{evidence_excerpt:' '},
+          {knowledge_id:'knowledge-1'},{submitted_at:'2026-10-25'},
+          {review_status:'submitted'},{status:'review_submitted'},{status:'review_duplicate'}
+        ].forEach(function(change) {
+          assert.strictEqual(canRepair.call(context, Object.assign({}, base, change)), false);
+        });
+    """
+    completed = subprocess.run(
+        [node, "-e", script], input=FRONTEND,
+        capture_output=True, text=True, encoding="utf-8", check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_incomplete_worthy_draft_can_save_evidence_then_request_reply_without_submitting() -> None:
+    node = shutil.which("node")
+    assert node
+    script = r"""
+        const assert = require('assert');
+        const vm = require('vm');
+        const source = require('fs').readFileSync(0, 'utf8');
+        const requests = [], alerts = [];
+        let opened = null;
+        const sandbox = {
+          API:'', alert: message => alerts.push(message),
+          fetch: (url, options) => {
+            requests.push({url, options});
+            return Promise.resolve({ok:true,json:() => Promise.resolve(
+              options.method === 'PATCH'
+                ? {id:'candidate-1',title:'标题',content:'正文',evidence_excerpt:'补充的可回溯来源',recommended_reply:'',eligible:false}
+                : {id:'candidate-1',review_status:'pending',recommended_reply:'根据摘要补充的回复',eligible:false}
+            )});
+          }
+        };
+        function method(name, next) {
+          const start = source.indexOf('    ' + name + ': function(');
+          assert(start > 0);
+          const end = source.indexOf('    ' + next + ': function(', start);
+          const expression = source.slice(start, end).trim().slice(name.length + 2).replace(/,$/, '');
+          return vm.runInNewContext('(' + expression + ')', sandbox);
+        }
+        const save = method('saveCandidateReview', 'submitCandidateReviewIds');
+        const annotate = method('annotateCandidateReviewDraft', 'reviewModelNeedsRevision');
+        const context = {
+          candidateReviews:{
+            current:{id:'candidate-1',recommended_reply:''},
+            form:{
+              title:'标题',contentText:'正文',recommended_reply:'',
+              evidence_excerpt:'补充的可回溯来源',knowledge_value:'worthy',
+              knowledge_origin:'business_accumulation',business_type:'self_operated',
+              category_id:'category-1',originalContent:'正文',mediaBlocks:[]
+            }
+          },
+          reviewReadonly:() => false,
+          authHeaders:() => ({}),
+          candidateReviewContent:text => text,
+          loadCandidateReviewDashboard:() => {},
+          loadCandidateReviews:() => Promise.resolve(),
+          showCandidateReviewNotice:() => {},
+          candidateDraftComplete:() => false,
+          candidateCanCompleteReply:() => true,
+          submitCandidateReviewIds:() => assert.fail('Incomplete draft must not submit'),
+          openCandidateReview:data => {opened=data;}
+        };
+        (async function() {
+          save.call(context, false, false);
+          await new Promise(setImmediate);
+          assert.strictEqual(alerts.length, 0);
+          assert.strictEqual(requests.length, 1);
+          assert.strictEqual(requests[0].options.method, 'PATCH');
+          const payload = JSON.parse(requests[0].options.body);
+          assert.strictEqual(payload.evidence_excerpt, '补充的可回溯来源');
+          assert.strictEqual(payload.knowledge_value, 'worthy');
+          assert.strictEqual(payload.recommended_reply, '');
+          assert.strictEqual(context.candidateReviews.saving, false);
+          annotate.call(context);
+          await new Promise(setImmediate);
+          assert.strictEqual(requests[1].url, '/integration/candidate-reviews/candidate-1/model-annotate');
+          assert.strictEqual(opened.recommended_reply, '根据摘要补充的回复');
+          assert.strictEqual(context.candidateReviews.modelAnnotating, false);
+          save.call(context, true, false);
+          assert.strictEqual(requests.length, 2);
+          assert(alerts.includes('请填写推荐回复'));
+        })().catch(error => {console.error(error);process.exit(1);});
+    """
+    completed = subprocess.run(
+        [node, "-e", script], input=FRONTEND,
+        capture_output=True, text=True, encoding="utf-8", check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
