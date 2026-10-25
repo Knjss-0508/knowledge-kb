@@ -71,6 +71,27 @@ def test_local_nightly_scheduler_matches_the_server_pull_parameters() -> None:
     assert 'AUTO_REVIEW_KILL_SWITCH' in WINDOWS_SCRIPT
 
 
+def test_local_nightly_scheduler_skips_empty_days_and_continues() -> None:
+    """第二部分某天返回 0 条时，应当提交该天并继续下一天，而不是停住。
+
+    第二部分存在整天无数据的日期（截图中 10-06/10-07/10-10~10-13 等）。
+    旧实现只处理一天就结束：空日虽然推进了游标，但当晚不会再继续，
+    后面的日期要等下一次计划任务才补。
+    """
+    # 必须有逐日推进的循环
+    assert "while ($processedWindows -lt $maxWindowsPerRun)" in WINDOWS_SCRIPT
+    # 空日判定基于 fetched_records，判断后直接 commit 并 continue
+    assert "$pulledRecords -le 0" in WINDOWS_SCRIPT
+    assert "& $PY -m answer_hub.automation_schedule commit" in WINDOWS_SCRIPT
+    assert "continue" in WINDOWS_SCRIPT
+    # 空日不能记成失败，否则会累积 consecutive_failure_count
+    assert "空日" in WINDOWS_SCRIPT
+    empty_branch = WINDOWS_SCRIPT.split("$pulledRecords -le 0", 1)[1].split("continue", 1)[0]
+    assert "automation_schedule failure" not in empty_branch
+    # 单次运行要有上限，避免一次跑太久
+    assert "ANSWER_HUB_MAX_WINDOWS_PER_RUN" in WINDOWS_SCRIPT
+
+
 def test_local_nightly_scheduler_does_not_clobber_the_output_dir() -> None:
     """prepare 的输出不能存进 $out。
 
