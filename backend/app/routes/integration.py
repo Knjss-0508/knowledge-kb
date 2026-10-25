@@ -71,10 +71,12 @@ from app.services.candidate_review import (
     model_priority_reasons,
     normalize_human_review,
     normalize_knowledge_value,
+    upstream_candidate_eligible,
 )
 from app.services.model_annotation import (
     ModelAnnotationError,
     annotate_transcribed_candidate,
+    complete_candidate_recommended_reply,
     revise_transcribed_candidate_draft,
 )
 from app.services.active_prompt import get_confidence_prompt_for_candidate
@@ -327,6 +329,7 @@ def _candidate_state(
         or {}
     )
     annotation = dict(review_metadata.get("model_annotation") or {})
+    selection = dict(payload.get("selection") or item.selection_metadata or {})
     history = review_metadata.get("draft_revision_history") or []
     draft_version = current_draft_version(review_metadata)
     human_review_version = review_metadata.get("human_review_draft_version")
@@ -337,13 +340,14 @@ def _candidate_state(
             human_review_is_current = False
         if not human_review_is_current:
             human_review = {}
+            selection["upstream_eligible"] = False
     failed_reason = (
         str(item.error_message or item.error_code or "送审失败，请修正后重试。")
         if item.review_status == "failed"
         else ""
     )
     return evaluate_candidate_state(
-        dict(payload.get("selection") or item.selection_metadata or {}),
+        selection,
         human_review,
         model_review,
         knowledge=knowledge,
@@ -352,6 +356,7 @@ def _candidate_state(
         has_draft_revision_history=bool(history),
         submitted=_candidate_is_locked(item),
         failed_reason=failed_reason,
+        auto_review_min_confidence=settings.AUTO_REVIEW_MIN_CONFIDENCE,
     )
 
 
@@ -360,8 +365,11 @@ def _persist_candidate_state(
     payload: dict[str, Any],
     review_metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    state = _candidate_state(item, payload, review_metadata)
     selection = dict(payload.get("selection") or item.selection_metadata or {})
+    # Keep upstream admission separate from the eligibility derived below.
+    selection.setdefault("upstream_eligible", upstream_candidate_eligible(selection))
+    payload["selection"] = selection
+    state = _candidate_state(item, payload, review_metadata)
     selection.update({
         "eligible": state["eligible"],
         "review_reason": state["review_reason"],
@@ -511,6 +519,52 @@ def _generate_pending_model_draft_revision(
     return revision
 
 
+def _model_annotation_blockers(knowledge: dict[str, Any]) -> list[str]:
+    blockers = draft_blocking_reasons(knowledge)
+    if str(knowledge.get("evidence_excerpt") or "").strip():
+        return [reason for reason in blockers if reason != "推荐回复为空"]
+    return blockers
+
+
+def _complete_missing_reply_for_annotation(
+    knowledge: dict[str, Any],
+    metadata: dict[str, Any],
+    *,
+    actor: str,
+) -> None:
+    if str(knowledge.get("recommended_reply") or "").strip():
+        return
+    before = _candidate_draft_snapshot(knowledge)
+    audit = {
+        "evidence_snapshot": str(knowledge.get("evidence_excerpt") or ""),
+        "requested_by": actor,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        completion = complete_candidate_recommended_reply({
+            "title": knowledge.get("title"),
+            "evidence_excerpt": knowledge.get("evidence_excerpt"),
+        })
+    except ModelAnnotationError as exc:
+        metadata["reply_completion"] = {
+            **audit, "status": "failed",
+            "error_code": exc.error_code, "error_message": str(exc),
+        }
+        raise
+    knowledge["recommended_reply"] = completion["recommended_reply"]
+    version = _append_draft_revision_history(
+        metadata, source="model_reply_completion", before=before,
+        after=_candidate_draft_snapshot(knowledge), actor=actor,
+    )
+    _invalidate_pending_model_revision(metadata, reason="模型初标已根据来源证据摘要补充推荐回复。")
+    metadata["reply_completion"] = {
+        **audit, "status": "completed", "draft_version": version,
+        "evidence_used": completion["evidence_used"],
+        "resolved_model_version": completion.get("resolved_model_version"),
+        "prompt_version": completion.get("prompt_version"),
+    }
+
+
 def _apply_candidate_model_review_gate(
     item: IntegrationIngestion,
     payload: dict[str, Any],
@@ -637,6 +691,7 @@ def _candidate_queue_state(
     candidate: IntegrationCandidate,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
     selection = candidate.selection.model_dump(mode="json")
+    selection["upstream_eligible"] = selection["eligible"]
     model_review = (
         candidate.model_review.model_dump(mode="json")
         if candidate.model_review
@@ -665,6 +720,7 @@ def _candidate_queue_state(
         knowledge=candidate.knowledge.model_dump(mode="json"),
         model_annotation=model_annotation,
         draft_version=draft_version,
+        auto_review_min_confidence=settings.AUTO_REVIEW_MIN_CONFIDENCE,
     )
     selection.update({
         "eligible": state["eligible"],
@@ -3666,6 +3722,9 @@ def annotate_candidate_reviews(
         human_review = normalize_human_review(human_review)
 
         payload["human_review"] = human_review
+        selection = dict(payload.get("selection") or item.selection_metadata or {})
+        selection["upstream_eligible"] = False
+        payload["selection"] = selection
         review_metadata["model_review"] = dict(
             payload.get("model_review")
             or review_metadata.get("model_review")
@@ -3723,7 +3782,7 @@ def model_annotate_candidate_reviews(
             continue
         payload, knowledge = _candidate_payload_with_taxonomy_defaults(item.candidate_payload)
         draft = {"title": str(knowledge.get("title") or ""), "content": knowledge.get("content"), "recommended_reply": knowledge.get("recommended_reply"), "category_id": knowledge.get("category_id"), "business_type": knowledge.get("business_type")}
-        blockers = draft_blocking_reasons(knowledge)
+        blockers = _model_annotation_blockers(knowledge)
         metadata = dict(item.review_metadata or {})
         if blockers:
             state = _persist_candidate_state(item, payload, metadata)
@@ -3736,6 +3795,11 @@ def model_annotate_candidate_reviews(
         )
         draft_version = current_draft_version(metadata)
         try:
+            _complete_missing_reply_for_annotation(
+                knowledge, metadata, actor=current_user.username,
+            )
+            draft["recommended_reply"] = knowledge.get("recommended_reply")
+            draft_version = current_draft_version(metadata)
             model_review = annotate_transcribed_candidate({"event_id": item.event_id, "draft": draft, "evidence_excerpt": str(knowledge.get("evidence_excerpt") or ""), "topic_evidence": _candidate_topic_evidence(item, payload), "source_conversation_id": item.source_conversation_id, "previous_model_review": dict(payload.get("model_review") or {})}, review_prompt=active_prompt, prompt_version=active_prompt_version)
         except ModelAnnotationError as exc:
             metadata["model_annotation"] = {
@@ -3818,6 +3882,15 @@ def update_candidate_review(
             detail="机型配置信息由飞书专用同步维护，历史候选不能人工修改。",
         ) from exc
     updates = body.model_dump(exclude_unset=True)
+    if "knowledge_value" in updates:
+        quick_review = build_quick_human_review(
+            updates["knowledge_value"], include_in_training=False,
+        )
+        for field in ("usability", "decision"):
+            updates.setdefault(field, quick_review[field])
+        selection = dict(payload.get("selection") or item.selection_metadata or {})
+        selection["upstream_eligible"] = False
+        payload["selection"] = selection
     confirm_dedup_review = updates.pop("confirm_dedup_review", None)
     deduplication_sensitive_changed = False
     for field, payload_key in (
@@ -3948,7 +4021,7 @@ def annotate_candidate_review_draft(
         "category_id": knowledge.get("category_id"),
         "business_type": knowledge.get("business_type"),
     }
-    blockers = draft_blocking_reasons(knowledge)
+    blockers = _model_annotation_blockers(knowledge)
     metadata = dict(item.review_metadata or {})
     if blockers:
         _persist_candidate_state(item, payload, metadata)
@@ -3960,7 +4033,7 @@ def annotate_candidate_review_draft(
     current_model_review = dict(
         payload.get("model_review") or metadata.get("model_review") or {}
     )
-    if current_model_review:
+    if current_model_review and str(knowledge.get("recommended_reply") or "").strip():
         current_state = _candidate_state(item, payload, metadata)
         if current_state["next_action"] != "annotate_model":
             raise HTTPException(
@@ -3982,6 +4055,11 @@ def annotate_candidate_review_draft(
             item.created_at,
             db=db,
         )
+        _complete_missing_reply_for_annotation(
+            knowledge, metadata, actor=current_user.username,
+        )
+        draft["recommended_reply"] = knowledge.get("recommended_reply")
+        draft_version = current_draft_version(metadata)
         model_review = annotate_transcribed_candidate(
             candidate,
             review_prompt=active_prompt,

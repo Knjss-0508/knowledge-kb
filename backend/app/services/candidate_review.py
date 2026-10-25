@@ -322,6 +322,15 @@ def build_quick_human_review(
     }
 
 
+def upstream_candidate_eligible(selection: dict[str, Any] | None) -> bool:
+    source = dict(selection or {})
+    if "upstream_eligible" in source:
+        return source["upstream_eligible"] is True
+    return source.get("eligible") is True or (
+        "自动审核：auto_approved" in (source.get("reasons") or [])
+    )
+
+
 def evaluate_candidate_state(
     selection: dict[str, Any] | None,
     human_review: dict[str, Any] | None,
@@ -333,6 +342,7 @@ def evaluate_candidate_state(
     has_draft_revision_history: bool = False,
     submitted: bool = False,
     failed_reason: str = "",
+    auto_review_min_confidence: float = 0.85,
 ) -> dict[str, Any]:
     selection_data = dict(selection or {})
     review = normalize_human_review(human_review)
@@ -351,7 +361,7 @@ def evaluate_candidate_state(
             "eligible": eligible,
             "blocking_reasons": blockers,
             "review_reason": blockers[0] if blockers else {
-                "ready": "人工价值与草稿门禁已通过，可提交发布审核",
+                "ready": "候选价值与草稿门禁已通过，可提交发布审核",
                 "submitted": "候选已进入发布审核，只读查看",
                 "rejected": "候选已被人工判定为不沉淀",
             }.get(status, ""),
@@ -469,7 +479,25 @@ def evaluate_candidate_state(
         usability == "usable" or decision in {"approved", "approved_with_changes"}
     ):
         return result("ready", True, [], "submit_for_publication_review")
-    if bool(selection_data.get("eligible")) and not has_model_review:
+    upstream_eligible = upstream_candidate_eligible(selection_data)
+    raw_confidence = (model if has_model_review else selection_data).get("confidence")
+    try:
+        model_confidence = float(raw_confidence) if not isinstance(raw_confidence, bool) else -1
+    except (TypeError, ValueError):
+        model_confidence = -1
+    if (
+        upstream_eligible
+        and not has_draft_revision_history
+        and not priority_reasons
+        and auto_review_min_confidence <= model_confidence <= 1
+        and (
+            not has_model_review
+            or (
+                model_draft_disposition(model) == "approved"
+                and normalize_knowledge_value(model.get("knowledge_value")) == "worthy"
+            )
+        )
+    ):
         return result("ready", True, [], "submit_for_publication_review")
     return result(
         "pending",

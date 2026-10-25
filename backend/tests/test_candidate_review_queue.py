@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 from sqlalchemy.exc import IntegrityError
 
 from app.routes.integration import _refresh_unreviewed_candidate, queue_knowledge_review_candidates
+from app.routes.integration import _candidate_queue_state
 from app.schemas.integration import IntegrationCandidateBatch
 
 
@@ -42,6 +43,27 @@ def _query_db(*existing_items):
     query.filter.return_value.first.side_effect = existing_items
     db.query.return_value = query
     return db
+
+
+def test_queue_keeps_upstream_approval_separate_from_derived_eligibility():
+    candidate = _candidate("auto-approved")
+    candidate["selection"]["eligible"] = True
+    candidate["model_review"] = {
+        "suggested_action": "submit_for_human_review",
+        "knowledge_value": "worthy",
+        "confidence": 0.95,
+    }
+    candidate["knowledge"].update({
+        "recommended_reply": "先检查充电线和充电口。",
+        "evidence_excerpt": "答疑：先检查充电线和充电口。",
+    })
+    payload, selection, metadata, review_status = _candidate_queue_state(
+        _batch(candidate).items[0],
+    )
+    assert review_status == "ready"
+    assert selection["upstream_eligible"] is True
+    assert payload["human_review"]["knowledge_value"] == "pending"
+    assert metadata["human_review"]["knowledge_value"] == "pending"
 
 
 def test_queue_reuses_duplicate_idempotency_key_within_one_batch() -> None:

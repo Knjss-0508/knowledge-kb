@@ -15783,17 +15783,8 @@ def _recommended_reply_quality_issues(
         )
     ):
         issues.append("包含内部分析标签")
-    normalized_body = re.sub(r"(?m)^\s*\d+[.、]\s*", "", content)
-    body_sentences = [
-        part.strip() for part in re.split(r"[。！？!?；;\n]+", normalized_body)
-        if part.strip()
-    ]
-    if (
-        len(reply) > 100
-        and len(body_sentences) > 1
-        and _normalized_topic_claim(reply) == _normalized_topic_claim(normalized_body)
-    ):
-        issues.append("推荐回复逐段复述正文")
+    # Reusing grounded body text is a style issue, not a reason to erase a reply.
+    # Keep complete conditions and exceptions instead of shortening them blindly.
     greeting_count = len(re.findall(r"(?:您好|你好)", reply))
     if greeting_count > 1 or re.search(r"建议\s*(?:您好|你好)", reply):
         issues.append("重复问候")

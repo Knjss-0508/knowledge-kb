@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from app.routes import integration
 from app.schemas.integration import (
     CandidateReviewBatchModelAnnotate,
+    CandidateReviewBatchAnnotate,
     CandidateReviewBatchSubmit,
     CandidateReviewUpdate,
     IntegrationCandidateBatch,
@@ -139,6 +140,187 @@ def test_human_value_save_binds_current_draft_without_manual_draft_disposition()
     )
     assert item.review_metadata["human_review_draft_version"] == 2
     assert result.review_status == "ready"
+
+
+def test_human_value_only_save_completes_legacy_fields_and_survives_reload():
+    item = _candidate_item(
+        model_review={"suggested_action": "submit_for_human_review"},
+        human_review={"knowledge_value": "pending", "usability": "pending"},
+    )
+    result = integration.update_candidate_review(
+        "ing-1", CandidateReviewUpdate(knowledge_value="worthy"),
+        _db_for(item), SimpleNamespace(username="reviewer"),
+    )
+    assert result.review_status == "ready"
+    assert result.human_review["usability"] == "usable"
+    assert result.human_review["decision"] == "approved"
+    reloaded = integration._candidate_review_item(item)
+    assert reloaded.review_status == item.review_status == "ready"
+    assert reloaded.eligible is True
+
+
+def test_upstream_approved_candidate_with_model_review_stays_ready():
+    item = _candidate_item(
+        model_review={
+            "suggested_action": "submit_for_human_review",
+            "knowledge_value": "worthy",
+            "confidence": 0.95,
+        },
+    )
+    item.candidate_payload["selection"]["eligible"] = True
+    state = integration._persist_candidate_state(
+        item, item.candidate_payload, item.review_metadata,
+    )
+    assert state["review_status"] == "ready"
+    assert integration._candidate_review_item(item).review_status == "ready"
+
+
+@pytest.mark.parametrize("confidence", [0.1, 0.84, None, "invalid", float("nan"), True])
+def test_upstream_admission_with_low_or_invalid_model_confidence_waits_for_human(confidence):
+    item = _candidate_item(model_review={
+        "suggested_action": "submit_for_human_review",
+        "knowledge_value": "worthy",
+        "confidence": confidence,
+    })
+    item.candidate_payload["selection"]["eligible"] = True
+    state = integration._candidate_state(item, item.candidate_payload, {})
+    assert state["review_status"] == "pending"
+    assert state["eligible"] is False
+
+
+def test_model_admission_honors_configured_confidence_threshold(monkeypatch):
+    monkeypatch.setattr(integration.settings, "AUTO_REVIEW_MIN_CONFIDENCE", 0.97)
+    item = _candidate_item(model_review={
+        "suggested_action": "submit_for_human_review",
+        "knowledge_value": "worthy",
+        "confidence": 0.95,
+    })
+    item.candidate_payload["selection"]["eligible"] = True
+    assert integration._candidate_state(
+        item, item.candidate_payload, {},
+    )["review_status"] == "pending"
+
+
+@pytest.mark.parametrize("selection,expected", [
+    ({"eligible": False, "reasons": ["自动审核：auto_approved"]}, "ready"),
+    ({"eligible": False, "reasons": ["模型建议通过"]}, "pending"),
+    ({"eligible": False, "reasons": ["自动审核：auto_approved"],
+      "upstream_eligible": False}, "pending"),
+])
+def test_legacy_admission_recovers_only_explicit_auto_approval(selection, expected):
+    item = _candidate_item(model_review={
+        "suggested_action": "submit_for_human_review",
+        "knowledge_value": "worthy",
+        "confidence": 0.95,
+    })
+    item.candidate_payload["selection"] = selection
+    state = integration._persist_candidate_state(
+        item, item.candidate_payload, item.review_metadata,
+    )
+    assert state["review_status"] == expected
+    assert integration._candidate_review_item(item).review_status == expected
+    assert item.candidate_payload["human_review"] == {}
+
+
+@pytest.mark.parametrize("changes,metadata", [
+    ({"confidence": 0.1}, {}),
+    ({"risk_flags": ["source_conflict"]}, {}),
+    ({}, {"draft_revision_history": [{"draft_version": 2}],
+          "draft_version": 2,
+          "model_annotation": {"status": "completed", "draft_version": 2}}),
+])
+def test_legacy_auto_approval_does_not_override_current_blockers(changes, metadata):
+    item = _candidate_item(model_review={
+        "suggested_action": "submit_for_human_review",
+        "knowledge_value": "worthy", "confidence": 0.95, **changes,
+    }, review_metadata=metadata)
+    item.candidate_payload["selection"] = {
+        "eligible": False, "reasons": ["自动审核：auto_approved"],
+    }
+    assert integration._candidate_state(
+        item, item.candidate_payload, metadata,
+    )["eligible"] is False
+
+
+@pytest.mark.parametrize("confidence,expected", [
+    (0.1, "pending"), (0.84, "pending"), (None, "pending"),
+    ("invalid", "pending"), (float("nan"), "pending"), (True, "pending"),
+    (0.95, "ready"),
+])
+@pytest.mark.parametrize("already_eligible", [False, True])
+def test_unannotated_admission_requires_valid_upstream_confidence(confidence, expected, already_eligible):
+    item = _candidate_item()
+    item.candidate_payload["selection"] = {
+        "eligible": already_eligible, "reasons": ["自动审核：auto_approved"],
+        "confidence": confidence,
+    }
+    state = integration._persist_candidate_state(item, item.candidate_payload, {})
+    assert state["review_status"] == expected
+    assert item.review_status == expected
+
+
+@pytest.mark.parametrize("mode", ["single", "batch"])
+def test_explicit_pending_human_review_revokes_previous_admission(mode):
+    item = _candidate_item(
+        model_review={"suggested_action": "submit_for_human_review"},
+    )
+    item.candidate_payload["selection"].update(
+        {"eligible": True, "upstream_eligible": True},
+    )
+    db = _db_for(item)
+    user = SimpleNamespace(username="reviewer")
+    if mode == "single":
+        integration.update_candidate_review(
+            "ing-1", CandidateReviewUpdate(knowledge_value="pending"), db, user,
+        )
+    else:
+        integration.annotate_candidate_reviews(
+            CandidateReviewBatchAnnotate(
+                ingestion_ids=["ing-1"], knowledge_value="pending",
+            ), db, user,
+        )
+    assert integration._candidate_review_item(item).review_status == "pending"
+    assert item.selection_metadata["upstream_eligible"] is False
+
+
+def test_explicit_legacy_rejection_is_not_overwritten_by_value_default():
+    item = _candidate_item(model_review={"suggested_action": "submit_for_human_review"})
+    result = integration.update_candidate_review(
+        "ing-1",
+        CandidateReviewUpdate(knowledge_value="worthy", decision="rejected"),
+        _db_for(item), SimpleNamespace(username="reviewer"),
+    )
+    assert result.review_status == "rejected"
+
+
+@pytest.mark.parametrize("model,metadata,knowledge_change,expected", [
+    ({"suggested_action": "return_for_revision"}, {}, {}, "revision_required"),
+    ({"suggested_action": "hold_for_evidence"}, {}, {}, "hold_for_evidence"),
+    ({"suggested_action": "discard"}, {}, {}, "discard_review"),
+    ({"suggested_action": "submit_for_human_review", "risk_flags": ["source_conflict"]},
+     {}, {}, "pending"),
+    ({"suggested_action": "submit_for_human_review"},
+     {"model_annotation": {"status": "failed"}}, {}, "pending_model_annotation"),
+    ({"suggested_action": "submit_for_human_review"}, {},
+     {"recommended_reply": ""}, "draft_incomplete"),
+    ({"suggested_action": "submit_for_human_review"},
+     {"draft_version": 2, "human_review_draft_version": 1,
+      "model_annotation": {"status": "completed", "draft_version": 2}},
+     {}, "pending"),
+])
+def test_upstream_admission_never_bypasses_current_candidate_blockers(
+    model, metadata, knowledge_change, expected,
+):
+    item = _candidate_item(model_review=model, review_metadata=metadata)
+    item.candidate_payload["selection"].update(
+        {"eligible": True, "upstream_eligible": True},
+    )
+    item.candidate_payload["knowledge"].update(knowledge_change)
+    state = integration._persist_candidate_state(
+        item, item.candidate_payload, item.review_metadata,
+    )
+    assert state["review_status"] == expected
+    assert state["eligible"] is False
 
 
 def test_new_model_annotation_does_not_reconfirm_old_human_value():

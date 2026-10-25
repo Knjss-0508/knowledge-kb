@@ -1735,8 +1735,8 @@
               <div class="review-panel-title"><h4>模型初标</h4><span class="priority-flag" v-if="candidateReviews.current.priority_review" :title="candidateReviews.current.priority_reasons.join('；')">重点复核</span></div>
               <div class="hint" style="margin:0 0 10px">当前草稿版本 v{{candidateReviews.current.draft_version}} · 初标版本 v{{candidateReviews.current.model_annotation.draft_version || '—'}}</div>
               <div class="review-error" v-if="candidateReviews.current.model_annotation.status==='failed'">本次模型标注失败，已保留原有初标：{{candidateReviews.current.model_annotation.reason || '模型没有返回有效的审核结果，请重试。'}}</div>
-              <button v-if="candidateCanAnnotateModel(candidateReviews.current)" class="btn b-template bsm" type="button" @click="annotateCandidateReviewDraft" :disabled="candidateReviews.modelAnnotating || !candidateDraftComplete(candidateReviews.current)">{{candidateReviews.modelAnnotating?'模型标注中...':(candidateReviews.current.next_action==='annotate_model'?'重新模型标注':'执行模型标注')}}</button>
-              <div class="review-error" v-if="!candidateDraftComplete(candidateReviews.current)">请先补齐标题、正文和推荐回复，草稿完整性门禁通过后才能模型标注或送审。</div>
+              <button v-if="candidateCanAnnotateModel(candidateReviews.current)" class="btn b-template bsm" type="button" @click="annotateCandidateReviewDraft" :disabled="candidateReviews.modelAnnotating">{{candidateReviews.modelAnnotating?'模型标注中...':(candidateReviews.current.next_action==='annotate_model'?'重新模型标注':'执行模型标注')}}</button>
+              <div class="hint" v-if="!candidateDraftComplete(candidateReviews.current)">推荐回复为空时，模型初标会根据已保存的来源证据摘要补充，再审核补齐后的草稿；请先保存标题、正文和来源证据摘要。摘要不足时需先补证据，草稿完整后才能送审。</div>
               <div class="review-model-grid">
                 <div class="review-model-item"><span>初标结论</span><b>{{reviewDecisionLabel(candidateReviews.current.model_review.decision)}}</b></div>
                 <div class="review-model-item"><span>沉淀价值</span><b>{{reviewKnowledgeValueLabel(candidateReviews.current.model_review.knowledge_value)}}</b></div>
@@ -2537,6 +2537,7 @@ Vue.createApp({
         },
         saving: false,
         modelRevisionLoading: false,
+        refreshRequired: {},
         submitting: false,
         updatedAt: '-'
       },
@@ -5200,6 +5201,13 @@ Vue.createApp({
       this.candidateReviews.selected = this.candidateReviews.selected.filter(function(id) { return !visible[id]; });
     },
     openCandidateReview: function(item) {
+      if (item && this.candidateReviews.refreshRequired && this.candidateReviews.refreshRequired[item.id]) {
+        var self=this;
+        return fetch(API + '/integration/candidate-reviews/' + encodeURIComponent(item.id), {method:'GET',headers:self.authHeaders()})
+          .then(function(response) { if(!response.ok)throw new Error('重新读取已保存草稿失败');return response.json(); })
+          .then(function(data) { delete self.candidateReviews.refreshRequired[item.id];self.openCandidateReview(data); })
+          .catch(function(error) { self.showCandidateReviewNotice(error.message + '，请重试后再保存。', 'error'); });
+      }
       if (!this.businessTypes.length) this.loadBusinessTypes();
       var current = JSON.parse(JSON.stringify(item || {}));
       current.model_review = current.model_review || {};
@@ -5302,14 +5310,26 @@ Vue.createApp({
         && !!preview && preview !== '暂无正文'
         && !!String(item.recommended_reply || '').trim();
     },
+    candidateCanCompleteReply: function(item) {
+      return !!item && !item.knowledge_id && !item.submitted_at
+        && item.review_status !== 'submitted'
+        && item.status !== 'review_submitted' && item.status !== 'review_duplicate'
+        && !!String(item.title || '').trim()
+        && !!String(this.contentPreview(item.content) || '').trim()
+        && this.contentPreview(item.content) !== '暂无正文'
+        && !!String(item.evidence_excerpt || '').trim()
+        && !String(item.recommended_reply || '').trim();
+    },
     candidateCanAnnotateModel: function(item) {
       if (!this.reviewAnnotatable(item)) return false;
-      return item.next_action === 'annotate_model'
-        || !Object.keys(item.model_review || {}).length;
+      var canComplete=this.candidateCanCompleteReply(item);
+      return (this.candidateDraftComplete(item) || canComplete)
+        && (canComplete || item.next_action === 'annotate_model'
+          || !Object.keys(item.model_review || {}).length);
     },
     annotateCandidateReviewDraft: function() {
       var self=this, current=self.candidateReviews.current;
-      if (!current || self.reviewReadonly() || !self.candidateDraftComplete(current) || self.candidateReviews.modelAnnotating) return;
+      if (!current || self.reviewReadonly() || (!self.candidateDraftComplete(current) && !self.candidateCanCompleteReply(current)) || self.candidateReviews.modelAnnotating) return;
       self.candidateReviews.modelAnnotating=true;
       fetch(API + '/integration/candidate-reviews/' + encodeURIComponent(current.id) + '/model-annotate', {
         method:'POST',
@@ -5325,7 +5345,22 @@ Vue.createApp({
         self.loadCandidateReviewDashboard();
         self.showCandidateReviewNotice('模型初标已完成，候选状态与送审门禁已重新计算。');
       }).catch(function(error) {
-        self.showCandidateReviewNotice(error.message, 'error');
+        self.candidateReviews.refreshRequired = self.candidateReviews.refreshRequired || {};
+        self.candidateReviews.refreshRequired[current.id] = true;
+        return fetch(API + '/integration/candidate-reviews/' + encodeURIComponent(current.id), {
+          method:'GET', headers:self.authHeaders()
+        }).then(function(response) {
+          if (!response.ok) throw new Error('重新读取已保存草稿失败');
+          return response.json();
+        }).then(function(data) {
+          delete self.candidateReviews.refreshRequired[current.id];
+          if (self.candidateReviews.current && self.candidateReviews.current.id === current.id) self.openCandidateReview(data);
+          self.loadCandidateReviews();
+          self.loadCandidateReviewDashboard();
+          self.showCandidateReviewNotice(error.message + '；已刷新已保存的草稿，请检查推荐回复及初标状态。', 'error');
+        }).catch(function() {
+          self.showCandidateReviewNotice(error.message + '；草稿刷新失败，请重新打开候选后再保存。', 'error');
+        });
       }).finally(function() { self.candidateReviews.modelAnnotating=false; });
     },
     reviewModelNeedsRevision: function(modelReview) { var model=modelReview||{},action=String(model.suggested_action||'');if(action==='return_for_revision')return true;if(['submit_for_human_review','hold_for_evidence','discard'].indexOf(action)!==-1)return false;return model.draft_quality==='revision_required'; },
@@ -5356,8 +5391,16 @@ Vue.createApp({
       var current = self.candidateReviews.current;
       var form = self.candidateReviews.form;
       if (!current || self.reviewReadonly()) return;
+      if (self.candidateReviews.modelAnnotating) {
+        self.showCandidateReviewNotice('模型初标正在处理草稿，请等待完成后再保存。', 'error');
+        return;
+      }
+      if (self.candidateReviews.refreshRequired && self.candidateReviews.refreshRequired[current.id]) {
+        self.showCandidateReviewNotice('请重新打开候选读取已保存的草稿后再保存，避免覆盖模型补充的回复。', 'error');
+        return;
+      }
       var nextReviewId = openNext ? self.nextCandidateReviewId(current.id) : '';
-      if (form.knowledge_value === 'worthy') {
+      if (submitAfter && form.knowledge_value === 'worthy') {
         if (!form.title.trim()) { alert('请输入知识标题'); return; }
         if (!form.contentText.trim()) { alert('请输入知识正文'); return; }
         if (!String(form.recommended_reply || '').trim()) { alert('请填写推荐回复'); return; }

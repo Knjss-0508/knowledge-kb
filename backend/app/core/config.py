@@ -1,5 +1,6 @@
 from urllib.parse import quote
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -7,6 +8,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "答疑中台知识库"
     VERSION: str = "0.1.0"
     API_V1_PREFIX: str = "/api/v1"
+    AUTO_REVIEW_MIN_CONFIDENCE: float = Field(default=0.85, ge=0, le=1)
 
     # PostgreSQL
     POSTGRES_HOST: str = "localhost"
