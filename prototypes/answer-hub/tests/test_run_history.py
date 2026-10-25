@@ -558,6 +558,45 @@ def test_interrupted_queue_run_is_labelled_automation_queue_not_streamlit(
     assert record["source_label"] == "自动化队列"
 
 
+def test_skipped_empty_window_is_reported_as_skipped_not_failure(
+    tmp_path: Path,
+) -> None:
+    """第二部分空日应留一条「已跳过 + 原因」记录，而不是失败或空白。
+
+    排障背景：空日如果没有记录，面板上这一天就是空白；如果有记录但被当成
+    失败，又会累积 consecutive_failure_count 把计划锁死。正确行为是：
+    运行状态 = skipped、健康度 = skipped、任务反馈 = 无需处理 + 具体原因。
+    """
+
+    queue_root = tmp_path / "queue"
+    output_root = tmp_path / "runs"
+    store = AutomationRunStore(output_root)
+    reason = "第二部分在 2026-10-06 至 2026-10-06 没有返回任何数据，按空日跳过。"
+
+    manifest = store.record_skipped_window(
+        from_date="2026-10-06",
+        to_date="2026-10-06",
+        reason=reason,
+    )
+
+    assert manifest["status"] == "skipped"
+    assert manifest["summary"]["skipped_empty_window"] is True
+
+    records = list_automation_run_records(output_root, queue_root, limit=20)
+    record = next(r for r in records if r["run_id"] == manifest["run_id"])
+
+    assert record["effective_status"] == "skipped"
+    assert record["health_status"] == "skipped"
+    assert record["status_label"] == "已跳过"
+
+    from answer_hub.run_feedback import automatic_run_feedback
+
+    feedback = automatic_run_feedback(record)
+    assert feedback["status"] == "not_required"
+    assert "2026-10-06" in feedback["message"]
+    assert "没有返回任何数据" in feedback["message"]
+
+
 def test_run_monitor_groups_manually_dropped_queue_retry_attempts(
     tmp_path: Path,
 ) -> None:

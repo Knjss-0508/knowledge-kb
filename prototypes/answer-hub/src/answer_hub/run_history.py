@@ -21,6 +21,7 @@ RUN_STATUS_LABELS = {
     "review_pending": "待人工审核",
     "needs_confirmation": "等待人工确认",
     "failed": "运行失败",
+    "skipped": "已跳过",
 }
 RUN_HEALTH_LABELS = {
     "healthy": "正常",
@@ -30,6 +31,7 @@ RUN_HEALTH_LABELS = {
     "review_pending": "待人工审核",
     "failed": "运行失败",
     "completed": "已完成",
+    "skipped": "已跳过",
     "unknown": "未知",
 }
 _URL_QUERY_RE = re.compile(
@@ -269,6 +271,9 @@ def _run_health(
         )
     if is_stale:
         health_status = "stalled"
+    elif status == "skipped":
+        # 空日跳过：没有数据可沉淀，不是异常，也不该进「待处理」。
+        health_status = "skipped"
     elif status == "failed":
         health_status = "failed"
     elif status == "needs_confirmation":
