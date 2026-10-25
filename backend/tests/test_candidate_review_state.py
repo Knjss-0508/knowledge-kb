@@ -262,7 +262,21 @@ def test_unannotated_admission_requires_valid_upstream_confidence(confidence, ex
 @pytest.mark.parametrize("mode", ["single", "batch"])
 def test_explicit_pending_human_review_revokes_previous_admission(mode):
     item = _candidate_item(
-        model_review={"suggested_action": "submit_for_human_review"},
+        model_review={
+            "suggested_action": "submit_for_human_review",
+            "draft_quality": "approved",
+            "knowledge_value": "worthy",
+            "confidence": 0.95,
+        },
+        review_metadata={
+            "draft_version": 1,
+            "model_annotation": {"status": "completed", "draft_version": 1},
+            "batch_model_admission": {
+                "status": "approved",
+                "source": "batch_model_workflow",
+                "draft_version": 1,
+            },
+        },
     )
     item.candidate_payload["selection"].update(
         {"eligible": True, "upstream_eligible": True},
@@ -281,6 +295,7 @@ def test_explicit_pending_human_review_revokes_previous_admission(mode):
         )
     assert integration._candidate_review_item(item).review_status == "pending"
     assert item.selection_metadata["upstream_eligible"] is False
+    assert "batch_model_admission" not in item.review_metadata
 
 
 def test_explicit_legacy_rejection_is_not_overwritten_by_value_default():
@@ -319,6 +334,68 @@ def test_upstream_admission_never_bypasses_current_candidate_blockers(
     state = integration._persist_candidate_state(
         item, item.candidate_payload, item.review_metadata,
     )
+    assert state["review_status"] == expected
+    assert state["eligible"] is False
+
+
+@pytest.mark.parametrize(
+    "model_review,expected",
+    [
+        (
+            {
+                "suggested_action": "submit_for_human_review",
+                "draft_quality": "approved",
+                "knowledge_value": "worthy",
+                "confidence": 0.84,
+            },
+            "pending",
+        ),
+        (
+            {
+                "suggested_action": "submit_for_human_review",
+                "draft_quality": "approved",
+                "knowledge_value": "worthy",
+                "confidence": 0.95,
+                "risk_flags": ["source_conflict"],
+            },
+            "pending",
+        ),
+        (
+            {
+                "suggested_action": "hold_for_evidence",
+                "draft_quality": "hold_for_evidence",
+                "knowledge_value": "worthy",
+                "confidence": 0.95,
+            },
+            "hold_for_evidence",
+        ),
+    ],
+)
+def test_batch_model_admission_keeps_confidence_risk_and_evidence_gates(
+    model_review,
+    expected,
+):
+    item = _candidate_item(
+        model_review=model_review,
+        review_metadata={
+            "draft_version": 2,
+            "draft_revision_history": [{"draft_version": 2}],
+            "model_review": model_review,
+            "model_annotation": {"status": "completed", "draft_version": 2},
+            "batch_model_admission": {
+                "status": "approved",
+                "source": "batch_model_workflow",
+                "draft_version": 2,
+            },
+        },
+    )
+
+    state = integration._persist_candidate_state(
+        item,
+        item.candidate_payload,
+        item.review_metadata,
+    )
+
     assert state["review_status"] == expected
     assert state["eligible"] is False
 

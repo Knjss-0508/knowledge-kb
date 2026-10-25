@@ -928,7 +928,7 @@
         <button class="btn bd" @click="resetCandidateReviewFilters" :disabled="candidateReviews.loading">重置筛选</button>
         <button class="btn br" @click="batchAnnotateCandidateReviews('unworthy')" :disabled="candidateReviews.annotating||!candidateReviews.selected.length">批量标为不沉淀</button>
         <button class="btn bs" @click="batchAnnotateCandidateReviews('worthy')" :disabled="candidateReviews.annotating||!candidateReviews.selected.length">批量标为值得沉淀</button>
-        <button class="btn b-template" @click="batchModelAnnotateCandidateReviews" :disabled="candidateReviews.modelAnnotating||!candidateReviews.selected.length">{{candidateReviews.modelAnnotating?'模型标注中...':'批量模型标注'}}</button>
+        <button class="btn b-template" @click="batchModelAnnotateCandidateReviews" :disabled="candidateReviews.modelAnnotating||!candidateReviews.selected.length">{{candidateReviews.modelAnnotating?'模型处理并送审中...':'批量模型标注并送审'}}</button>
         <button class="btn bp" @click="submitSelectedCandidateReviews" :disabled="candidateReviews.submitting||!selectedSubmittableReviewIds().length">{{candidateReviews.submitting?'送审中...':'批量送审'}}</button>
       </div>
     </section>
@@ -5534,11 +5534,11 @@ Vue.createApp({
     batchModelAnnotateCandidateReviews: function() {
       var ids=this.candidateReviews.selected.slice();
       if (!ids.length) return;
-      if (!confirm('确认按候选创建时间选择适用的已批准 Prompt，对选中的 '+ids.length+' 条候选执行批量模型标注？')) return;
+      if (!confirm('确认对选中的 '+ids.length+' 条候选执行完整模型流程？系统会按候选创建时间选择已批准 Prompt，自动采用一次模型修订并重新初标；最终通过送审门禁的候选会直接进入知识待审核队列，不会正式发布。')) return;
       var self=this; self.candidateReviews.modelAnnotating=true;
-      fetch(API+'/integration/candidate-reviews:batch-model-annotate',{method:'POST',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({ingestion_ids:ids})})
+      fetch(API+'/integration/candidate-reviews:batch-model-annotate',{method:'POST',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({ingestion_ids:ids,apply_model_revisions:true,submit_ready:true})})
         .then(function(response){return response.json().then(function(data){if(!response.ok)throw new Error(data.detail||'批量模型标注失败');return data;});})
-        .then(function(data){var message='批量模型标注完成：成功 '+Number(data.updated||0)+' 条，失败 '+Number(data.failed||0)+' 条。';var revisionFailures=(data.results||[]).filter(function(item){return item.model_draft_revision_status==='generation_failed';});if(revisionFailures.length)message+='\n其中 '+revisionFailures.length+' 条初标要求修订，但模型修订失败；请在候选详情重试。';var failures=(data.results||[]).filter(function(item){return item.status==='failed';});if(failures.length)message+='\n\n失败明细：\n'+failures.slice(0,8).map(function(item){return item.ingestion_id+'：'+(item.error_message||item.error_code||'标注失败');}).join('\n');alert(message);self.candidateReviews.selected=[];self.loadCandidateReviews();self.loadCandidateReviewDashboard();return data;})
+        .then(function(data){var message='批量模型流程完成：标注成功 '+Number(data.updated||0)+' 条，采用修订 '+Number(data.revisions_applied||0)+' 条，重新初标 '+Number(data.reannotated||0)+' 条，送审成功 '+Number(data.submitted||0)+' 条，幂等复用 '+Number(data.reused||0)+' 条；流程失败 '+Number(data.failed||0)+' 条，送审失败 '+Number(data.submission_failed||0)+' 条。';var manual=(data.results||[]).filter(function(item){return item.status==='updated'&&!item.submission_status&&item.review_status!=='submitted';});if(manual.length)message+='\n仍需人工处理 '+manual.length+' 条（待补证据、再次修订、低置信度或门禁未通过）。';var failures=(data.results||[]).filter(function(item){return item.status==='failed'||item.submission_status==='failed';});if(failures.length)message+='\n\n失败明细：\n'+failures.slice(0,8).map(function(item){return item.ingestion_id+'：'+(item.error_message||item.error_code||'处理失败');}).join('\n');alert(message);self.candidateReviews.selected=[];self.loadCandidateReviews();self.loadStats();self.loadCandidateReviewDashboard();return data;})
         .catch(function(error){alert(error.message);return null;})
         .finally(function(){self.candidateReviews.modelAnnotating=false;});
     },

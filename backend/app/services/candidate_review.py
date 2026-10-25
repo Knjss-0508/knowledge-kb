@@ -343,11 +343,13 @@ def evaluate_candidate_state(
     submitted: bool = False,
     failed_reason: str = "",
     auto_review_min_confidence: float = 0.85,
+    batch_model_admission: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     selection_data = dict(selection or {})
     review = normalize_human_review(human_review)
     model = dict(model_review or {})
     annotation = dict(model_annotation or {})
+    model_admission = dict(batch_model_admission or {})
     priority_reasons = model_priority_reasons(model, knowledge=knowledge)
 
     def result(
@@ -480,14 +482,21 @@ def evaluate_candidate_state(
     ):
         return result("ready", True, [], "submit_for_publication_review")
     upstream_eligible = upstream_candidate_eligible(selection_data)
+    try:
+        batch_model_admitted = (
+            model_admission.get("status") == "approved"
+            and model_admission.get("source") == "batch_model_workflow"
+            and int(model_admission.get("draft_version")) == int(draft_version)
+        )
+    except (TypeError, ValueError):
+        batch_model_admitted = False
     raw_confidence = (model if has_model_review else selection_data).get("confidence")
     try:
         model_confidence = float(raw_confidence) if not isinstance(raw_confidence, bool) else -1
     except (TypeError, ValueError):
         model_confidence = -1
     if (
-        upstream_eligible
-        and not has_draft_revision_history
+        ((upstream_eligible and not has_draft_revision_history) or batch_model_admitted)
         and not priority_reasons
         and auto_review_min_confidence <= model_confidence <= 1
         and (
