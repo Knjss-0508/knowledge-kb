@@ -49,6 +49,8 @@ AUTOMATION_RUN_STATUSES = {
     "review_pending": "待人工审核",
     "needs_confirmation": "等待人工确认",
     "failed": "运行失败",
+    # 第二部分在该日期没有任何数据，本次按「空日」跳过；不是失败。
+    "skipped": "已跳过",
 }
 
 DEFAULT_CLUSTER_FAILURE_ABORT_RATIO = 0.5
@@ -195,6 +197,68 @@ class AutomationRunStore:
             if len(manifests) >= max(1, limit):
                 break
         return manifests
+
+    def record_skipped_window(
+        self,
+        *,
+        from_date: str,
+        to_date: str,
+        reason: str,
+        fetched_records: int = 0,
+    ) -> dict[str, Any]:
+        """记录一个「空日」：该日期第二部分没有任何数据，本次跳过。
+
+        这不是失败，也不会产生队列任务；但必须在运行记录里留痕，
+        这样面板的「任务反馈」能说明为什么这一天没有沉淀结果，
+        而不是留下一条查不到原因的空白。
+        """
+
+        timestamp = _now()
+        run_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}"
+        run_dir = self.root / run_id
+        run_dir.mkdir(parents=True, exist_ok=False)
+        manifest = {
+            "manifest_version": AUTOMATION_MANIFEST_VERSION,
+            "release": release_metadata(),
+            "run_id": run_id,
+            "status": "skipped",
+            "status_label": AUTOMATION_RUN_STATUSES["skipped"],
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "finished_at": timestamp,
+            "duration_seconds": 0.0,
+            "source_name": f"second-part-window-{from_date}-{to_date}",
+            "standards_name": "",
+            "run_dir": str(run_dir),
+            "options": {
+                "knowledge_settle_from_date": from_date,
+                "knowledge_settle_to_date": to_date,
+                "second_part_query_from_date": from_date,
+                "second_part_query_to_date": to_date,
+                "skipped_empty_window": True,
+            },
+            "terminology": {},
+            "stages": [],
+            "current_activity": {
+                "stage_id": "second_part_pull",
+                "label": "第二部分拉取",
+                "status": "skipped",
+                "detail": reason,
+                "metrics": {"fetched_records": int(fetched_records)},
+                "updated_at": timestamp,
+            },
+            "activity_history": [],
+            "summary": {
+                "skipped_empty_window": True,
+                "fetched_records": int(fetched_records),
+                "knowledge_settle_from_date": from_date,
+                "knowledge_settle_to_date": to_date,
+            },
+            "artifacts": {},
+            "error": "",
+            "alerts": [reason],
+        }
+        return self.save(manifest)
 
     def update_stage(
         self,

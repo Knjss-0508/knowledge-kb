@@ -188,13 +188,35 @@ def resume_plan(path: str | Path) -> dict[str, Any]:
 
 def _main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("prepare", "commit", "failure", "defer", "resume"))
-    parser.add_argument("--plan", required=True)
+    parser.add_argument(
+        "action",
+        choices=("prepare", "commit", "failure", "defer", "resume", "log-skipped-window"),
+    )
+    # log-skipped-window 只写运行记录，不需要计划文件。
+    parser.add_argument("--plan", default="")
     parser.add_argument("--today", default="")
     parser.add_argument("--from-date", default="")
     parser.add_argument("--to-date", default="")
     parser.add_argument("--reason", default="")
+    parser.add_argument("--output-dir", default="")
+    parser.add_argument("--fetched-records", type=int, default=0)
     args = parser.parse_args()
+    if args.action == "log-skipped-window":
+        if not args.output_dir:
+            raise SystemExit("log-skipped-window 需要 --output-dir")
+        from .automation import AutomationRunStore
+
+        manifest = AutomationRunStore(args.output_dir).record_skipped_window(
+            from_date=args.from_date,
+            to_date=args.to_date,
+            reason=args.reason
+            or f"第二部分在 {args.from_date} 至 {args.to_date} 没有返回任何数据，已跳过。",
+            fetched_records=args.fetched_records,
+        )
+        print(json.dumps({"run_id": manifest["run_id"], "status": manifest["status"], "recorded": True}, ensure_ascii=False))
+        return 0
+    if not args.plan:
+        raise SystemExit(f"{args.action} 需要 --plan")
     if args.action == "prepare":
         today = _parse_date(args.today) if args.today else None
         result = prepare_window(args.plan, today=today)

@@ -90,6 +90,9 @@ def automatic_run_feedback(record: dict[str, Any]) -> dict[str, Any]:
             if effective_status in {"processing", "running"} and has_retry
             else "unhandled"
         )
+    elif effective_status == "skipped":
+        # 空日跳过是正常结果：既不需要处理，也不该显示成「已恢复」。
+        status = "not_required"
     elif has_retry and effective_status in {
         "completed", "done", "review_pending"
     }:
@@ -106,6 +109,8 @@ def automatic_run_feedback(record: dict[str, Any]) -> dict[str, Any]:
             message = str(alerts[-1] or "").strip()
     if not message and cz_failed > 0:
         message = "CZ 候选价值复核同步失败，请查看同步阶段错误。"
+    if not message and effective_status == "skipped":
+        message = "第二部分该日期没有数据，已跳过并继续下一天。"
     if status == "resolved" and not message:
         for attempt in reversed(retry_history):
             if isinstance(attempt, dict) and str(attempt.get("error") or "").strip():
