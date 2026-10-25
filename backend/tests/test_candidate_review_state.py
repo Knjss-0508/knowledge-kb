@@ -15,6 +15,124 @@ from app.schemas.integration import (
 )
 from app.services.knowledge_dedup import DedupDecision
 from app.models.integration import IntegrationIngestion
+from app.services.candidate_review import evaluate_candidate_state
+
+
+_COMPLETE_DRAFT = {
+    "title": "候选标题",
+    "content": {"blocks": [{"type": "paragraph", "text": "候选正文"}]},
+    "recommended_reply": "推荐回复",
+}
+_HUMAN_WORTHY = {
+    "knowledge_value": "worthy",
+    "usability": "usable",
+    "decision": "approved",
+}
+
+
+@pytest.mark.parametrize(
+    "model_review,annotation_status",
+    [
+        ({"suggested_action": "return_for_revision"}, "completed"),
+        ({}, ""),
+    ],
+)
+def test_human_worthy_is_not_rolled_back_by_model_revision(
+    model_review,
+    annotation_status,
+):
+    """人工标为「值得沉淀」且草稿完整时，模型「退回转写」不应改回状态。
+
+    线上问题：人工在复核页把候选标为「值得沉淀」，知识点仍停在
+    revision_required（退回转写），进不了送审阶段。原因是模型初标
+    给出 return_for_revision 时直接覆盖了人工结论。
+    """
+
+    annotation = (
+        {"status": annotation_status, "draft_version": 1}
+        if annotation_status
+        else {}
+    )
+
+    state = evaluate_candidate_state(
+        {},
+        _HUMAN_WORTHY,
+        model_review or None,
+        knowledge=_COMPLETE_DRAFT,
+        model_annotation=annotation,
+        draft_version=1,
+    )
+
+    assert state["review_status"] == "ready"
+    assert state["eligible"] is True
+    assert state["next_action"] == "submit_for_publication_review"
+
+
+def test_human_worthy_still_holds_for_missing_evidence():
+    """证据不足仍要拦住，不能被人工「值得沉淀」放行。"""
+
+    state = evaluate_candidate_state(
+        {},
+        _HUMAN_WORTHY,
+        {
+            "suggested_action": "submit_for_human_review",
+            "evidence_sufficiency": "insufficient",
+        },
+        knowledge=_COMPLETE_DRAFT,
+        model_annotation={"status": "completed", "draft_version": 1},
+        draft_version=1,
+    )
+
+    assert state["review_status"] == "hold_for_evidence"
+    assert state["eligible"] is False
+
+
+def test_human_worthy_still_blocked_by_stale_annotation():
+    """初标对应的草稿版本已过期时，仍需重新标注。"""
+
+    state = evaluate_candidate_state(
+        {},
+        _HUMAN_WORTHY,
+        {"suggested_action": "submit_for_human_review"},
+        knowledge=_COMPLETE_DRAFT,
+        model_annotation={"status": "completed", "draft_version": 1},
+        draft_version=2,
+    )
+
+    assert state["review_status"] == "pending_model_annotation"
+    assert state["eligible"] is False
+
+
+def test_human_worthy_still_blocked_by_incomplete_draft():
+    """模型结论不再覆盖人工，但草稿不完整仍必须拦住。"""
+
+    state = evaluate_candidate_state(
+        {},
+        _HUMAN_WORTHY,
+        {"suggested_action": "submit_for_human_review"},
+        knowledge={"title": "候选标题", "content": {"blocks": []}, "recommended_reply": "回复"},
+        model_annotation={"status": "completed", "draft_version": 1},
+        draft_version=1,
+    )
+
+    assert state["review_status"] == "draft_incomplete"
+    assert state["eligible"] is False
+
+
+def test_model_discard_still_requires_human_confirmation():
+    """模型明确建议不沉淀时，仍走人工确认，不被人工「值得沉淀」直接放行。"""
+
+    state = evaluate_candidate_state(
+        {},
+        _HUMAN_WORTHY,
+        {"suggested_action": "discard", "knowledge_value": "unworthy"},
+        knowledge=_COMPLETE_DRAFT,
+        model_annotation={"status": "completed", "draft_version": 1},
+        draft_version=1,
+    )
+
+    assert state["review_status"] == "discard_review"
+    assert state["eligible"] is False
 
 
 def _new_knowledge_decision() -> DedupDecision:
