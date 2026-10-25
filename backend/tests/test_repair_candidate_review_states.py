@@ -102,3 +102,83 @@ def test_database_preview_rolls_back_and_apply_updates_only_selected_candidate(a
             assert db.get(model, "excel").review_status == "pending"
     finally:
         engine.dispose()
+
+
+def _stuck_candidate(review_status: str, *, worth: bool = True):
+    item = _candidate_item(model_review={
+        "suggested_action": "return_for_revision",
+        "knowledge_value": "worthy" if worth else "unworthy",
+    })
+    item.review_status = review_status
+    item.candidate_payload["human_review"] = {
+        "knowledge_value": "worthy" if worth else "unworthy",
+        "usability": "usable" if worth else "unusable",
+        "decision": "approved" if worth else "rejected",
+    }
+    return item
+
+
+def test_find_stuck_worthy_lists_only_human_approved_records():
+    """只能挑出「人工已确认值得沉淀、草稿完整」且状态卡住的候选。"""
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    model = script.IntegrationIngestion
+    engine = create_engine("sqlite://")
+    model.__table__.create(engine)
+    try:
+        with Session(engine) as db:
+            samples = [
+                ("stuck-revision", "revision_required", True),
+                ("stuck-hold", "hold_for_evidence", True),
+                ("stuck-annotate", "pending_model_annotation", True),
+                ("not-worthy", "revision_required", False),
+                ("already-ready", "ready", True),
+            ]
+            for key, status, worth in samples:
+                values = deepcopy(_stuck_candidate(status, worth=worth).__dict__)
+                values.update(id=key, idempotency_key=key, source_system="answer-hub")
+                db.add(model(**values))
+            db.commit()
+
+            found = script.find_stuck_worthy_candidates(db, limit=50)
+            ids = {row["ingestion_id"] for row in found}
+
+            assert ids == {"stuck-revision", "stuck-hold", "stuck-annotate"}
+            for row in found:
+                assert row["current_status"] in script.STUCK_STATUSES
+    finally:
+        engine.dispose()
+
+
+def test_find_stuck_worthy_apply_moves_selected_to_ready():
+    """重算后，之前卡在退回转写的候选应变为 ready，且不动其他记录。"""
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    model = script.IntegrationIngestion
+    engine = create_engine("sqlite://")
+    model.__table__.create(engine)
+    try:
+        with Session(engine) as db:
+            for key, status in [
+                ("stuck", "revision_required"),
+                ("untouched", "pending"),
+            ]:
+                values = deepcopy(_stuck_candidate(status).__dict__)
+                values.update(id=key, idempotency_key=key, source_system="answer-hub")
+                db.add(model(**values))
+            db.commit()
+
+            found = script.find_stuck_worthy_candidates(db, limit=50)
+            ids = [row["ingestion_id"] for row in found]
+            assert ids == ["stuck"]
+
+            script.repair_candidate_states(db, ids, apply=True)
+            db.expire_all()
+            assert db.get(model, "stuck").review_status == "ready"
+            assert db.get(model, "untouched").review_status == "pending"
+    finally:
+        engine.dispose()
