@@ -357,6 +357,7 @@ def _candidate_state(
         submitted=_candidate_is_locked(item),
         failed_reason=failed_reason,
         auto_review_min_confidence=settings.AUTO_REVIEW_MIN_CONFIDENCE,
+        batch_model_admission=review_metadata.get("batch_model_admission"),
     )
 
 
@@ -588,6 +589,23 @@ def _preserve_previous_candidate_model_review(
                 "replaced_at": datetime.utcnow().isoformat(),
             },
         ]
+
+
+def _record_batch_model_admission(
+    item: IntegrationIngestion,
+    *,
+    actor: str,
+) -> dict[str, Any]:
+    payload, _ = _candidate_payload_with_taxonomy_defaults(item.candidate_payload)
+    metadata = dict(item.review_metadata or {})
+    metadata["batch_model_admission"] = {
+        "status": "approved",
+        "source": "batch_model_workflow",
+        "draft_version": current_draft_version(metadata),
+        "approved_by": actor,
+        "approved_at": datetime.utcnow().isoformat(),
+    }
+    return _persist_candidate_state(item, payload, metadata)
 
 
 def _candidate_review_item(item: IntegrationIngestion) -> CandidateReviewListItem:
@@ -3725,6 +3743,7 @@ def annotate_candidate_reviews(
         selection = dict(payload.get("selection") or item.selection_metadata or {})
         selection["upstream_eligible"] = False
         payload["selection"] = selection
+        review_metadata.pop("batch_model_admission", None)
         review_metadata["model_review"] = dict(
             payload.get("model_review")
             or review_metadata.get("model_review")
@@ -3754,6 +3773,121 @@ def annotate_candidate_reviews(
     )
 
 
+def _model_annotate_candidate_review_once(
+    ingestion_id: str,
+    db: Session,
+    current_user: User,
+) -> CandidateReviewAnnotateResult:
+    item = db.query(IntegrationIngestion).filter(
+        IntegrationIngestion.id == ingestion_id,
+        IntegrationIngestion.review_status.isnot(None),
+        IntegrationIngestion.source_system != "excel",
+    ).first()
+    if not item:
+        return CandidateReviewAnnotateResult(
+            ingestion_id=ingestion_id,
+            status="failed",
+            error_code="CANDIDATE_NOT_FOUND",
+            error_message="候选复核记录不存在。",
+        )
+    if _candidate_is_locked(item):
+        return CandidateReviewAnnotateResult(
+            ingestion_id=ingestion_id,
+            status="failed",
+            review_status=item.review_status,
+            error_code="CANDIDATE_LOCKED",
+            error_message="该候选已进入知识发布审核，不能再次模型标注。",
+        )
+    payload, knowledge = _candidate_payload_with_taxonomy_defaults(item.candidate_payload)
+    draft = {
+        "title": str(knowledge.get("title") or ""),
+        "content": knowledge.get("content"),
+        "recommended_reply": knowledge.get("recommended_reply"),
+        "category_id": knowledge.get("category_id"),
+        "business_type": knowledge.get("business_type"),
+    }
+    blockers = _model_annotation_blockers(knowledge)
+    metadata = dict(item.review_metadata or {})
+    if blockers:
+        state = _persist_candidate_state(item, payload, metadata)
+        return CandidateReviewAnnotateResult(
+            ingestion_id=ingestion_id,
+            status="failed",
+            review_status=state["review_status"],
+            error_code="DRAFT_INCOMPLETE",
+            error_message="；".join(blockers),
+        )
+    active_prompt, active_prompt_version = get_confidence_prompt_for_candidate(
+        item.created_at,
+        db=db,
+    )
+    draft_version = current_draft_version(metadata)
+    try:
+        _complete_missing_reply_for_annotation(
+            knowledge,
+            metadata,
+            actor=current_user.username,
+        )
+        draft["recommended_reply"] = knowledge.get("recommended_reply")
+        draft_version = current_draft_version(metadata)
+        model_review = annotate_transcribed_candidate(
+            {
+                "event_id": item.event_id,
+                "draft": draft,
+                "evidence_excerpt": str(knowledge.get("evidence_excerpt") or ""),
+                "topic_evidence": _candidate_topic_evidence(item, payload),
+                "source_conversation_id": item.source_conversation_id,
+                "previous_model_review": dict(payload.get("model_review") or {}),
+            },
+            review_prompt=active_prompt,
+            prompt_version=active_prompt_version,
+        )
+    except ModelAnnotationError as exc:
+        metadata["model_annotation"] = {
+            **dict(metadata.get("model_annotation") or {}),
+            "status": "failed",
+            "reason": str(exc),
+            "draft_version": draft_version,
+            "annotated_by": current_user.username,
+        }
+        state = _persist_candidate_state(item, payload, metadata)
+        return CandidateReviewAnnotateResult(
+            ingestion_id=ingestion_id,
+            status="failed",
+            review_status=state["review_status"],
+            error_code=exc.error_code,
+            error_message=str(exc),
+        )
+    _preserve_previous_candidate_model_review(payload, metadata)
+    payload["model_review"] = model_review
+    metadata["model_review"] = model_review
+    metadata["model_annotation"] = {
+        "status": "completed",
+        "annotated_by": current_user.username,
+        "requested_model": model_review.get("requested_model"),
+        "resolved_model_version": model_review.get("resolved_model_version"),
+        "prompt_version": active_prompt_version,
+        "batch": True,
+        "draft_version": draft_version,
+        "annotated_at": datetime.utcnow().isoformat(),
+    }
+    state = _persist_candidate_state(item, payload, metadata)
+    revision = _generate_pending_model_draft_revision(
+        item,
+        knowledge,
+        model_review,
+        requested_by=current_user.username,
+    )
+    return CandidateReviewAnnotateResult(
+        ingestion_id=ingestion_id,
+        status="updated",
+        review_status=state["review_status"],
+        model_draft_revision_status=revision.get("status"),
+        error_code=revision.get("error_code"),
+        error_message=revision.get("error_message"),
+    )
+
+
 @router.post(
     "/candidate-reviews:batch-model-annotate",
     response_model=CandidateReviewBatchAnnotateResponse,
@@ -3767,83 +3901,169 @@ def model_annotate_candidate_reviews(
     updated = failed = 0
     results: list[CandidateReviewAnnotateResult] = []
     for ingestion_id in list(dict.fromkeys(body.ingestion_ids)):
-        item = db.query(IntegrationIngestion).filter(
-            IntegrationIngestion.id == ingestion_id,
-            IntegrationIngestion.review_status.isnot(None),
-            IntegrationIngestion.source_system != "excel",
-        ).first()
-        if not item:
-            failed += 1
-            results.append(CandidateReviewAnnotateResult(ingestion_id=ingestion_id, status="failed", error_code="CANDIDATE_NOT_FOUND", error_message="候选复核记录不存在。"))
-            continue
-        if _candidate_is_locked(item):
-            failed += 1
-            results.append(CandidateReviewAnnotateResult(ingestion_id=ingestion_id, status="failed", review_status=item.review_status, error_code="CANDIDATE_LOCKED", error_message="该候选已进入知识发布审核，不能再次模型标注。"))
-            continue
-        payload, knowledge = _candidate_payload_with_taxonomy_defaults(item.candidate_payload)
-        draft = {"title": str(knowledge.get("title") or ""), "content": knowledge.get("content"), "recommended_reply": knowledge.get("recommended_reply"), "category_id": knowledge.get("category_id"), "business_type": knowledge.get("business_type")}
-        blockers = _model_annotation_blockers(knowledge)
-        metadata = dict(item.review_metadata or {})
-        if blockers:
-            state = _persist_candidate_state(item, payload, metadata)
-            failed += 1
-            results.append(CandidateReviewAnnotateResult(ingestion_id=ingestion_id, status="failed", review_status=state["review_status"], error_code="DRAFT_INCOMPLETE", error_message="；".join(blockers)))
-            continue
-        active_prompt, active_prompt_version = get_confidence_prompt_for_candidate(
-            item.created_at,
-            db=db,
-        )
-        draft_version = current_draft_version(metadata)
         try:
-            _complete_missing_reply_for_annotation(
-                knowledge, metadata, actor=current_user.username,
+            result = _model_annotate_candidate_review_once(
+                ingestion_id,
+                db,
+                current_user,
             )
-            draft["recommended_reply"] = knowledge.get("recommended_reply")
-            draft_version = current_draft_version(metadata)
-            model_review = annotate_transcribed_candidate({"event_id": item.event_id, "draft": draft, "evidence_excerpt": str(knowledge.get("evidence_excerpt") or ""), "topic_evidence": _candidate_topic_evidence(item, payload), "source_conversation_id": item.source_conversation_id, "previous_model_review": dict(payload.get("model_review") or {})}, review_prompt=active_prompt, prompt_version=active_prompt_version)
-        except ModelAnnotationError as exc:
-            metadata["model_annotation"] = {
-                **dict(metadata.get("model_annotation") or {}),
-                "status": "failed",
-                "reason": str(exc),
-                "draft_version": draft_version,
-                "annotated_by": current_user.username,
-            }
-            state = _persist_candidate_state(item, payload, metadata)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Unexpected batch model annotation failure for candidate %s",
+                ingestion_id,
+            )
+            result = CandidateReviewAnnotateResult(
+                ingestion_id=ingestion_id,
+                status="failed",
+                error_code="BATCH_MODEL_ANNOTATION_FAILED",
+                error_message="批量模型初标发生异常，请重试该候选。",
+            )
+        results.append(result)
+        if result.status == "updated":
+            updated += 1
+        else:
             failed += 1
-            results.append(CandidateReviewAnnotateResult(ingestion_id=ingestion_id, status="failed", review_status=state["review_status"], error_code=exc.error_code, error_message=str(exc)))
-            continue
-        _preserve_previous_candidate_model_review(payload, metadata)
-        payload["model_review"] = model_review
-        metadata["model_review"] = model_review
-        metadata["model_annotation"] = {
-            "status": "completed",
-            "annotated_by": current_user.username,
-            "requested_model": model_review.get("requested_model"),
-            "resolved_model_version": model_review.get("resolved_model_version"),
-            "prompt_version": active_prompt_version,
-            "batch": True,
-            "draft_version": draft_version,
-            "annotated_at": datetime.utcnow().isoformat(),
-        }
-        state = _persist_candidate_state(item, payload, metadata)
-        revision = _generate_pending_model_draft_revision(
-            item,
-            knowledge,
-            model_review,
-            requested_by=current_user.username,
-        )
-        updated += 1
-        results.append(CandidateReviewAnnotateResult(
-            ingestion_id=ingestion_id,
-            status="updated",
-            review_status=state["review_status"],
-            model_draft_revision_status=revision.get("status"),
-            error_code=revision.get("error_code"),
-            error_message=revision.get("error_message"),
-        ))
-    db.commit()
-    return CandidateReviewBatchAnnotateResponse(updated=updated, failed=failed, results=results)
+
+    revisions_applied = reannotated = 0
+    if getattr(body, "apply_model_revisions", False):
+        for result in results:
+            if result.status != "updated":
+                continue
+            if result.model_draft_revision_status == "generation_failed":
+                result.status = "failed"
+                updated -= 1
+                failed += 1
+                continue
+            if result.model_draft_revision_status != "pending_human_apply":
+                continue
+            try:
+                apply_candidate_review_model_revision(
+                    result.ingestion_id,
+                    db,
+                    current_user,
+                )
+                result.revision_applied = True
+                revisions_applied += 1
+                refreshed = annotate_candidate_review_draft(
+                    result.ingestion_id,
+                    db,
+                    current_user,
+                )
+            except Exception as exc:
+                db.rollback()
+                logger.exception(
+                    "Batch model revision workflow failed for candidate %s",
+                    result.ingestion_id,
+                )
+                result.status = "failed"
+                result.error_code = "MODEL_REVISION_WORKFLOW_FAILED"
+                result.error_message = (
+                    str(exc.detail)
+                    if isinstance(exc, HTTPException)
+                    else "模型修订或重新初标发生异常，请重试该候选。"
+                )
+                updated -= 1
+                failed += 1
+                continue
+            result.reannotated = True
+            result.review_status = refreshed.review_status
+            result.model_draft_revision_status = (
+                refreshed.model_draft_revision or {}
+            ).get("status")
+            reannotated += 1
+            if result.model_draft_revision_status == "generation_failed":
+                revision = refreshed.model_draft_revision or {}
+                result.status = "failed"
+                result.error_code = revision.get("error_code")
+                result.error_message = revision.get("error_message")
+                updated -= 1
+                failed += 1
+
+        for result in results:
+            if (
+                result.status != "updated"
+                or result.model_draft_revision_status == "pending_human_apply"
+            ):
+                continue
+            try:
+                item = db.query(IntegrationIngestion).filter(
+                    IntegrationIngestion.id == result.ingestion_id,
+                ).first()
+                if not item:
+                    raise ValueError("CANDIDATE_NOT_FOUND")
+                state = _record_batch_model_admission(
+                    item,
+                    actor=current_user.username,
+                )
+                db.commit()
+                result.review_status = state["review_status"]
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "Batch model admission failed for candidate %s",
+                    result.ingestion_id,
+                )
+                result.status = "failed"
+                result.error_code = "MODEL_AUTO_ADMISSION_FAILED"
+                result.error_message = "模型自动准入计算异常，请重试该候选。"
+                updated -= 1
+                failed += 1
+
+    submitted = reused = submission_failed = 0
+    if getattr(body, "submit_ready", False):
+        ready_ids = [
+            result.ingestion_id
+            for result in results
+            if result.status == "updated" and result.review_status == "ready"
+        ]
+        result_by_id = {result.ingestion_id: result for result in results}
+        for ingestion_id in ready_ids:
+            result = result_by_id[ingestion_id]
+            try:
+                submission = submit_candidate_reviews(
+                    CandidateReviewBatchSubmit(ingestion_ids=[ingestion_id]),
+                    db,
+                    current_user,
+                )
+                for submission_result in submission.results:
+                    result.submission_status = submission_result.status
+                    result.knowledge_id = submission_result.knowledge_id
+                    if submission_result.status in {"submitted", "reused"}:
+                        result.review_status = "submitted"
+                    elif submission_result.status == "failed":
+                        if submission_result.error_code == "DUPLICATE_REVIEW_REQUIRED":
+                            result.review_status = "ready"
+                        elif submission_result.error_code != "REVIEW_NOT_READY":
+                            result.review_status = "failed"
+                        result.error_code = submission_result.error_code
+                        result.error_message = submission_result.error_message
+                submitted += submission.submitted
+                reused += submission.reused
+                submission_failed += submission.failed
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "Batch candidate submission failed for candidate %s",
+                    ingestion_id,
+                )
+                submission_failed += 1
+                result.submission_status = "failed"
+                result.error_code = "BATCH_SUBMISSION_FAILED"
+                result.error_message = "候选送审发生异常，请单独重试。"
+                continue
+
+    return CandidateReviewBatchAnnotateResponse(
+        updated=updated,
+        failed=failed,
+        revisions_applied=revisions_applied,
+        reannotated=reannotated,
+        submitted=submitted,
+        reused=reused,
+        submission_failed=submission_failed,
+        results=results,
+    )
 
 
 @router.patch(
@@ -3916,6 +4136,8 @@ def update_candidate_review(
     payload["knowledge"] = knowledge
 
     review_metadata = dict(item.review_metadata or {})
+    if {"knowledge_value", "usability", "decision"} & updates.keys():
+        review_metadata.pop("batch_model_admission", None)
     draft_after = _candidate_draft_snapshot(knowledge)
     draft_changed = draft_before != draft_after
     _append_draft_revision_history(
@@ -4208,6 +4430,22 @@ def apply_candidate_review_model_revision(
         after=_candidate_draft_snapshot(knowledge),
         actor=current_user.username,
     )
+    human_review = dict(
+        payload.get("human_review")
+        or metadata.get("human_review")
+        or {}
+    )
+    human_review_version = metadata.get("human_review_draft_version")
+    try:
+        human_review_is_current = int(human_review_version) == draft_version
+    except (TypeError, ValueError):
+        human_review_is_current = False
+    if (
+        human_review_is_current
+        and normalize_knowledge_value(human_review.get("knowledge_value")) == "worthy"
+    ):
+        # Human review owns the topic's value decision; the model owns draft quality.
+        metadata["human_review_draft_version"] = next_draft_version
     revision.update({
         "status": "applied",
         "applied_by": current_user.username,

@@ -19,6 +19,71 @@ def test_model_revision_requires_human_apply_and_keeps_original_draft() -> None:
     assert "采用模型修改并重新初标" in FRONTEND
 
 
+def test_batch_model_annotation_requests_full_revision_and_submission_workflow() -> None:
+    assert "批量模型标注并送审" in FRONTEND
+    assert "apply_model_revisions:true" in FRONTEND
+    assert "submit_ready:true" in FRONTEND
+    assert "采用修订 " in FRONTEND
+    assert "重新初标 " in FRONTEND
+    assert "送审成功 " in FRONTEND
+
+
+def test_batch_model_annotation_sends_full_workflow_flags() -> None:
+    node = shutil.which("node")
+    assert node
+    script = r"""
+        const assert = require('assert');
+        const vm = require('vm');
+        const source = require('fs').readFileSync(0, 'utf8');
+        const start = source.indexOf('    batchModelAnnotateCandidateReviews: function(');
+        const end = source.indexOf('    annotateCandidateReviewIds: function(', start);
+        const expression = source.slice(start, end).trim()
+          .slice('batchModelAnnotateCandidateReviews'.length + 2).replace(/,$/, '');
+        const requests = [], alerts = [];
+        const sandbox = {
+          API:'',
+          confirm:() => true,
+          alert:message => alerts.push(message),
+          fetch:(url, options) => {
+            requests.push({url, options});
+            return Promise.resolve({ok:true,json:() => Promise.resolve({
+              updated:1,failed:0,revisions_applied:1,reannotated:1,
+              submitted:1,reused:0,submission_failed:0,
+              results:[{ingestion_id:'ing-1',status:'updated',
+                review_status:'submitted',submission_status:'submitted'}]
+            })});
+          }
+        };
+        const method = vm.runInNewContext('(' + expression + ')', sandbox);
+        const context = {
+          candidateReviews:{selected:['ing-1'],modelAnnotating:false},
+          authHeaders:headers => headers,
+          loadCandidateReviews:() => {},
+          loadStats:() => {},
+          loadCandidateReviewDashboard:() => {}
+        };
+        method.call(context);
+        setImmediate(() => {
+          assert.strictEqual(requests.length, 1);
+          const body = JSON.parse(requests[0].options.body);
+          assert.deepStrictEqual(body.ingestion_ids, ['ing-1']);
+          assert.strictEqual(body.apply_model_revisions, true);
+          assert.strictEqual(body.submit_ready, true);
+          assert(alerts[0].includes('送审成功 1 条'));
+          assert.strictEqual(context.candidateReviews.modelAnnotating, false);
+        });
+    """
+    completed = subprocess.run(
+        [node, "-e", script],
+        input=FRONTEND,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
 def test_model_annotation_failure_is_visible_without_hiding_previous_review():
     assert "本次模型标注失败，已保留原有初标" in FRONTEND
     assert "candidateReviews.current.model_annotation.status==='failed'" in FRONTEND

@@ -4,6 +4,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.routes import integration
+from app.schemas.integration import (
+    CandidateReviewBatchModelAnnotate,
+    CandidateReviewBatchSubmitResponse,
+    CandidateReviewSubmitResult,
+)
 from app.services.model_annotation import ModelAnnotationError
 
 
@@ -250,6 +255,238 @@ def test_batch_model_annotation_executes_requested_draft_revisions(monkeypatch):
     assert item.candidate_payload["knowledge"]["content"]["blocks"][0]["value"] == "原正文"
 
 
+def test_batch_model_annotation_can_apply_revision_reannotate_and_submit_ready(
+    monkeypatch,
+):
+    item = _candidate_item()
+    item.candidate_payload["selection"] = {"upstream_eligible": False}
+    item.candidate_payload["human_review"] = {}
+    item.review_metadata = {"draft_version": 1}
+    item.review_status = "pending"
+    item.status = "candidate_pending"
+    db = _Db(item)
+    annotation_calls = []
+    monkeypatch.setattr(
+        integration,
+        "_candidate_payload_with_taxonomy_defaults",
+        lambda payload: (payload, payload["knowledge"]),
+    )
+    monkeypatch.setattr(
+        integration,
+        "get_confidence_prompt_for_candidate",
+        lambda *_args, **_kwargs: ("审核 Prompt", "review-v9"),
+    )
+
+    def annotate(*_args, **_kwargs):
+        annotation_calls.append(True)
+        if len(annotation_calls) == 1:
+            return {
+                "knowledge_value": "worthy",
+                "suggested_action": "return_for_revision",
+                "draft_quality": "revision_required",
+                "confidence": 0.95,
+                "resolved_model_version": "model-v5",
+                "prompt_version": "review-v9",
+            }
+        return {
+            "knowledge_value": "worthy",
+            "suggested_action": "submit_for_human_review",
+            "draft_quality": "approved",
+            "confidence": 0.96,
+            "resolved_model_version": "model-v5",
+            "prompt_version": "review-v9",
+        }
+
+    monkeypatch.setattr(integration, "annotate_transcribed_candidate", annotate)
+    monkeypatch.setattr(
+        integration,
+        "revise_transcribed_candidate_draft",
+        lambda _candidate: {
+            "revised_content": "批量采用后的正文",
+            "revised_recommended_reply": "批量采用后的回复",
+            "resolved_model_version": "model-v5",
+            "prompt_version": "draft-revision-v2",
+        },
+    )
+    submitted_ids = []
+
+    def submit(body, _db, _user):
+        submitted_ids.extend(body.ingestion_ids)
+        item.review_status = "submitted"
+        return CandidateReviewBatchSubmitResponse(
+            submitted=1,
+            failed=0,
+            reused=0,
+            results=[
+                CandidateReviewSubmitResult(
+                    ingestion_id=item.id,
+                    status="submitted",
+                    knowledge_id="K-1",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(integration, "submit_candidate_reviews", submit)
+
+    result = integration.model_annotate_candidate_reviews(
+        CandidateReviewBatchModelAnnotate(
+            ingestion_ids=[item.id],
+            apply_model_revisions=True,
+            submit_ready=True,
+        ),
+        db,
+        SimpleNamespace(username="reviewer"),
+    )
+
+    assert len(annotation_calls) == 2
+    assert item.candidate_payload["knowledge"]["content"]["blocks"][0]["value"] == "批量采用后的正文"
+    assert item.review_metadata["model_draft_revision"]["status"] == "applied"
+    assert item.review_metadata["batch_model_admission"]["draft_version"] == 2
+    assert item.review_metadata["human_review_draft_version"] == 1
+    assert submitted_ids == [item.id]
+    assert result.revisions_applied == 1
+    assert result.reannotated == 1
+    assert result.submitted == 1
+    assert result.results[0].revision_applied is True
+    assert result.results[0].reannotated is True
+    assert result.results[0].submission_status == "submitted"
+    assert result.results[0].knowledge_id == "K-1"
+
+
+def test_batch_model_workflow_continues_after_one_revision_crashes(monkeypatch):
+    item = _candidate_item()
+    item.id = "ing-2"
+    db = _Db(item)
+    monkeypatch.setattr(
+        integration,
+        "_model_annotate_candidate_review_once",
+        lambda ingestion_id, *_args: integration.CandidateReviewAnnotateResult(
+            ingestion_id=ingestion_id,
+            status="updated",
+            review_status="revision_required",
+            model_draft_revision_status="pending_human_apply",
+        ),
+    )
+
+    def apply_revision(ingestion_id, *_args):
+        if ingestion_id == "ing-1":
+            raise RuntimeError("broken historical metadata")
+
+    monkeypatch.setattr(
+        integration,
+        "apply_candidate_review_model_revision",
+        apply_revision,
+    )
+    monkeypatch.setattr(
+        integration,
+        "annotate_candidate_review_draft",
+        lambda *_args: SimpleNamespace(
+            review_status="pending",
+            model_draft_revision={},
+        ),
+    )
+    monkeypatch.setattr(
+        integration,
+        "_record_batch_model_admission",
+        lambda *_args, **_kwargs: {"review_status": "ready"},
+    )
+    submitted_ids = []
+
+    def submit(body, *_args):
+        submitted_ids.extend(body.ingestion_ids)
+        return CandidateReviewBatchSubmitResponse(
+            submitted=1,
+            failed=0,
+            reused=0,
+            results=[
+                CandidateReviewSubmitResult(
+                    ingestion_id=body.ingestion_ids[0],
+                    status="submitted",
+                    knowledge_id="K-2",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(integration, "submit_candidate_reviews", submit)
+
+    result = integration.model_annotate_candidate_reviews(
+        CandidateReviewBatchModelAnnotate(
+            ingestion_ids=["ing-1", "ing-2"],
+            apply_model_revisions=True,
+            submit_ready=True,
+        ),
+        db,
+        SimpleNamespace(username="reviewer"),
+    )
+
+    assert result.failed == 1
+    assert result.submitted == 1
+    assert result.results[0].error_code == "MODEL_REVISION_WORKFLOW_FAILED"
+    assert result.results[1].submission_status == "submitted"
+    assert submitted_ids == ["ing-2"]
+    assert db.rollback_count == 1
+
+
+def test_batch_model_workflow_continues_when_one_submission_crashes(
+    monkeypatch,
+):
+    item = _candidate_item()
+    db = _Db(item)
+    monkeypatch.setattr(
+        integration,
+        "_model_annotate_candidate_review_once",
+        lambda ingestion_id, *_args: integration.CandidateReviewAnnotateResult(
+            ingestion_id=ingestion_id,
+            status="updated",
+            review_status="pending",
+        ),
+    )
+    monkeypatch.setattr(
+        integration,
+        "_record_batch_model_admission",
+        lambda *_args, **_kwargs: {"review_status": "ready"},
+    )
+    submitted_ids = []
+
+    def submit(body, *_args):
+        ingestion_id = body.ingestion_ids[0]
+        submitted_ids.append(ingestion_id)
+        if ingestion_id == "ing-1":
+            raise RuntimeError("submission failed")
+        item.review_status = "submitted"
+        return CandidateReviewBatchSubmitResponse(
+            submitted=1,
+            failed=0,
+            reused=0,
+            results=[
+                CandidateReviewSubmitResult(
+                    ingestion_id=ingestion_id,
+                    status="submitted",
+                    knowledge_id=f"K-{ingestion_id}",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(integration, "submit_candidate_reviews", submit)
+
+    result = integration.model_annotate_candidate_reviews(
+        CandidateReviewBatchModelAnnotate(
+            ingestion_ids=["ing-1", "ing-2"],
+            apply_model_revisions=True,
+            submit_ready=True,
+        ),
+        db,
+        SimpleNamespace(username="reviewer"),
+    )
+
+    assert submitted_ids == ["ing-1", "ing-2"]
+    assert result.submitted == 1
+    assert result.submission_failed == 1
+    assert result.results[0].error_code == "BATCH_SUBMISSION_FAILED"
+    assert result.results[1].submission_status == "submitted"
+    assert db.rollback_count == 1
+
+
 def test_model_revision_failure_is_persisted_for_retry(monkeypatch):
     item = _candidate_item()
 
@@ -385,6 +622,7 @@ class _Query:
 class _Db:
     def __init__(self, item):
         self.item = item
+        self.rollback_count = 0
 
     def query(self, *_args):
         return _Query(self.item)
@@ -394,6 +632,9 @@ class _Db:
 
     def commit(self):
         pass
+
+    def rollback(self):
+        self.rollback_count += 1
 
     def refresh(self, _item):
         pass
@@ -433,3 +674,37 @@ def test_human_apply_is_the_only_step_that_changes_draft_and_appends_history():
     assert history[0]["before"]["content"]["blocks"][0]["value"] == "原正文"
     assert history[0]["after"]["content"]["blocks"][0]["value"] == "采用后正文"
     assert item.review_metadata["model_annotation"]["status"] == "stale_after_draft_revision"
+
+
+def test_model_revision_does_not_revive_stale_human_value():
+    item = _candidate_item()
+    item.candidate_payload["human_review"] = {
+        "knowledge_value": "worthy",
+        "usability": "usable",
+        "decision": "approved",
+    }
+    item.review_metadata = {
+        "draft_version": 2,
+        "human_review": dict(item.candidate_payload["human_review"]),
+        "human_review_draft_version": 1,
+        "model_draft_revision": {
+            "revision": 1,
+            "revision_id": "draft-v2-r1",
+            "base_draft_version": 2,
+            "status": "pending_human_apply",
+            "revised_draft": {
+                "title": "原草稿",
+                "content": {"blocks": [{"type": "text", "value": "采用后正文"}]},
+                "recommended_reply": "采用后回复",
+            },
+        },
+    }
+
+    integration.apply_candidate_review_model_revision(
+        item.id,
+        _Db(item),
+        SimpleNamespace(username="reviewer"),
+    )
+
+    assert item.review_metadata["draft_version"] == 3
+    assert item.review_metadata["human_review_draft_version"] == 1

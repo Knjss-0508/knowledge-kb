@@ -367,6 +367,10 @@ class CandidateReviewAnnotateResult(BaseModel):
     status: Literal["updated", "failed"]
     review_status: str | None = None
     model_draft_revision_status: str | None = None
+    revision_applied: bool = False
+    reannotated: bool = False
+    submission_status: Literal["submitted", "failed", "reused"] | None = None
+    knowledge_id: str | None = None
     error_code: str | None = None
     error_message: str | None = None
 
@@ -374,11 +378,18 @@ class CandidateReviewAnnotateResult(BaseModel):
 class CandidateReviewBatchAnnotateResponse(BaseModel):
     updated: int
     failed: int
+    revisions_applied: int = 0
+    reannotated: int = 0
+    submitted: int = 0
+    reused: int = 0
+    submission_failed: int = 0
     results: list[CandidateReviewAnnotateResult]
 
 
 class CandidateReviewBatchModelAnnotate(BaseModel):
     ingestion_ids: list[str] = Field(..., min_length=1, max_length=500)
+    apply_model_revisions: bool = False
+    submit_ready: bool = False
 
 
 class CandidateReviewSubmitResult(BaseModel):
