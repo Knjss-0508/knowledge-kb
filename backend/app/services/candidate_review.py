@@ -395,6 +395,7 @@ def evaluate_candidate_state(
 
     annotation_status = _text(annotation.get("status"))
     annotation_version = annotation.get("draft_version")
+
     if annotation_status == "stale_after_draft_revision":
         return result(
             "pending_model_annotation",
@@ -428,6 +429,32 @@ def evaluate_candidate_state(
             )
         action = _text(model.get("suggested_action"))
         disposition = model_draft_disposition(model)
+        # 线上问题：人工在复核页标为「值得沉淀」后，知识点仍停留在
+        # revision_required（退回转写），进不了送审阶段。
+        # 原因是模型初标只要给出 return_for_revision，就直接把状态改回
+        # 「需修改」。人工已经确认沉淀价值、草稿也完整时，这条建议不应
+        # 覆盖人工结论——转写文字可以后续再润色，不该阻断送审。
+        #
+        # 其余模型门禁保持原样：证据不足、初标过期、建议不沉淀等
+        # 仍然会拦住候选。
+        human_confirmed_worthy = knowledge_value == "worthy" and (
+            usability == "usable"
+            or decision in {"approved", "approved_with_changes"}
+        )
+        only_asks_for_revision = (
+            action == "return_for_revision"
+            or (
+                action not in {"submit_for_human_review", "hold_for_evidence", "discard"}
+                and disposition == "revision_required"
+            )
+        )
+        if (
+            human_confirmed_worthy
+            and knowledge is not None
+            and only_asks_for_revision
+            and not _has_explicit_evidence_risk(model)
+        ):
+            return result("ready", True, [], "submit_for_publication_review")
         if _has_explicit_evidence_risk(model):
             return result(
                 "hold_for_evidence",
