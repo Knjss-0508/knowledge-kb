@@ -392,6 +392,16 @@ class CandidateReviewBatchModelAnnotate(BaseModel):
     submit_ready: bool = False
 
 
+class CandidateModelAutomationUpdate(BaseModel):
+    enabled: bool
+
+
+class CandidateModelTaskCreate(BaseModel):
+    ingestion_ids: list[str] = Field(..., min_length=1, max_length=500)
+    apply_model_revisions: Literal[True] = True
+    submit_ready: Literal[True] = True
+
+
 class CandidateReviewSubmitResult(BaseModel):
     ingestion_id: str
     status: Literal["submitted", "failed", "reused"]

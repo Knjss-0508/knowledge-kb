@@ -453,6 +453,14 @@
     .candidate-review-page .candidate-filter-field.date-range .candidate-date-inputs{display:grid;grid-template-columns:1fr 18px 1fr;align-items:center;gap:8px}.candidate-date-separator{text-align:center;color:#98a2b3}
     .candidate-review-page .candidate-priority-field{align-self:end;min-height:42px;display:flex;align-items:center;gap:8px;padding-bottom:1px;color:#667085;font-size:13px;white-space:nowrap;cursor:pointer}.candidate-review-page .candidate-priority-field input{accent-color:#0b9f88}
     .candidate-review-page .candidate-filter-actions{min-height:74px;padding:16px 24px;border-top:1px solid #edf1f4;display:flex;align-items:center;gap:12px;justify-content:flex-end;flex-wrap:wrap}
+    .candidate-review-page .candidate-model-panel{padding-bottom:16px}
+    .candidate-review-page .candidate-model-panel>.review-subtle,.candidate-review-page .candidate-model-panel>[role=alert]{margin:0 24px 12px;line-height:1.7}
+    .candidate-review-page .candidate-model-panel .candidate-filter-actions{justify-content:flex-start;min-height:54px}
+    .candidate-review-page .candidate-model-task{margin:12px 24px 0;border:1px solid #edf1f4;border-radius:7px;padding-bottom:12px}
+    .candidate-review-page .candidate-model-task .candidate-filter-actions{padding:12px 16px;border-top:0}
+    .candidate-review-page .candidate-model-task details,.candidate-review-page .candidate-model-task>p{margin:0 16px;line-height:1.8;overflow-wrap:anywhere}
+    .candidate-review-page .candidate-model-task summary{cursor:pointer;color:#087f6b}
+    .candidate-review-page .candidate-model-task progress{width:140px;accent-color:#0b9f88}
     .candidate-review-page .candidate-filter-actions .review-selected-note{margin-right:auto;font-size:13px;color:#667085}.candidate-review-page .candidate-filter-actions .review-selected-note b{color:#0b9f88}
     .candidate-review-page .candidate-filter-actions .btn{height:38px;padding:0 16px;border-radius:7px;font-size:13px;font-weight:700;white-space:nowrap}
     .candidate-review-page .candidate-filter-actions .btn.bp{background:#0b9f88;border-color:#0b9f88}.candidate-review-page .candidate-filter-actions .btn.bp:hover:not(:disabled){background:#087f6b;border-color:#087f6b}
@@ -928,8 +936,35 @@
         <button class="btn bd" @click="resetCandidateReviewFilters" :disabled="candidateReviews.loading">重置筛选</button>
         <button class="btn br" @click="batchAnnotateCandidateReviews('unworthy')" :disabled="candidateReviews.annotating||!candidateReviews.selected.length">批量标为不沉淀</button>
         <button class="btn bs" @click="batchAnnotateCandidateReviews('worthy')" :disabled="candidateReviews.annotating||!candidateReviews.selected.length">批量标为值得沉淀</button>
-        <button class="btn b-template" @click="batchModelAnnotateCandidateReviews" :disabled="candidateReviews.modelAnnotating||!candidateReviews.selected.length">{{candidateReviews.modelAnnotating?'模型处理并送审中...':'批量模型标注并送审'}}</button>
+        <button class="btn b-template" @click="batchModelAnnotateCandidateReviews" :disabled="candidateReviews.taskCreating||!candidateReviews.selected.length">{{candidateReviews.taskCreating?'创建后台任务中...':'批量模型标注并送审'}}</button>
         <button class="btn bp" @click="submitSelectedCandidateReviews" :disabled="candidateReviews.submitting||!selectedSubmittableReviewIds().length">{{candidateReviews.submitting?'送审中...':'批量送审'}}</button>
+      </div>
+    </section>
+    <section class="candidate-filter-card candidate-model-panel">
+      <div class="candidate-filter-actions">
+        <label class="candidate-training-toggle"><input type="checkbox" v-model="candidateReviews.automationEnabled" @change="setCandidateModelAutomation(candidateReviews.automationEnabled)" :disabled="candidateReviews.automationSaving"> 自动模型标注并送审</label>
+        <span class="review-subtle">{{candidateReviews.automationEnabled?'已开启：持续扫描待处理候选，每次最多100条，逐条执行。':'开启后会处理已有及后续新增的待处理候选。'}}</span>
+      </div>
+      <p class="review-subtle">模型修订、重新初标、查重和送审在后台执行，关闭页面后继续；低置信度、证据不足及未通过门禁的候选保留人工处理。关闭自动处理后，当前条完成即停止后续自动任务。</p>
+      <p v-if="candidateReviews.taskError" role="alert">{{candidateReviews.taskError}}</p>
+      <div v-for="task in candidateReviews.modelTasks" :key="task.id" class="candidate-model-task">
+        <div class="candidate-filter-actions">
+          <b>{{task.source==='automatic'?'自动任务':'手动批量任务'}} · {{candidateModelTaskStatus(task.status)}}</b>
+          <span>{{task.completed}} / {{task.total}} 条</span>
+          <progress :value="task.completed" :max="task.total" :aria-label="'模型任务进度 '+task.completed+'/'+task.total"></progress>
+          <span>标注成功 {{task.updated}} · 采用修订 {{task.revisions_applied}} · 重新初标 {{task.reannotated}} · 送审成功 {{task.submitted}} · 复用 {{task.reused}} · 失败 {{task.failed+task.submission_failed}}</span>
+          <button v-if="candidateModelFailedIds(task).length&&task.status!=='queued'&&task.status!=='running'" class="btn bd bsm" @click="startCandidateModelTask(candidateModelFailedIds(task))" :disabled="candidateReviews.taskCreating">重试失败项</button>
+        </div>
+        <p v-if="task.error_message" role="alert">{{task.error_message}}</p>
+        <details v-if="task.results&&task.results.length">
+          <summary>查看逐条结果与人工处理原因</summary>
+          <div v-for="result in task.results" :key="result.ingestion_id" class="review-subtle">{{result.ingestion_id}} · {{result.submission_status==='submitted'||result.submission_status==='reused'?'已送审':(result.error_message||reviewStatusLabel(result.review_status)||result.status)}}</div>
+        </details>
+      </div>
+      <div v-if="candidateReviews.taskTotal>10" class="candidate-filter-actions">
+        <span>历史任务 · 第 {{candidateReviews.taskPage}} / {{Math.ceil(candidateReviews.taskTotal/10)}} 页，共 {{candidateReviews.taskTotal}} 个</span>
+        <button class="btn bd bsm" :disabled="candidateReviews.taskPage<=1||candidateReviews.taskLoading" @click="changeCandidateModelTaskPage(candidateReviews.taskPage-1)">上一页任务</button>
+        <button class="btn bd bsm" :disabled="candidateReviews.taskPage*10>=candidateReviews.taskTotal||candidateReviews.taskLoading" @click="changeCandidateModelTaskPage(candidateReviews.taskPage+1)">下一页任务</button>
       </div>
     </section>
     <div class="integration-hint">Answer Hub 同步到本页后，复核人可补充组员验证与修改意见。批量送审只创建“待发布审核”知识，不会直接发布。</div>
@@ -2537,6 +2572,16 @@ Vue.createApp({
         },
         saving: false,
         modelRevisionLoading: false,
+        modelAnnotating: false,
+        taskCreating: false,
+        automationEnabled: false,
+        automationSaving: false,
+        modelTasks: [],
+        taskPage: 1,
+        taskTotal: 0,
+        taskError: '',
+        taskPoller: null,
+        taskLoading: false,
         refreshRequired: {},
         submitting: false,
         updatedAt: '-'
@@ -4971,6 +5016,7 @@ Vue.createApp({
       if (!this.businessTypes.length) this.loadBusinessTypes();
       this.loadCats();
       this.loadCandidateReviews();
+      this.loadCandidateModelTasks();
     },
     openCandidateReviewStatus: function(status, priorityOnly) {
       if (!this.can('knowledge:submit')) return;
@@ -5534,13 +5580,76 @@ Vue.createApp({
     batchModelAnnotateCandidateReviews: function() {
       var ids=this.candidateReviews.selected.slice();
       if (!ids.length) return;
-      if (!confirm('确认对选中的 '+ids.length+' 条候选执行完整模型流程？系统会按候选创建时间选择已批准 Prompt，自动采用一次模型修订并重新初标；最终通过送审门禁的候选会直接进入知识待审核队列，不会正式发布。')) return;
-      var self=this; self.candidateReviews.modelAnnotating=true;
-      fetch(API+'/integration/candidate-reviews:batch-model-annotate',{method:'POST',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({ingestion_ids:ids,apply_model_revisions:true,submit_ready:true})})
-        .then(function(response){return response.json().then(function(data){if(!response.ok)throw new Error(data.detail||'批量模型标注失败');return data;});})
-        .then(function(data){var message='批量模型流程完成：标注成功 '+Number(data.updated||0)+' 条，采用修订 '+Number(data.revisions_applied||0)+' 条，重新初标 '+Number(data.reannotated||0)+' 条，送审成功 '+Number(data.submitted||0)+' 条，幂等复用 '+Number(data.reused||0)+' 条；流程失败 '+Number(data.failed||0)+' 条，送审失败 '+Number(data.submission_failed||0)+' 条。';var manual=(data.results||[]).filter(function(item){return item.status==='updated'&&!item.submission_status&&item.review_status!=='submitted';});if(manual.length)message+='\n仍需人工处理 '+manual.length+' 条（待补证据、再次修订、低置信度或门禁未通过）。';var failures=(data.results||[]).filter(function(item){return item.status==='failed'||item.submission_status==='failed';});if(failures.length)message+='\n\n失败明细：\n'+failures.slice(0,8).map(function(item){return item.ingestion_id+'：'+(item.error_message||item.error_code||'处理失败');}).join('\n');alert(message);self.candidateReviews.selected=[];self.loadCandidateReviews();self.loadStats();self.loadCandidateReviewDashboard();return data;})
-        .catch(function(error){alert(error.message);return null;})
-        .finally(function(){self.candidateReviews.modelAnnotating=false;});
+      if (!confirm('确认将选中的 '+ids.length+' 条候选加入后台模型任务？系统会按候选创建时间选择已批准 Prompt，自动采用一次模型修订并重新初标；通过送审门禁后进入知识待审核队列。关闭页面后任务继续执行。')) return;
+      return this.startCandidateModelTask(ids);
+    },
+    readCandidateTaskResponse: function(response) {
+      return response.text().then(function(text) {
+        var data;
+        try { data=JSON.parse(text); }
+        catch (error) { throw new Error('后台任务接口暂不可用（HTTP '+response.status+'，返回内容不是 JSON）。已创建的任务会继续处理，请稍后刷新进度。'); }
+        if (!response.ok) throw new Error(data.detail||'后台任务请求失败');
+        return data;
+      });
+    },
+    startCandidateModelTask: function(ids) {
+      var self=this;
+      if (!ids.length||self.candidateReviews.taskCreating) return Promise.resolve(null);
+      self.candidateReviews.taskCreating=true;
+      self.candidateReviews.taskError='';
+      return fetch(API+'/integration/candidate-model-tasks',{method:'POST',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({ingestion_ids:ids,apply_model_revisions:true,submit_ready:true})})
+        .then(self.readCandidateTaskResponse)
+        .then(function(task) {
+          self.candidateReviews.selected=[];
+          self.candidateReviews.taskPage=1;
+          self.showCandidateReviewNotice('后台任务已创建，共 '+task.total+' 条；可关闭页面，稍后查看进度。');
+          self.loadCandidateModelTasks();
+          return task;
+        })
+        .catch(function(error){self.candidateReviews.taskError=error.message;return null;})
+        .finally(function(){self.candidateReviews.taskCreating=false;});
+    },
+    candidateModelTaskStatus: function(status) {
+      return {queued:'等待处理',running:'正在处理',completed:'处理完成',failed:'任务失败',cancelled:'已停止'}[status]||status;
+    },
+    candidateModelFailedIds: function(task) {
+      return (task.results||[]).filter(function(result){return result.status==='failed'||result.submission_status==='failed';}).map(function(result){return result.ingestion_id;});
+    },
+    setCandidateModelAutomation: function(enabled) {
+      var self=this;
+      self.candidateReviews.automationSaving=true;
+      return fetch(API+'/integration/candidate-model-automation',{method:'PUT',headers:self.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({enabled:enabled})})
+        .then(self.readCandidateTaskResponse)
+        .then(function(data){self.candidateReviews.automationEnabled=data.enabled;self.candidateReviews.taskError='';self.loadCandidateModelTasks();})
+        .catch(function(error){self.candidateReviews.automationEnabled=!enabled;self.candidateReviews.taskError=error.message;})
+        .finally(function(){self.candidateReviews.automationSaving=false;});
+    },
+    loadCandidateModelTasks: function() {
+      var self=this;
+      if (self.candidateReviews.taskPoller) window.clearTimeout(self.candidateReviews.taskPoller);
+      if (self.candidateReviews.taskLoading) return Promise.resolve(null);
+      self.candidateReviews.taskLoading=true;
+      return fetch(API+'/integration/candidate-model-automation?task_page='+self.candidateReviews.taskPage,{headers:self.authHeaders()})
+        .then(self.readCandidateTaskResponse)
+        .then(function(data) {
+          var previous=JSON.stringify(self.candidateReviews.modelTasks.map(function(task){return [task.id,task.completed,task.status];}));
+          self.candidateReviews.modelTasks=data.tasks||[];
+          self.candidateReviews.taskTotal=Number(data.task_total||0);
+          if (!self.candidateReviews.automationSaving) self.candidateReviews.automationEnabled=!!data.enabled;
+          self.candidateReviews.taskError='';
+          var current=JSON.stringify(self.candidateReviews.modelTasks.map(function(task){return [task.id,task.completed,task.status];}));
+          if (previous!==current) {self.loadCandidateReviews();self.loadStats();self.loadCandidateReviewDashboard();}
+          return data;
+        })
+        .catch(function(error){self.candidateReviews.taskError=error.message;return null;})
+        .finally(function() {
+          self.candidateReviews.taskLoading=false;
+          if (self.view==='candidateReviews') self.candidateReviews.taskPoller=window.setTimeout(function(){self.loadCandidateModelTasks();},5000);
+        });
+    },
+    changeCandidateModelTaskPage: function(page) {
+      this.candidateReviews.taskPage=page;
+      return this.loadCandidateModelTasks();
     },
     annotateCandidateReviewIds: function(ids, knowledgeValue) {
       var self=this;

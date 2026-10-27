@@ -3613,8 +3613,11 @@ def preprocess_source_rows(source_rows: list[dict[str, Any]]) -> list[dict[str, 
         raw_product_code = _clean_text(row.get("产品类型编码"))
         raw_category = _clean_text(row.get("类目"))
         category_product = resolve_product_category(raw_category)
-        legacy_product = resolve_product_category(raw_product_code or raw_product_type)
-        product_category = category_product or legacy_product
+        legacy_product = resolve_product_category(raw_product_type)
+        if not is_concrete_unconfigured_product(raw_product_type):
+            legacy_product = legacy_product or resolve_product_category(raw_product_code)
+        category_is_aggregate = is_concrete_unconfigured_product(raw_category)
+        product_category = category_product or (None if category_is_aggregate else legacy_product)
         # The source workbook's 类目 is the business-owned product category.
         # Keep 产品类型 as an audit field, but do not let a legacy value such as
         # “电脑” move a clearly identified notebook row into aggregate recall.
@@ -3633,17 +3636,19 @@ def preprocess_source_rows(source_rows: list[dict[str, Any]]) -> list[dict[str, 
         row["回收业务层级编码"] = business_line.code if business_line else ""
         row["产品类型原值"] = raw_product_type
         row["类目原值"] = raw_category
+        aggregate_product_value = raw_category if category_is_aggregate else raw_product_type or raw_product_code
         aggregate_product = bool(
             business_line
             and business_line.code == AGGREGATE_BUSINESS_LINE_CODE
+            and aggregate_product_value not in {"相机", "相机机身", "camera_body", "电脑"}
             and is_concrete_unconfigured_product(
-                raw_product_type or raw_product_code
+                aggregate_product_value
             )
         )
         row["产品类型"] = (
             product_category.name
             if product_category
-            else raw_product_type or raw_product_code
+            else aggregate_product_value
             if aggregate_product
             else UNKNOWN_PRODUCT_NAME
         )

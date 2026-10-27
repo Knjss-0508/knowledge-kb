@@ -11,6 +11,7 @@ import re
 
 from .product_taxonomy import (
     is_concrete_unconfigured_product,
+    is_product_type_placeholder,
     resolve_product_category,
 )
 
@@ -158,6 +159,15 @@ def business_line_from_record(
     record: dict[str, Any],
     path: str | Path | None = None,
 ) -> BusinessLine | None:
+    product = next((
+        record.get(key) for key in ("类目", "产品类型", "产品类型编码", "适用范围")
+        if not is_product_type_placeholder(record.get(key))
+    ), "")
+    if is_concrete_unconfigured_product(product):
+        return next(
+            line for line in load_business_lines(path)
+            if line.code == AGGREGATE_BUSINESS_LINE_CODE
+        )
     explicit = next(
         (
             _text(record.get(field))
@@ -177,9 +187,7 @@ def business_line_from_record(
     product_marker = resolve_business_line(record.get("产品类型"), path)
     if product_marker:
         return product_marker
-    if resolve_product_category(
-        record.get("产品类型编码") or record.get("产品类型")
-    ):
+    if resolve_product_category(product):
         return default_business_line(path)
     if is_concrete_unconfigured_product(record.get("产品类型")):
         return next(
