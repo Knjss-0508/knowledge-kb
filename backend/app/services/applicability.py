@@ -72,10 +72,22 @@ _CATEGORY_ALIAS_GROUPS = (
     ("平板", "平板电脑"),
     ("笔记本", "笔记本电脑"),
 )
-_BUSINESS_TYPE_VALUES = {
-    "self_operated": {"0", "selfoperated"},
-    "aggregated": {"2", "aggregated"},
-}
+SELF_OPERATED_CATEGORY_NAMES = frozenset(
+    {
+        "手机",
+        "平板电脑",
+        "耳机/耳麦",
+        "笔记本",
+        "游戏机",
+        "游戏卡带",
+        "单电/微单机身",
+        "单反机身",
+        "相机镜头",
+        "手写笔",
+        "学习机",
+        "智能手表",
+    }
+)
 
 
 _NORMALIZE_SCOPE_KEY_CACHE_MAXSIZE = 131072
@@ -130,14 +142,36 @@ def scope_keys(values: Any, kind: str) -> set[str]:
 
 
 def _business_type_for_category(category: dict[str, Any]) -> str | None:
-    raw_value = category.get("bizType")
-    if raw_value is None:
-        raw_value = category.get("biz_type")
-    normalized = normalize_scope_key(raw_value)
-    for business_type, values in _BUSINESS_TYPE_VALUES.items():
-        if normalized in values:
-            return business_type
-    return None
+    category_ids = scope_keys(
+        [
+            category.get("categoryId"),
+            category.get("category_id"),
+            category.get("id"),
+            category.get("code"),
+            category.get("value"),
+        ],
+        "category",
+    )
+    category_name = next(
+        (
+            str(category.get(key) or "").strip()
+            for key in (
+                "categoryName",
+                "category_name",
+                "name",
+                "label",
+                "title",
+                "text",
+            )
+            if str(category.get(key) or "").strip()
+        ),
+        "",
+    )
+    if not category_ids or not category_name:
+        return None
+    if category_name in SELF_OPERATED_CATEGORY_NAMES:
+        return "self_operated"
+    return "aggregated"
 
 
 def _cache_group(cache: dict[str, Any], business_type: str) -> dict[str, Any]:
@@ -159,7 +193,7 @@ def _cache_group(cache: dict[str, Any], business_type: str) -> dict[str, Any]:
         category
         for category in cache.get("applicable_categories") or []
         if isinstance(category, dict)
-        and _business_type_for_category(category) in {None, business_type}
+        and _business_type_for_category(category) == business_type
     ]
     categories = list(raw_categories)
     category_ids = {
