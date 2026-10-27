@@ -39,6 +39,15 @@ def test_structured_source_product_is_used_when_applicability_is_empty():
     assert knowledge["business_type"] == "aggregated"
 
 
+def test_no_product_evidence_keeps_legacy_self_operated_default():
+    """没有产品证据的历史候选不能被静默改判为聚合回收。"""
+
+    _, knowledge = _candidate_payload_with_taxonomy_defaults({
+        "knowledge": {"title": "历史候选", "category_id": "cat-process"},
+    })
+    assert knowledge["business_type"] == "self_operated"
+
+
 def test_opaque_category_id_does_not_reclassify_without_product_evidence():
     _, knowledge = _candidate_payload_with_taxonomy_defaults({
         "knowledge": {"business_type": "self_operated", "applicable_categories": ["1234"]},

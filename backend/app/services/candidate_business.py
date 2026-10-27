@@ -60,4 +60,5 @@ def candidate_business_type(knowledge: dict, payload: dict) -> str:
     concrete = scope_keys(_product_names(values), "category") - _UNKNOWN_KEYS
     if concrete - _DOORSTEP_KEYS:
         return "aggregated"
-    return knowledge.get("business_type") or ("self_operated" if concrete else "aggregated")
+    # 没有明确产品证据时沿用历史默认值，避免旧候选被静默改判为聚合回收。
+    return knowledge.get("business_type") or "self_operated"
