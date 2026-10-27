@@ -21,6 +21,7 @@ from fastapi import (
 from app.core.config import settings
 from app.models.user import User
 from app.routes.auth import require_permission
+from app.services.applicability import SELF_OPERATED_CATEGORY_NAMES
 
 
 logger = logging.getLogger(__name__)
@@ -53,20 +54,7 @@ _saved_cookie: str | None = None
 _saved_cookie_meta: dict = {}
 _saved_cookie_lock = Lock()
 REQUEST_DELAY_SECONDS = 0.25
-ALLOWED_CATEGORY_NAMES = {
-    "手机",
-    "平板电脑",
-    "耳机/耳麦",
-    "笔记本",
-    "游戏机",
-    "游戏卡带",
-    "单电/微单机身",
-    "单反机身",
-    "相机镜头",
-    "手写笔",
-    "学习机",
-    "智能手表",
-}
+ALLOWED_CATEGORY_NAMES = SELF_OPERATED_CATEGORY_NAMES
 SELF_OPERATED_BUSINESS_TYPE = "self_operated"
 AGGREGATED_BUSINESS_TYPE = "aggregated"
 BUSINESS_TYPES = (
@@ -391,28 +379,17 @@ def _category_id(category: dict) -> str:
 
 
 def _category_business_type(category: dict) -> str | None:
-    raw_biz_type = None
-    for key in ("bizType", "biz_type"):
-        if key in category:
-            raw_biz_type = category.get(key)
-            break
+    """按中台业务规则归属适用品类。
 
-    if raw_biz_type is None or isinstance(raw_biz_type, bool):
+    曼哈顿返回的 ``bizType`` 不能作为自营/聚合的划分依据：自营回收
+    仅包含既定白名单中的品类，其余有效品类均属于聚合回收。
+    """
+    category_id = _category_id(category)
+    category_name = _category_name(category)
+    if not category_id or not category_name:
         return None
-    if isinstance(raw_biz_type, float):
-        if not raw_biz_type.is_integer():
-            return None
-        biz_type = int(raw_biz_type)
-    else:
-        try:
-            biz_type = int(str(raw_biz_type).strip())
-        except (TypeError, ValueError):
-            return None
-
-    if biz_type == 0:
-        if _category_name(category) in ALLOWED_CATEGORY_NAMES:
-            return SELF_OPERATED_BUSINESS_TYPE
-        return None
+    if category_name in ALLOWED_CATEGORY_NAMES:
+        return SELF_OPERATED_BUSINESS_TYPE
     return AGGREGATED_BUSINESS_TYPE
 
 

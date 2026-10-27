@@ -8,6 +8,7 @@ from app.services.applicability import (
     resolve_applicability_scope,
     scope_keys,
 )
+from app.services import applicability
 from app.services.knowledge_dedup import search_embeddings
 
 
@@ -128,6 +129,39 @@ def test_missing_brand_and_model_context_skips_lower_funnel_layers() -> None:
         "lenovo",
         "apple",
     ]
+
+
+def test_legacy_cache_routes_every_non_self_operated_category_to_aggregated() -> None:
+    cache = {
+        "applicable_categories": [
+            {"categoryId": 101, "categoryName": "手机", "bizType": 0},
+            {"categoryId": 102, "categoryName": "大家电", "bizType": 0},
+            {"categoryId": 201, "categoryName": "黄金", "bizType": 2},
+            {"categoryId": 301, "categoryName": "珠宝", "bizType": "unknown"},
+            {"categoryId": 302, "categoryName": ""},
+        ],
+        "brands_by_category": {
+            "101": [{"brandId": 1, "brandName": "苹果"}],
+            "102": [{"brandId": 2, "brandName": "海尔"}],
+            "201": [{"brandId": 3, "brandName": "周大福"}],
+            "301": [{"brandId": 4, "brandName": "测试珠宝"}],
+            "302": [{"brandId": 5, "brandName": "无效分类品牌"}],
+        },
+        "models": [],
+    }
+
+    self_operated = applicability._cache_group(cache, "self_operated")
+    aggregated = applicability._cache_group(cache, "aggregated")
+
+    assert [item["categoryId"] for item in self_operated["applicable_categories"]] == [
+        101
+    ]
+    assert [item["categoryId"] for item in aggregated["applicable_categories"]] == [
+        102,
+        201,
+        301,
+    ]
+    assert list(aggregated["brands_by_category"]) == ["102", "201", "301"]
 
 
 def test_canonicalize_applicability_names_to_unique_manhattan_ids() -> None:

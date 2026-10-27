@@ -48,7 +48,7 @@ def test_model_cache_key_keeps_same_model_separate_by_category_and_brand() -> No
     )
 
 
-def test_category_business_type_requires_recognized_biz_type_and_self_whitelist() -> None:
+def test_category_business_type_uses_self_operated_whitelist_and_routes_others_to_aggregated() -> None:
     assert (
         manhattan._category_business_type(
             {"categoryId": 101, "categoryName": "手机", "bizType": 0}
@@ -65,17 +65,23 @@ def test_category_business_type_requires_recognized_biz_type_and_self_whitelist(
         manhattan._category_business_type(
             {"categoryId": 102, "categoryName": "大家电", "bizType": 0}
         )
-        is None
+        == manhattan.AGGREGATED_BUSINESS_TYPE
     )
     assert (
         manhattan._category_business_type(
             {"categoryId": 301, "categoryName": "未知业务"}
         )
-        is None
+        == manhattan.AGGREGATED_BUSINESS_TYPE
     )
     assert (
         manhattan._category_business_type(
             {"categoryId": 302, "categoryName": "未知业务", "bizType": "unknown"}
+        )
+        == manhattan.AGGREGATED_BUSINESS_TYPE
+    )
+    assert (
+        manhattan._category_business_type(
+            {"categoryId": 303, "categoryName": ""}
         )
         is None
     )
@@ -226,7 +232,7 @@ def test_refresh_fetches_and_tags_models_per_brand(monkeypatch) -> None:
     ] == [("101", "1"), ("101", "2")]
 
 
-def test_refresh_groups_all_recognized_categories_by_business_type(monkeypatch) -> None:
+def test_refresh_groups_every_non_self_operated_category_as_aggregated(monkeypatch) -> None:
     category_request_params: list[dict] = []
     brand_request_category_ids: list[str] = []
     written: dict = {}
@@ -258,10 +264,10 @@ def test_refresh_groups_all_recognized_categories_by_business_type(monkeypatch) 
     asyncio.run(manhattan._refresh_manhattan_cache_job("test-cookie"))
 
     assert category_request_params == [{"bizType": "-2"}]
-    assert brand_request_category_ids == ["101", "201"]
+    assert brand_request_category_ids == ["101", "102", "201", "301"]
     assert [
         item["categoryId"] for item in written["applicable_categories"]
-    ] == [101, 201]
+    ] == [101, 102, 201, 301]
     assert [
         item["categoryId"]
         for item in written["options_by_business_type"]["self_operated"][
@@ -273,17 +279,17 @@ def test_refresh_groups_all_recognized_categories_by_business_type(monkeypatch) 
         for item in written["options_by_business_type"]["aggregated"][
             "applicable_categories"
         ]
-    ] == [201]
+    ] == [102, 201, 301]
     assert list(
         written["options_by_business_type"]["self_operated"]["brands_by_category"]
     ) == ["101"]
     assert list(
         written["options_by_business_type"]["aggregated"]["brands_by_category"]
-    ) == ["201"]
+    ) == ["102", "201", "301"]
     assert [
         item["categoryId"]
         for item in written["options_by_business_type"]["aggregated"]["models"]
-    ] == ["201"]
+    ] == ["102", "201", "301"]
 
 
 def test_model_refresh_retries_transient_upstream_failure(monkeypatch) -> None:
