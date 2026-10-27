@@ -97,6 +97,28 @@ def test_composite_product_type_keeps_configured_category_and_self_operated_line
     assert row["回收业务层级编码"] == "self_operated"
 
 
+def test_source_category_outside_doorstep_overrides_stale_phone_and_business():
+    row = preprocess_source_rows([{
+        "工单ID": "DRONE-1", "聊天内容": "无人机实名登记如何核对",
+        "类目": "无人机", "产品类型": "手机", "产品类型编码": "phone",
+        "回收业务层级编码": "self_operated",
+    }])[0]
+    assert row["回收业务层级"] == "聚合回收"
+    assert row["产品类型"] == "无人机"
+    assert row["产品类型编码"] == ""
+
+
+def test_concrete_source_product_overrides_stale_product_code():
+    row = preprocess_source_rows([{
+        "工单ID": "DRONE-2", "聊天内容": "无人机登记状态",
+        "产品类型": "无人机", "产品类型编码": "phone",
+        "回收业务层级编码": "self_operated",
+    }])[0]
+    assert row["回收业务层级"] == "聚合回收"
+    assert row["产品类型"] == "无人机"
+    assert row["产品类型编码"] == ""
+
+
 def test_source_preprocessing_prefers_category_over_legacy_product_type() -> None:
     rows = preprocess_source_rows(
         [

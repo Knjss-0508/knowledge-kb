@@ -34,6 +34,7 @@ from app.routes import (
 from app.services.embedding import close_embedding_client
 from app.services.blind_label_auto_release_worker import run_blind_label_auto_release_worker
 from app.services.knowledge_import_worker import run_knowledge_import_worker
+from app.services.candidate_model_tasks import run_candidate_model_worker
 from app.services.knowledge_vector_worker import run_knowledge_vector_worker
 from app.services.media_deletion import run_media_deletion_worker
 from app.services.media_storage import _normalize_remote_media_path_prefix
@@ -89,6 +90,7 @@ async def lifespan(_: FastAPI):
         logger.exception("Failed to load the saved model connection overrides.")
     if _background_workers_should_start():
         workers = [
+            asyncio.create_task(run_candidate_model_worker(stop_event)),
             asyncio.create_task(run_media_deletion_worker(stop_event)),
             asyncio.create_task(
                 run_knowledge_import_worker(

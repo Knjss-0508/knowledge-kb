@@ -37,8 +37,7 @@ def test_batch_model_annotation_sends_full_workflow_flags() -> None:
         const source = require('fs').readFileSync(0, 'utf8');
         const start = source.indexOf('    batchModelAnnotateCandidateReviews: function(');
         const end = source.indexOf('    annotateCandidateReviewIds: function(', start);
-        const expression = source.slice(start, end).trim()
-          .slice('batchModelAnnotateCandidateReviews'.length + 2).replace(/,$/, '');
+        const expression = '{' + source.slice(start, end) + '}';
         const requests = [], alerts = [];
         const sandbox = {
           API:'',
@@ -46,31 +45,32 @@ def test_batch_model_annotation_sends_full_workflow_flags() -> None:
           alert:message => alerts.push(message),
           fetch:(url, options) => {
             requests.push({url, options});
-            return Promise.resolve({ok:true,json:() => Promise.resolve({
-              updated:1,failed:0,revisions_applied:1,reannotated:1,
-              submitted:1,reused:0,submission_failed:0,
-              results:[{ingestion_id:'ing-1',status:'updated',
-                review_status:'submitted',submission_status:'submitted'}]
-            })});
+            return Promise.resolve({ok:true,status:202,text:() => Promise.resolve(
+              JSON.stringify({id:'task-1',total:100,completed:0,status:'queued'})
+            )});
           }
         };
-        const method = vm.runInNewContext('(' + expression + ')', sandbox);
+        const methods = vm.runInNewContext('(' + expression + ')', sandbox);
         const context = {
-          candidateReviews:{selected:['ing-1'],modelAnnotating:false},
+          ...methods,
+          candidateReviews:{selected:Array.from({length:100}, (_,i) => 'ing-'+i),taskCreating:false},
           authHeaders:headers => headers,
+          showCandidateReviewNotice:message => alerts.push(message),
+          loadCandidateModelTasks:() => {},
           loadCandidateReviews:() => {},
           loadStats:() => {},
           loadCandidateReviewDashboard:() => {}
         };
-        method.call(context);
+        context.batchModelAnnotateCandidateReviews();
         setImmediate(() => {
           assert.strictEqual(requests.length, 1);
           const body = JSON.parse(requests[0].options.body);
-          assert.deepStrictEqual(body.ingestion_ids, ['ing-1']);
+          assert.strictEqual(body.ingestion_ids.length, 100);
+          assert.strictEqual(requests[0].url, '/integration/candidate-model-tasks');
           assert.strictEqual(body.apply_model_revisions, true);
           assert.strictEqual(body.submit_ready, true);
-          assert(alerts[0].includes('送审成功 1 条'));
-          assert.strictEqual(context.candidateReviews.modelAnnotating, false);
+          assert(alerts[0].includes('后台任务已创建，共 100 条'));
+          assert.strictEqual(context.candidateReviews.taskCreating, false);
         });
     """
     completed = subprocess.run(

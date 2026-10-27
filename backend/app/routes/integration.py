@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.integration_auth import require_integration_key, require_retrieval_key
-from app.models.integration import IntegrationIngestion, RetrievalQualityEvent
+from app.models.integration import CandidateModelTask, IntegrationIngestion, RetrievalQualityEvent
 from app.models.knowledge import Category, Knowledge, KnowledgeStatus, TagDimension
 from app.models.user import User
 from app.routes.auth import get_current_user, require_permission
@@ -32,6 +32,8 @@ from app.schemas.integration import (
     CandidateReviewListResponse,
     CandidateReviewSubmitResult,
     CandidateReviewUpdate,
+    CandidateModelAutomationUpdate,
+    CandidateModelTaskCreate,
     IntegrationCandidate,
     IntegrationCandidateBatch,
     IntegrationCandidateBatchResponse,
@@ -62,6 +64,8 @@ from app.schemas.knowledge import (
     TagValueResponse,
 )
 from app.services.applicability import resolve_applicability_scope
+from app.services.candidate_business import candidate_business_type
+from app.services.candidate_model_tasks import automation_settings, enqueue_task, task_snapshot
 from app.services.candidate_review import (
     build_quick_human_review,
     current_draft_version,
@@ -198,7 +202,7 @@ def _candidate_payload_with_taxonomy_defaults(
     payload = dict(candidate_payload or {})
     knowledge = dict(payload.get("knowledge") or {})
     knowledge.setdefault("knowledge_origin", "business_accumulation")
-    knowledge.setdefault("business_type", "self_operated")
+    knowledge["business_type"] = candidate_business_type(knowledge, payload)
     payload["knowledge"] = knowledge
     return payload, knowledge
 
@@ -720,7 +724,9 @@ def _candidate_queue_state(
         if candidate.human_review
         else {}
     )
-    payload = candidate.model_dump(mode="json")
+    payload, _ = _candidate_payload_with_taxonomy_defaults(
+        candidate.model_dump(mode="json")
+    )
     draft_version = 1
     model_annotation = (
         {
@@ -735,7 +741,7 @@ def _candidate_queue_state(
         selection,
         human_review,
         model_review,
-        knowledge=candidate.knowledge.model_dump(mode="json"),
+        knowledge=payload["knowledge"],
         model_annotation=model_annotation,
         draft_version=draft_version,
         auto_review_min_confidence=settings.AUTO_REVIEW_MIN_CONFIDENCE,
@@ -3886,6 +3892,63 @@ def _model_annotate_candidate_review_once(
         error_code=revision.get("error_code"),
         error_message=revision.get("error_message"),
     )
+
+
+@router.get("/candidate-model-automation")
+def get_candidate_model_automation(
+    task_page: int = Query(1, ge=1),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    config = automation_settings(db)
+    query = db.query(CandidateModelTask)
+    total = query.count()
+    tasks = query.order_by(CandidateModelTask.created_at.desc(), CandidateModelTask.id.desc()).offset(
+        (task_page - 1) * 10
+    ).limit(10).all()
+    return {
+        "enabled": config.enabled, "tasks": [task_snapshot(task) for task in tasks],
+        "task_total": total, "task_page": task_page,
+    }
+
+
+@router.put("/candidate-model-automation")
+def update_candidate_model_automation(
+    body: CandidateModelAutomationUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    config = automation_settings(db, lock=True)
+    config.enabled = body.enabled
+    config.requested_by = current_user.id
+    config.updated_at = datetime.utcnow()
+    db.commit()
+    return {"enabled": config.enabled}
+
+
+@router.post("/candidate-model-tasks", status_code=status.HTTP_202_ACCEPTED)
+def create_candidate_model_task(
+    body: CandidateModelTaskCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    task = enqueue_task(db, body.ingestion_ids, current_user.id)
+    if task is None:
+        raise HTTPException(409, "所选候选已在后台任务中，请查看已有任务进度。")
+    db.commit()
+    return task_snapshot(task)
+
+
+@router.get("/candidate-model-tasks/{task_id}")
+def get_candidate_model_task(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    task = db.get(CandidateModelTask, task_id)
+    if not task:
+        raise HTTPException(404, "模型后台任务不存在。")
+    return task_snapshot(task)
 
 
 @router.post(

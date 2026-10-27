@@ -32,6 +32,32 @@ class IntegrationIngestion(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class CandidateModelAutomation(Base):
+    __tablename__ = "candidate_model_automation"
+
+    id = Column(String(32), primary_key=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    requested_by = Column(String(64), nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class CandidateModelTask(Base):
+    __tablename__ = "candidate_model_tasks"
+
+    id = Column(String(64), primary_key=True)
+    status = Column(String(32), nullable=False, default="queued", index=True)
+    source = Column(String(16), nullable=False, default="manual")
+    requested_by = Column(String(64), nullable=False)
+    ingestion_ids = Column(JSON, nullable=False, default=list)
+    results = Column(JSON, nullable=False, default=list)
+    lease_token = Column(String(64), nullable=True)
+    lease_expires_at = Column(DateTime, nullable=True)
+    current_ingestion_id = Column(String(64), nullable=True)
+    error_message = Column(String(512), nullable=False, default="")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ConfidenceTrainingSettingsRecord(Base):
     """One durable, local-only configuration record for confidence evaluation."""
 

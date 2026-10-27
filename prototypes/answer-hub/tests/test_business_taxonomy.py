@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from answer_hub.business_taxonomy import (
     AGGREGATE_BUSINESS_LINE_NAME,
     SELF_OPERATED_BUSINESS_LINE_NAME,
@@ -50,3 +52,24 @@ def test_cz_applicable_category_path_keeps_business_hierarchy() -> None:
         == "自营回收/手机"
     )
     assert cz_applicable_category_path("聚合回收", "") == "聚合回收"
+
+
+@pytest.mark.parametrize("product", ["无人机", "扫地机器人", "数码相机"])
+def test_non_doorstep_product_overrides_inherited_self_operated_line(product):
+    assert business_line_from_record({
+        "产品类型": product,
+        "回收业务层级编码": "self_operated",
+    }).name == AGGREGATE_BUSINESS_LINE_NAME
+
+
+def test_business_owned_category_precedes_legacy_product_code():
+    assert business_line_from_record({
+        "类目": "无人机", "产品类型": "手机", "产品类型编码": "phone",
+        "回收业务层级": "自营回收",
+    }).name == AGGREGATE_BUSINESS_LINE_NAME
+
+
+def test_placeholder_category_does_not_hide_concrete_product():
+    assert business_line_from_record({
+        "类目": "待确认", "产品类型": "无人机", "回收业务层级编码": "self_operated",
+    }).name == AGGREGATE_BUSINESS_LINE_NAME
