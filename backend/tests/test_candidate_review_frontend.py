@@ -25,7 +25,14 @@ def test_batch_model_annotation_requests_full_revision_and_submission_workflow()
     assert "submit_ready:true" in FRONTEND
     assert "采用修订 " in FRONTEND
     assert "重新初标 " in FRONTEND
-    assert "送审成功 " in FRONTEND
+    assert "<th>送审成功</th>" in FRONTEND
+
+
+def test_candidate_task_failure_counts_distinguish_workflow_and_submission() -> None:
+    assert "<th>流程失败</th><th>送审失败</th>" in FRONTEND
+    assert "{{task.failed}}</td>" in FRONTEND
+    assert "{{task.submission_failed}}</td>" in FRONTEND
+    assert "task.failed+task.submission_failed" not in FRONTEND
 
 
 def test_batch_model_annotation_sends_full_workflow_flags() -> None:
@@ -80,6 +87,122 @@ def test_batch_model_annotation_sends_full_workflow_flags() -> None:
         text=True,
         encoding="utf-8",
         check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_compact_tasks_load_summary_history_and_details_only_as_needed_and_keep_pause_visible():
+    assert "modelPanelOpen: false" in FRONTEND
+    assert 'v-if="candidateReviews.modelPanelOpen" id="candidate-model-content"' in FRONTEND
+    assert 'v-if="candidateReviews.servicePaused||candidateReviews.taskError||candidateReviews.taskLoadError"' in FRONTEND
+    node = shutil.which("node")
+    assert node
+    script = r"""
+      const assert=require('assert'), vm=require('vm');
+      const source=require('fs').readFileSync(0,'utf8');
+      const start=source.indexOf('    batchModelAnnotateCandidateReviews: function(');
+      const end=source.indexOf('    annotateCandidateReviewIds: function(',start);
+      const requests=[], refreshes=[];
+      const task={id:'old-task',status:'completed',total:3,completed:3,failed:1,submission_failed:1};
+      const detail={...task,results:[
+        {ingestion_id:'a',status:'failed'},
+        {ingestion_id:'b',status:'updated',submission_status:'failed'},
+        {ingestion_id:'c',status:'updated',submission_status:'submitted'}
+      ]};
+      const summary={enabled:false,service_paused:false,failed_task_total:1,history_total:46,
+        task_total:46,active_task:{id:'active',completed:2,total:100,status:'queued'},tasks:[]};
+      function response(data){return {ok:true,status:200,text:async()=>JSON.stringify(data)};}
+      let pending=null, htmlFailure=false, timerDelay=0;
+      const sandbox={API:'',window:{clearTimeout:()=>{},setTimeout:(_cb,delay)=>{timerDelay=delay;return 1;}},
+        fetch:async(url,options)=>{
+          requests.push({url,options});
+          if(pending){const wait=pending;pending=null;return wait;}
+          if(htmlFailure)return {ok:false,status:502,text:async()=>'<html>Bad Gateway</html>'};
+          if(url.endsWith('/candidate-model-automation:resume'))return response({service_paused:false});
+          if(url.endsWith('/candidate-model-tasks/old-task'))return response(detail);
+          if(url.endsWith('/candidate-model-tasks'))return response({id:'new',total:2,status:'queued'});
+          const params=new URL('http://local'+url).searchParams;
+          return response({...summary,tasks:params.get('task_page')==='0'?[]:[task],
+            task_total:params.get('task_filter')==='failures'?1:46});
+        }
+      };
+      const methods=vm.runInNewContext('({'+source.slice(start,end)+'})',sandbox);
+      const state={modelPanelOpen:false,taskFilter:'failures',taskPage:1,taskLoading:false,
+        modelTasks:[],taskDetails:{},selected:[],failedTaskTotal:0,taskHistoryTotal:0,
+        servicePaused:false,automationEnabled:false,taskError:'',taskLoadError:'',expandedTaskId:'',taskStatusRevision:0};
+      const ctx={...methods,candidateReviews:state,view:'candidateReviews',authHeaders:()=>({}),
+        loadCandidateReviews:()=>refreshes.push(1),loadStats:()=>{},loadCandidateReviewDashboard:()=>{},
+        showCandidateReviewNotice:()=>{}};
+      (async()=>{
+        await ctx.loadCandidateModelTasks();
+        assert(requests[0].url.includes('task_page=0'));
+        assert(requests[0].url.includes('include_results=false'));
+        assert.equal(state.modelTasks.length,0);assert.equal(state.failedTaskTotal,1);
+        assert.equal(timerDelay,5000);
+        await ctx.loadCandidateModelTasks();
+        assert.equal(refreshes.length,1,'unchanged progress must not reload the candidate table');
+        summary.active_task.completed=3;
+        await ctx.loadCandidateModelTasks();assert.equal(refreshes.length,2);
+        await ctx.openCandidateModelFailures();
+        assert(state.modelPanelOpen);assert.equal(state.modelTasks[0].id,'old-task');
+        assert(requests.at(-1).url.includes('task_filter=failures'));
+        await ctx.setCandidateModelTaskFilter('all');
+        await ctx.changeCandidateModelTaskPage(2);
+        assert(requests.at(-1).url.includes('task_page=2'));
+        assert.equal(requests.filter(r=>r.url.includes('/candidate-model-tasks/')).length,0);
+        await ctx.toggleCandidateModelTaskDetail(task);
+        assert.equal(state.taskDetails['old-task'].results.length,3);
+        await ctx.retryCandidateModelTask(task);
+        const post=requests.find(r=>r.options.method==='POST'&&r.url.endsWith('/candidate-model-tasks'));
+        assert.deepEqual(JSON.parse(post.options.body).ingestion_ids,['a','b']);
+        assert.equal(requests.filter(r=>r.url.endsWith('/candidate-model-tasks/old-task')).length,1);
+        await ctx.toggleCandidateModelPanel();assert(!state.modelPanelOpen);
+        summary.service_paused=true;summary.pause_reason='服务异常，已暂停';
+        await ctx.loadCandidateModelTasks();assert(state.servicePaused);
+        assert.equal(timerDelay,15000);
+        const count=requests.length;
+        await ctx.startCandidateModelTask(['blocked']);assert.equal(requests.length,count);
+        summary.service_paused=false;
+        await ctx.resumeCandidateModelProcessing();
+        assert(!state.servicePaused);assert(!state.automationEnabled);
+        assert(!requests.some(r=>r.options.method==='PUT'),'resume must not enable auto processing');
+        htmlFailure=true;await ctx.loadCandidateModelTasks();
+        assert(state.taskLoadError.includes('HTTP 502'));assert(!state.modelPanelOpen);
+        htmlFailure=false;
+        // A response for a formerly expanded filter must not overwrite the new view.
+        state.modelPanelOpen=true;state.taskFilter='all';state.taskPage=2;
+        let release;pending=new Promise(resolve=>{release=resolve;});
+        const loading=ctx.loadCandidateModelTasks();
+        await ctx.setCandidateModelTaskFilter('failures');
+        release(response({...summary,tasks:[{id:'stale-page'}]}));
+        await loading;
+        assert.equal(state.modelTasks[0].id,'old-task');
+        assert(requests.at(-1).url.includes('task_filter=failures'));
+        assert.equal(state.taskPage,1);assert(!state.taskLoading);
+        // A pre-resume GET must not resurrect the old paused state if the fresh GET fails.
+        let oldStatusRelease;pending=new Promise(resolve=>{oldStatusRelease=resolve;});
+        state.servicePaused=true;
+        const oldStatusRequest=ctx.loadCandidateModelTasks();
+        await ctx.resumeCandidateModelProcessing();
+        htmlFailure=true;
+        oldStatusRelease(response({...summary,service_paused:true,pause_reason:'old pause'}));
+        await oldStatusRequest;
+        assert(!state.servicePaused);assert(state.taskLoadError.includes('HTTP 502'));
+        htmlFailure=false;
+        // A slow detail response from an earlier checkpoint must not replace terminal results.
+        delete state.taskDetails[task.id];
+        let oldDetailRelease;pending=new Promise(resolve=>{oldDetailRelease=resolve;});
+        const oldDetail=ctx.loadCandidateModelTaskDetail({...task,status:'queued',completed:1});
+        await ctx.loadCandidateModelTaskDetail(task);
+        oldDetailRelease(response({...task,status:'queued',completed:1,results:[]}));
+        await oldDetail;
+        assert.equal(state.taskDetails[task.id].completed,3);
+        assert.equal(state.taskDetails[task.id].results.length,3);
+      })().catch(e=>{console.error(e);process.exit(1);});
+    """
+    completed = subprocess.run(
+        [node, "-e", script], input=FRONTEND, capture_output=True,
+        text=True, encoding="utf-8", check=False,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
 

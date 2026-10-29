@@ -104,3 +104,9 @@ class MigrationRevisionTests(unittest.TestCase):
             self.revisions[revision]["path"].name,
             "20261010_01_work_order_identity.py",
         )
+
+    def test_candidate_pause_follows_deployed_jsonb_migration(self):
+        self.assertEqual(
+            self.revisions["20261028_01_candidate_pause"]["down_revision"],
+            "20261029_01_candidate_jsonb",
+        )

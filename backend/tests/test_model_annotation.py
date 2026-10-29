@@ -240,6 +240,65 @@ def test_http_error_keeps_retry_classification(monkeypatch):
     assert error.value.retryable is True
 
 
+@pytest.mark.parametrize("operation", ["annotation", "revision"])
+def test_candidate_model_steps_retry_transport_without_repeating_business_changes(monkeypatch, operation):
+    import json
+    import httpx
+
+    calls, waits = [], []
+    monkeypatch.setattr(model_annotation, "resolve_call_config", lambda *_args: {
+        "base_url": "http://model.invalid/v1", "api_key": "test-placeholder",
+        "model": "deepseek-flash", "timeout_seconds": 5,
+    })
+    monkeypatch.setattr(model_annotation.time, "sleep", waits.append)
+    result = _valid_review() if operation == "annotation" else {
+        "revised_content": "1. 来源支持的处理结论",
+        "revised_recommended_reply": "请核对来源。",
+        "change_summary": ["核对来源"], "evidence_used": ["来源事实"], "limitations": [],
+    }
+
+    def post(*args, **kwargs):
+        calls.append(kwargs["json"])
+        if len(calls) == 1:
+            raise httpx.RemoteProtocolError("connection closed")
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(result, ensure_ascii=False)}}],
+        })
+
+    monkeypatch.setattr(model_annotation.httpx, "post", post)
+    original = {"draft": {"title": "核对", "content": "原稿", "recommended_reply": "原回复"}}
+    if operation == "annotation":
+        model_annotation.annotate_transcribed_candidate(original)
+    else:
+        model_annotation.revise_transcribed_candidate_draft(original)
+    assert original["draft"]["content"] == "原稿"
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert waits == [1.05, 2, 1.05]
+
+
+def test_shadow_rerun_keeps_retry_ownership_with_existing_worker(monkeypatch):
+    import httpx
+
+    calls, waits = [], []
+    monkeypatch.setattr(model_annotation, "resolve_call_config", lambda *_args: {
+        "base_url": "http://model.invalid/v1", "api_key": "test-placeholder",
+    })
+    monkeypatch.setattr(model_annotation.time, "sleep", waits.append)
+
+    def post(*args, **kwargs):
+        calls.append(1)
+        raise httpx.ConnectError("connection closed")
+
+    monkeypatch.setattr(model_annotation.httpx, "post", post)
+    with pytest.raises(model_annotation.ModelAnnotationError):
+        model_annotation.shadow_rerun_transcribed_candidate(
+            review_prompt="规则", candidate={"title": "样本"}, prompt_version="shadow-v1",
+        )
+    assert calls == [1]
+    assert waits == []
+
+
 def test_connection_test_passes_unsaved_dialog_values_and_reports_the_route(monkeypatch):
     captured = {}
 
