@@ -443,3 +443,58 @@ def test_scope_funnel_runs_before_query_vector_ranking(query_embedding) -> None:
 
     assert result == []
     query_embedding.assert_not_called()
+
+
+def test_db_connection_is_released_before_waiting_on_embedding(monkeypatch) -> None:
+    """外部向量化期间不能占着连接池，否则慢隧道会拖垮整站。"""
+
+    import app.services.knowledge_dedup as knowledge_dedup
+
+    db = MagicMock()
+    db.new = db.dirty = db.deleted = []
+    monkeypatch.setattr(
+        knowledge_dedup, "_get_cached_query_embedding", lambda key: None
+    )
+
+    knowledge_dedup._release_db_connection_before_external_call(
+        db, "笔记本屏幕问题"
+    )
+
+    db.close.assert_called_once_with()
+
+
+def test_db_connection_is_kept_when_session_has_pending_writes(monkeypatch) -> None:
+    """会话里有未提交写入时不能关闭，否则会把业务改动回滚。"""
+
+    import app.services.knowledge_dedup as knowledge_dedup
+
+    db = MagicMock()
+    db.new = [object()]
+    db.dirty = db.deleted = []
+    monkeypatch.setattr(
+        knowledge_dedup, "_get_cached_query_embedding", lambda key: None
+    )
+
+    knowledge_dedup._release_db_connection_before_external_call(
+        db, "笔记本屏幕问题"
+    )
+
+    db.close.assert_not_called()
+
+
+def test_db_connection_is_kept_when_embedding_is_cached(monkeypatch) -> None:
+    """缓存命中不会等待外部服务，无需额外释放连接。"""
+
+    import app.services.knowledge_dedup as knowledge_dedup
+
+    db = MagicMock()
+    db.new = db.dirty = db.deleted = []
+    monkeypatch.setattr(
+        knowledge_dedup, "_get_cached_query_embedding", lambda key: (0.1, 0.2)
+    )
+
+    knowledge_dedup._release_db_connection_before_external_call(
+        db, "笔记本屏幕问题"
+    )
+
+    db.close.assert_not_called()
