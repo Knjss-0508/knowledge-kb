@@ -960,7 +960,19 @@ async def set_manhattan_session(
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
             resp = await client.get(_url(path), headers=_headers(cookie), params={"bizType": "-2"})
     except httpx.HTTPError as exc:
-        raise HTTPException(502, f"Cookie verification request failed: {exc}")
+        # 线上运维直接看页面上的中文提示定位网络问题，因此按异常类型给出
+        # 可操作的原因，而不是把 httpx 的英文原文透出给使用者。
+        if isinstance(exc, httpx.ConnectTimeout):
+            detail = "知识库服务器连接曼哈顿后台超时，请检查容器网络后重试。"
+        elif isinstance(exc, httpx.ReadTimeout):
+            detail = "曼哈顿后台响应超时，请稍后重试。"
+        elif isinstance(exc, httpx.ConnectError):
+            detail = "知识库服务器无法连接曼哈顿后台，请检查容器网络后重试。"
+        elif isinstance(exc, httpx.NetworkError):
+            detail = "知识库服务器与曼哈顿后台网络通信失败，请稍后重试。"
+        else:
+            detail = "曼哈顿后台验证请求失败，请稍后重试。"
+        raise HTTPException(502, detail) from None
 
     if resp.status_code >= 400 and resp.status_code not in (401, 403):
         raise HTTPException(resp.status_code, f"Cookie verification failed: {resp.text[:300]}")
