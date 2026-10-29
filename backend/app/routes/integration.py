@@ -3405,8 +3405,11 @@ def _candidate_review_light_query(
     不带状态时才退化为全量，语义与原来逐项过滤完全一致。
     """
 
-    payload = cast(IntegrationIngestion.candidate_payload, JSONB).label("payload")
-    metadata = cast(IntegrationIngestion.review_metadata, JSONB).label("metadata")
+    # 列已是 jsonb，`->` 只解析一次且可按键定位；直接投影子文档，
+    # 不再把整列 payload/metadata 传回应用层（3 万行约 538MB，
+    # 实测整列传输 6.3s，只传需要的子文档 2.3s）。
+    payload = IntegrationIngestion.candidate_payload
+    metadata = IntegrationIngestion.review_metadata
     base_filters = list(_CANDIDATE_REVIEW_BASE_FILTERS)
     if review_status:
         base_filters.append(IntegrationIngestion.review_status == review_status)
@@ -3418,42 +3421,38 @@ def _candidate_review_light_query(
             IntegrationIngestion.review_status.label("review_status"),
             IntegrationIngestion.updated_at.label("updated_at"),
             IntegrationIngestion.created_at.label("created_at"),
-            payload,
-            metadata,
+            payload["model_review"].label("candidate_model_review"),
+            metadata["model_review"].label("metadata_model_review"),
+            payload["human_review"].label("candidate_human_review"),
+            metadata["human_review"].label("metadata_human_review"),
+            metadata["deduplication"].label("deduplication"),
+            metadata["deduplication_confirmation"].label(
+                "deduplication_confirmation"
+            ),
+            payload["knowledge"]["applicable_categories"].label(
+                "applicable_categories"
+            ),
+            func.length(func.trim(
+                payload["knowledge"]["evidence_excerpt"].as_string()
+            )).label("evidence_length"),
+            *(
+                [
+                    payload["knowledge"]["title"].label("title"),
+                    payload["knowledge"]["evidence_excerpt"].label(
+                        "evidence_excerpt"
+                    ),
+                ]
+                if with_keyword_fields
+                else []
+            ),
         )
         .where(*base_filters)
         .limit(2**31 - 1)
         .subquery("candidate_review_parsed")
     )
-    # 这一层只做「取子文档」，所有 `a or b` 的取值链都留在 Python 侧，与
-    # `_candidate_review_item` 的语义逐字一致（包括 0 / false 这类病态真假值）。
-    fact_columns = [
-        parsed.c.id.label("id"),
-        parsed.c.event_id.label("event_id"),
-        parsed.c.source_conversation_id.label("source_conversation_id"),
-        parsed.c.review_status.label("review_status"),
-        parsed.c.updated_at.label("updated_at"),
-        parsed.c.created_at.label("created_at"),
-        parsed.c.payload["model_review"].label("candidate_model_review"),
-        parsed.c.metadata["model_review"].label("metadata_model_review"),
-        parsed.c.payload["human_review"].label("candidate_human_review"),
-        parsed.c.metadata["human_review"].label("metadata_human_review"),
-        parsed.c.metadata["deduplication"].label("deduplication"),
-        parsed.c.metadata["deduplication_confirmation"].label(
-            "deduplication_confirmation"
-        ),
-        parsed.c.payload["knowledge"]["applicable_categories"].label(
-            "applicable_categories"
-        ),
-        func.length(func.trim(
-            parsed.c.payload["knowledge"]["evidence_excerpt"].astext
-        )).label("evidence_length"),
-    ]
-    if with_keyword_fields:
-        fact_columns.append(parsed.c.payload["knowledge"]["title"].label("title"))
-        fact_columns.append(
-            parsed.c.payload["knowledge"]["evidence_excerpt"].label("evidence_excerpt")
-        )
+    # 所有 `a or b` 的取值链仍留在 Python 侧，与 `_candidate_review_item`
+    # 的语义逐字一致（包括 0 / false 这类病态真假值）。
+    fact_columns = [column for column in parsed.c]
     facts = select(*fact_columns).limit(2**31 - 1).subquery("candidate_review_facts")
     columns = [
         facts.c.id,
