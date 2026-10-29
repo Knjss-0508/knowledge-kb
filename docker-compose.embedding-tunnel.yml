@@ -39,13 +39,18 @@ services:
     # 当作宿主环境变量插值，未定义时替换为空串，导致 ssh 收到空端口而反复重启。
     command:
       - |
-        set -e
+        set -u
         apk add --no-cache openssh-client >/dev/null 2>&1
         mkdir -p /root/.ssh
         cp /key/id_ed25519 /root/.ssh/id_ed25519
         chmod 600 /root/.ssh/id_ed25519
         echo "[tunnel] $${REMOTE_BIND}:$${REMOTE_PORT} -> $${TARGET_HOST}:$${TARGET_PORT} via $${SSH_USER}@$${SSH_HOST}:$${SSH_PORT}"
+        # 不能使用 set -e：ssh 断开时返回非 0，会让整个脚本立即退出，
+        # 下面这个重连循环根本不会执行，只能依赖 Docker 反复重启容器
+        # （实测累计 2500 次，每次重启还要重新安装 openssh-client）。
+        delay=5
         while true; do
+          started=$$(date +%s)
           ssh -N \
             -o StrictHostKeyChecking=accept-new \
             -o ServerAliveInterval=20 \
@@ -59,7 +64,17 @@ services:
             "$${SSH_USER}@$${SSH_HOST}"
           code=$$?
           echo "[tunnel] 连接结束（退出码 $${code}），5 秒后重连"
-          sleep 5
+          # 连接稳定存活过 60 秒说明网络链路正常，退避重新归零。
+          if [ $$(( $$(date +%s) - started )) -ge 60 ]; then
+            delay=5
+          fi
+          # 端口被上一个会话残留占用时，短暂失败会连续出现；用指数退避
+          # 把重试频率压下来（上限 60 秒），避免刷日志和打满 sshd。
+          sleep "$${delay}"
+          if [ "$${code}" -ne 0 ]; then
+            delay=$$(( delay * 2 ))
+            [ "$${delay}" -gt 60 ] && delay=60
+          fi
         done
     environment:
       SSH_HOST: ${EMBEDDING_TUNNEL_SSH_HOST:?需要在 .env 设置 EMBEDDING_TUNNEL_SSH_HOST（远端服务器地址）}
