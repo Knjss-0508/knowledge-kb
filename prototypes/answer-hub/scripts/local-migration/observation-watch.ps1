@@ -59,8 +59,22 @@ function Probe($url, $timeout = 15) {
     }
 }
 
+# 探测用 ssh 必须带心跳与超时，并且 stdin 置空：
+# 之前缺少这三项时，连接被中间设备静默丢弃后 ssh 会永远挂住，任务每 10 分钟
+# 叠加一个孤儿进程（2026-10-19 起累计 94 个）。stdin 若不置空，ssh 会继承
+# 计划任务的输入句柄，同样可能永不退出。
+$SSH_OPTS = @(
+    '-o', 'StrictHostKeyChecking=no',
+    '-o', 'ConnectTimeout=10',
+    '-o', 'ServerAliveInterval=15',
+    '-o', 'ServerAliveCountMax=2',
+    '-o', 'BatchMode=yes',
+    '-o', 'LogLevel=ERROR'
+)
+
 function SshRun($cmd) {
-    return (& ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -o LogLevel=ERROR $SRV $cmd 2>&1)
+    # 用空管道显式关闭 stdin（PowerShell 不支持 < 重定向）。
+    return (@($null | & ssh @SSH_OPTS $SRV $cmd 2>&1))
 }
 
 # 服务器上某个 URL 的 HTTP 状态码（只读探测）
@@ -76,7 +90,7 @@ function SshE2ECode() {
         Set-Content -LiteralPath $py -Value $E2E_PY -Encoding ascii
         # 用「本机临时文件 + 管道」上传，避免 ssh 内联引号地狱
         Get-Content -Raw -Encoding ascii $py |
-            & ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes -o LogLevel=ERROR $SRV "cat > /tmp/_watch_e2e.py" 2>&1 | Out-Null
+            & ssh @SSH_OPTS $SRV "cat > /tmp/_watch_e2e.py" 2>&1 | Out-Null
         $out = SshRun "docker cp /tmp/_watch_e2e.py kb-backend:/tmp/_watch_e2e.py && docker exec kb-backend python /tmp/_watch_e2e.py"
         $txt = ($out | Out-String)
         if ($txt -match 'E2E_OK /health 200' -and $txt -match 'E2E_OK /api/v1/automation/control 200') { return "200" }
