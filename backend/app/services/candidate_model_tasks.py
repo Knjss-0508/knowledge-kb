@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, or_, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.database import SessionLocal
@@ -16,6 +19,30 @@ from app.schemas.integration import CandidateReviewBatchModelAnnotate
 
 logger = logging.getLogger(__name__)
 ACTIVE_STATUSES = ("queued", "running")
+SERVICE_ERROR_CODES = {"NETWORK_ERROR", "TIMEOUT", "HTTP_429"}
+PERMANENT_SERVICE_ERRORS = {"CONFIG_MISSING", "HTTP_401", "HTTP_403"}
+
+
+def _record_service_outcome(config: CandidateModelAutomation, outcome: dict | None) -> None:
+    if not outcome:
+        return
+    entries = outcome.get("results", [])
+    errors = [
+        entry for entry in entries
+        if entry.get("error_code") in SERVICE_ERROR_CODES | PERMANENT_SERVICE_ERRORS
+        or str(entry.get("error_code") or "").startswith("HTTP_5")
+    ]
+    if errors:
+        config.consecutive_network_failures = (config.consecutive_network_failures or 0) + 1
+        if (config.consecutive_network_failures >= 2
+                or errors[0].get("error_code") in PERMANENT_SERVICE_ERRORS):
+            config.paused_at = datetime.utcnow()
+            config.pause_reason = (
+                f"模型服务不可用（{errors[0]['error_code']}），已暂停全部候选模型任务。"
+                "请确认网关连接恢复后点击“恢复处理”；未处理候选保持原进度。"
+            )
+    elif any(entry.get("status") != "skipped" for entry in entries):
+        config.consecutive_network_failures = 0
 
 
 def automation_settings(db: Session, *, lock: bool = False) -> CandidateModelAutomation:
@@ -23,7 +50,7 @@ def automation_settings(db: Session, *, lock: bool = False) -> CandidateModelAut
     return (query.with_for_update() if lock else query).one()
 
 
-def task_snapshot(task: CandidateModelTask) -> dict:
+def task_snapshot(task: CandidateModelTask, *, include_results: bool = True) -> dict:
     results = list(task.results or [])
     counters = {
         key: sum(int(row.get(key) or 0) for row in results)
@@ -36,7 +63,7 @@ def task_snapshot(task: CandidateModelTask) -> dict:
         **counters,
         "error_message": task.error_message,
         "created_at": task.created_at, "updated_at": task.updated_at,
-        "results": [entry for row in results for entry in row.get("results", [])],
+        "results": [entry for row in results for entry in row.get("results", [])] if include_results else [],
     }
 
 
@@ -64,7 +91,7 @@ def schedule_automatic_candidates(db: Session) -> CandidateModelTask | None:
     from app.routes.auth import has_permission
 
     config = automation_settings(db, lock=True)
-    if not config.enabled:
+    if not config.enabled or config.paused_at:
         return None
     user = db.get(User, config.requested_by)
     if not user or not user.is_active or not has_permission(user, "knowledge:submit"):
@@ -92,7 +119,7 @@ def schedule_automatic_candidates(db: Session) -> CandidateModelTask | None:
     return enqueue_task(db, [row.id for row in rows], user.id, source="automatic")
 
 
-def _mark_automatic_attempt(item: IntegrationIngestion, task_id: str) -> None:
+def _mark_model_workflow_attempt(item: IntegrationIngestion, task_id: str | None) -> None:
     from app.services.candidate_review import current_draft_version
 
     item.review_metadata = {
@@ -104,23 +131,44 @@ def _mark_automatic_attempt(item: IntegrationIngestion, task_id: str) -> None:
     }
 
 
+def _model_workflow_attempted_current_draft(item: IntegrationIngestion) -> bool:
+    from app.services.candidate_review import current_draft_version
+
+    recorded = (item.review_metadata or {}).get("automatic_model_workflow") or {}
+    try:
+        return int(recorded.get("draft_version")) == current_draft_version(item.review_metadata or {})
+    except (TypeError, ValueError):
+        return False
+
+
+@contextmanager
+def candidate_model_execution_slot(engine: Engine) -> Iterator[bool]:
+    """Share the candidate execution lock across worker and legacy HTTP callers."""
+    if engine.dialect.name != "postgresql":
+        yield True
+        return
+    with engine.connect() as connection:
+        locked = bool(connection.execute(text("SELECT pg_try_advisory_lock(735216, 20261027)")).scalar())
+        connection.commit()
+        if not locked:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            connection.execute(text("SELECT pg_advisory_unlock(735216, 20261027)"))
+            connection.commit()
+
+
 def process_next_candidate_model_task(session_factory: sessionmaker = SessionLocal) -> bool:
     # A session-level PostgreSQL lock survives business commits. Expired leases
     # alone must never let a second process overtake a slow but living model call.
     with session_factory() as guard:
         engine = guard.get_bind()
-    if engine.dialect.name != "postgresql":
-        return _process_next_candidate_model_task(session_factory)
-    with engine.connect() as connection:
-        locked = connection.execute(text("SELECT pg_try_advisory_lock(735216, 20261027)")).scalar()
-        connection.commit()
+    with candidate_model_execution_slot(engine) as locked:
         if not locked:
             return False
-        try:
-            return _process_next_candidate_model_task(session_factory)
-        finally:
-            connection.execute(text("SELECT pg_advisory_unlock(735216, 20261027)"))
-            connection.commit()
+        return _process_next_candidate_model_task(session_factory)
 
 
 def _process_next_candidate_model_task(session_factory: sessionmaker) -> bool:
@@ -132,6 +180,8 @@ def _process_next_candidate_model_task(session_factory: sessionmaker) -> bool:
     now = datetime.utcnow()
     with session_factory() as db:
         config = automation_settings(db, lock=True)
+        if config.paused_at:
+            return False
         # Serialize model calls across application workers to keep service load bounded.
         if db.query(CandidateModelTask.id).filter(
             CandidateModelTask.status == "running",
@@ -168,6 +218,8 @@ def _process_next_candidate_model_task(session_factory: sessionmaker) -> bool:
             user = db.get(User, user_id)
             if not user or not user.is_active or not has_permission(user, "knowledge:submit"):
                 raise PermissionError("任务发起人的提交权限已失效。")
+            item = None
+            skip = False
             if ingestion_id is None:
                 outcome = None
             else:
@@ -177,6 +229,7 @@ def _process_next_candidate_model_task(session_factory: sessionmaker) -> bool:
                     _candidate_is_locked(item) or (
                         source == "automatic" and (
                             item.reviewed_at or human.get("knowledge_value") in {"worthy", "unworthy"}
+                            or _model_workflow_attempted_current_draft(item)
                         )
                     )
                 )
@@ -184,7 +237,7 @@ def _process_next_candidate_model_task(session_factory: sessionmaker) -> bool:
                     outcome = {"results": [{
                         "ingestion_id": ingestion_id, "status": "skipped",
                         "review_status": item.review_status,
-                        "error_message": "已送审或已有人工结论，保留当前处理结果。",
+                        "error_message": "已送审、已有人工结论或当前草稿已处理，保留当前结果。",
                     }]}
                 elif interrupted:
                     outcome = {"failed": 1, "results": [{
@@ -200,11 +253,13 @@ def _process_next_candidate_model_task(session_factory: sessionmaker) -> bool:
                         ), db, user,
                     )
                     outcome = response.model_dump(mode="json")
-                if item and source == "automatic":
-                    _mark_automatic_attempt(item, task_id)
+                if item and not skip:
+                    # A failed manual task must not be silently retried by the auto scan.
+                    _mark_model_workflow_attempt(item, task_id)
             task = db.query(CandidateModelTask).filter_by(id=task_id, lease_token=token).with_for_update().one()
             if outcome is not None:
                 task.results = [*list(task.results or []), outcome]
+            _record_service_outcome(automation_settings(db, lock=True), outcome)
             task.status = "completed" if len(task.results) >= len(task.ingestion_ids) else "queued"
             task.lease_token = None
             task.lease_expires_at = None
@@ -215,10 +270,10 @@ def _process_next_candidate_model_task(session_factory: sessionmaker) -> bool:
             logger.exception("Candidate model task %s failed at %s", task_id, ingestion_id)
             task = db.query(CandidateModelTask).filter_by(id=task_id, lease_token=token).with_for_update().one_or_none()
             if task:
-                if source == "automatic" and ingestion_id:
+                if ingestion_id:
                     item = db.get(IntegrationIngestion, ingestion_id)
                     if item:
-                        _mark_automatic_attempt(item, task_id)
+                        _mark_model_workflow_attempt(item, task_id)
                 task.error_message = (
                     str(exc) if isinstance(exc, PermissionError)
                     else "后台处理异常，已保留此前进度；请查看失败明细并重试。"

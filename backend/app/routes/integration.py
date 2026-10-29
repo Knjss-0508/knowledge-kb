@@ -3,11 +3,11 @@ import hashlib
 import uuid
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import and_, case, cast, func, select, text
+from sqlalchemy import and_, case, cast, func, or_, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -65,7 +65,10 @@ from app.schemas.knowledge import (
 )
 from app.services.applicability import resolve_applicability_scope
 from app.services.candidate_business import candidate_business_type
-from app.services.candidate_model_tasks import automation_settings, enqueue_task, task_snapshot
+from app.services.candidate_model_tasks import (
+    _mark_model_workflow_attempt, _record_service_outcome,
+    automation_settings, candidate_model_execution_slot, enqueue_task, task_snapshot,
+)
 from app.services.candidate_review import (
     build_quick_human_review,
     current_draft_version,
@@ -3929,20 +3932,60 @@ def _model_annotate_candidate_review_once(
 
 @router.get("/candidate-model-automation")
 def get_candidate_model_automation(
-    task_page: int = Query(1, ge=1),
+    task_page: int = Query(1, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("knowledge:submit")),
+    task_filter: Literal["all", "failures"] = "all",
+    include_results: bool = True,
 ):
     config = automation_settings(db)
     query = db.query(CandidateModelTask)
     total = query.count()
-    tasks = query.order_by(CandidateModelTask.created_at.desc(), CandidateModelTask.id.desc()).offset(
-        (task_page - 1) * 10
-    ).limit(10).all()
+    if db.get_bind().dialect.name == "postgresql":
+        failure_predicate = text(
+            "EXISTS (SELECT 1 FROM json_array_elements(candidate_model_tasks.results) AS entry "
+            "WHERE COALESCE((entry->>'failed')::int,0)>0 "
+            "OR COALESCE((entry->>'submission_failed')::int,0)>0)"
+        )
+    else:
+        failure_predicate = text(
+            "EXISTS (SELECT 1 FROM json_each(candidate_model_tasks.results) AS entry "
+            "WHERE json_extract(entry.value,'$.failed')>0 "
+            "OR json_extract(entry.value,'$.submission_failed')>0)"
+        )
+    failures = query.filter(or_(CandidateModelTask.status == "failed", failure_predicate))
+    failed_total = failures.count()
+    selected = failures if task_filter == "failures" else query
+    tasks = selected.order_by(CandidateModelTask.created_at.desc(), CandidateModelTask.id.desc()).offset(
+        max(0, task_page - 1) * 10
+    ).limit(10).all() if task_page else []
+    active_query = query.filter(CandidateModelTask.status.in_(("queued", "running")))
+    active = active_query.order_by(CandidateModelTask.created_at, CandidateModelTask.id).first()
     return {
-        "enabled": config.enabled, "tasks": [task_snapshot(task) for task in tasks],
-        "task_total": total, "task_page": task_page,
+        "enabled": config.enabled,
+        "service_paused": bool(config.paused_at),
+        "pause_reason": config.pause_reason,
+        "paused_at": config.paused_at,
+        "active_task": task_snapshot(active, include_results=False) if active else None,
+        "active_task_total": active_query.count(),
+        "failed_task_total": failed_total,
+        "history_total": total,
+        "tasks": [task_snapshot(task, include_results=include_results) for task in tasks],
+        "task_total": failed_total if task_filter == "failures" else total, "task_page": task_page,
     }
+
+
+@router.post("/candidate-model-automation:resume")
+def resume_candidate_model_processing(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    config = automation_settings(db, lock=True)
+    config.paused_at = None
+    config.pause_reason = ""
+    config.consecutive_network_failures = 0
+    db.commit()
+    return {"service_paused": False}
 
 
 @router.put("/candidate-model-automation")
@@ -3965,6 +4008,8 @@ def create_candidate_model_task(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("knowledge:submit")),
 ):
+    if automation_settings(db, lock=True).paused_at:
+        raise HTTPException(409, "模型服务异常，候选任务已暂停；请确认网关恢复后点击“恢复处理”。")
     task = enqueue_task(db, body.ingestion_ids, current_user.id)
     if task is None:
         raise HTTPException(409, "所选候选已在后台任务中，请查看已有任务进度。")
@@ -3988,6 +4033,59 @@ def get_candidate_model_task(
     "/candidate-reviews:batch-model-annotate",
     response_model=CandidateReviewBatchAnnotateResponse,
 )
+def guarded_model_annotate_candidate_reviews(
+    body: CandidateReviewBatchModelAnnotate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("knowledge:submit")),
+):
+    """Keep the legacy synchronous endpoint within the worker's service gate."""
+    with candidate_model_execution_slot(db.get_bind()) as locked:
+        if not locked:
+            raise HTTPException(409, "已有候选模型任务正在处理；请改用后台任务接口。")
+        return _run_guarded_candidate_model_batch(body, db, current_user)
+
+
+def _run_guarded_candidate_model_batch(
+    body: CandidateReviewBatchModelAnnotate, db: Session, current_user: User,
+) -> CandidateReviewBatchAnnotateResponse:
+    config = automation_settings(db)
+    if config.paused_at:
+        raise HTTPException(409, config.pause_reason or "候选模型服务已保护性暂停。")
+    db.commit()
+    totals = {key: 0 for key in (
+        "updated", "failed", "revisions_applied", "reannotated",
+        "submitted", "reused", "submission_failed",
+    )}
+    results: list[CandidateReviewAnnotateResult] = []
+    for ingestion_id in dict.fromkeys(body.ingestion_ids):
+        config = automation_settings(db)
+        if config.paused_at:
+            raise HTTPException(409, config.pause_reason or "候选模型服务已保护性暂停。")
+        db.commit()
+        outcome = model_annotate_candidate_reviews(
+            CandidateReviewBatchModelAnnotate(
+                ingestion_ids=[ingestion_id],
+                apply_model_revisions=body.apply_model_revisions,
+                submit_ready=body.submit_ready,
+            ), db, current_user,
+        )
+        for key in totals:
+            totals[key] += getattr(outcome, key)
+        results.extend(outcome.results)
+        item = db.get(IntegrationIngestion, ingestion_id)
+        if item:
+            _mark_model_workflow_attempt(item, None)
+        _record_service_outcome(automation_settings(db, lock=True), outcome.model_dump(mode="json"))
+        db.commit()
+        if automation_settings(db).paused_at:
+            raise HTTPException(
+                503,
+                f"模型服务异常，已完成 {len(results)} 条；其余候选未处理。"
+                "请确认网关恢复后使用后台任务继续，不要重复提交已处理项。",
+            )
+    return CandidateReviewBatchAnnotateResponse(**totals, results=results)
+
+
 def model_annotate_candidate_reviews(
     body: CandidateReviewBatchModelAnnotate,
     db: Session = Depends(get_db),
@@ -4054,7 +4152,8 @@ def model_annotate_candidate_reviews(
                     result.ingestion_id,
                 )
                 result.status = "failed"
-                result.error_code = "MODEL_REVISION_WORKFLOW_FAILED"
+                model_error = exc.__cause__ if isinstance(exc.__cause__, ModelAnnotationError) else None
+                result.error_code = model_error.error_code if model_error else "MODEL_REVISION_WORKFLOW_FAILED"
                 result.error_message = (
                     str(exc.detail)
                     if isinstance(exc, HTTPException)

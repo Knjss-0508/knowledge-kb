@@ -47,6 +47,9 @@ class CandidateModelAutomation(Base):
     id = Column(String(32), primary_key=True)
     enabled = Column(Boolean, nullable=False, default=False)
     requested_by = Column(String(64), nullable=True)
+    consecutive_network_failures = Column(Integer, nullable=False, default=0)
+    paused_at = Column(DateTime, nullable=True)
+    pause_reason = Column(String(512), nullable=False, default="")
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 

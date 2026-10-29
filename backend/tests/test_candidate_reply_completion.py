@@ -1,6 +1,7 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.routes import integration
@@ -11,6 +12,111 @@ from backend.tests.test_candidate_review_state import _candidate_item, _db_for
 
 EVIDENCE = "答疑确认：先核对两处设备信息；不一致时暂缓修改，并提交复核。"
 REPLY = "请先核对两处设备信息；若不一致，请暂缓修改并提交复核。"
+
+
+@pytest.fixture
+def transport(monkeypatch):
+    monkeypatch.setattr(model_annotation, "resolve_call_config", lambda *_args: {
+        "base_url": "http://model.invalid/v1", "api_key": "test-placeholder",
+        "model": "deepseek-flash", "timeout_seconds": 5,
+    })
+    waits = []
+    monkeypatch.setattr(model_annotation.time, "sleep", waits.append)
+    return waits
+
+
+def _reply_response(**changes):
+    import json
+
+    result = {
+        "recommended_reply": REPLY, "evidence_sufficiency": "sufficient",
+        "evidence_used": [EVIDENCE], **changes,
+    }
+    return httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(result, ensure_ascii=False)}}],
+    })
+
+
+@pytest.mark.parametrize("failure", [
+    httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError, httpx.ReadTimeout,
+    429, 503,
+])
+def test_reply_completion_recovers_transient_transport_failure(monkeypatch, transport, failure):
+    calls = []
+
+    def post(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            if isinstance(failure, int):
+                return httpx.Response(failure)
+            raise failure("temporary interruption")
+        return _reply_response()
+
+    monkeypatch.setattr(model_annotation.httpx, "post", post)
+    result = model_annotation.complete_candidate_recommended_reply({
+        "title": "设备信息核对", "evidence_excerpt": EVIDENCE,
+    })
+    assert result["recommended_reply"] == REPLY
+    assert len(calls) == 2
+    assert transport == [1.05, 2, 1.05]
+
+
+def test_reply_completion_stops_after_three_failed_calls_and_redacts_details(monkeypatch, transport):
+    calls = []
+
+    def post(*args, **kwargs):
+        calls.append(1)
+        raise httpx.ConnectError("private-host?api_key=do-not-display")
+
+    monkeypatch.setattr(model_annotation.httpx, "post", post)
+    with pytest.raises(model_annotation.ModelAnnotationError) as error:
+        model_annotation.complete_candidate_recommended_reply({
+            "title": "设备信息核对", "evidence_excerpt": EVIDENCE,
+        })
+    assert len(calls) == 3
+    assert transport == [1.05, 2, 1.05, 5, 1.05]
+    assert error.value.error_code == "NETWORK_ERROR"
+    assert error.value.retryable is True
+    assert "ConnectError" in str(error.value)
+    assert "3" in str(error.value)
+    assert "private-host" not in str(error.value)
+    assert "do-not-display" not in str(error.value)
+
+
+@pytest.mark.parametrize("status", [400, 401, 403])
+def test_reply_completion_does_not_retry_permanent_http_failure(monkeypatch, transport, status):
+    calls = []
+
+    def post(*args, **kwargs):
+        calls.append(1)
+        return httpx.Response(status)
+
+    monkeypatch.setattr(model_annotation.httpx, "post", post)
+    with pytest.raises(model_annotation.ModelAnnotationError) as error:
+        model_annotation.complete_candidate_recommended_reply({
+            "title": "设备信息核对", "evidence_excerpt": EVIDENCE,
+        })
+    assert error.value.error_code == f"HTTP_{status}"
+    assert not error.value.retryable
+    assert len(calls) == 1
+
+
+def test_recovered_connection_still_rejects_unsupported_reply(monkeypatch, transport):
+    calls = []
+
+    def post(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ReadError("temporary interruption")
+        return _reply_response(evidence_used=["摘要没有的依据"])
+
+    monkeypatch.setattr(model_annotation.httpx, "post", post)
+    with pytest.raises(model_annotation.ModelAnnotationError) as error:
+        model_annotation.complete_candidate_recommended_reply({
+            "title": "设备信息核对", "evidence_excerpt": EVIDENCE,
+        })
+    assert error.value.error_code == "INVALID_REPLY_COMPLETION"
+    assert len(calls) == 2
 
 
 def test_reply_completion_uses_summary_as_the_fact_source(monkeypatch):
@@ -101,7 +207,7 @@ def test_completion_rejects_unsupported_or_incomplete_answers(monkeypatch, resul
 
 @pytest.mark.parametrize("mode", ["single", "batch"])
 @pytest.mark.parametrize("failure", ["insufficient", "timeout"])
-def test_completion_failure_keeps_reply_empty_and_previous_truth(monkeypatch, mode, failure):
+def test_completion_failure_keeps_reply_empty_and_previous_truth(monkeypatch, mode, failure, transport):
     old_review = {"suggested_action": "hold_for_evidence", "knowledge_value": "pending"}
     human = {"knowledge_value": "worthy", "usability": "usable"}
     item = _candidate_item(recommended_reply="", evidence_excerpt=EVIDENCE, model_review=old_review, human_review=human)
@@ -200,10 +306,11 @@ def test_annotation_retry_reuses_completed_reply_and_keeps_version(monkeypatch):
         calls.append(purpose)
         if purpose == "根据来源证据摘要补充推荐回复":
             return {"recommended_reply": REPLY, "evidence_sufficiency": "sufficient", "evidence_used": [EVIDENCE]}
-        if calls.count("草稿标注") == 1:
+        if calls.count("草稿标注") <= 3:
             raise model_annotation.ModelAnnotationError("初标超时", "TIMEOUT", retryable=True)
         return {"knowledge_value": "worthy", "draft_quality": "approved", "confidence": 0.95, "reason": "与摘要一致"}
     monkeypatch.setattr(model_annotation, "_call_deepseek_flash", call)
+    monkeypatch.setattr(model_annotation.time, "sleep", lambda _: None)
     monkeypatch.setattr(integration, "get_confidence_prompt_for_candidate", lambda *args, **kwargs: ("规则", "v1"))
     db, user = _db_for(item), SimpleNamespace(username="reviewer")
     with pytest.raises(integration.HTTPException):
@@ -216,3 +323,4 @@ def test_annotation_retry_reuses_completed_reply_and_keeps_version(monkeypatch):
     assert result.model_annotation["status"] == "completed"
     assert len(item.review_metadata["draft_revision_history"]) == 1
     assert calls.count("根据来源证据摘要补充推荐回复") == 1
+    assert calls.count("草稿标注") == 4
