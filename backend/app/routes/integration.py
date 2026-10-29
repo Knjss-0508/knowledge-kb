@@ -3393,13 +3393,11 @@ def _candidate_review_light_query(
 ):
     """列表统计与筛选需要的窄投影查询。
 
-    candidate_payload / review_metadata 是 json 列（不是 jsonb），一个 `->` 就会
-    重新解析整个文档：19341 行、candidate_payload 合计 152MB 的快照上，取全字段要
-    3.2s（其中绝大部分是传输与解析），而列表统计/筛选只用到少数几个派生字段。
-    这里先 CAST 成 jsonb 解析一次，再只投影需要的字段，后续只对当前页取整行。
+    这两列现在都是 jsonb，`->` 可以直接按键定位，不再需要先 CAST 整列，
+    也不需要为阻止 CAST 内联而嵌套子查询（那两层子查询会各自物化 3 万行，
+    是当前剩余耗时的主要来源）。这里直接投影子文档，只把需要的部分传回
+    应用层（整列约 538MB，子文档合计约 18MB）。
 
-    三层子查询各自的 LIMIT 与 confidence_training 里的做法一致：阻止 PostgreSQL
-    把子查询内联进外层，否则 CAST 会被复制进每个 `->` 表达式，19341 行上要多花数秒。
     带 ``review_status`` 时把状态过滤下推。状态是普通列，SQL 侧先筛掉不需要
     解析的行（平台默认进入候选页就带 pending），可把 3 万行降到 1 万行左右；
     不带状态时才退化为全量，语义与原来逐项过滤完全一致。
@@ -3413,7 +3411,7 @@ def _candidate_review_light_query(
     base_filters = list(_CANDIDATE_REVIEW_BASE_FILTERS)
     if review_status:
         base_filters.append(IntegrationIngestion.review_status == review_status)
-    parsed = (
+    return (
         select(
             IntegrationIngestion.id.label("id"),
             IntegrationIngestion.event_id.label("event_id"),
@@ -3447,32 +3445,8 @@ def _candidate_review_light_query(
             ),
         )
         .where(*base_filters)
-        .limit(2**31 - 1)
-        .subquery("candidate_review_parsed")
+        .order_by(IntegrationIngestion.created_at.desc())
     )
-    # 所有 `a or b` 的取值链仍留在 Python 侧，与 `_candidate_review_item`
-    # 的语义逐字一致（包括 0 / false 这类病态真假值）。
-    fact_columns = [column for column in parsed.c]
-    facts = select(*fact_columns).limit(2**31 - 1).subquery("candidate_review_facts")
-    columns = [
-        facts.c.id,
-        facts.c.event_id,
-        facts.c.source_conversation_id,
-        facts.c.review_status,
-        facts.c.updated_at,
-        facts.c.candidate_model_review,
-        facts.c.metadata_model_review,
-        facts.c.candidate_human_review,
-        facts.c.metadata_human_review,
-        facts.c.deduplication,
-        facts.c.deduplication_confirmation,
-        facts.c.applicable_categories,
-        facts.c.evidence_length,
-    ]
-    if with_keyword_fields:
-        columns.append(facts.c.title)
-        columns.append(facts.c.evidence_excerpt)
-    return select(*columns).order_by(facts.c.created_at.desc())
 
 
 def _candidate_review_light_rows(
