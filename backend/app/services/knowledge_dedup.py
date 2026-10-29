@@ -200,6 +200,34 @@ def _query_embedding(query: str) -> list[float]:
     return [float(value) for value in vector]
 
 
+def _release_db_connection_before_external_call(db: Session, query: str) -> None:
+    """Hand the pooled DB connection back before waiting on the embedding service.
+
+    检索请求在读取适用范围后事务已结束。若此时直接等待外部 embedding，
+    每个请求都会在整个外部调用期间占着连接池中的一个连接（size 5 +
+    overflow 10）；隧道抖动时几十个慢请求就能把池占满，连 /health 和普通
+    页面都拿不到连接。缓存命中不需要外部调用，因此保持原样；会话里还有
+    未提交写入时也不动它，避免回滚业务改动。
+    """
+
+    normalized = query.strip()
+    if not normalized or db is None:
+        return
+    key = (
+        settings.EMBEDDING_PROVIDER.strip().lower(),
+        settings.EMBEDDING_BASE_URL.rstrip("/"),
+        settings.EMBEDDING_MODEL,
+        settings.EMBEDDING_DIMENSIONS,
+        settings.VERSION,
+        normalized,
+    )
+    if _get_cached_query_embedding(key) is not None:
+        return
+    if db.new or db.dirty or db.deleted:
+        return
+    db.close()
+
+
 DedupAction = Literal["create", "review_duplicate", "block_duplicate"]
 DedupMatchType = Literal[
     "exact",
@@ -1121,6 +1149,13 @@ def search_embeddings(
         if not allowed_knowledge_ids:
             return []
 
+    # 向量化要经过外部 embedding 服务（隧道重启或 GPU 排队时可达数十秒）。
+    # 上面读取适用范围后事务已经结束，这里先归还连接再等待模型；否则每个
+    # 检索请求都会在整个外部调用期间占着连接池（size 5 + overflow 10），
+    # 少量慢请求即可把连接池占满，连 /health 与普通页面都拿不到连接。
+    # 只在真的需要调用模型时释放：缓存命中不会等待外部服务，也无需要付
+    # 重新取连接的开销。后续查询会重新取连接，语义不变。
+    _release_db_connection_before_external_call(db, query)
     query_vector = _query_embedding(query)
     distance = KnowledgeSearchEmbedding.embedding_vector.cosine_distance(query_vector)
     item_query = (
