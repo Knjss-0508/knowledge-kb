@@ -5,7 +5,7 @@ import sqlalchemy as sa
 
 
 revision = "20261028_01_candidate_pause"
-down_revision = "20261027_01_candidate_tasks"
+down_revision = "20261029_01_candidate_jsonb"
 branch_labels = None
 depends_on = None
 
