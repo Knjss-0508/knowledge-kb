@@ -3371,7 +3371,11 @@ def _candidate_review_full_items(
     ]
 
 
-def _candidate_review_light_query(*, with_keyword_fields: bool):
+def _candidate_review_light_query(
+    *,
+    with_keyword_fields: bool,
+    review_status: str = "",
+):
     """列表统计与筛选需要的窄投影查询。
 
     candidate_payload / review_metadata 是 json 列（不是 jsonb），一个 `->` 就会
@@ -3381,10 +3385,16 @@ def _candidate_review_light_query(*, with_keyword_fields: bool):
 
     三层子查询各自的 LIMIT 与 confidence_training 里的做法一致：阻止 PostgreSQL
     把子查询内联进外层，否则 CAST 会被复制进每个 `->` 表达式，19341 行上要多花数秒。
+    带 ``review_status`` 时把状态过滤下推。状态是普通列，SQL 侧先筛掉不需要
+    解析的行（平台默认进入候选页就带 pending），可把 3 万行降到 1 万行左右；
+    不带状态时才退化为全量，语义与原来逐项过滤完全一致。
     """
 
     payload = cast(IntegrationIngestion.candidate_payload, JSONB).label("payload")
     metadata = cast(IntegrationIngestion.review_metadata, JSONB).label("metadata")
+    base_filters = list(_CANDIDATE_REVIEW_BASE_FILTERS)
+    if review_status:
+        base_filters.append(IntegrationIngestion.review_status == review_status)
     parsed = (
         select(
             IntegrationIngestion.id.label("id"),
@@ -3396,7 +3406,7 @@ def _candidate_review_light_query(*, with_keyword_fields: bool):
             payload,
             metadata,
         )
-        .where(*_CANDIDATE_REVIEW_BASE_FILTERS)
+        .where(*base_filters)
         .limit(2**31 - 1)
         .subquery("candidate_review_parsed")
     )
@@ -3451,11 +3461,19 @@ def _candidate_review_light_query(*, with_keyword_fields: bool):
     return select(*columns).order_by(facts.c.created_at.desc())
 
 
-def _candidate_review_light_rows(db: Session, *, keyword: str) -> list:
+def _candidate_review_light_rows(
+    db: Session,
+    *,
+    keyword: str,
+    review_status: str = "",
+) -> list:
     """列表统计与筛选需要的窄投影行。"""
 
     return db.execute(
-        _candidate_review_light_query(with_keyword_fields=bool(keyword.strip()))
+        _candidate_review_light_query(
+            with_keyword_fields=bool(keyword.strip()),
+            review_status=review_status,
+        )
     ).all()
 
 
@@ -3530,7 +3548,13 @@ def list_candidate_reviews(
 ):
     if updated_from and updated_to and updated_from > updated_to:
         raise HTTPException(status_code=400, detail="更新时间开始日期不能晚于结束日期。")
-    rows = _candidate_review_light_rows(db, keyword=keyword)
+    # 状态先下推到 SQL：平台进入候选页默认带 review_status=pending，
+    # 先把不需要解析的行排除掉。用 kwargs 透传，保持与只接受
+    # ``keyword`` 的旧实现/替身兼容。
+    light_kwargs = {"keyword": keyword}
+    if review_status:
+        light_kwargs["review_status"] = review_status
+    rows = _candidate_review_light_rows(db, **light_kwargs)
     all_items = [_candidate_review_light_item(row) for row in rows]
     product_categories: dict[str, dict[str, str]] = {}
     for item in all_items:
