@@ -147,3 +147,43 @@ Unable to find image 'knowledge-kb-backend:latest' locally
 3. **镜像仍 53 个 / 9.6 GB**：可回收约 3.16 GB，属零停机清理项，尚未执行。
 4. **本机是办公 PC**：数据库仍在服务器，本机跨网访问数据库 3.6–12 秒，
    后端无法迁移；本项目长期增长应迁独立云主机，而不是迁到办公 PC。
+
+## 8. 镜像清理（2026-11-02 完成）
+
+### 8.1 执行结果
+
+`knowledge-kb-backend` 从 **53 个降到 16 个**，Docker 镜像总量 9.62 GB → 8.39 GB。
+
+### 8.2 关于「可回收 3.16 GB」的说明
+
+文档与 `docker system df` 显示的 3.16 GB **不能按字面理解**：这些镜像共享
+同一个 483 MB 基础层，每个 tag 的真实独占只有 12–13 MB。删 35 个镜像实际只回收
+约 0.9 GB，而不是 3.1 GB。
+
+剩下的 2.575 GB「可回收」主要是**其他项目**的镜像（voc-workbench 三件套、
+appeal-exemption-system、mysql、postgres），不属于本项目，不得清理。
+
+### 8.3 顺带修掉的隐患：pin-image 钉着旧版本
+
+`/opt/knowledge-kb-runtime/compose.pin-image.yml` 原本钉的是
+`frontend-stale-error-20261001`，比线上 `candidate-pause-10ed87b` **落后 11 个版本**。
+任何一次 compose 启动都会把后端回退到 10-01 的代码。
+
+已改为钉住当前线上镜像，并备份原文件为 `compose.pin-image.yml.bak-20261102`。
+
+### 8.4 新增工具：`scripts/prune-kb-images.sh`
+
+保留规则（四条并集）：
+
+1. 当前运行镜像；
+2. 所有容器（含已停止）引用的镜像；
+3. 最近 3 个构建；
+4. 回滚锚点清单 `/opt/knowledge-kb-runtime/kb-rollback-anchors.txt`；
+5. compose pin-image 钉住的镜像。
+
+默认只打印清单，`--apply` 才删除。**不使用 `docker image prune -a`**——本机
+6+ 项目共用 Docker，全局 prune 会误删其他项目的镜像。
+
+回滚锚点清单只保留当前本地确实存在的 tag，避免清单失真：
+本次发现 6 个历史文档记录的锚点（`log-verdict-retention-20261010`、
+`pool-state-e3b361f` 等）在清理前就已不存在，已从清单移除并在此记录。
