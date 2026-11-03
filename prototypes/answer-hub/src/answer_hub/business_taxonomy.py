@@ -159,15 +159,22 @@ def business_line_from_record(
     record: dict[str, Any],
     path: str | Path | None = None,
 ) -> BusinessLine | None:
+    """Resolve the business line with an explicit source value taking priority.
+
+    第二部分已有“回收业务层级”时以它为准，因为聚合回收的品类库本来就
+    包含手机等上门品类。唯一例外是：层级写成自营回收、但具体品类不在
+    上门 12 品类内时，纠正为聚合回收——自营只覆盖这 12 类。
+    只有层级为空时才按产品品类推断。
+    """
     product = next((
         record.get(key) for key in ("类目", "产品类型", "产品类型编码", "适用范围")
         if not is_product_type_placeholder(record.get(key))
     ), "")
+    product_line = None
     if is_concrete_unconfigured_product(product):
-        return next(
-            line for line in load_business_lines(path)
-            if line.code == AGGREGATE_BUSINESS_LINE_CODE
-        )
+        product_line = _business_line(path, AGGREGATE_BUSINESS_LINE_CODE)
+    elif resolve_product_category(product):
+        product_line = _business_line(path, SELF_OPERATED_BUSINESS_LINE_CODE)
     explicit = next(
         (
             _text(record.get(field))
@@ -183,19 +190,30 @@ def business_line_from_record(
         "",
     )
     if explicit:
-        return resolve_business_line(explicit, path)
+        line = resolve_business_line(explicit, path)
+        if (
+            line is not None
+            and line.code == SELF_OPERATED_BUSINESS_LINE_CODE
+            and product_line is not None
+            and product_line.code == AGGREGATE_BUSINESS_LINE_CODE
+        ):
+            return product_line
+        if line is not None:
+            return line
     product_marker = resolve_business_line(record.get("产品类型"), path)
     if product_marker:
         return product_marker
-    if resolve_product_category(product):
-        return default_business_line(path)
+    if product_line is not None:
+        return product_line
     if is_concrete_unconfigured_product(record.get("产品类型")):
-        return next(
-            line
-            for line in load_business_lines(path)
-            if line.code == AGGREGATE_BUSINESS_LINE_CODE
-        )
+        return _business_line(path, AGGREGATE_BUSINESS_LINE_CODE)
     return default_business_line(path)
+
+
+def _business_line(path: str | Path | None, code: str) -> BusinessLine:
+    return next(
+        line for line in load_business_lines(path) if line.code == code
+    )
 
 
 def canonical_business_line_name(

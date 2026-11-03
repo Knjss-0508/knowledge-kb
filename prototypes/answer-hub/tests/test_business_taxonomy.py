@@ -73,3 +73,19 @@ def test_placeholder_category_does_not_hide_concrete_product():
     assert business_line_from_record({
         "类目": "待确认", "产品类型": "无人机", "回收业务层级编码": "self_operated",
     }).name == AGGREGATE_BUSINESS_LINE_NAME
+
+
+def test_explicit_aggregate_line_keeps_doorstep_product():
+    for product in (
+        "手机", "平板电脑", "智能手表", "耳机/耳麦", "笔记本", "游戏机",
+        "游戏卡带", "单电/微单机身", "单反机身", "相机镜头", "手写笔", "学习机",
+    ):
+        assert business_line_from_record({
+            "回收业务层级": "聚合回收", "产品类型": product,
+        }).name == AGGREGATE_BUSINESS_LINE_NAME
+
+
+def test_explicit_self_operated_is_corrected_when_category_is_not_doorstep():
+    assert business_line_from_record({
+        "类目": "智能手环", "产品类型": "手机", "回收业务层级": "自营回收",
+    }).name == AGGREGATE_BUSINESS_LINE_NAME

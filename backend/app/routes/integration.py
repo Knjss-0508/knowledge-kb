@@ -64,7 +64,10 @@ from app.schemas.knowledge import (
     TagValueResponse,
 )
 from app.services.applicability import resolve_applicability_scope
-from app.services.candidate_business import candidate_business_type
+from app.services.candidate_business import (
+    candidate_business_type,
+    categories_from_manhattan,
+)
 from app.services.candidate_model_tasks import (
     _mark_model_workflow_attempt, _record_service_outcome,
     automation_settings, candidate_model_execution_slot, enqueue_task, task_snapshot,
@@ -205,9 +208,28 @@ def _candidate_payload_with_taxonomy_defaults(
     payload = dict(candidate_payload or {})
     knowledge = dict(payload.get("knowledge") or {})
     knowledge.setdefault("knowledge_origin", "business_accumulation")
-    knowledge["business_type"] = candidate_business_type(knowledge, payload)
+    derived_business_type = _candidate_business_type(knowledge, payload)
+    if derived_business_type:
+        knowledge["business_type"] = derived_business_type
     payload["knowledge"] = knowledge
     return payload, knowledge
+
+
+def _candidate_business_type(knowledge: dict, payload: dict) -> str:
+    """按适用品类回写业务类型，缺证据时保留历史值。"""
+
+    try:
+        resolved_categories = categories_from_manhattan(
+            knowledge.get("applicable_categories"),
+            _read_manhattan_cache(),
+        )
+    except (OSError, ValueError):
+        resolved_categories = []
+    return candidate_business_type(
+        knowledge,
+        payload,
+        resolved_category_names=resolved_categories,
+    )
 
 
 def _ensure_candidate_origin_is_writable(knowledge: dict) -> None:
@@ -3049,6 +3071,10 @@ def submit_knowledge_candidates(
             )
             continue
 
+        normalized_payload = _candidate_payload_with_taxonomy_defaults(
+            candidate.model_dump(mode="json")
+        )[0]
+        candidate = IntegrationCandidate.model_validate(normalized_payload)
         try:
             decision = check_duplicate(
                 db,
@@ -4328,6 +4354,29 @@ def update_candidate_review(
             if knowledge.get(payload_key) != value:
                 deduplication_sensitive_changed = True
             knowledge[payload_key] = value
+    if "business_type" in body.model_fields_set:
+        # 人工明确选择过业务类型，后续保存和送审不应被旧回放行覆盖。
+        knowledge["business_type_source"] = "human"
+    # 显式业务类型优先；只把“自营 + 非上门 12 类”纠正为聚合回收。
+    # 聚合回收的品类库本来就包含手机等上门品类。
+    normalized_business_type = _candidate_business_type(knowledge, payload)
+    if knowledge.get("business_type") != normalized_business_type:
+        knowledge["business_type"] = normalized_business_type
+        selection = dict(payload.get("selection") or item.selection_metadata or {})
+        reasons = [
+            str(value)
+            for value in (selection.get("reasons") or [])
+            if str(value).strip()
+        ]
+        note = (
+            "适用品类不在上门 12 类内，业务类型已按规则校正为聚合回收。"
+            if normalized_business_type == "aggregated"
+            else "业务类型已按适用品类校正为自营回收。"
+        )
+        if note not in reasons:
+            reasons.append(note)
+        selection["reasons"] = reasons
+        payload["selection"] = selection
     payload["knowledge"] = knowledge
 
     review_metadata = dict(item.review_metadata or {})

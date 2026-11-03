@@ -55,9 +55,49 @@ def test_opaque_category_id_does_not_reclassify_without_product_evidence():
     assert knowledge["business_type"] == "self_operated"
 
 
-def test_explicit_aggregate_business_for_doorstep_product_is_preserved():
+def test_explicit_aggregate_business_keeps_doorstep_product():
+    """聚合回收品类库包含手机等上门品类，显式聚合不能被品类改回自营。"""
+
     _, knowledge = _candidate_payload_with_taxonomy_defaults({
         "knowledge": {"business_type": "aggregated", "applicable_categories": ["手机"]},
+    })
+    assert knowledge["business_type"] == "aggregated"
+
+
+def test_explicit_self_operated_with_non_doorstep_product_is_corrected():
+    _, knowledge = _candidate_payload_with_taxonomy_defaults({
+        "knowledge": {
+            "business_type": "self_operated",
+            "applicable_categories": ["智能手环"],
+        },
+    })
+    assert knowledge["business_type"] == "aggregated"
+
+
+def test_replay_source_line_takes_priority_over_product_inference():
+    _, knowledge = _candidate_payload_with_taxonomy_defaults({
+        "knowledge": {"applicable_categories": ["手机"]},
+        "selection": {"answer_hub_replay_input": {"回收业务层级": "聚合回收"}},
+    })
+    assert knowledge["business_type"] == "aggregated"
+
+
+def test_replay_self_operated_line_with_non_doorstep_product_is_corrected():
+    _, knowledge = _candidate_payload_with_taxonomy_defaults({
+        "knowledge": {"applicable_categories": ["智能手环"]},
+        "selection": {"answer_hub_replay_input": {"回收业务层级": "自营回收"}},
+    })
+    assert knowledge["business_type"] == "aggregated"
+
+
+def test_human_selected_business_type_is_not_overridden_by_replay_source():
+    _, knowledge = _candidate_payload_with_taxonomy_defaults({
+        "knowledge": {
+            "business_type": "aggregated",
+            "business_type_source": "human",
+            "applicable_categories": ["手机"],
+        },
+        "selection": {"answer_hub_replay_input": {"回收业务层级": "自营回收"}},
     })
     assert knowledge["business_type"] == "aggregated"
 
@@ -80,3 +120,57 @@ def test_placeholder_source_category_does_not_hide_known_drone_product():
         "selection": {"answer_hub_replay_input": {"类目": "待确认", "产品类型": "无人机"}},
     })
     assert knowledge["business_type"] == "aggregated"
+
+
+def test_manhattan_category_id_is_resolved_before_classification(monkeypatch):
+    from app.routes import integration
+
+    monkeypatch.setattr(
+        integration,
+        "_read_manhattan_cache",
+        lambda: {
+            "options_by_business_type": {
+                "aggregated": {
+                    "applicable_categories": [
+                        {"categoryId": "901", "categoryName": "黄金"}
+                    ]
+                }
+            }
+        },
+    )
+    _, knowledge = _candidate_payload_with_taxonomy_defaults({
+        "knowledge": {"business_type": "self_operated", "applicable_categories": ["901"]},
+    })
+    assert knowledge["business_type"] == "aggregated"
+
+
+def test_unknown_opaque_category_id_keeps_legacy_business_type(monkeypatch):
+    from app.routes import integration
+
+    monkeypatch.setattr(integration, "_read_manhattan_cache", lambda: {})
+    _, knowledge = _candidate_payload_with_taxonomy_defaults({
+        "knowledge": {"business_type": "self_operated", "applicable_categories": ["901"]},
+    })
+    assert knowledge["business_type"] == "self_operated"
+
+
+def test_mixed_category_name_and_id_are_resolved_together(monkeypatch):
+    from app.routes import integration
+
+    monkeypatch.setattr(
+        integration,
+        "_read_manhattan_cache",
+        lambda: {
+            "options_by_business_type": {
+                "self_operated": {
+                    "applicable_categories": [
+                        {"categoryId": "119", "categoryName": "手机"}
+                    ]
+                }
+            }
+        },
+    )
+    _, knowledge = _candidate_payload_with_taxonomy_defaults({
+        "knowledge": {"applicable_categories": ["119", "手机"]},
+    })
+    assert knowledge["business_type"] == "self_operated"

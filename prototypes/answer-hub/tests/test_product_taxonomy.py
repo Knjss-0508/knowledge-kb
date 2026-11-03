@@ -215,7 +215,7 @@ def test_source_preprocessing_sends_ambiguous_camera_body_to_manual_confirmation
     assert "进入人工确认" in row["预处理备注"]
 
 
-def test_source_preprocessing_reserves_aggregate_business_hierarchy() -> None:
+def test_source_preprocessing_keeps_explicit_aggregate_business_hierarchy() -> None:
     explicit = preprocess_source_rows(
         [
             {

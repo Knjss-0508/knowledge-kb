@@ -966,7 +966,7 @@ def test_aggregate_business_line_prompt_does_not_use_self_operated_rules() -> No
     prompt = mimo_module._clustering_rules_prompt_block(
         {
             "回收业务层级": "聚合回收",
-            "产品类型": "手机",
+            "产品类型": "智能手环",
             "对象/部位": "屏幕",
             "异常现象": "碎裂",
         }
@@ -7171,6 +7171,7 @@ def test_different_business_hierarchy_levels_are_forced_apart() -> None:
         **self_operated,
         "数据ID": "AGG-PHONE",
         "_原子知识ID": "AGG-PHONE-U1",
+        "产品类型": "智能手环",
         "回收业务层级": "聚合回收",
     }
 
@@ -7191,6 +7192,7 @@ def test_aggregate_business_line_does_not_use_self_operated_quality_rules() -> N
     }
     aggregate = {
         **self_operated,
+        "产品类型": "智能手环",
         "回收业务层级": "聚合回收",
     }
 
@@ -7517,7 +7519,7 @@ def test_direct_mimo_atomic_batches_never_mix_business_hierarchy_levels(
             "工单ID": f"{line}-{index}",
             "聊天内容": f"{line}手机屏幕碎裂核验{index}",
             "回收业务层级": line,
-            "产品类型": "手机",
+            "产品类型": "手机" if line == "自营回收" else "智能手环",
         }
         for line in ("自营回收", "聚合回收")
         for index in range(2)
