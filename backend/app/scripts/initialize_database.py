@@ -287,8 +287,9 @@ def validate_schema() -> None:
         "ix_media_deletion_tasks_storage_backend",
         "ix_media_upload_staging_expires_at",
         "ix_media_upload_staging_username",
-        "ix_retrieval_quality_events_request_id",
-        "ix_retrieval_quality_events_source_kind",
+        # 20261103_01_drop_idx 已删除这两个低基数索引（线上实测 scan=0），
+        # 这里必须同步移除，否则迁移成功后 validate_schema 会判定索引缺失，
+        # migrate 容器以非 0 退出，后端无法启动。
         "ix_blind_label_batches_user_id",
         "ix_blind_label_batches_status",
         "ix_blind_label_batches_created_at",

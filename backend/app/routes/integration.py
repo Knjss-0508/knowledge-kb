@@ -4334,6 +4334,7 @@ def update_candidate_review(
         payload["selection"] = selection
     confirm_dedup_review = updates.pop("confirm_dedup_review", None)
     deduplication_sensitive_changed = False
+    business_type_changed = False
     for field, payload_key in (
         ("title", "title"),
         ("subtitles", "subtitles"),
@@ -4353,9 +4354,13 @@ def update_candidate_review(
             value = updates.pop(field)
             if knowledge.get(payload_key) != value:
                 deduplication_sensitive_changed = True
+                if field == "business_type":
+                    business_type_changed = True
             knowledge[payload_key] = value
-    if "business_type" in body.model_fields_set:
-        # 人工明确选择过业务类型，后续保存和送审不应被旧回放行覆盖。
+    if business_type_changed:
+        # 只有人工真正改过业务类型才记为人工结论。前端保存任意字段都会带上
+        # 现有 business_type，若按「字段出现即人工」会把这个旧值冻结住，
+        # 导致后续按品类纠正和源端回放都无法再修正。
         knowledge["business_type_source"] = "human"
     # 显式业务类型优先；只把“自营 + 非上门 12 类”纠正为聚合回收。
     # 聚合回收的品类库本来就包含手机等上门品类。

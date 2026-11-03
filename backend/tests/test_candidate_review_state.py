@@ -993,3 +993,48 @@ def test_model_revision_is_versioned_and_adoption_invalidates_old_annotation(mon
     assert applied.model_review == {}
     assert item.review_metadata["model_draft_revision"]["status"] == "applied"
     assert item.review_metadata["model_annotation"]["status"] == "stale_after_draft_revision"
+
+
+def test_unchanged_business_type_save_does_not_freeze_the_old_value():
+    """保存其它字段时会带上当前 business_type，不能被误判成人工选择。
+
+    前端提交的表单总带 business_type。若按「字段出现即人工选择」打标记，
+    会把历史值冻结，之后源端业务层级回放与按品类纠正都会失效。
+    """
+
+    item = _candidate_item()
+    item.candidate_payload["knowledge"]["applicable_categories"] = ["手机"]
+    item.candidate_payload["selection"]["answer_hub_replay_input"] = {
+        "回收业务层级": "自营回收",
+    }
+
+    integration.update_candidate_review(
+        "ing-1",
+        CandidateReviewUpdate(title="新标题", business_type="self_operated"),
+        _db_for(item),
+        SimpleNamespace(username="reviewer"),
+    )
+
+    knowledge = item.candidate_payload["knowledge"]
+    assert "business_type_source" not in knowledge
+    assert knowledge["business_type"] == "self_operated"
+
+
+def test_explicit_business_type_change_remains_a_human_decision():
+    """人工显式改成聚合回收后，不能被源端「自营回收」回放改回自营。"""
+
+    item = _candidate_item()
+    item.candidate_payload["selection"]["answer_hub_replay_input"] = {
+        "回收业务层级": "自营回收",
+    }
+
+    integration.update_candidate_review(
+        "ing-1",
+        CandidateReviewUpdate(business_type="aggregated"),
+        _db_for(item),
+        SimpleNamespace(username="reviewer"),
+    )
+
+    knowledge = item.candidate_payload["knowledge"]
+    assert knowledge["business_type_source"] == "human"
+    assert knowledge["business_type"] == "aggregated"
