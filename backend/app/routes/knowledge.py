@@ -42,6 +42,11 @@ from app.services.applicability import (
     build_applicability_canonicalizer,
     scope_keys,
 )
+from app.services.candidate_business import (
+    business_type_for_products,
+    categories_from_manhattan,
+    reconcile_business_type,
+)
 from app.services.knowledge_dedup import (
     DedupDecision,
     build_dedup_documents,
@@ -450,6 +455,11 @@ def _validate_business_applicable_categories(
     if not selected_values:
         return
     allowed_keys = cached_applicable_category_keys(business_type)
+    if business_type == "aggregated":
+        # 聚合回收的品类库包含手机等上门品类；显式聚合不能因品类名称被拒。
+        allowed_keys = allowed_keys | cached_applicable_category_keys(
+            "self_operated"
+        )
     business_label = BUSINESS_TYPE_LABELS.get(business_type, business_type)
     if not allowed_keys:
         raise HTTPException(
@@ -469,6 +479,90 @@ def _validate_business_applicable_categories(
                 + "、".join(invalid_values[:5])
             ),
         )
+
+
+def _business_type_from_applicability(values) -> str | None:
+    """按适用品类名称推导业务类型。
+
+    上门回收只覆盖 12 个固定品类，其余具体品类一律归聚合回收。
+    只有名称和 Manhattan 缓存都还原不出具体品类时返回 ``None``，
+    由调用方保留历史值，避免缺证据的数据被静默改判。
+    """
+    direct = business_type_for_products(values)
+    if direct:
+        return direct
+    try:
+        snapshot = cached_manhattan_options_snapshot()
+    except Exception:
+        return None
+    return business_type_for_products(values, categories_from_manhattan(values, snapshot))
+
+
+def _apply_product_business_type(knowledge: Any) -> bool:
+    """按适用品类校正业务类型；返回是否发生改动。
+
+    已有业务类型优先，只把“自营 + 非上门 12 类”纠正为聚合回收。
+    """
+    derived = _business_type_from_applicability(
+        getattr(knowledge, "applicable_categories", None) or []
+    )
+    current = getattr(knowledge, "business_type", "")
+    resolved = reconcile_business_type(current, derived)
+    if not resolved or resolved == current:
+        return False
+    knowledge.business_type = resolved
+    return True
+
+
+def _reclassify_for_review(
+    db: Session,
+    item: Knowledge,
+    *,
+    actor: str,
+    confirm_dedup_review: bool = False,
+) -> bool:
+    """发布前纠正业务类型，并让查重按新业务类型重新计算。
+
+    业务类型同时是查重与向量隔离条件。如果审核时才发现类型不一致，
+    不能直接沿用旧类型的查重结果发布；纠正后重新入队，等待完成再发布。
+    """
+    if not _apply_product_business_type(item):
+        return False
+    item.updated_by = actor
+    item.updated_at = datetime.utcnow()
+    if _vector_task_table_available(db):
+        _invalidate_knowledge_vectors(db, item.id)
+        _enqueue_manual_vectorization(db, item, requested_by=actor)
+        db.commit()
+        db.refresh(item)
+        return True
+    decision = _check_manual_deduplication(
+        db,
+        title=item.title,
+        subtitles=item.subtitles or [],
+        content=item.content,
+        scene_tags=item.applicable_scenes or [],
+        knowledge_origin=item.knowledge_origin,
+        business_type=item.business_type,
+        applicable_categories=getattr(item, "applicable_categories", None),
+        exclude_knowledge_id=item.id,
+        confirm_dedup_review=confirm_dedup_review,
+        allow_duplicate_review=True,
+    )
+    item.deduplication_metadata = _deduplication_metadata(decision)
+    if decision.embedding:
+        save_embedding(
+            db,
+            knowledge=item,
+            content_hash=decision.content_hash,
+            embedding=decision.embedding,
+            title_embedding=decision.title_embedding,
+            content_embedding=decision.content_embedding,
+        )
+    ensure_search_embeddings(db, item)
+    db.commit()
+    db.refresh(item)
+    return True
 
 
 def _manhattan_option_text(option, *keys: str) -> str:
@@ -1768,6 +1862,13 @@ def _create_knowledge_item(
             status_code=422,
             detail="机型配置信息由飞书专用同步维护，不能人工创建或普通导入。",
         )
+    body.business_type = (
+        reconcile_business_type(
+            body.business_type,
+            _business_type_from_applicability(body.applicable_categories),
+        )
+        or body.business_type
+    )
     _require_manual_applicable_category(
         source=source,
         category_id=body.category_id,
@@ -4548,6 +4649,16 @@ def update_knowledge(
     was_published = item.status == KnowledgeStatus.PUBLISHED
     updates = body.model_dump(exclude_unset=True)
     updated_fields = set(updates)
+    # 适用品类变化时只做“自营 + 非上门 12 类 → 聚合”的单向纠正；
+    # 显式聚合回收（品类库包含手机等上门品类）保持不变。
+    if "applicable_categories" in updated_fields:
+        resolved_business_type = reconcile_business_type(
+            updates.get("business_type", item.business_type),
+            _business_type_from_applicability(updates["applicable_categories"]),
+        )
+        if resolved_business_type:
+            updates["business_type"] = resolved_business_type
+            updated_fields.add("business_type")
     # 这里已经进入人工 PATCH 路由，是否最初由 Excel/自动化创建不应让
     # 操作人重新承担模型调用等待；只要队列表已迁移，所有可编辑知识都
     # 统一走“主表先提交、向量后台处理”。
@@ -4835,6 +4946,8 @@ def submit_review(
     if current_user.role != "super_admin" and item.created_by != current_user.username:
         raise HTTPException(403, "Only the creator can submit this knowledge item for review.")
     before_data = _knowledge_snapshot(item)
+    # 从草稿直接提交时同样按品类回写，变更日志会保留这次纠正。
+    _apply_product_business_type(item)
     # 提交审核同样是人工操作；已完成迁移时不在请求线程重复调用模型。
     async_vector = _vector_task_table_available(db)
     decision = None
@@ -4904,6 +5017,18 @@ def approve_knowledge(
         raise HTTPException(404, "知识条目不存在")
     if item.status != KnowledgeStatus.REVIEW:
         raise HTTPException(400, "只有审核中状态才能审批通过")
+    if _reclassify_for_review(db, item, actor=current_user.username):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "BUSINESS_TYPE_CORRECTED",
+                "message": (
+                    "适用品类与业务类型不一致，已按品类规则改为"
+                    f"{BUSINESS_TYPE_LABELS.get(item.business_type, item.business_type)}；"
+                    "正在重新执行查重，请稍后再发布。"
+                ),
+            },
+        )
     vector_gate = _vector_processing_gate(db, item)
     if vector_gate:
         code, message = vector_gate
@@ -4997,6 +5122,21 @@ def batch_approve_knowledge(
                     status="failed",
                     error_code="STATUS_NOT_REVIEW",
                     error_message="只有待审核状态的知识可以批量通过。",
+                )
+            )
+            continue
+        if _reclassify_for_review(db, item, actor=current_user.username):
+            failed += 1
+            results.append(
+                KnowledgeBatchApproveResult(
+                    knowledge_id=knowledge_id,
+                    status="failed",
+                    error_code="BUSINESS_TYPE_CORRECTED",
+                    error_message=(
+                        "适用品类与业务类型不一致，已按品类规则改为"
+                        f"{BUSINESS_TYPE_LABELS.get(item.business_type, item.business_type)}；"
+                        "正在重新执行查重，请稍后再发布。"
+                    ),
                 )
             )
             continue

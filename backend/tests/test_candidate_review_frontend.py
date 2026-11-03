@@ -19,6 +19,14 @@ def test_model_revision_requires_human_apply_and_keeps_original_draft() -> None:
     assert "采用模型修改并重新初标" in FRONTEND
 
 
+def test_candidate_business_type_is_derived_from_doorstep_categories() -> None:
+    assert "candidateBusinessTypeFromCategories: function(values)" in FRONTEND
+    assert "适用品类不在上门 12 类内，已按规则归为聚合回收" in FRONTEND
+    assert "reconcileCandidateBusinessType: function(explicitValue, derivedValue)" in FRONTEND
+    assert "candidateBusinessTypeFromCategories(form.applicableCategories)" in FRONTEND
+    assert "按适用品类校验" in FRONTEND
+
+
 def test_batch_model_annotation_requests_full_revision_and_submission_workflow() -> None:
     assert "批量模型标注并送审" in FRONTEND
     assert "apply_model_revisions:true" in FRONTEND

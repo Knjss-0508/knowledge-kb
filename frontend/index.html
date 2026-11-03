@@ -1855,7 +1855,7 @@
             <div class="review-form-grid">
               <div class="fg span-2"><label class="fl"><span class="req">*</span> 知识标题</label><input class="fi" v-model="candidateReviews.form.title" :disabled="reviewReadonly()" placeholder="输入知识标题"></div>
               <div class="fg span-2"><label class="fl"><span class="req">*</span> 知识来源</label><select class="fi" v-model="candidateReviews.form.knowledge_origin" :disabled="reviewReadonly()"><option value="" disabled>请选择知识来源</option><option v-for="origin in assignableKnowledgeOrigins(candidateReviews.form.knowledge_origin)" :key="origin.value" :value="origin.value">{{origin.label}}</option></select></div>
-              <div class="fg"><label class="fl"><span class="req">*</span> 业务类型</label><select class="fi" v-model="candidateReviews.form.business_type" :disabled="reviewReadonly()" @change="onCandidateBusinessTypeChange"><option value="" disabled>请选择业务类型</option><option v-for="businessType in businessTypes" :key="businessType.value" :value="businessType.value">{{businessType.label}}</option></select></div>
+              <div class="fg"><label class="fl"><span class="req">*</span> 业务类型 <span class="hint">按适用品类校验</span></label><select class="fi" v-model="candidateReviews.form.business_type" :disabled="reviewReadonly()"><option value="" disabled>请选择业务类型</option><option v-for="businessType in businessTypes" :key="businessType.value" :value="businessType.value">{{businessType.label}}</option></select><div class="hint" v-if="candidateReviews.autoBusinessTypeNotice">{{candidateReviews.autoBusinessTypeNotice}}</div></div>
               <div class="fg"><label class="fl"><span class="req">*</span> 所属分类</label><select class="fi" v-model="candidateReviews.form.category_id" :disabled="reviewReadonly() || !candidateReviews.form.business_type"><option value="" disabled>{{candidateReviews.form.business_type?'请选择分类':'请先选择业务类型'}}</option><option v-for="cat in cats" :key="cat.id" :value="cat.id">{{cat.name}}</option></select></div>
               <div class="fg span-2"><label class="fl">沉淀价值</label><select class="fi" v-model="candidateReviews.form.knowledge_value" :disabled="reviewReadonly()"><option value="pending">待确认</option><option value="worthy">值得沉淀</option><option value="unworthy">不沉淀</option></select><div class="hint">草稿处理由模型初标决定；人工仅确认是否值得沉淀。</div></div>
               <div class="fg span-2"><label class="fl">训练用途</label><label class="candidate-training-toggle" style="min-height:40px"><input type="checkbox" v-model="candidateReviews.form.includeInTraining" :disabled="reviewReadonly() || candidateReviews.form.knowledge_value==='pending'"> 作为人工标注样本</label><div class="hint">训练候选由人工价值结论、草稿处理动作、来源与后续样本质检共同决定。</div></div>
@@ -1918,7 +1918,7 @@
         <template v-else>
           <section class="review-desk-overview">
             <div class="review-desk-overview-top">
-              <div class="review-desk-meta"><span class="tg tg-r">{{sl(reviewDesk.detail.status)}}</span><span class="tg tg-l">{{knowledgeOriginLabel(reviewDesk.detail.knowledge_origin)}}</span></div>
+              <div class="review-desk-meta"><span class="tg tg-r">{{sl(reviewDesk.detail.status)}}</span><span class="tg tg-l">{{knowledgeOriginLabel(reviewDesk.detail.knowledge_origin)}}</span><span class="tg tg-l">{{businessTypeLabel(reviewDesk.detail.business_type)}}</span></div>
               <span class="review-desk-id">{{reviewDesk.detail.id}}</span>
             </div>
             <h4>{{reviewDesk.detail.title}}</h4>
@@ -2611,6 +2611,7 @@ Vue.createApp({
         loading: false,
         selected: [],
         dlg: false,
+        autoBusinessTypeNotice: '',
         current: null,
         form: {
           title:'', knowledge_origin:'', business_type:'', category_id:'', contentText:'', originalContentText:'', recommended_reply:'', evidence_excerpt:'',
@@ -5355,6 +5356,22 @@ Vue.createApp({
         review_note: current.human_review.notes || current.human_review.feedback || current.human_review.modification_notes || '',
         confirmDedupReview: !!current.deduplication_confirmed
       };
+      var derivedBusinessType = typeof this.candidateBusinessTypeFromCategories === 'function'
+        ? this.candidateBusinessTypeFromCategories(current.applicable_categories || [])
+        : '';
+      var resolvedBusinessType = typeof this.reconcileCandidateBusinessType === 'function'
+        ? this.reconcileCandidateBusinessType(
+          this.candidateReviews.form.business_type,
+          derivedBusinessType
+        )
+        : derivedBusinessType;
+      if (resolvedBusinessType && resolvedBusinessType !== this.candidateReviews.form.business_type) {
+        this.candidateReviews.form.business_type = resolvedBusinessType;
+        this.candidateReviews.autoBusinessTypeNotice =
+          '适用品类不在上门 12 类内，已按规则归为聚合回收。';
+      } else {
+        this.candidateReviews.autoBusinessTypeNotice = '';
+      }
       this.candidateReviews.dlg = true;
     },
     candidateReviewMediaUrl: function(media) {
@@ -5499,6 +5516,13 @@ Vue.createApp({
       var current = self.candidateReviews.current;
       var form = self.candidateReviews.form;
       if (!current || self.reviewReadonly()) return;
+      var derivedBusinessType = typeof self.candidateBusinessTypeFromCategories === 'function'
+        ? self.candidateBusinessTypeFromCategories(form.applicableCategories)
+        : '';
+      var resolvedBusinessType = typeof self.reconcileCandidateBusinessType === 'function'
+        ? self.reconcileCandidateBusinessType(form.business_type, derivedBusinessType)
+        : derivedBusinessType;
+      if (resolvedBusinessType) form.business_type = resolvedBusinessType;
       if (self.candidateReviews.modelAnnotating) {
         self.showCandidateReviewNotice('模型初标正在处理草稿，请等待完成后再保存。', 'error');
         return;
@@ -7096,6 +7120,62 @@ Vue.createApp({
       });
       if (found) return found.label;
       return {self_operated:'自营回收', aggregated:'聚合回收'}[key] || key || '-';
+    },
+    candidateBusinessTypeFromCategories: function(values) {
+      var doorstep = {
+        '手机':1, '智能手机':1,
+        '平板电脑':1, '平板':1,
+        '智能手表':1, '手表':1,
+        '耳机/耳麦':1, '耳机':1, '耳麦':1, '蓝牙耳机':1,
+        '笔记本':1, '笔记本电脑':1, 'laptop':1,
+        '游戏机':1, '游戏主机':1, '掌机':1,
+        '游戏卡带':1, '游戏卡':1, 'switch卡带':1, '实体游戏卡':1,
+        '单电/微单机身':1, '单电机身':1, '微单机身':1, '单电':1, '微单':1,
+        '单反机身':1, '单反':1,
+        '相机镜头':1, '镜头':1,
+        '手写笔':1, '触控笔':1,
+        '学习机':1, '学习平板':1
+      };
+      var unknown = {'待确认':1,'其他':1,'不确定':1,'通用':1,'全品类':1};
+      var self = this;
+      function categoryName(value) {
+        if (value && typeof value === 'object') {
+          return String(value.categoryName || value.category_name || value.name || value.label || value.title || value.text || '').trim();
+        }
+        var id = String(value || '').trim();
+        if (!id) return '';
+        var caches = Object.keys(self.mhCaches || {}).map(function(key) { return self.mhCaches[key]; });
+        for (var cacheIndex = 0; cacheIndex < caches.length; cacheIndex++) {
+          var options = self.flattenOptions(caches[cacheIndex] && caches[cacheIndex].applicable_categories || []);
+          for (var optionIndex = 0; optionIndex < options.length; optionIndex++) {
+            if (self.optValue(options[optionIndex]) === id) return self.optLabel(options[optionIndex]);
+          }
+        }
+        // 缓存尚未加载时不要猜：ID 无法还原成品类名称就交给后端判定。
+        return '';
+      }
+      var found = false, aggregate = false, unresolved = false;
+      (Array.isArray(values) ? values : []).forEach(function(value) {
+        var text = categoryName(value);
+        if (!text) { unresolved = true; return; }
+        text = text.replace(/^(?:自营回收|聚合回收|self_operated|aggregated)[\/／>]+/, '')
+          .split(/[|｜]/)[0].trim().toLowerCase();
+        if (!text || unknown[text] || /^[0-9a-f-]{8,}$/.test(text) || /^(?:cat|category)[-_]/.test(text)) return;
+        found = true;
+        if (!doorstep[text]) aggregate = true;
+      });
+      if (unresolved) return '';
+      return found ? (aggregate ? 'aggregated' : 'self_operated') : '';
+    },
+    reconcileCandidateBusinessType: function(explicitValue, derivedValue) {
+      var explicitKey = String(explicitValue || '').trim();
+      if (explicitKey === 'aggregated' || explicitKey === '聚合回收' || explicitKey === '聚合') {
+        return 'aggregated';
+      }
+      if (explicitKey === 'self_operated' || explicitKey === '自营回收' || explicitKey === '自营') {
+        return derivedValue === 'aggregated' ? 'aggregated' : 'self_operated';
+      }
+      return derivedValue || '';
     },
     assignableKnowledgeOrigins: function(currentValue) {
       var currentKey = String(currentValue || '');

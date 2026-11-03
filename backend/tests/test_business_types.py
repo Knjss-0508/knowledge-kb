@@ -118,7 +118,7 @@ class BusinessTypeTests(unittest.TestCase):
         )
 
     @patch("app.routes.knowledge.cached_applicable_category_keys")
-    def test_applicable_categories_are_isolated_by_business_type(
+    def test_aggregated_accepts_doorstep_categories_while_self_operated_stays_strict(
         self,
         cached_keys,
     ):
@@ -136,14 +136,20 @@ class BusinessTypeTests(unittest.TestCase):
             applicable_categories=["平板电脑"],
         )
 
+        # 聚合回收的品类库包含上门品类，因此手机/平板在聚合下合法。
+        _validate_business_applicable_categories(
+            business_type="aggregated",
+            applicable_categories=["平板电脑"],
+        )
+
         with self.assertRaises(HTTPException) as raised:
             _validate_business_applicable_categories(
-                business_type="aggregated",
-                applicable_categories=["平板电脑"],
+                business_type="self_operated",
+                applicable_categories=["黄金"],
             )
 
         self.assertEqual(raised.exception.status_code, 422)
-        self.assertIn("不属于聚合回收", raised.exception.detail)
+        self.assertIn("不属于自营回收", raised.exception.detail)
 
     def test_changing_business_type_requires_resubmitting_full_applicability_scope(
         self,
