@@ -8,6 +8,7 @@
 """
 
 import ast
+import re
 import unittest
 from pathlib import Path
 
@@ -109,4 +110,31 @@ class MigrationRevisionTests(unittest.TestCase):
         self.assertEqual(
             self.revisions["20261028_01_candidate_pause"]["down_revision"],
             "20261029_01_candidate_jsonb",
+        )
+
+    def test_dropped_retrieval_indexes_are_not_required_by_schema_validation(self):
+        """20261103_01_drop_idx 删除的索引不能还留在强校验清单里。
+
+        迁移会把这些索引 DROP，但 initialize_database.validate_schema 仍要求
+        它们存在时，migrate 容器会在升级成功后报「索引缺失」并以非 0 退出，
+        整个后端起不来。
+        """
+
+        source = (
+            VERSIONS_DIR.parents[1] / "app" / "scripts" / "initialize_database.py"
+        ).read_text(encoding="utf-8")
+        migration = self.revisions["20261103_01_drop_idx"]["path"].read_text(
+            encoding="utf-8"
+        )
+        dropped = set(
+            re.findall(r'"?(ix_retrieval_quality_events_[a-z_]+)"?', migration)
+        )
+        self.assertTrue(dropped)
+        still_required = sorted(
+            name for name in dropped if f'"{name}"' in source
+        )
+        self.assertEqual(
+            still_required,
+            [],
+            "这些索引已被迁移删除，但仍被 validate_schema 强制要求存在",
         )

@@ -48,6 +48,10 @@ PROCESSING_PLUGIN_NAME = "answer-hub-topic-transcription"
 DRAFT_INCOMPLETE_STATUSES = {
     "standard_rule_fallback",
     "evidence_review_only",
+    # 模型输出质量校验失败时会留下空正文并标记 blocked。这类候选同样应该
+    # 进入人工复核补齐，而不是在本地判失败——否则一条脏数据会让整个日期
+    # 窗口的自动化运行以退出码 1 结束，游标卡在原地不再前进。
+    "blocked",
 }
 PROCESSING_PLUGIN_VERSION = "2026-08-06-evidence-facts-v1"
 CZ_HEADQUARTERS_STANDARD_ORIGIN = "headquarters_standard"

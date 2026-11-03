@@ -112,7 +112,7 @@ def test_empty_body_is_not_exported_even_with_all_approval_fields(tmp_path, stan
 
 @pytest.mark.parametrize(
     "draft_status",
-    ["standard_rule_fallback", "evidence_review_only"],
+    ["standard_rule_fallback", "evidence_review_only", "blocked"],
 )
 def test_draft_incomplete_body_is_sent_to_candidate_review(draft_status):
     """草稿明确未就绪（转写被预算/证据门禁跳过）时应送候选价值复核。
