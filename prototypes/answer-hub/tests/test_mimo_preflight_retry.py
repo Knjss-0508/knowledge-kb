@@ -91,3 +91,19 @@ def test_http_503_counts_as_transient(monkeypatch):
     assert automation.run_mimo_preflight()["passed"] is True
     assert client.calls == 2
     assert sleeps == [5.0]
+
+
+def test_mimo_client_bypasses_the_desktop_system_proxy():
+    """2026-11-05 的 TLS EOF 来自系统代理劫持内网网关，客户端必须直连。"""
+
+    from urllib.request import ProxyHandler
+
+    from answer_hub import mimo
+
+    active_proxies = [
+        handler
+        for handler in mimo._MODEL_OPENER.handlers
+        if isinstance(handler, ProxyHandler)
+        and handler.proxies
+    ]
+    assert active_proxies == [], "不能沿用系统代理"
