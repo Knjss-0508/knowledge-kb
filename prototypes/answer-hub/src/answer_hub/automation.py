@@ -7,6 +7,7 @@ from typing import Any, Callable
 import json
 import math
 import os
+import re
 import shutil
 import threading
 import time
@@ -483,14 +484,71 @@ def list_automation_runs(
     return AutomationRunStore(output_root).list(limit=limit)
 
 
+# 预检遇到这些字样视为「链路瞬时不可用」，值得等一会儿再试；
+# 其余（未配置、鉴权失败、返回非法 JSON）都属于配置问题，重试没有意义。
+_PREFLIGHT_TRANSIENT_MARKERS = (
+    "网络错误",
+    "读取超时",
+    "响应总超时",
+    "ssl",
+    "eof occurred",
+    "connection reset",
+    "connection aborted",
+    "connection refused",
+    "timed out",
+    "timeout",
+    "temporary failure",
+    "name or service not known",
+    "getaddrinfo failed",
+)
+
+
+def _preflight_is_transient(error: str) -> bool:
+    lowered = str(error or "").lower()
+    if any(marker in lowered for marker in _PREFLIGHT_TRANSIENT_MARKERS):
+        return True
+    # MiMo HTTP 5xx / 429 也是服务端瞬时问题。
+    return bool(re.search(r"mimo http (?:429|5\d\d)\b", lowered))
+
+
+def _preflight_attempts() -> tuple[int, float]:
+    try:
+        attempts = int(os.getenv("ANSWER_HUB_MIMO_PREFLIGHT_ATTEMPTS", "4"))
+    except ValueError:
+        attempts = 4
+    try:
+        backoff = float(
+            os.getenv("ANSWER_HUB_MIMO_PREFLIGHT_BACKOFF_SECONDS", "5")
+        )
+    except ValueError:
+        backoff = 5.0
+    return max(1, min(attempts, 8)), max(0.5, min(backoff, 60.0))
+
+
 def run_mimo_preflight() -> dict[str, Any]:
+    """Verify the model endpoint before generation.
+
+    夜间定时任务只跑一次：过去的实现只依赖 MimoClient 内部的 0.75s/1.5s
+    两次退避，一次 30 秒左右的 TLS/网络抖动就会让整批任务失败，并把工作簿
+    移进 failed 桶，之后每晚都只是「队列未清空」而跳过日期。这里为链路类
+    错误增加一轮更长的退避（默认 5/10/20 秒，共 4 次），配置类错误仍立即
+    失败。
+    """
+
     client = MimoClient.from_env()
     if client is None:
         raise MimoPreflightError("MiMo 未配置：请检查 MIMO_API_KEY、MIMO_BASE_URL 和 MIMO_MODEL。")
-    try:
-        return client.check_availability()
-    except MimoError as exc:
-        raise MimoPreflightError(str(exc)) from exc
+    attempts, backoff = _preflight_attempts()
+    last_error: MimoError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.check_availability()
+        except MimoError as exc:
+            last_error = exc
+            if attempt >= attempts or not _preflight_is_transient(str(exc)):
+                break
+            time.sleep(backoff * (2 ** (attempt - 1)))
+    raise MimoPreflightError(str(last_error)) from last_error
 
 
 def _mimo_preflight_required(use_mimo: bool, clustering_mode: str) -> bool:

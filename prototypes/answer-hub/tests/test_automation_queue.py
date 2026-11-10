@@ -9,6 +9,7 @@ from answer_hub.auto_review import AutoReviewPolicy
 from answer_hub.automation import AutomationRunStore
 from answer_hub.automation_queue import (
     AutomationQueue,
+    _failure_kind,
     read_queue_job_metadata,
     write_queue_job_metadata,
 )
@@ -52,6 +53,49 @@ def _production_policy() -> AutoReviewPolicy:
         validated_model="mimo-v2.5-pro",
         validated_prompt_version="topic-review-v1",
     )
+
+
+def test_only_preflight_failures_are_marked_retryable():
+    """调度器只自动重跑「读取输入前就失败」的模型网关预检错误。"""
+
+    assert _failure_kind({
+        "status": "needs_confirmation",
+        "summary": {"mimo_preflight": {"passed": False, "error": "MiMo 网络错误"}},
+    }) == "model_gateway_preflight"
+    assert _failure_kind({
+        "status": "needs_confirmation",
+        "summary": {"mimo_preflight": {"passed": True}},
+    }) == ""
+    assert _failure_kind({"status": "failed", "summary": {}}) == ""
+    assert _failure_kind({"status": "review_pending"}) == ""
+
+
+def test_preflight_failure_is_recorded_in_queue_metadata(tmp_path, monkeypatch):
+    """工作簿移入 failed 桶时必须带上可重试标记。"""
+
+    queue_root = tmp_path / "queue"
+    queue = AutomationQueue(queue_root)
+    queue.ensure()
+    (queue.pending / "source.xlsx").write_bytes(b"source")
+
+    def pipeline(**kwargs):
+        manifest = _fake_manifest(
+            kwargs["source_path"],
+            kwargs["output_root"],
+            status="needs_confirmation",
+            error="MiMo API 预检失败",
+        )
+        manifest["summary"]["mimo_preflight"] = {"passed": False}
+        return AutomationRunStore(kwargs["output_root"]).save(manifest)
+
+    monkeypatch.setattr(automation_queue, "run_automation_pipeline", pipeline)
+    summary = automation_queue.process_automation_queue(
+        queue_root, None, tmp_path / "runs",
+    )
+
+    assert summary["failed"] == 1
+    failed_book = next(queue.failed.glob("*.xlsx"))
+    assert read_queue_job_metadata(failed_book)["failure_kind"] == "model_gateway_preflight"
 
 
 @pytest.mark.parametrize("with_file,worker_mode,job_mode,expected", [

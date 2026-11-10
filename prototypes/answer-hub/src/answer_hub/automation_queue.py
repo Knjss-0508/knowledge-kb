@@ -137,6 +137,22 @@ def _block_cz_sync_for_cluster_failure(manifest: dict[str, Any]) -> bool:
     return True
 
 
+def _failure_kind(manifest: dict[str, Any]) -> str:
+    """Classify a failed run so the scheduler can retry transient causes.
+
+    Only ``model_gateway_preflight`` is retried automatically: the run stopped
+    before touching any input, so re-running it is safe. Everything else keeps
+    the existing "block and wait for a human" behaviour.
+    """
+
+    if str(manifest.get("status") or "") != "needs_confirmation":
+        return ""
+    preflight = (manifest.get("summary") or {}).get("mimo_preflight") or {}
+    if isinstance(preflight, dict) and preflight and not preflight.get("passed"):
+        return "model_gateway_preflight"
+    return ""
+
+
 def _option_int(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -320,6 +336,7 @@ def _complete_retried_queue_item(
                     "run_status": "review_pending",
                     "final_path": str(completed_source),
                     "error": "",
+                    "failure_kind": "",
                     "summary": manifest.get("summary") or {},
                     "artifacts": manifest.get("artifacts") or {},
                 }
@@ -774,6 +791,7 @@ def process_automation_queue(
                             "updated_at": _now(),
                             "claimed_path": str(claimed_path),
                             "error": "",
+                            "failure_kind": "",
                         }
                     )
                     write_queue_job_metadata(claimed_path, job_metadata)
@@ -854,6 +872,7 @@ def process_automation_queue(
                                 "run_id": str(manifest.get("run_id") or ""),
                                 "final_path": str(final_path),
                                 "error": str(manifest.get("error") or ""),
+                            "failure_kind": _failure_kind(manifest),
                                 "summary": manifest.get("summary") or {},
                                 "artifacts": manifest.get("artifacts") or {},
                             }
@@ -901,6 +920,7 @@ def process_automation_queue(
                                 "finished_at": _now(),
                                 "final_path": str(final_path),
                                 "error": str(exc),
+                                "failure_kind": "",
                             }
                         )
                         write_queue_job_metadata(final_path, job_metadata)
