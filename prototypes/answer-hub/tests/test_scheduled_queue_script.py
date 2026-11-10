@@ -100,3 +100,23 @@ def test_local_nightly_scheduler_is_saved_as_utf8_with_bom() -> None:
     """PowerShell 5.1 会把无 BOM 的 UTF-8 当 ANSI 读，中文吃引号后整篇语法报错。"""
     raw = (SCRIPTS / "local-migration" / "nightly-scheduler.ps1").read_bytes()
     assert raw[:3] == b"\xef\xbb\xbf"
+
+
+def test_scheduler_self_heals_transient_model_gateway_failures() -> None:
+    """一次 TLS 抖动不能让日期游标卡住好几天。
+
+    2026-11-05 02:00 的 2026-10-26 窗口在 MiMo 预检遇到
+    ``SSL: UNEXPECTED_EOF_WHILE_READING``；工作簿进 failed 桶后，之后每晚都只是
+    「队列未清空」跳过日期，直到 11-10 仍未恢复。两个调度脚本都必须在「failed
+    桶只有模型网关预检失败且预检已恢复」时自动重试，而不是永远跳过。
+    """
+
+    for script in (WINDOWS_SCRIPT, SCRIPT):
+        assert "model_gateway_preflight" in script
+        assert "retry" in script.lower()
+
+    assert "Test-OnlyTransientModelFailures" in WINDOWS_SCRIPT
+    assert "Test-MimoPreflightNow" in WINDOWS_SCRIPT
+    assert '"--retry-failed"' in WINDOWS_SCRIPT
+    assert "retry_failed_flag" in SCRIPT
+    assert "$retry_failed_flag" in SCRIPT

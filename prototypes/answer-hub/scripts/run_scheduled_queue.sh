@@ -10,8 +10,48 @@ window_json="$($python_bin -m answer_hub.automation_schedule prepare --plan "$pl
 from_date="$(printf '%s' "$window_json" | "$python_bin" -c 'import json,sys; print(json.load(sys.stdin)["from_date"])')"
 to_date="$(printf '%s' "$window_json" | "$python_bin" -c 'import json,sys; print(json.load(sys.stdin)["to_date"])')"
 
+# failed 桶里只有「模型网关预检失败」的工作簿时，可以在预检恢复后自动重跑。
+# 这类失败发生在读取输入之前，重跑不会产生重复数据；否则工作簿会一直卡在
+# failed 桶，之后每晚都只是「队列未清空」跳过日期。
+retry_failed_flag=""
+if find "data/automation-queue/failed" -maxdepth 1 -type f -name '*.xlsx' -print -quit | grep -q .; then
+  if "$python_bin" - <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path("data/automation-queue/failed")
+books = sorted(root.glob("*.xlsx"))
+if not books:
+    sys.exit(1)
+for book in books:
+    meta = book.with_name(book.name + ".job.json")
+    if not meta.is_file():
+        sys.exit(1)
+    try:
+        payload = json.loads(meta.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        sys.exit(1)
+    if payload.get("failure_kind") != "model_gateway_preflight":
+        sys.exit(1)
+sys.exit(0)
+PY
+  then
+    if "$python_bin" -c "from answer_hub.automation import run_mimo_preflight; run_mimo_preflight()" >/dev/null 2>&1; then
+      echo "Failed queue only contains transient model-gateway errors; retrying it now."
+      retry_failed_flag="--retry-failed"
+    else
+      echo "Failed queue is transient but the model gateway is still unavailable; keeping the block."
+    fi
+  fi
+fi
+
 for bucket in pending processing failed; do
   if find "data/automation-queue/$bucket" -maxdepth 1 -type f -name '*.xlsx' -print -quit | grep -q .; then
+    if [ "$bucket" = "failed" ] && [ -n "$retry_failed_flag" ]; then
+      echo "Retrying the transient failed workbooks instead of skipping $from_date to $to_date."
+      continue
+    fi
     echo "Queue has unresolved $bucket work; skip $from_date to $to_date."
     # 这是「本轮跳过」，不是失败：队列还没清干净，本次不拉取而已。
     # 用 failure 会累积 consecutive_failure_count，三个晚上就把 auto_advance_paused
@@ -49,7 +89,7 @@ if [[ "$pull_succeeded" -ne 1 ]]; then
   exit 1
 fi
 
-if "$python_bin" -m answer_hub.cli automation-queue --queue-dir data/automation-queue --standards data/standards/active_standards.json --output-dir outputs/automation-runs --clustering-mode direct_mimo --max-files 10 --stale-after-seconds 7200 --sync-to-cz-review; then
+if "$python_bin" -m answer_hub.cli automation-queue --queue-dir data/automation-queue --standards data/standards/active_standards.json --output-dir outputs/automation-runs --clustering-mode direct_mimo --max-files 10 --stale-after-seconds 7200 --sync-to-cz-review $retry_failed_flag; then
   "$python_bin" -m answer_hub.automation_schedule commit --plan "$plan_path" --from-date "$from_date" --to-date "$to_date"
 else
   exit_code=$?

@@ -131,6 +131,27 @@ $processedWindows = 0
 $emptyWindows = 0
 $consumedWindows = 0
 
+# failed 桶里只有「模型网关预检失败」的工作簿时，可以在预检恢复后自动重跑。
+# 这类失败发生在读取输入之前，重跑不会产生重复数据；如果不自动重跑，工作簿
+# 就会一直卡在 failed 桶，之后每晚都只是「队列未清空」跳过日期（2026-11-05
+# 到 11-10 实测连停 5 天）。
+function Test-OnlyTransientModelFailures {
+    $workbooks = @(Get-ChildItem (Join-Path $QUEUE 'failed') -Filter '*.xlsx' -File -ErrorAction SilentlyContinue)
+    if (-not $workbooks.Count) { return $false }
+    foreach ($book in $workbooks) {
+        $meta = Join-Path $book.DirectoryName ($book.Name + '.job.json')
+        if (-not (Test-Path $meta)) { return $false }
+        $text = Get-Content $meta -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+        if ($text -notmatch '"failure_kind"\s*:\s*"model_gateway_preflight"') { return $false }
+    }
+    return $true
+}
+
+function Test-MimoPreflightNow {
+    $probe = & $PY -c "from answer_hub.automation import run_mimo_preflight; print('PREFLIGHT_OK', run_mimo_preflight().get('model'))" 2>&1
+    return (($probe -join ' ') -match 'PREFLIGHT_OK')
+}
+
 while ($processedWindows -lt $maxWindowsPerRun) {
     # ---------- 1) prepare ----------
     $prepareJson = & $PY -m answer_hub.automation_schedule prepare --plan $PLAN 2>&1
@@ -143,11 +164,21 @@ while ($processedWindows -lt $maxWindowsPerRun) {
 
     # ---------- 2) 队列阻塞检查 ----------
     $queueBusy = $false
+    $retryFailed = $false
     foreach ($b in @("pending", "processing", "failed")) {
         $d = Join-Path $QUEUE $b
         $n = @(Get-ChildItem $d -Filter "*.xlsx" -File -ErrorAction SilentlyContinue).Count
         Log ("  2) 桶 {0,-11} {1} 个 xlsx" -f $b, $n)
         if ($n -gt 0) {
+            if ($b -eq "failed" -and (Test-OnlyTransientModelFailures)) {
+                Log "  [自愈] failed 桶只有模型网关预检失败，先做连通性预检"
+                if (Test-MimoPreflightNow) {
+                    $retryFailed = $true
+                    Log "  [自愈] 预检已恢复：本轮重试 failed 工作簿，不跳过日期"
+                    continue
+                }
+                Log "  [自愈] 预检仍未通过，保持队列阻塞"
+            }
             Log ("  ⛔ 队列有未解决的 {0} 文件，跳过 {1} ~ {2}" -f $b, $from, $to)
             # 「本轮跳过」不是失败：用 failure 会累积 consecutive_failure_count，
             # 三个晚上就把 auto_advance_paused 置为 true。
@@ -229,6 +260,7 @@ while ($processedWindows -lt $maxWindowsPerRun) {
     $consumeArgs = @("-m","answer_hub.cli","automation-queue","--queue-dir",$QUEUE,"--standards",$STD,
                      "--output-dir",$OUT,"--clustering-mode","direct_mimo","--max-files","10",
                      "--stale-after-seconds","7200")
+    if ($retryFailed) { $consumeArgs += "--retry-failed" }
     if ($syncToCzReview) {
         $consumeArgs += "--sync-to-cz-review"
         Log "  4) 消费队列（★ 送 CZ 候选价值复核）"
