@@ -50,6 +50,13 @@ LISTEN_HOST = os.environ.get("MODEL_GATEWAY_LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("MODEL_GATEWAY_LISTEN_PORT", "19000"))
 DEFAULT_MODEL = os.environ.get("MODEL_GATEWAY_DEFAULT_MODEL", "deepseek-flash")
 UPSTREAM_TIMEOUT = float(os.environ.get("MODEL_GATEWAY_TIMEOUT_SECONDS", "90"))
+MAX_ATTEMPTS = max(
+    1, min(int(os.environ.get("MODEL_GATEWAY_MAX_ATTEMPTS", "3") or 3), 6)
+)
+RETRY_BACKOFF = max(
+    0.0,
+    min(float(os.environ.get("MODEL_GATEWAY_RETRY_BACKOFF_SECONDS", "0.6") or 0.6), 10.0),
+)
 LOG_PATH = os.environ.get(
     "MODEL_GATEWAY_LOG",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "model-gateway-proxy.log"),
@@ -125,7 +132,27 @@ def _upstream_key() -> str:
     return key
 
 
-def _forward(method: str, raw_path: str, body: bytes, client_model: str | None):
+def _opener() -> urllib.request.OpenerDirector:
+    """Talk to the internal gateway directly, never through a desktop proxy.
+
+    urllib 默认会读取本机 Windows 系统代理（例如 Clash 的 127.0.0.1:7897）。
+    公司网关是内网地址，经代理转发会被中途断开，表现为
+    ``[SSL: UNEXPECTED_EOF_WHILE_READING]``，最终给后端返回 502。
+    确需系统代理时显式设置 ``MODEL_GATEWAY_USE_SYSTEM_PROXY=true``。
+    """
+
+    use_system_proxy = os.environ.get(
+        "MODEL_GATEWAY_USE_SYSTEM_PROXY", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if use_system_proxy:
+        return urllib.request.build_opener()
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+_OPENER = _opener()
+
+
+def _forward_once(method: str, raw_path: str, body: bytes, client_model: str | None):
     """Send one request to the real gateway and return (status, headers, body)."""
     parsed = urllib.parse.urlsplit(raw_path)
     upstream_url = GATEWAY_BASE + parsed.path + (("?" + parsed.query) if parsed.query else "")
@@ -147,25 +174,58 @@ def _forward(method: str, raw_path: str, body: bytes, client_model: str | None):
         upstream_url, data=payload if method not in ("GET", "HEAD") else None,
         headers=headers, method=method,
     )
-    try:
-        with urllib.request.urlopen(request, timeout=UPSTREAM_TIMEOUT) as response:
-            return (
-                response.status,
-                response.headers.get("Content-Type") or "application/json",
-                response.read(),
-            )
-    except urllib.error.HTTPError as exc:
+    with _OPENER.open(request, timeout=UPSTREAM_TIMEOUT) as response:
         return (
-            exc.code,
-            exc.headers.get("Content-Type") if exc.headers else "application/json",
-            exc.read(),
+            response.status,
+            response.headers.get("Content-Type") or "application/json",
+            response.read(),
         )
-    except socket.timeout as exc:
-        raise TimeoutError(str(exc)) from exc
-    except urllib.error.URLError as exc:
-        if isinstance(getattr(exc, "reason", None), socket.timeout):
-            raise TimeoutError(str(exc)) from exc
-        raise
+
+
+def _forward(method: str, raw_path: str, body: bytes, client_model: str | None):
+    """Forward with retries for transient TLS/network/5xx failures."""
+
+    last_error: BaseException | None = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            return _forward_once(method, raw_path, body, client_model)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (429, 500, 502, 503, 504) and attempt < MAX_ATTEMPTS:
+                log(
+                    "%s %s -> upstream HTTP %d, retry %d/%d"
+                    % (method, urllib.parse.urlsplit(raw_path).path, exc.code, attempt, MAX_ATTEMPTS)
+                )
+                time.sleep(RETRY_BACKOFF * (2 ** (attempt - 1)))
+                continue
+            return (
+                exc.code,
+                exc.headers.get("Content-Type") if exc.headers else "application/json",
+                exc.read(),
+            )
+        except socket.timeout as exc:
+            last_error = TimeoutError(str(exc))
+        except urllib.error.URLError as exc:
+            if isinstance(getattr(exc, "reason", None), socket.timeout):
+                last_error = TimeoutError(str(exc))
+            else:
+                last_error = exc
+        except OSError as exc:
+            last_error = exc
+        if attempt < MAX_ATTEMPTS:
+            log(
+                "%s %s -> %s, retry %d/%d"
+                % (
+                    method,
+                    urllib.parse.urlsplit(raw_path).path,
+                    type(last_error).__name__,
+                    attempt,
+                    MAX_ATTEMPTS,
+                )
+            )
+            time.sleep(RETRY_BACKOFF * (2 ** (attempt - 1)))
+            continue
+        raise last_error
+    raise last_error or RuntimeError("upstream request failed")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -200,17 +260,35 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self) -> None:  # noqa: N802
-        path = urllib.parse.urlsplit(self.path).path
+        parsed = urllib.parse.urlsplit(self.path)
+        path = parsed.path
         if path == "/health":
             key_ok = bool(_secret(KEY_NAME))
+            payload = {
+                "status": "ok",
+                "upstream_base": GATEWAY_BASE,
+                "default_model": DEFAULT_MODEL,
+                "gateway_key_present": key_ok,
+                "uses_system_proxy": os.environ.get(
+                    "MODEL_GATEWAY_USE_SYSTEM_PROXY", ""
+                ).strip().lower() in {"1", "true", "yes", "on"},
+            }
+            # ``/health?deep=1``：顺带验证上游网关是否可达，供 watchdog 使用。
+            if "deep=1" in (parsed.query or "") and key_ok:
+                try:
+                    probe = urllib.request.Request(
+                        GATEWAY_BASE + "/models",
+                        headers={"Authorization": "Bearer " + _upstream_key()},
+                    )
+                    with _OPENER.open(probe, timeout=8) as response:
+                        payload["upstream_status"] = response.status
+                except urllib.error.HTTPError as exc:
+                    payload["upstream_status"] = exc.code
+                except Exception as exc:  # noqa: BLE001
+                    payload["upstream_status"] = type(exc).__name__
             self._reply_json(
                 200,
-                {
-                    "status": "ok",
-                    "upstream_base": GATEWAY_BASE,
-                    "default_model": DEFAULT_MODEL,
-                    "gateway_key_present": key_ok,
-                },
+                payload,
             )
             return
         if not path.startswith("/v1/"):

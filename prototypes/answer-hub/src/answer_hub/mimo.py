@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 import copy
 import json
 import os
@@ -40,6 +40,30 @@ from .terminology import (
     build_terminology_prompt_block,
     ensure_terminology_loaded,
 )
+
+
+def _model_opener():
+    """Talk to the model gateway directly, bypassing the desktop proxy.
+
+    2026-11-05 的夜间任务在这里失败：本机 Windows 系统代理（Clash 等）把
+    内网网关 ``tokenhub.zhuanspirit.com`` 的请求转发出去，TLS 被中途断开，
+    urllib 抛 ``[SSL: UNEXPECTED_EOF_WHILE_READING]``。网关是内网地址，直连
+    才是正确路径。确需代理时显式设置 ``ANSWER_HUB_MODEL_USE_SYSTEM_PROXY=true``。
+    """
+
+    use_system_proxy = os.environ.get(
+        "ANSWER_HUB_MODEL_USE_SYSTEM_PROXY", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if use_system_proxy:
+        return build_opener()
+    return build_opener(ProxyHandler({}))
+
+
+_MODEL_OPENER = _model_opener()
+
+
+def _urlopen(request: Request, timeout: float):
+    return _MODEL_OPENER.open(request, timeout=timeout)
 
 
 PROMPT_VERSION = "multi-category-topic-transcription-v16-source-bounded-single-rule"
@@ -2021,7 +2045,7 @@ def _post_request_with_deadline(
 
     def request_worker() -> None:
         try:
-            with urlopen(
+            with _urlopen(
                 request,
                 timeout=connection_timeout_seconds,
             ) as response:

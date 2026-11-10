@@ -142,6 +142,55 @@ function Test-ProxyHealth([int]$TimeoutSec = 6) {
     }
 }
 
+function Test-ProxyUpstream([int]$TimeoutSec = 12) {
+    # 浅健康检查只看本进程是否活着；这里额外验证「代理 -> 公司网关」这一段。
+    # 本机系统代理劫持内网网关时，代理一直健康但所有模型调用都返回 502。
+    # 状态只在变化时写日志，避免每分钟刷屏。
+    $stateFile = Join-Path $RT 'model-gateway-upstream.state'
+    $previous = ''
+    try { $previous = (Get-Content $stateFile -Raw -ErrorAction SilentlyContinue).Trim() } catch { }
+    $status = 'unknown'
+    try {
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$LocalPort/health?deep=1" -Method Get `
+            -TimeoutSec $TimeoutSec -UseBasicParsing -Proxy $null -ErrorAction Stop
+        $body = $resp.Content | ConvertFrom-Json
+        $status = [string]$body.upstream_status
+    } catch {
+        $status = 'probe_failed'
+    }
+    if ($status -ne $previous) {
+        if ($status -eq '200') {
+            Write-Log 'INFO' "upstream gateway reachable (status=200)"
+        } else {
+            Write-Log 'WARN' "upstream gateway probe failed (status=$status); model calls will return 502"
+        }
+        try { Set-Content -Path $stateFile -Value $status -Encoding ASCII } catch { }
+    }
+    return ($status -eq '200')
+}
+
+function Stop-OwnedProxies {
+    # PID 文件会过期（例如人工重启代理后），仅按 PID 文件杀进程会漏掉真实实例，
+    # 后面的 Start-Proxy 就会因端口被占而失败。这里以命令行特征兜底。
+    $ids = @()
+    try {
+        foreach ($p in (Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction Stop)) {
+            if ($p.CommandLine -and ($p.CommandLine -like '*model-gateway-proxy.py*')) {
+                $ids += [int]$p.ProcessId
+            }
+        }
+    } catch { }
+    foreach ($id in $ids) {
+        try {
+            Stop-Process -Id $id -Force -ErrorAction Stop
+            Write-Log 'WARN' "killed proxy pid=$id (cmdline matched model-gateway-proxy.py)"
+        } catch {
+            Write-Log 'WARN' "failed to kill proxy pid=$id : $($_.Exception.Message)"
+        }
+    }
+    try { Remove-Item -Force $ProxyPidFile -ErrorAction SilentlyContinue } catch { }
+}
+
 function Start-Proxy {
     if (-not (Test-Path $PyExe)) { Write-Log 'ERROR' "python missing: $PyExe"; return }
     if (-not (Test-Path $ProxyScript)) { Write-Log 'ERROR' "proxy script missing: $ProxyScript"; return }
@@ -197,11 +246,16 @@ function Test-RemoteTunnel {
 $proxyOk = Test-ProxyHealth
 if (-not $proxyOk) {
     Write-Log 'WARN' 'proxy health check failed'
-    Stop-OwnedProcess $ProxyPidFile $ProxyProcName
+    Stop-OwnedProxies
     Start-Proxy
     Start-Sleep -Seconds 3
     $proxyOk = Test-ProxyHealth
     Write-Log ($(if ($proxyOk) { 'INFO' } else { 'ERROR' })) "proxy recovered=$proxyOk"
+}
+
+# 浅健康通过后，再确认上游网关这一段（只记录，不重启：重启代理修不好上游/网络）。
+if ($proxyOk) {
+    Test-ProxyUpstream | Out-Null
 }
 
 # ---- 2. reverse tunnel ----------------------------------------------------
