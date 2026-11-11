@@ -563,6 +563,16 @@ class IntegrationStandardSearchRequest(BaseModel):
             "各自 1～10 条返回数量配置约束。"
         ),
     )
+    candidate_pool_limit: int | None = Field(
+        None,
+        alias="candidatePoolLimit",
+        ge=1,
+        le=20,
+        description=(
+            "重排场景下每个知识池的候选上限（1～20）。设置后优先于运行时 "
+            "top_k 配置，仅扩大本次请求的召回窗口，不改变默认行为。"
+        ),
+    )
 
     @field_validator("normalized_question")
     @classmethod

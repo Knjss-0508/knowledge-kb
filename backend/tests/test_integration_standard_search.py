@@ -617,6 +617,48 @@ class IntegrationStandardSearchTests(unittest.TestCase):
         "app.routes.integration.get_active_runtime_values",
         return_value={
             "retrieval_score_threshold": 0.42,
+            "retrieval_headquarters_standard_top_k": 2,
+            "retrieval_business_accumulation_top_k": 4,
+        },
+    )
+    @patch("app.routes.integration.search_embeddings")
+    def test_candidate_pool_limit_overrides_runtime_top_k_for_rerank(
+        self,
+        search,
+        _runtime_config,
+    ):
+        def ranked_for_origin(*_args, **kwargs):
+            origin = kwargs["knowledge_origin"]
+            start = 1 if origin == "headquarters_standard" else 101
+            return [
+                (
+                    _knowledge(index, knowledge_origin=origin),
+                    0.99 - offset * 0.01,
+                )
+                for offset, index in enumerate(range(start, start + 25))
+            ]
+
+        search.side_effect = ranked_for_origin
+        body = IntegrationStandardSearchRequest.model_validate(
+            _identity_payload(
+                normalizedQuestion="屏幕漏光",
+                limit=20,
+                candidatePoolLimit=20,
+            )
+        )
+
+        response = _call_search(body)
+
+        self.assertEqual(
+            [call.kwargs["top_k"] for call in search.call_args_list],
+            [20, 20],
+        )
+        self.assertEqual(len(response.candidates), 40)
+
+    @patch(
+        "app.routes.integration.get_active_runtime_values",
+        return_value={
+            "retrieval_score_threshold": 0.42,
             "retrieval_headquarters_standard_top_k": 10,
             "retrieval_business_accumulation_top_k": 8,
         },
