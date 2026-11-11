@@ -22948,6 +22948,19 @@ def build_topic_review_rows(
                 else []
             )
         )
+        if not matches and review_matches:
+            # 主检索 query 较稀疏，实测 65% 的主题拿不到标准；复核 query 拼上了
+            # 标题、正文和判定依据，覆盖率接近 95%。这里只回填审计/下游使用的
+            # Top5 与版本，不重写已生成的知识正文，避免改变已有审核结论。
+            matches = review_matches
+            topic["主题检索标准Top5"] = _format_retrieved_standards(matches)
+            topic["主题标准版本"] = "\n".join(
+                f"{_standard_reference(item)}:{item.version}"
+                for item, _score in matches
+                if _standard_reference(item)
+            )
+            topic["主题标准检索来源"] = "review_query_fallback"
+            topic["主题标准检索状态"] = "fallback_match"
         topic["主题初标复核标准Top5"] = (
             _format_retrieved_standards(review_matches)
             if review_matches

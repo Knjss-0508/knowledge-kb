@@ -143,9 +143,16 @@ def _standard_search_top_k_by_origin(
     runtime_config: dict[str, Any],
     *,
     request_limit: int,
+    candidate_pool_limit: int | None = None,
 ) -> dict[str, int]:
+    requested_cap = None
+    if candidate_pool_limit is not None:
+        requested_cap = max(1, min(int(candidate_pool_limit), 20))
     result: dict[str, int] = {}
     for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS:
+        if requested_cap is not None:
+            result[knowledge_origin] = min(request_limit, requested_cap)
+            continue
         config_key = STANDARD_SEARCH_TOP_K_CONFIG_KEYS[knowledge_origin]
         try:
             configured_top_k = int(runtime_config[config_key])
@@ -2108,6 +2115,7 @@ def search_standard_provider_knowledge(
     top_k_by_origin = _standard_search_top_k_by_origin(
         runtime_config,
         request_limit=body.limit,
+        candidate_pool_limit=body.candidate_pool_limit,
     )
     score_threshold = _retrieval_score_threshold(runtime_config)
     inferred_business_type = body.business_type
