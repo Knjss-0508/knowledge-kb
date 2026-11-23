@@ -47,10 +47,18 @@ def test_blind_label_frontend_uses_five_annotators_and_unanimous_consensus() -> 
 def test_admin_blind_labeling_defaults_to_people_and_keeps_shared_filters() -> None:
     assert "isBlindLabelOverviewTab: function()" in FRONTEND
     assert "this.blindLabeling.tab = this.isBlindLabelAdmin() ? 'people' : 'mine';" in FRONTEND
-    # 管理员可选页签 = 两个管理员总览页 + 共用的「标注排行」。
-    assert "['people','workOrders','ranking'].indexOf(tab)" in FRONTEND
+    assert "['people','workOrders','ranking','learning'].indexOf(tab)" in FRONTEND
     assert "blindLabeling.overview.filters" in FRONTEND
     assert "changeBlindLabelOverviewPage(-1)" in FRONTEND
+
+
+def test_learning_preview_has_admin_only_tab_and_read_only_paging() -> None:
+    assert 'v-if="isBlindLabelAdmin()" id="blind-label-learning-tab"' in FRONTEND
+    assert 'id="blind-label-learning-panel"' in FRONTEND
+    assert "['mine','completed','ranking'].indexOf(tab)" in FRONTEND
+    assert "'/blind-labeling/learning-samples/preview?' + params.toString(), {method:'GET'}" in FRONTEND
+    assert '@click="loadBlindLabelLearning(blindLabeling.learning.nextCursor)"' in FRONTEND
+    assert "不调用 AI、不启动训练，也不修改知识库" in FRONTEND
 
 
 def test_blind_label_people_panel_only_shows_name_completed_annotations_and_last_activity() -> None:
@@ -296,7 +304,7 @@ def test_blind_label_ranking_tab_is_available_to_annotators_and_admins() -> None
     assert "id=\"blind-label-ranking-panel\"" in FRONTEND
     assert "blindLabeling.tab==='ranking'" in FRONTEND
     # 两个角色的可选页签都包含 ranking。
-    assert "['people','workOrders','ranking'].indexOf(tab)" in FRONTEND
+    assert "['people','workOrders','ranking','learning'].indexOf(tab)" in FRONTEND
     assert "['mine','completed','ranking'].indexOf(tab)" in FRONTEND
     # 它不属于管理员专属总览页签，否则标注员会被 isBlindLabelOverviewTab 挡住。
     assert "isBlindLabelRankingTab: function()" in FRONTEND

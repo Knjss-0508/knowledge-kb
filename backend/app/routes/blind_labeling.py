@@ -24,6 +24,7 @@ from app.schemas.blind_labeling import (
     BlindLabelReleaseRequest,
     BlindLabelSubmitRequest,
 )
+from app.services.blind_label_learning import preview_learning_samples
 from app.services.blind_labeling import (
     BLIND_LABEL_BATCH_SIZE,
     annotation_ranking,
@@ -511,6 +512,17 @@ def get_blind_label_overview(
         page_size=page_size,
         include_retired=include_retired,
     )
+
+
+@router.get("/learning-samples/preview")
+def get_learning_sample_preview(
+    cursor: str | None = Query(None, min_length=1, max_length=64),
+    scan_limit: int = Query(50, ge=1, le=100),
+    category_id: str | None = Query(None, min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("retrieval:label_overview")),
+):
+    return preview_learning_samples(db, cursor=cursor, scan_limit=scan_limit, category_id=category_id)
 
 
 @router.get("/work-orders/{work_order_id}")

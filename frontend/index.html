@@ -1595,6 +1595,7 @@
       <button v-if="isBlindLabelAdmin()" id="blind-label-people-tab" type="button" role="tab" aria-controls="blind-label-people-panel" :aria-selected="blindLabeling.tab==='people'" class="blind-label-tab" :class="{on:blindLabeling.tab==='people'}" @click="setBlindLabelTab('people')">人员统计</button>
       <button v-if="isBlindLabelAdmin()" id="blind-label-work-orders-tab" type="button" role="tab" aria-controls="blind-label-work-orders-panel" :aria-selected="blindLabeling.tab==='workOrders'" class="blind-label-tab" :class="{on:blindLabeling.tab==='workOrders'}" @click="setBlindLabelTab('workOrders')">已标注总览</button>
       <button id="blind-label-ranking-tab" type="button" role="tab" aria-controls="blind-label-ranking-panel" :aria-selected="blindLabeling.tab==='ranking'" class="blind-label-tab" :class="{on:blindLabeling.tab==='ranking'}" @click="setBlindLabelTab('ranking')">标注排行</button>
+      <button v-if="isBlindLabelAdmin()" id="blind-label-learning-tab" type="button" role="tab" aria-controls="blind-label-learning-panel" :aria-selected="blindLabeling.tab==='learning'" class="blind-label-tab" :class="{on:blindLabeling.tab==='learning'}" @click="setBlindLabelTab('learning')">回流样本</button>
        <span class="blind-label-tab-right">每工单最多 5 名标注员 · 全员一致自动通过</span>
     </div>
 
@@ -1658,6 +1659,29 @@
         <div v-if="blindLabeling.overview.pagination.totalPages > 1" class="blind-label-pagination"><button class="btn bd bsm" type="button" @click="changeBlindLabelOverviewPage(-1)" :disabled="blindLabeling.overview.loading || blindLabeling.overview.pagination.page <= 1">上一页</button><span>第 {{blindLabeling.overview.pagination.page}} / {{blindLabeling.overview.pagination.totalPages}} 页 · 共 {{blindLabeling.overview.pagination.total}} 条</span><button class="btn bd bsm" type="button" @click="changeBlindLabelOverviewPage(1)" :disabled="blindLabeling.overview.loading || blindLabeling.overview.pagination.page >= blindLabeling.overview.pagination.totalPages">下一页</button></div>
       </template>
     </template>
+      <section v-if="isBlindLabelAdmin() && blindLabeling.tab==='learning'" id="blind-label-learning-panel" role="tabpanel" aria-labelledby="blind-label-learning-tab" :aria-busy="blindLabeling.learning.loading">
+        <div class="blind-label-section-head">
+          <div><h3>回流样本预览</h3><p>仅预览已达成共识或已仲裁的在池工单。分流是规则建议，不调用 AI、不启动训练，也不修改知识库。</p></div>
+        </div>
+        <div class="blind-label-ranking-toolbar">
+          <label class="blind-label-month-field"><span>原候选品类</span><select class="inp" v-model="blindLabeling.learning.categoryId" @change="loadBlindLabelLearning()" :disabled="blindLabeling.learning.loading"><option value="">全部</option><option v-for="cat in cats" :key="cat.id" :value="cat.id">{{cat.name}}</option></select></label>
+          <button type="button" class="btn bd bsm" @click="loadBlindLabelLearning()" :disabled="blindLabeling.learning.loading">从头扫描</button>
+          <button type="button" class="btn bd bsm" @click="loadBlindLabelLearning(blindLabeling.learning.nextCursor)" :disabled="blindLabeling.learning.loading || !blindLabeling.learning.nextCursor">继续扫描</button>
+          <span class="hint" role="status">{{blindLabeling.learning.loading ? '扫描中…' : (blindLabeling.learning.error ? '' : '本批扫描 '+blindLabeling.learning.scanned+' 单，得到 '+blindLabeling.learning.items.length+' 条待复核样本')}}</span>
+        </div>
+        <div v-if="blindLabeling.learning.error" class="blind-label-error" role="alert">{{blindLabeling.learning.error}}</div>
+        <div class="tw">
+          <table class="blind-label-ranking-table"><thead><tr><th>盲标记录</th><th>建议去向</th><th>候选结论</th><th>操作</th></tr></thead><tbody>
+            <tr v-for="sample in blindLabeling.learning.items" :key="sample.work_order_id">
+              <td>{{sample.consensus_status==='arbitrated'?'已仲裁':'全员一致'}}<div class="blind-label-subline">{{sample.completed_annotators}} / {{sample.required_annotators}} 人提交</div></td>
+              <td>{{blindLabelLearningTrackLabel(sample.suggested_track)}}</td>
+              <td><div v-for="candidate in sample.candidates" :key="candidate.candidate_ref">候选 {{candidate.rank}} · {{candidate.verdict==='referable'?'可参考':candidate.verdict==='not_referable'?'不可参考':'未判定'}} · {{blindLabelLearningKnowledgeLabel(candidate.knowledge_state)}}</div></td>
+              <td><button type="button" class="btn bd bsm" @click="openBlindLabelWorkOrder(sample)">查看盲标详情</button></td>
+            </tr>
+            <tr v-if="!blindLabeling.learning.items.length && !blindLabeling.learning.error"><td colspan="4" class="blind-label-empty">{{blindLabeling.learning.loading ? '正在扫描…' : blindLabeling.learning.nextCursor ? '本批没有可预览样本，可继续扫描。' : '没有找到可预览的样本。'}}</td></tr>
+          </tbody></table>
+        </div>
+      </section>
       <template v-if="blindLabeling.tab==='ranking'">
         <div v-if="blindLabeling.ranking.error" class="blind-label-error" role="alert">{{blindLabeling.ranking.error}}</div>
         <div class="blind-label-section-head"><div><h3>标注排行</h3><p>按标注员分组统计已提交的标注条数，从多到少排列；只统计标注产出，不展示工单内容或其他人的判断。完成率＝完成工单数 ÷ 实际派发数（不含被回收），因此 100% 只代表手上到期的单子都交了，不代表没有被回收。</p></div><span class="hint">共 {{blindLabeling.ranking.people.length}} 人 · {{blindLabeling.ranking.summary.annotations || 0}} 条候选判断</span></div>
@@ -2574,6 +2598,7 @@ Vue.createApp({
         current:{open:false,readOnly:false,assignment:null,detail:null,candidates:[],labels:{},reasonCodes:{},reasonNotes:{},allNotReferable:false,taskReasonCode:'',note:'',error:''},
         overview:{loading:false,error:'',summary:{total:0,pending:0,in_progress:0,partial:0,completed:0,disputed:0,annotations:0,consensus_rate:0,active_annotators:0},cards:[],people:[],workOrders:[],updatedAt:'-',filters:{dateFrom:'',dateTo:'',status:'',dimension:'',annotator:'',keyword:''},datePicker:{kind:'',opening:false,openTimer:null,releaseTimer:null,startedAt:0},pagination:{page:1,size:20,total:0,totalPages:1}},
         adminDetail:{open:false,loading:false,error:'',item:null,workOrder:null,candidates:[],annotations:[],taskReasons:[],consensus:null,arbitration:{},arbitrationReason:'',arbitrating:false},
+        learning:{loading:false,error:'',categoryId:'',nextCursor:'',scanned:0,items:[]},
         ranking:{loading:false,error:'',mode:'month',month:'',dateFrom:'',dateTo:'',updatedAt:'-',people:[],summary:{annotators:0,annotations:0,completed_work_orders:0,referable_count:0,not_referable_count:0,released_count:0}}
       },
       retrievalPeriodOptions:[
@@ -9395,7 +9420,7 @@ Vue.createApp({
     },
     setBlindLabelTab: function(tab) {
       if (this.isBlindLabelAdmin()) {
-        if (['people','workOrders','ranking'].indexOf(tab) === -1) return;
+        if (['people','workOrders','ranking','learning'].indexOf(tab) === -1) return;
       } else {
         if (['mine','completed','ranking'].indexOf(tab) === -1) return;
         if (!this.can('retrieval:blind_label') && !this.isSuperAdmin()) return;
@@ -9404,8 +9429,37 @@ Vue.createApp({
       if (tab === 'completed') this.blindLabeling.batch = this.blindLabelEmptyBatch();
       if (tab === 'completed') this.blindLabeling.pagination.page = 1;
       if (this.isBlindLabelRankingTab()) this.loadBlindLabelRanking();
+      else if (tab === 'learning') this.loadBlindLabelLearning();
       else if (this.isBlindLabelOverviewTab()) this.loadBlindLabelOverview();
       else this.loadBlindLabelAssignments(false);
+    },
+    blindLabelLearningTrackLabel: function(track) {
+      return {ranking_review:'回放核对召回排序',knowledge_review:'复核知识内容或版本',knowledge_gap_review:'核实是否缺知识',recall_review:'核实已有知识是否漏召回',evidence_review:'补充证据'}[track] || '补充证据';
+    },
+    blindLabelLearningKnowledgeLabel: function(state) {
+      return {snapshot_matches:'标题及正文未变',snapshot_differs:'标题或正文有变化',not_published:'知识不存在或未发布',snapshot_unverifiable:'无法核对历史内容'}[state] || '无法核对';
+    },
+    loadBlindLabelLearning: function(cursor) {
+      var state = this.blindLabeling.learning;
+      if (!this.isBlindLabelAdmin() || state.loading) return;
+      var params = new URLSearchParams();
+      if (state.categoryId) params.set('category_id', state.categoryId);
+      if (cursor) params.set('cursor', cursor);
+      state.loading = true;
+      state.error = '';
+      if (!cursor) {
+        state.items = [];
+        state.scanned = 0;
+        state.nextCursor = '';
+      }
+      return this.blindLabelApi('/blind-labeling/learning-samples/preview?' + params.toString(), {method:'GET'})
+        .then(function(data) {
+          state.items = data.items || [];
+          state.scanned = data.scanned || 0;
+          state.nextCursor = data.next_cursor || '';
+        })
+        .catch(function(error) { state.error = error.message || '加载回流样本失败，请重试'; })
+        .finally(function() { state.loading = false; });
     },
     loadBlindLabelAssignments: function(autoClaim) {
       var self = this;
