@@ -95,9 +95,32 @@ def test_no_paired_labels_does_not_imply_zero_accuracy(monkeypatch):
     }]
 
 
+def test_no_recommendation_is_observed_but_not_graded(monkeypatch):
+    from app.services import blind_label_answer_replay as replay
+
+    monkeypatch.setattr(replay, "load_learning_review", lambda *_: {
+        "replay_eligible": True,
+        "review": {"id": 1, "issue_type": "answer_issue", "knowledge_id": "target", "expected_answer": "要点"},
+    })
+    report = replay.run_answer_replay(object(), _manifest([
+        _case("miss", {"generation": "no_recommendation"}, _answer("correct")),
+        _case("failed", {"generation": "failed"}, _answer()),
+        _case("missing"),
+    ]))
+    summary = report["summary"]
+    assert summary["baseline"]["counts"] == {
+        "no_recommendation": 1, "generation_failed": 1, "missing_output": 1,
+    }
+    assert summary["baseline"]["evaluated"] == 0
+    assert summary["candidate"]["evaluated"] == 1
+    assert summary["paired"]["evaluated"] == 0
+
+
 @pytest.mark.parametrize("cases", [
     [_case("wo"), _case("wo")],
     [_case("wo", {"generation": "failed", "verdict": "incorrect"})],
+    [_case("wo", {"generation": "no_recommendation", "verdict": "incorrect"})],
+    [_case("wo", {"generation": "no_recommendation", "answer": "不应附带话术"})],
     [_case("wo", {"generation": "answered", "answer": " "})],
     [_case("wo", {**_answer(), "transcript": "原对话"})],
 ])

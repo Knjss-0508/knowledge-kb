@@ -15,7 +15,7 @@ _GRADED = {"correct", "incorrect"}
 class AnswerOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    generation: Literal["answered", "failed"]
+    generation: Literal["answered", "no_recommendation", "failed"]
     answer: str = Field("", max_length=4000)
     verdict: Literal["correct", "incorrect", "insufficient_evidence"] | None = None
 
@@ -23,8 +23,8 @@ class AnswerOutput(BaseModel):
     def check_generation(self):
         if self.generation == "answered" and not self.answer:
             raise ValueError("成功生成时需提供脱敏答复")
-        if self.generation == "failed" and (self.answer or self.verdict is not None):
-            raise ValueError("生成失败不能附带答复或人工判定")
+        if self.generation != "answered" and (self.answer or self.verdict is not None):
+            raise ValueError("没有推荐话术时不能附带答复或人工判定")
         return self
 
 
@@ -96,6 +96,8 @@ def _answer_status(output: AnswerOutput | None) -> str:
         return "missing_output"
     if output.generation == "failed":
         return "generation_failed"
+    if output.generation == "no_recommendation":
+        return "no_recommendation"
     return output.verdict or "unreviewed"
 
 
