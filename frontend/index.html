@@ -1033,7 +1033,15 @@
             <td>{{formatDate(item.updated_at)}}</td>
             <td style="text-align:right"><button class="btn bd bsm" @click="openCandidateReview(item)">{{item.review_status==='submitted'?'查看':'审核'}}</button></td>
           </tr>
-          <tr v-if="!candidateReviews.items.length"><td colspan="11" class="review-empty">{{candidateReviews.loading?'正在加载候选审核队列...':'暂无符合条件的候选知识'}}</td></tr>
+          <tr v-if="!candidateReviews.items.length">
+            <td colspan="11" class="review-empty">
+              <div v-if="candidateReviews.loadError" role="alert">
+                {{candidateReviews.loadError}}
+                <button type="button" class="btn bd bsm" @click="loadCandidateReviews()">重试</button>
+              </div>
+              <span v-else>{{candidateReviews.loading?'正在加载候选审核队列...':'暂无符合条件的候选知识'}}</span>
+            </td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -2609,6 +2617,7 @@ Vue.createApp({
         filter: {keyword:'', status:'', priorityOnly:false, deduplicationRequired:false, productCategory:'', annotationStatus:'', modelKnowledgeValue:'', updatedFrom:'', updatedTo:''},
         productCategories: [],
         loading: false,
+        loadError: '',
         selected: [],
         dlg: false,
         autoBusinessTypeNotice: '',
@@ -5161,6 +5170,8 @@ Vue.createApp({
     },
     loadCandidateReviews: function(resetPage) {
       var self = this;
+      var requestId = (self._candidateReviewRequestId || 0) + 1;
+      self._candidateReviewRequestId = requestId;
       if (resetPage) self.candidateReviews.page=1;
       var params = new URLSearchParams();
       var filter = self.candidateReviews.filter;
@@ -5176,15 +5187,28 @@ Vue.createApp({
       params.set('limit', String(self.candidateReviews.pageSize));
       params.set('offset', String((self.candidateReviews.page-1)*self.candidateReviews.pageSize));
       self.candidateReviews.loading = true;
+      self.candidateReviews.loadError = '';
       return fetch(API + '/integration/candidate-reviews?' + params.toString(), {headers:self.authHeaders()})
-        .then(function(response) {
-          return response.json().then(function(data) {
-            if (!response.ok) throw new Error(data.detail || '加载候选审核队列失败');
-            return data;
+        .then(async function(response) {
+          if (response.status >= 500) {
+            throw new Error('候选审核队列服务暂时不可用，请稍后重试。');
+          }
+          var data = await response.json().catch(function() {
+            throw new Error('候选审核队列返回异常，请稍后重试。');
           });
+          if (!response.ok) {
+            throw new Error(data && typeof data.detail === 'string' && data.detail || '加载候选审核队列失败，请重试。');
+          }
+          if (!data || !Array.isArray(data.items)) {
+            throw new Error('候选审核队列返回异常，请稍后重试。');
+          }
+          return data;
+        }, function() {
+          throw new Error('无法连接候选审核队列，请检查网络后重试。');
         })
         .then(function(data) {
-          self.candidateReviews.items = Array.isArray(data.items) ? data.items : [];
+          if (self._candidateReviewRequestId !== requestId) return;
+          self.candidateReviews.items = data.items;
            self.candidateReviews.total = Number(data.total || 0);
            self.candidateReviews.productCategories = Array.isArray(data.product_categories) ? data.product_categories : self.candidateReviews.productCategories;
           self.candidateReviews.summary = Object.assign(
@@ -5199,10 +5223,14 @@ Vue.createApp({
           self.candidateReviews.updatedAt = self.formatDate(new Date());
         })
         .catch(function(error) {
+          if (self._candidateReviewRequestId !== requestId) return;
           self.candidateReviews.items = [];
-          alert(error.message);
+          self.candidateReviews.selected = [];
+          self.candidateReviews.loadError = error.message;
         })
-        .finally(function() { self.candidateReviews.loading = false; });
+        .finally(function() {
+          if (self._candidateReviewRequestId === requestId) self.candidateReviews.loading = false;
+        });
     },
     reviewStatusLabel: function(value) {
       return {

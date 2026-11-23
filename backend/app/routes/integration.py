@@ -1,6 +1,7 @@
 import logging
 import hashlib
 import uuid
+from collections.abc import Iterator
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Literal
@@ -11,6 +12,7 @@ from sqlalchemy import and_, case, cast, func, or_, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.engine import Row
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -3491,15 +3493,15 @@ def _candidate_review_light_rows(
     *,
     keyword: str,
     review_status: str = "",
-) -> list:
-    """列表统计与筛选需要的窄投影行。"""
+) -> Iterator[Row]:
+    """用固定大小的缓冲流式读取，避免无状态筛选时一次加载全部候选。"""
 
-    return db.execute(
-        _candidate_review_light_query(
-            with_keyword_fields=bool(keyword.strip()),
-            review_status=review_status,
-        )
-    ).all()
+    query = _candidate_review_light_query(
+        with_keyword_fields=bool(keyword.strip()),
+        review_status=review_status,
+    ).execution_options(yield_per=256)
+    with db.execute(query) as result:
+        yield from result
 
 
 def _candidate_review_status_counts(db: Session) -> dict[str, int]:
@@ -3595,45 +3597,82 @@ def list_candidate_reviews(
 ):
     if updated_from and updated_to and updated_from > updated_to:
         raise HTTPException(status_code=400, detail="更新时间开始日期不能晚于结束日期。")
-    # 状态先下推到 SQL：平台进入候选页默认带 review_status=pending，
-    # 先把不需要解析的行排除掉。用 kwargs 透传，保持与只接受
-    # ``keyword`` 的旧实现/替身兼容。
-    light_kwargs = {"keyword": keyword}
-    if review_status:
-        light_kwargs["review_status"] = review_status
-    rows = _candidate_review_light_rows(db, **light_kwargs)
-    all_items = [_candidate_review_light_item(row) for row in rows]
     # 摘要卡片描述的是「全部候选」的分布，不能随状态筛选缩小。
-    # review_status 是普通列，用一次 SQL 分组计数即可，无需解析 JSON。
     status_counts = _candidate_review_status_counts(db)
-    if not status_counts.get("total"):
-        # 单测常把数据库替换成只提供行数据的替身；此时退回按行统计，
-        # 保证摘要语义与真实查询一致。
-        status_counts = {}
-        for item in all_items:
-            status_counts[item.review_status] = (
-                status_counts.get(item.review_status, 0) + 1
-            )
-        status_counts["total"] = len(all_items)
+    normalized_keyword = keyword.strip().lower()
+    normalized_product_category = product_category.strip().lower()
+    category_keys = (
+        "categoryName", "category_name", "name", "label",
+        "categoryId", "category_id", "id", "value",
+    )
     product_categories: dict[str, dict[str, str]] = {}
-    for item in all_items:
+    page_ids: list[str] = []
+    total = priority = needs_deduplication = 0
+    # 扫描时累计统计和筛选计数，只保留本页 ID；完整条目等游标关闭后再查。
+    for row in _candidate_review_light_rows(
+        db, keyword=keyword, review_status=review_status
+    ):
+        item = _candidate_review_light_item(row)
+        needs_dedup = bool(
+            item.deduplication
+            and item.deduplication.action == "review_duplicate"
+            and not item.deduplication_confirmed
+        )
+        priority += bool(item.priority_review)
+        needs_deduplication += needs_dedup
+        category_matches = not normalized_product_category
         for raw_category in item.applicable_categories:
-            if isinstance(raw_category, dict):
-                value = next(
-                    (
-                        str(raw_category.get(key) or "").strip()
-                        for key in (
-                            "categoryName", "category_name", "name", "label",
-                            "categoryId", "category_id", "id", "value",
-                        )
-                        if str(raw_category.get(key) or "").strip()
-                    ),
-                    "",
-                )
-            else:
-                value = str(raw_category or "").strip()
+            raw_values = (
+                (raw_category.get(key) for key in category_keys)
+                if isinstance(raw_category, dict)
+                else (raw_category,)
+            )
+            values = [str(value or "").strip() for value in raw_values]
+            value = next((value for value in values if value), "")
             if value:
-                product_categories.setdefault(value.lower(), {"value": value, "label": value})
+                product_categories.setdefault(
+                    value.lower(), {"value": value, "label": value}
+                )
+            if not category_matches:
+                category_matches = any(
+                    value.lower() == normalized_product_category for value in values
+                )
+        if not category_matches or (
+            review_status and item.review_status != review_status
+        ):
+            continue
+        if priority_only and not item.priority_review:
+            continue
+        if deduplication_required and not needs_dedup:
+            continue
+        if updated_from and item.updated_at.date() < updated_from:
+            continue
+        if updated_to and item.updated_at.date() > updated_to:
+            continue
+        if normalized_keyword and normalized_keyword not in " ".join(
+            (
+                item.title, item.event_id, item.source_conversation_id,
+                item.evidence_excerpt or "",
+            )
+        ).lower():
+            continue
+        if annotation_status:
+            review = item.human_review or {}
+            annotated = bool(
+                review.get("knowledge_value") not in (None, "", "pending")
+                or review.get("usability") not in (None, "", "pending")
+                or str(review.get("decision") or "").strip()
+            )
+            if annotated != (annotation_status == "annotated"):
+                continue
+        if model_knowledge_value and normalize_knowledge_value(
+            (item.model_review or {}).get("knowledge_value")
+        ) != model_knowledge_value:
+            continue
+        if total >= offset and len(page_ids) < limit:
+            page_ids.append(item.id)
+        total += 1
+
     summary = {
         "total": status_counts.get("total", 0),
         **{
@@ -3642,85 +3681,15 @@ def list_candidate_reviews(
         },
         # human_pending 与 pending 语义相同（人工待复核），保持并列字段。
         "human_pending": status_counts.get("pending", 0),
-        "priority": sum(item.priority_review for item in all_items),
-        "model_priority": sum(item.priority_review for item in all_items),
-        "deduplication_required": sum(
-            bool(
-                item.deduplication
-                and item.deduplication.action == "review_duplicate"
-                and not item.deduplication_confirmed
-            )
-            for item in all_items
-        ),
+        "priority": priority,
+        "model_priority": priority,
+        "deduplication_required": needs_deduplication,
     }
-
-    normalized_keyword = keyword.strip().lower()
-    filtered = all_items
-    if normalized_keyword:
-        filtered = [
-            item
-            for item in filtered
-            if normalized_keyword
-            in " ".join(
-                (
-                    item.title,
-                    item.event_id,
-                    item.source_conversation_id,
-                    item.evidence_excerpt or "",
-                )
-            ).lower()
-        ]
-    if review_status:
-        filtered = [item for item in filtered if item.review_status == review_status]
-    normalized_product_category = product_category.strip().lower()
-    if normalized_product_category:
-        def category_matches(item: CandidateReviewListItem) -> bool:
-            for value in item.applicable_categories:
-                candidates = tuple(value.get(key) for key in (
-                    "categoryName", "category_name", "name", "label",
-                    "categoryId", "category_id", "id", "value",
-                )) if isinstance(value, dict) else (value,)
-                if any(str(candidate or "").strip().lower() == normalized_product_category for candidate in candidates):
-                    return True
-            return False
-        filtered = [item for item in filtered if category_matches(item)]
-    if annotation_status:
-        def is_annotated(item: CandidateReviewListItem) -> bool:
-            review = item.human_review or {}
-            return bool(
-                review.get("knowledge_value") not in (None, "", "pending")
-                or review.get("usability") not in (None, "", "pending")
-                or str(review.get("decision") or "").strip()
-            )
-        filtered = [item for item in filtered if is_annotated(item) == (annotation_status == "annotated")]
-    if model_knowledge_value:
-        filtered = [
-            item for item in filtered
-            if normalize_knowledge_value((item.model_review or {}).get("knowledge_value")) == model_knowledge_value
-        ]
-    if updated_from:
-        filtered = [item for item in filtered if item.updated_at.date() >= updated_from]
-    if updated_to:
-        filtered = [item for item in filtered if item.updated_at.date() <= updated_to]
-    if priority_only:
-        filtered = [item for item in filtered if item.priority_review]
-    if deduplication_required:
-        filtered = [
-            item
-            for item in filtered
-            if (
-                item.deduplication
-                and item.deduplication.action == "review_duplicate"
-                and not item.deduplication_confirmed
-            )
-        ]
-
-    page_items = filtered[offset : offset + limit]
     return CandidateReviewListResponse(
-        total=len(filtered),
+        total=total,
         summary=summary,
         product_categories=sorted(product_categories.values(), key=lambda category: category["label"]),
-        items=_candidate_review_full_items(db, [item.id for item in page_items]),
+        items=_candidate_review_full_items(db, page_ids),
     )
 
 

@@ -858,7 +858,12 @@ def test_candidate_summary_counts_human_pending_separately_from_explicit_model_r
     monkeypatch.setattr(
         integration,
         "_candidate_review_light_rows",
-        lambda _db, *, keyword: items,
+        lambda _db, **_filters: items,
+    )
+    monkeypatch.setattr(
+        integration,
+        "_candidate_review_status_counts",
+        lambda _db: {"total": 2, "pending": 2},
     )
     monkeypatch.setattr(
         integration,

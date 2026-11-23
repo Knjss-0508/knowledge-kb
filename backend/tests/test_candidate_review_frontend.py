@@ -329,6 +329,62 @@ def test_candidate_review_list_reload_is_awaitable_for_save_and_next() -> None:
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def test_candidate_review_list_recovers_from_html_gateway_error() -> None:
+    node = shutil.which("node")
+    assert node
+    script = r"""
+        const assert = require('node:assert/strict');
+        const html = require('node:fs').readFileSync(0, 'utf8');
+        const start = html.indexOf('    loadCandidateReviews: function(');
+        const end = html.indexOf('    reviewStatusLabel: function(', start);
+        const API = '/api/v1';
+        const context = {
+          candidateReviews: {
+            page: 2, pageSize: 20, filter: {status: 'pending'}, selected: ['old'],
+            items: [], loading: false, loadError: ''
+          },
+          authHeaders: () => ({}),
+          formatDate: () => '-',
+          reviewSelectable: () => true,
+        };
+        const urls = [];
+        const responses = [
+          new Response('<html><h1>502 Bad Gateway</h1></html>', {status: 502}),
+          new Response('<html>not JSON</html>'),
+          Response.json({detail: '没有复核权限'}, {status: 403}),
+          Response.json({items: [{id: 'new'}], total: 42, summary: {}}),
+        ];
+        const fetch = async (url) => { urls.push(url); return responses.shift(); };
+        const alert = () => { throw new Error('must not show a blocking alert'); };
+        const reload = eval('({' + html.slice(start, end) + '})')
+          .loadCandidateReviews.bind(context);
+        (async function() {
+          const state = context.candidateReviews;
+          await reload();
+          assert.match(state.loadError, /服务暂时不可用/);
+          assert.equal(state.loading, false);
+          assert.deepEqual(state.selected, []);
+          await reload();
+          assert.match(state.loadError, /返回异常/);
+          await reload();
+          assert.equal(state.loadError, '没有复核权限');
+          await reload();
+          assert.equal(state.loadError, '');
+          assert.deepEqual(state.items, [{id: 'new'}]);
+          assert.equal(state.total, 42);
+          assert.equal(new Set(urls).size, 1);
+          assert.match(urls[0], /review_status=pending.*offset=20/);
+        })().catch(error => {console.error(error); process.exitCode = 1;});
+    """
+    completed = subprocess.run(
+        [node, "-e", script], input=FRONTEND, capture_output=True,
+        text=True, encoding="utf-8", check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert 'v-if="candidateReviews.loadError" role="alert"' in FRONTEND
+    assert '@click="loadCandidateReviews()">重试</button>' in FRONTEND
+
+
 def test_annotation_failure_refreshes_saved_reply_or_blocks_stale_save() -> None:
     node = shutil.which("node")
     assert node
