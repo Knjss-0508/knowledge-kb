@@ -117,7 +117,7 @@ def retry_failed(_: User = Depends(require_permission("account:manage"))) -> dic
 
 
 @router.post("/resume")
-def resume(_: User = Depends(require_permission("account:manage"))) -> dict[str, Any]:
+def resume(_: User = Depends(require_permission("automation:resume_schedule"))) -> dict[str, Any]:
     """恢复被暂停的自动顺延（清失败/跳过记录，游标不动）。"""
     try:
         return _gateway().request("POST", "/api/v1/automation/resume")

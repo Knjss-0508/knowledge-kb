@@ -37,7 +37,7 @@ def test_monitor_run_rows_explain_incomplete_history_and_failure_state() -> None
     assert "已恢复" in FRONTEND
 
 
-def test_start_and_stop_automation_keep_logical_and_scheduled_switches_aligned() -> None:
+def test_start_does_not_enable_scheduling_and_stop_turns_it_off() -> None:
     node = shutil.which("node")
     assert node, "Node.js is required for the automation monitor behavior test"
     frontend_path = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
@@ -90,8 +90,9 @@ def test_start_and_stop_automation_keep_logical_and_scheduled_switches_aligned()
         context.startAutomationProcess();
         assert.deepStrictEqual(context.saved, {{
           enabled: true,
-          schedule_enabled: true
+          schedule_enabled: false
         }});
+        context.answerHubMonitor.control.schedule_enabled = true;
         context.stopAutomationProcess();
         assert.deepStrictEqual(context.saved, {{
           enabled: false,
@@ -544,8 +545,7 @@ def test_resume_button_is_offered_only_while_auto_advance_is_paused() -> None:
     )
 
 
-def test_resume_action_posts_to_the_resume_route_then_reloads() -> None:
-    """恢复必须打到 /automation-monitor/resume，成功后刷新真实状态。"""
+def test_resume_does_not_report_success_without_a_confirmed_plan() -> None:
     _run_node_script(
         """
         const context = buildContext({answerHubMonitor: {control: {plan: {auto_advance_paused: true}}}});
@@ -557,17 +557,63 @@ def test_resume_action_posts_to_the_resume_route_then_reloads() -> None:
             json: function() { return Promise.resolve({status: 'resumed', control: {}}); }
           });
         };
-        context.resumeAutomationMonitor();
-        setTimeout(function() {
+        context.resumeAutomationMonitor().then(function() {
           assert.ok(
             calledUrl.indexOf('/automation-monitor/resume') !== -1,
             'restore must hit the resume route, got ' + calledUrl
           );
           assert.ok(calledUrl.indexOf('/retry-failed') === -1, 'restore is not a retry');
-          assert.strictEqual(context.reloaded, true, 'restore must re-read the real state afterwards');
+          assert.strictEqual(context.reloaded, true, 'unconfirmed response must re-read state');
+          assert.strictEqual(context.answerHubMonitor.control.plan.auto_advance_paused, true);
+          assert.strictEqual(context.answerHubMonitor.resumeNotice, '');
+          assert.match(context.answerHubMonitor.lastError, /未能确认恢复/);
           assert.strictEqual(context.answerHubMonitor.actionLoading, false);
           process.exit(0);
-        }, 20);
+        }).catch(error => { console.error(error); process.exit(1); });
+        """
+    )
+
+
+def test_super_support_can_resume_and_sees_the_confirmed_cursor() -> None:
+    _run_node_script(
+        """
+        const paused = {auto_advance_paused: true, consecutive_failure_count: 3,
+          last_failure_reason: 'failed', cursor_date: '2026-10-31'};
+        const context = buildContext({
+          currentUser: {role: 'super_support', permissions: ['automation:resume_schedule']},
+          answerHubMonitor: {control: {plan: paused}}
+        });
+        assert.equal(context.automationMonitorActionDisabled('resume'), false);
+        assert.equal(context.automationMonitorActionDisabled('run'), true);
+        const viewer = buildContext({
+          currentUser: {role: 'senior_support', permissions: ['knowledge:submit']},
+          answerHubMonitor: {control: {plan: paused}}
+        });
+        assert.equal(viewer.automationMonitorActionDisabled('resume'), true);
+        const calls = [];
+        sandbox.fetch = function(url, options) {
+          calls.push([url, options.method]);
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({status: 'resumed', control: {plan: {
+              auto_advance_paused: false, consecutive_failure_count: 0,
+              last_failure_reason: '', cursor_date: '2026-10-31'
+            }}})
+          });
+        };
+        viewer.resumeAutomationMonitor();
+        const pending = context.resumeAutomationMonitor();
+        context.resumeAutomationMonitor();
+        Promise.resolve(pending).then(function() {
+          assert.equal(calls.length, 1);
+          assert.deepStrictEqual(calls[0], ['/automation-monitor/resume', 'POST']);
+          assert.equal(context.answerHubMonitor.control.plan.consecutive_failure_count, 0);
+          assert.equal(context.answerHubMonitor.control.plan.auto_advance_paused, false);
+          assert.equal(context.answerHubMonitor.control.plan.cursor_date, '2026-10-31');
+          assert.match(context.answerHubMonitor.resumeNotice, /已恢复自动顺延/);
+          assert.match(context.answerHubMonitor.resumeNotice, /不会立即执行/);
+          process.exit(0);
+        }).catch(error => { console.error(error); process.exit(1); });
         """
     )
 

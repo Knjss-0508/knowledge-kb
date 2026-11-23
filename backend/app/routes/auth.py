@@ -20,7 +20,7 @@ ROLES = {
     "visitor": {"label": "游客用户", "permissions": {"knowledge:view"}},
     "junior_support": {"label": "小小答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_own_review", "password:reset_self", "retrieval:blind_label"}},
     "senior_support": {"label": "大大答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_review_all", "knowledge:approve", "password:reset_self", "retrieval:blind_label"}},
-    "super_support": {"label": "超级答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_review_all", "knowledge:edit_published", "knowledge:approve", "password:reset_self", "retrieval:blind_label"}},
+    "super_support": {"label": "超级答疑", "permissions": {"knowledge:view", "knowledge:create", "knowledge:submit", "knowledge:edit_review_all", "knowledge:edit_published", "knowledge:approve", "password:reset_self", "retrieval:blind_label", "automation:resume_schedule"}},
     "super_admin": {"label": "超级管理员", "permissions": {"*", "account:manage"}},
 }
 
@@ -39,6 +39,7 @@ PERMISSION_LABELS = {
     "retrieval:label_overview": "查看召回盲标总览",
     "retrieval:label_arbitrate": "仲裁召回盲标分歧",
     "account:manage": "管理账号",
+    "automation:resume_schedule": "恢复自动化顺延",
 }
 
 
