@@ -7,34 +7,21 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from pydantic import ValidationError
-from sqlalchemy import create_engine
-from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.services.blind_label_replay import ReplayManifest, run_retrieval_replay
-
-
-_LOOPBACK_IPS = {"127.0.0.1", "::1"}
-_MAX_MANIFEST_BYTES = 1_000_000
+from scripts._blind_replay_io import LOOPBACK_IPS, local_database, read_manifest, readonly_engine
 
 
 def _local_endpoints():
-    database = make_url(os.environ.get("BLIND_REPLAY_DATABASE_URL", ""))
-    if (
-        database.drivername not in {"postgresql", "postgresql+psycopg2"}
-        or database.host not in _LOOPBACK_IPS
-        or not database.database
-        or database.query
-    ):
-        raise ValueError("需要显式配置不带连接参数的本机 PostgreSQL 副本地址。")
+    database = local_database()
     try:
         embedding = urlsplit(os.environ.get("BLIND_REPLAY_EMBEDDING_URL", ""))
         if (
             embedding.scheme not in {"http", "https"}
-            or embedding.hostname not in _LOOPBACK_IPS
+            or embedding.hostname not in LOOPBACK_IPS
             or not embedding.port
             or embedding.username is not None
             or embedding.query
@@ -58,31 +45,14 @@ def main():
         database, embedding_url = _local_endpoints()
     except (ArgumentError, ValueError):
         parser.error("请配置有效的 BLIND_REPLAY_DATABASE_URL 与 BLIND_REPLAY_EMBEDDING_URL（仅接受本机 IP）。")
-    try:
-        with args.manifest.open("rb") as source:
-            payload = source.read(_MAX_MANIFEST_BYTES + 1)
-    except OSError:
-        parser.error("无法读取回放清单。")
-    if len(payload) > _MAX_MANIFEST_BYTES:
-        parser.error("回放清单超过大小限制。")
-    try:
-        manifest = ReplayManifest.model_validate_json(payload)
-    except ValidationError as exc:
-        parser.error(f"回放清单格式错误（{exc.error_count()} 处）；未输出原始输入。")
+    payload, manifest = read_manifest(parser, args.manifest, ReplayManifest)
 
     settings.EMBEDDING_BASE_URL = embedding_url
     # Do not send an inherited production key or route local requests via a proxy.
     settings.EMBEDDING_API_KEY = ""
     os.environ["NO_PROXY"] = "127.0.0.1,::1"
     os.environ["no_proxy"] = os.environ["NO_PROXY"]
-    engine = create_engine(
-        database, hide_parameters=True,
-        connect_args={
-            "hostaddr": database.host,
-            "connect_timeout": 10,
-            "options": "-c default_transaction_read_only=on -c statement_timeout=30000",
-        },
-    )
+    engine = readonly_engine(database)
     try:
         with Session(engine, autoflush=False) as db:
             report = run_retrieval_replay(db, manifest)

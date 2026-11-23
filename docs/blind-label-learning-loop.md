@@ -42,6 +42,29 @@
 - 回放复用 `/standard-search` 的语义排序和阈值过滤，不调用 HTTP 路由，不记录检索事件。数据库连接默认只读；报告只有内部 ID、排名、分数、阈值、结果状态及汇总，不含问题和答案正文。报告也应留在内部。
 - 口径是**按知识来源分别排名**的检索窗口和返回 Top 3，不是插件重排后的排名；「不在窗口」不判断是筛选、索引还是召回的原因。答复问题样本只统计其检索环节，不评判最终回复。报告是副本的基线，不代表已实测生产表现。
 
+## 第四批改动：最终答复离线验收
+
+知识库的 `/standard-search` 只返回检索结果，Answer Hub 的草稿回放也不是线上助手的最终答复。请在隔离环境中用实际助手链路对**同一批脱敏输入、同一知识快照**分别跑基线和候选，再将最终输出填入本地 JSON。验收脚本只汇总人工判定，不生成答复、不调用 Embedding 或外部 AI，也不写数据库或检索日志。
+
+从 `backend` 目录运行。只需配置上一节约束下的只读 `BLIND_REPLAY_DATABASE_URL`，不要连接生产或通过回环隧道访问生产。清单最多 100 单、1 MB，版本字段使用内部版本标识；以下是格式示例，不是真实结果：
+
+```json
+{
+  "baseline_version": "assistant-baseline-1",
+  "candidate_version": "assistant-candidate-2",
+  "cases": [{
+    "work_order_id": "wo-example",
+    "review_id": 1,
+    "baseline": {"generation": "answered", "answer": "直接给出处理步骤。", "verdict": "incorrect"},
+    "candidate": {"generation": "answered", "answer": "先确认适用条件，再给出对应步骤。", "verdict": "correct"}
+  }]
+}
+```
+
+1. 可先不填 `verdict`，用 `python -m scripts.replay_blind_label_answers <脱敏清单.json> --confirm-local-sanitized --review-references` 提取同版复核参考。此模式含预期要点，**只重定向到受控本地文件**，不发到日志、外部服务或 Git。
+2. 审核员依据预期要点及对应知识判两版答复：`correct`、`incorrect` 或 `insufficient_evidence`（证据不足）；尽量不向审核员显示版本身份。没评就留空。生成失败记 `{"generation":"failed"}`，未拿到产物则留空整侧；两者都不等于答错。改动答复后需清除旧判定，重新审核。
+3. 去掉 `--review-references` 生成统计报告。只有当前仍有效、且版本吻合的 `answer_issue` 复核才计入。两侧都判对错才进入配对正确率和提升/退步统计；单侧正确率仅基于该侧有判定的样本，不能直接相减。报告保留未评、缺证据、缺产物和生成失败等计数；没有配对样本时差值为 `null`。报告不含答复正文和预期要点，也不据此自动判定发布或训练。
+
 ## 后续三步的验收
 
 1. **试点确认**：从现有完成单选约 100 单，覆盖一两个高频品类。AI 归因只能提交建议，调用前需确定脱敏和发送边界；没有依据的不进入训练集。

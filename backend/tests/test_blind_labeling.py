@@ -443,6 +443,7 @@ def test_learning_review_rejects_changed_evidence_and_retired_orders(db):
 def test_learning_review_answer_points_stay_out_of_preview_and_require_source_query(db):
     from app.routes.blind_labeling import put_learning_sample_review
     from app.schemas.blind_labeling import BlindLabelLearningReviewInput
+    from app.services.blind_label_answer_replay import AnswerReplayManifest, build_review_references, run_answer_replay
     from app.services.blind_label_learning import preview_learning_samples
 
     order = _work_order_for_sample_preview(db, "learning-answer")
@@ -460,12 +461,26 @@ def test_learning_review_answer_points_stay_out_of_preview_and_require_source_qu
     saved = put_learning_sample_review(order.id, body, db, actor)
     assert saved["review"]["expected_answer"] == "先说明适用条件"
     assert "expected_answer" not in preview_learning_samples(db)["items"][0]["review"]
+    manifest = AnswerReplayManifest.model_validate({
+        "baseline_version": "v1", "candidate_version": "v2",
+        "cases": [{
+            "work_order_id": str(order.id), "review_id": saved["review"]["id"],
+            "baseline": {"generation": "answered", "answer": "直接处理。", "verdict": "incorrect"},
+            "candidate": {"generation": "answered", "answer": "先说明适用条件，再处理。", "verdict": "correct"},
+        }],
+    })
+    expected = build_review_references(db, manifest)["cases"][0]
+    assert expected["expected_answer"] == "先说明适用条件"
+    assert run_answer_replay(db, manifest)["summary"]["paired"]["improved"] == 1
 
     order.query_text = ""
     db.commit()
     stale, = preview_learning_samples(db)["items"]
     assert stale["review_status"] == "stale"
     assert stale["replay_eligible"] is False
+    replay = run_answer_replay(db, manifest)
+    assert replay["cases"][0]["status"] == "review_changed_or_ineligible"
+    assert replay["summary"]["paired"]["evaluated"] == 0
     body = body.model_copy(update={"evidence_version": stale["evidence_version"], "previous_review_id": saved["review"]["id"]})
     with pytest.raises(HTTPException) as exc:
         put_learning_sample_review(order.id, body, db, actor)
