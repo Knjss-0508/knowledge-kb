@@ -1661,24 +1661,71 @@
     </template>
       <section v-if="isBlindLabelAdmin() && blindLabeling.tab==='learning'" id="blind-label-learning-panel" role="tabpanel" aria-labelledby="blind-label-learning-tab" :aria-busy="blindLabeling.learning.loading">
         <div class="blind-label-section-head">
-          <div><h3>回流样本预览</h3><p>仅预览已达成共识或已仲裁的在池工单。分流是规则建议，不调用 AI、不启动训练，也不修改知识库。</p></div>
+          <div><h3>回流样本复核</h3><p>仅处理已达成共识或已仲裁的在池工单。复核记录可用于后续离线回放；不调用 AI、不启动训练，也不修改知识库。</p></div>
         </div>
         <div class="blind-label-ranking-toolbar">
           <label class="blind-label-month-field"><span>原候选品类</span><select class="inp" v-model="blindLabeling.learning.categoryId" @change="loadBlindLabelLearning()" :disabled="blindLabeling.learning.loading"><option value="">全部</option><option v-for="cat in cats" :key="cat.id" :value="cat.id">{{cat.name}}</option></select></label>
           <button type="button" class="btn bd bsm" @click="loadBlindLabelLearning()" :disabled="blindLabeling.learning.loading">从头扫描</button>
           <button type="button" class="btn bd bsm" @click="loadBlindLabelLearning(blindLabeling.learning.nextCursor)" :disabled="blindLabeling.learning.loading || !blindLabeling.learning.nextCursor">继续扫描</button>
-          <span class="hint" role="status">{{blindLabeling.learning.loading ? '扫描中…' : (blindLabeling.learning.error ? '' : '本批扫描 '+blindLabeling.learning.scanned+' 单，得到 '+blindLabeling.learning.items.length+' 条待复核样本')}}</span>
+          <span class="hint" role="status">{{blindLabeling.learning.loading ? '扫描中…' : (blindLabeling.learning.error ? '' : '本批扫描 '+blindLabeling.learning.scanned+' 单，得到 '+blindLabeling.learning.items.length+' 条回流样本')}}</span>
         </div>
         <div v-if="blindLabeling.learning.error" class="blind-label-error" role="alert">{{blindLabeling.learning.error}}</div>
+        <p v-if="blindLabeling.learning.notice" class="hint" role="status">{{blindLabeling.learning.notice}}</p>
+        <section v-if="blindLabeling.learning.editor" class="blind-label-filter-card" :aria-busy="blindLabeling.learning.editor.loading || blindLabeling.learning.editor.saving">
+          <div class="blind-label-filter-head">
+            <div><h3>确认回流样本</h3><p>先核对原盲标详情。复核会生成新版本，不覆盖历史记录。</p></div>
+            <button type="button" class="btn bd bsm" @click="blindLabeling.learning.editor=null" :disabled="blindLabeling.learning.editor.saving">关闭</button>
+          </div>
+          <p v-if="blindLabeling.learning.editor.loading" role="status">正在获取最新证据…</p>
+          <div v-if="blindLabeling.learning.editor.error" class="blind-label-error" role="alert">{{blindLabeling.learning.editor.error}}</div>
+          <form v-if="blindLabeling.learning.editor.sample" @submit.prevent="saveBlindLabelLearningReview">
+            <fieldset :disabled="blindLabeling.learning.editor.saving">
+              <div class="blind-label-filter-grid">
+                <label><span>复核结论</span>
+                  <select ref="blindLearningIssue" class="inp" required v-model="blindLabeling.learning.editor.issueType" @change="blindLabeling.learning.editor.knowledgeId=''">
+                    <option disabled value="">请选择</option>
+                    <option value="retrieval_missed">已有知识未召回</option>
+                    <option value="ranking">正确候选排序待优化</option>
+                    <option value="answer_issue">知识正确但答复有问题</option>
+                    <option value="knowledge_issue">知识内容问题</option>
+                    <option value="knowledge_gap">确认缺少知识</option>
+                    <option value="exclude">不纳入回流</option>
+                  </select>
+                </label>
+                <label v-if="blindLabeling.learning.editor.issueType==='ranking'"><span>正确知识（原候选）</span>
+                  <select class="inp" required v-model="blindLabeling.learning.editor.knowledgeId">
+                    <option disabled value="">请选择</option>
+                    <option v-for="candidate in blindLabeling.learning.editor.sample.candidates.filter(function(row){return row.knowledge_id && row.knowledge_state!=='not_published';})" :key="candidate.candidate_ref" :value="candidate.knowledge_id">候选 {{candidate.rank}} · {{candidate.knowledge_id}}</option>
+                  </select>
+                </label>
+                <label v-else-if="['retrieval_missed','answer_issue'].indexOf(blindLabeling.learning.editor.issueType)!==-1"><span>正确知识 ID（已发布）</span>
+                  <input class="inp" required maxlength="64" v-model.trim="blindLabeling.learning.editor.knowledgeId">
+                </label>
+                <label v-if="blindLabeling.learning.editor.issueType==='answer_issue'"><span>预期答复要点（请勿填写姓名、手机号等个人信息）</span>
+                  <textarea class="fi" required maxlength="1000" rows="3" v-model.trim="blindLabeling.learning.editor.expectedAnswer"></textarea>
+                </label>
+              </div>
+              <div class="blind-label-toolbar">
+                <button type="button" class="btn bd bsm" @click="openBlindLabelWorkOrder(blindLabeling.learning.editor.sample)">查看盲标详情</button>
+                <button type="button" class="btn bd bsm" v-if="blindLabeling.learning.editor.error" @click="openBlindLabelLearningReview(blindLabeling.learning.editor.workOrderId)">重新打开并核对</button>
+                <button type="submit" class="btn bp bsm">{{blindLabeling.learning.editor.saving ? '正在保存…' : '保存复核结论'}}</button>
+              </div>
+            </fieldset>
+          </form>
+          <button type="button" class="btn bd bsm" v-else-if="blindLabeling.learning.editor.error" @click="openBlindLabelLearningReview(blindLabeling.learning.editor.workOrderId)">重试</button>
+        </section>
         <div class="tw">
-          <table class="blind-label-ranking-table"><thead><tr><th>盲标记录</th><th>建议去向</th><th>候选结论</th><th>操作</th></tr></thead><tbody>
+          <table class="blind-label-ranking-table"><thead><tr><th>盲标记录</th><th>建议去向</th><th>候选结论</th><th>复核状态</th><th>操作</th></tr></thead><tbody>
             <tr v-for="sample in blindLabeling.learning.items" :key="sample.work_order_id">
               <td>{{sample.consensus_status==='arbitrated'?'已仲裁':'全员一致'}}<div class="blind-label-subline">{{sample.completed_annotators}} / {{sample.required_annotators}} 人提交</div></td>
               <td>{{blindLabelLearningTrackLabel(sample.suggested_track)}}</td>
               <td><div v-for="candidate in sample.candidates" :key="candidate.candidate_ref">候选 {{candidate.rank}} · {{candidate.verdict==='referable'?'可参考':candidate.verdict==='not_referable'?'不可参考':'未判定'}} · {{blindLabelLearningKnowledgeLabel(candidate.knowledge_state)}}</div></td>
-              <td><button type="button" class="btn bd bsm" @click="openBlindLabelWorkOrder(sample)">查看盲标详情</button></td>
+              <td>{{blindLabelLearningReviewLabel(sample)}}</td>
+              <td><button type="button" class="btn bd bsm" @click="openBlindLabelWorkOrder(sample)">查看盲标详情</button>
+                <button v-if="can('retrieval:label_arbitrate')" type="button" class="btn bp bsm" @click="openBlindLabelLearningReview(sample.work_order_id)" :disabled="blindLabeling.learning.editor && blindLabeling.learning.editor.saving">复核样本</button>
+              </td>
             </tr>
-            <tr v-if="!blindLabeling.learning.items.length && !blindLabeling.learning.error"><td colspan="4" class="blind-label-empty">{{blindLabeling.learning.loading ? '正在扫描…' : blindLabeling.learning.nextCursor ? '本批没有可预览样本，可继续扫描。' : '没有找到可预览的样本。'}}</td></tr>
+            <tr v-if="!blindLabeling.learning.items.length && !blindLabeling.learning.error"><td colspan="5" class="blind-label-empty">{{blindLabeling.learning.loading ? '正在扫描…' : blindLabeling.learning.nextCursor ? '本批没有可预览样本，可继续扫描。' : '没有找到可预览的样本。'}}</td></tr>
           </tbody></table>
         </div>
       </section>
@@ -2598,7 +2645,7 @@ Vue.createApp({
         current:{open:false,readOnly:false,assignment:null,detail:null,candidates:[],labels:{},reasonCodes:{},reasonNotes:{},allNotReferable:false,taskReasonCode:'',note:'',error:''},
         overview:{loading:false,error:'',summary:{total:0,pending:0,in_progress:0,partial:0,completed:0,disputed:0,annotations:0,consensus_rate:0,active_annotators:0},cards:[],people:[],workOrders:[],updatedAt:'-',filters:{dateFrom:'',dateTo:'',status:'',dimension:'',annotator:'',keyword:''},datePicker:{kind:'',opening:false,openTimer:null,releaseTimer:null,startedAt:0},pagination:{page:1,size:20,total:0,totalPages:1}},
         adminDetail:{open:false,loading:false,error:'',item:null,workOrder:null,candidates:[],annotations:[],taskReasons:[],consensus:null,arbitration:{},arbitrationReason:'',arbitrating:false},
-        learning:{loading:false,error:'',categoryId:'',nextCursor:'',scanned:0,items:[]},
+        learning:{loading:false,error:'',notice:'',categoryId:'',nextCursor:'',scanned:0,items:[],editor:null},
         ranking:{loading:false,error:'',mode:'month',month:'',dateFrom:'',dateTo:'',updatedAt:'-',people:[],summary:{annotators:0,annotations:0,completed_work_orders:0,referable_count:0,not_referable_count:0,released_count:0}}
       },
       retrievalPeriodOptions:[
@@ -9439,9 +9486,64 @@ Vue.createApp({
     blindLabelLearningKnowledgeLabel: function(state) {
       return {snapshot_matches:'标题及正文未变',snapshot_differs:'标题或正文有变化',not_published:'知识不存在或未发布',snapshot_unverifiable:'无法核对历史内容'}[state] || '无法核对';
     },
+    blindLabelLearningReviewLabel: function(sample) {
+      if (sample.replay_eligible) return '已确认 · 待离线回放';
+      return {confirmed:'已确认 · 知识待处理',excluded:'不纳入',stale:'证据有变 · 待重新确认'}[sample.review_status] || '待复核';
+    },
+    blindLabelLearningReviewPath: function(workOrderId) {
+      return '/blind-labeling/learning-samples/' + encodeURIComponent(workOrderId) + '/review';
+    },
+    openBlindLabelLearningReview: function(workOrderId) {
+      var self = this, state = this.blindLabeling.learning;
+      if (!this.can('retrieval:label_arbitrate') || (state.editor && state.editor.saving)) return;
+      state.notice = '';
+      state.editor = {workOrderId:workOrderId,loading:true,saving:false,error:'',sample:null,reviewId:null,issueType:'',knowledgeId:'',expectedAnswer:''};
+      var editor = state.editor;
+      return this.blindLabelApi(this.blindLabelLearningReviewPath(workOrderId), {method:'GET'})
+        .then(function(data) {
+          if (state.editor !== editor) return;
+          var review = data.review || {};
+          editor.sample = data.sample;
+          editor.reviewId = review.id || null;
+          editor.issueType = review.issue_type || '';
+          editor.knowledgeId = review.knowledge_id || '';
+          editor.expectedAnswer = review.expected_answer || '';
+          self.$nextTick(function() {
+            if (state.editor === editor && self.$refs.blindLearningIssue) self.$refs.blindLearningIssue.focus();
+          });
+        })
+        .catch(function(error) { editor.error = error.message || '加载复核证据失败'; })
+        .finally(function() { editor.loading = false; });
+    },
+    saveBlindLabelLearningReview: function() {
+      var state = this.blindLabeling.learning, editor = state.editor;
+      if (!this.can('retrieval:label_arbitrate') || !editor || !editor.sample || editor.saving) return;
+      var issue = editor.issueType;
+      var payload = {
+        evidence_version:editor.sample.evidence_version, previous_review_id:editor.reviewId, issue_type:issue,
+        knowledge_id:['retrieval_missed','ranking','answer_issue'].indexOf(issue)!==-1 ? editor.knowledgeId : null,
+        expected_answer:issue==='answer_issue' ? editor.expectedAnswer : ''
+      };
+      editor.saving = true;
+      editor.error = '';
+      return this.blindLabelApi(this.blindLabelLearningReviewPath(editor.workOrderId), {
+        method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
+      }).then(function(data) {
+        state.items = state.items.map(function(item) {
+          return item.work_order_id === editor.workOrderId ? Object.assign({}, data.sample, {
+            review_status:data.review_status, replay_eligible:data.replay_eligible
+          }) : item;
+        });
+        state.notice = '复核结论已保存。';
+        state.editor = null;
+      }).catch(function(error) { editor.error = error.message || '保存复核结论失败'; })
+        .finally(function() { editor.saving = false; });
+    },
     loadBlindLabelLearning: function(cursor) {
       var state = this.blindLabeling.learning;
-      if (!this.isBlindLabelAdmin() || state.loading) return;
+      if (!this.isBlindLabelAdmin() || state.loading || (state.editor && state.editor.saving)) return;
+      state.editor = null;
+      state.notice = '';
       var params = new URLSearchParams();
       if (state.categoryId) params.set('category_id', state.categoryId);
       if (cursor) params.set('cursor', cursor);

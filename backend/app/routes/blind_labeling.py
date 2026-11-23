@@ -21,10 +21,16 @@ from app.schemas.blind_labeling import (
     BlindLabelArbitrationInput,
     BlindLabelArbitrationRequest,
     BlindLabelClaimRequest,
+    BlindLabelLearningReviewInput,
     BlindLabelReleaseRequest,
     BlindLabelSubmitRequest,
 )
-from app.services.blind_label_learning import preview_learning_samples
+from app.services.blind_label_learning import (
+    LearningReviewError,
+    load_learning_review,
+    preview_learning_samples,
+    save_learning_review,
+)
 from app.services.blind_labeling import (
     BLIND_LABEL_BATCH_SIZE,
     annotation_ranking,
@@ -148,21 +154,18 @@ def _get_assignment(db: Session, assignment_id: str) -> BlindLabelAssignment:
     return assignment
 
 
-def _get_work_order(db: Session, identifier: str) -> BlindLabelWorkOrder | None:
+def _get_work_order(db: Session, identifier: str, *, lock: bool = False) -> BlindLabelWorkOrder | None:
     """Resolve the internal ID, the upstream work-order ID, or the conversation ID."""
 
     identifier = str(identifier or "").strip()
     if not identifier:
         return None
-    return (
-        db.query(BlindLabelWorkOrder)
-        .filter(
-            (BlindLabelWorkOrder.id == identifier)
-            | (BlindLabelWorkOrder.question_form_id == identifier)
-            | (BlindLabelWorkOrder.conversation_id == identifier)
-        )
-        .first()
+    query = db.query(BlindLabelWorkOrder).filter(
+        (BlindLabelWorkOrder.id == identifier)
+        | (BlindLabelWorkOrder.question_form_id == identifier)
+        | (BlindLabelWorkOrder.conversation_id == identifier)
     )
+    return (query.with_for_update() if lock else query).first()
 
 
 def _claim_response(db: Session, user_id: str):
@@ -525,6 +528,34 @@ def get_learning_sample_preview(
     return preview_learning_samples(db, cursor=cursor, scan_limit=scan_limit, category_id=category_id)
 
 
+@router.get("/learning-samples/{work_order_id}/review")
+def get_learning_sample_review(
+    work_order_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("retrieval:label_arbitrate")),
+):
+    try:
+        return load_learning_review(db, work_order_id)
+    except LearningReviewError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@router.put("/learning-samples/{work_order_id}/review")
+def put_learning_sample_review(
+    work_order_id: str,
+    body: BlindLabelLearningReviewInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("retrieval:label_arbitrate")),
+):
+    try:
+        result = save_learning_review(db, work_order_id, body, current_user.id)
+        db.commit()
+    except LearningReviewError as exc:
+        db.rollback()
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    return result
+
+
 @router.get("/work-orders/{work_order_id}")
 def get_work_order_detail(
     work_order_id: str,
@@ -550,7 +581,7 @@ def arbitrate_work_order(
 ):
     """Persist administrator arbitration separately from retrieval telemetry."""
 
-    work_order = _get_work_order(db, work_order_id)
+    work_order = _get_work_order(db, work_order_id, lock=True)
     if not work_order:
         raise HTTPException(status_code=404, detail="盲标工单不存在")
 

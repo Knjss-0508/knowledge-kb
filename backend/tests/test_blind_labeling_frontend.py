@@ -61,6 +61,14 @@ def test_learning_preview_has_admin_only_tab_and_read_only_paging() -> None:
     assert "不调用 AI、不启动训练，也不修改知识库" in FRONTEND
 
 
+def test_learning_review_form_submits_expected_revision_after_human_action() -> None:
+    assert '@submit.prevent="saveBlindLabelLearningReview"' in FRONTEND
+    assert '"can(\'retrieval:label_arbitrate\')"' in FRONTEND
+    assert "evidence_version:editor.sample.evidence_version, previous_review_id:editor.reviewId" in FRONTEND
+    assert "method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)" in FRONTEND
+    assert "证据有变 · 待重新确认" in FRONTEND
+
+
 def test_blind_label_people_panel_only_shows_name_completed_annotations_and_last_activity() -> None:
     assert "查看每位标注员的完成标注量和最近活动" in FRONTEND
     assert "<th>标注员</th><th>总完成标注数</th><th>最后活动时间</th>" in FRONTEND

@@ -17,6 +17,7 @@ from app.models.blind_labeling import (
     BlindLabelArbitration,
     BlindLabelAssignment,
     BlindLabelBatch,
+    BlindLabelLearningReview,
     BlindLabelWorkOrder,
 )
 from app.models.integration import RetrievalQualityEvent
@@ -115,6 +116,7 @@ def db():
         BlindLabelAssignment.__table__,
         BlindLabelAnnotation.__table__,
         BlindLabelArbitration.__table__,
+        BlindLabelLearningReview.__table__,
     ]
     for table in tables:
         table.create(engine)
@@ -367,8 +369,107 @@ def test_learning_preview_http_denies_annotators_and_rejects_large_pages():
     app.dependency_overrides[get_current_user] = lambda: User(role="junior_support")
     with TestClient(app) as client:
         assert client.get(path).status_code == 403
+        assert client.put("/blind-labeling/learning-samples/wo-1/review", json={}).status_code == 403
         app.dependency_overrides[get_current_user] = lambda: User(role="super_admin")
         assert client.get(path, params={"scan_limit": 101}).status_code == 422
+
+
+def test_learning_review_saves_versioned_reference_and_invalidates_when_it_changes(db):
+    from app.routes.blind_labeling import get_learning_sample_review, put_learning_sample_review
+    from app.schemas.blind_labeling import BlindLabelLearningReviewInput
+    from app.services.blind_label_learning import preview_learning_samples
+
+    order = _work_order_for_sample_preview(db, "learning-review")
+    _finish_for_sample_preview(db, order, choice="c2")
+    external = Knowledge(
+        id="correct-outside-pool", title="漏召回知识", category_id="cat-phone",
+        content={"value": "原版"}, status=KnowledgeStatus.PUBLISHED, created_by="test",
+        knowledge_origin="business_accumulation", business_type="aggregated",
+    )
+    db.add(external)
+    db.commit()
+    actor = User(id="u1", role="super_admin")
+    preview, = preview_learning_samples(db)["items"]
+    body = BlindLabelLearningReviewInput(
+        issue_type="retrieval_missed", evidence_version=preview["evidence_version"],
+        previous_review_id=None, knowledge_id=external.id,
+    )
+    saved = put_learning_sample_review(order.id, body, db, actor)
+    assert saved["review_status"] == "confirmed"
+    assert saved["replay_eligible"] is True
+    assert get_learning_sample_review(order.id, db, actor)["review"]["knowledge_id"] == external.id
+    with pytest.raises(HTTPException) as exc:
+        put_learning_sample_review(order.id, body, db, actor)
+    assert exc.value.status_code == 409
+
+    external.content = {"value": "已修订"}
+    db.commit()
+    stale, = preview_learning_samples(db)["items"]
+    assert stale["review_status"] == "stale"
+    assert stale["replay_eligible"] is False
+    body = body.model_copy(update={"previous_review_id": saved["review"]["id"], "issue_type": "exclude", "knowledge_id": None})
+    assert put_learning_sample_review(order.id, body, db, actor)["review_status"] == "excluded"
+    assert db.query(BlindLabelLearningReview).count() == 2
+
+
+def test_learning_review_rejects_changed_evidence_and_retired_orders(db):
+    from app.routes.blind_labeling import put_learning_sample_review
+    from app.schemas.blind_labeling import BlindLabelLearningReviewInput
+    from app.services.blind_label_learning import preview_learning_samples
+
+    order = _work_order_for_sample_preview(db, "learning-review")
+    _finish_for_sample_preview(db, order, choice="c2")
+    db.commit()
+    preview, = preview_learning_samples(db)["items"]
+    actor = User(id="u1", role="super_admin")
+    body = BlindLabelLearningReviewInput(
+        issue_type="ranking", evidence_version=preview["evidence_version"],
+        previous_review_id=None, knowledge_id="biz-2",
+    )
+    db.get(Knowledge, "biz-2").content = {"value": "已修订"}
+    db.commit()
+    with pytest.raises(HTTPException) as exc:
+        put_learning_sample_review(order.id, body, db, actor)
+    assert exc.value.status_code == 409
+
+    order.pool_state = POOL_STATE_RETIRED
+    db.commit()
+    with pytest.raises(HTTPException) as exc:
+        put_learning_sample_review(order.id, body, db, actor)
+    assert exc.value.status_code == 409
+    assert db.query(BlindLabelLearningReview).count() == 0
+
+
+def test_learning_review_answer_points_stay_out_of_preview_and_require_source_query(db):
+    from app.routes.blind_labeling import put_learning_sample_review
+    from app.schemas.blind_labeling import BlindLabelLearningReviewInput
+    from app.services.blind_label_learning import preview_learning_samples
+
+    order = _work_order_for_sample_preview(db, "learning-answer")
+    _finish_for_sample_preview(db, order, choice="c2")
+    db.commit()
+    preview, = preview_learning_samples(db)["items"]
+    fields = dict(
+        issue_type="answer_issue", evidence_version=preview["evidence_version"],
+        previous_review_id=None, knowledge_id="biz-2",
+    )
+    with pytest.raises(ValidationError):
+        BlindLabelLearningReviewInput(**fields)
+    actor = User(id="u1", role="super_admin")
+    body = BlindLabelLearningReviewInput(**fields, expected_answer="先说明适用条件")
+    saved = put_learning_sample_review(order.id, body, db, actor)
+    assert saved["review"]["expected_answer"] == "先说明适用条件"
+    assert "expected_answer" not in preview_learning_samples(db)["items"][0]["review"]
+
+    order.query_text = ""
+    db.commit()
+    stale, = preview_learning_samples(db)["items"]
+    assert stale["review_status"] == "stale"
+    assert stale["replay_eligible"] is False
+    body = body.model_copy(update={"evidence_version": stale["evidence_version"], "previous_review_id": saved["review"]["id"]})
+    with pytest.raises(HTTPException) as exc:
+        put_learning_sample_review(order.id, body, db, actor)
+    assert exc.value.status_code == 422
 
 
 def _seed_extra_business_events(db, count=2):

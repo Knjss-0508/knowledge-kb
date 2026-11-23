@@ -255,3 +255,24 @@ class BlindLabelArbitration(Base):
             name="ck_blind_label_arbitration_verdict",
         ),
     )
+
+
+class BlindLabelLearningReview(Base):
+    """Append-only human decisions; a superseded review remains audit evidence."""
+
+    __tablename__ = "blind_label_learning_reviews"
+
+    id = Column(Integer, primary_key=True)
+    work_order_id = Column(String(64), ForeignKey("blind_label_work_orders.id"), nullable=False)
+    evidence_version = Column(String(64), nullable=False)
+    evidence_snapshot = Column(JSON, nullable=False)
+    issue_type = Column(String(24), nullable=False)
+    knowledge_id = Column(String(64), nullable=True)
+    knowledge_version = Column(String(64), nullable=True)
+    expected_answer = Column(Text, nullable=False, default="")
+    reviewer_id = Column(String(64), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_blind_label_learning_reviews_order_rev", "work_order_id", "id"),
+    )
