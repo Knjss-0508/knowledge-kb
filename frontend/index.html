@@ -1073,14 +1073,22 @@
         <div><span>最近成功</span><b>{{answerHubMonitor.control.plan.last_successful_to_date || '尚无'}}</b></div>
         <div><span>失败次数</span><b>{{answerHubMonitor.control.plan.consecutive_failure_count || 0}}{{answerHubMonitor.control.plan.auto_advance_paused?' · 已暂停顺延':''}}</b></div>
       </div>
-      <div class="automation-plan-warning" v-if="answerHubMonitor.control.plan.last_failure_reason">最近失败：{{answerHubMonitor.control.plan.last_failure_reason}}；失败时日期游标不会移动。<button v-if="answerHubMonitor.control.plan.auto_advance_paused" class="btn bd bsm" type="button" @click="resumeAutomationMonitor" :disabled="automationMonitorActionDisabled('resume')" :title="automationMonitorActionTitle('resume')">清除失败记录并恢复顺延</button></div>
+      <div class="automation-plan-warning" v-if="answerHubMonitor.control.plan.last_failure_reason || answerHubMonitor.control.plan.auto_advance_paused">
+        <span v-if="answerHubMonitor.control.plan.last_failure_reason">最近失败：{{answerHubMonitor.control.plan.last_failure_reason}}；</span>
+        <span>失败时日期游标不会移动。</span>
+        <template v-if="answerHubMonitor.control.plan.auto_advance_paused">
+          <button v-if="can('automation:resume_schedule')" class="btn bd bsm" type="button" @click="resumeAutomationMonitor" :disabled="automationMonitorActionDisabled('resume')" :title="automationMonitorActionTitle('resume')">{{answerHubMonitor.resumeLoading ? '正在恢复…' : '清除失败记录并恢复顺延'}}</button>
+          <span v-else>请联系超级答疑或管理员恢复顺延。</span>
+        </template>
+      </div>
       <div class="automation-plan-note" v-else-if="answerHubMonitor.control.plan.last_deferral_reason">本次未执行：{{answerHubMonitor.control.plan.last_deferral_reason}}；这是主动跳过，不计入失败次数，日期游标不会移动。</div>
+      <div class="automation-plan-note" v-if="answerHubMonitor.resumeNotice && !answerHubMonitor.control.plan.auto_advance_paused" role="status">{{answerHubMonitor.resumeNotice}}</div>
       <div class="automation-action-row">
         <div class="automation-action-group">
           <button class="btn start" type="button" @click="startAutomationProcess" :disabled="automationMonitorActionDisabled('start')" :title="automationMonitorActionTitle('start')">开始自动化流程</button>
           <button class="btn stop" type="button" @click="stopAutomationProcess" :disabled="automationMonitorActionDisabled('stop')" :title="automationMonitorActionTitle('stop')">停止自动化流程</button>
           <button class="btn bd" type="button" @click="runAutomationMonitorOnce" :disabled="automationMonitorActionDisabled('run')" :title="automationMonitorActionTitle('run')">立即执行一次</button>
-          <button class="btn bd" type="button" @click="loadAutomationMonitor" :disabled="answerHubMonitor.loading">刷新</button>
+          <button class="btn bd" type="button" @click="loadAutomationMonitor" :disabled="answerHubMonitor.loading || answerHubMonitor.resumeLoading">刷新</button>
           <button class="btn bd" type="button" @click="showAutomationMonitorLogs" :disabled="answerHubMonitor.logsLoading">查看运行日志</button>
           <button class="btn bd" type="button" @click="retryAutomationMonitor" :disabled="automationMonitorActionDisabled('retry')" :title="automationMonitorActionTitle('retry')">重试失败任务</button>
         </div>
@@ -2659,7 +2667,7 @@ Vue.createApp({
         updatedAt: '-'
       },
       candidateReviewNotice: {visible:false, message:'', type:'success', timer:null},
-      answerHubMonitor: {loading:false,logsLoading:false,actionLoading:false,updatedAt:'-',page:1,pageSize:20,lastError:'',errorPinned:false,controlRollback:null,service:{status:'unknown',message:''},control:{enabled:false,schedule_enabled:false,schedule_time:'02:00',running:false,plan:{knowledge_settle_from_date:'',knowledge_settle_to_date:'',second_part_query_from_date:'',second_part_query_to_date:'',timezone:'Asia/Shanghai',run_mode:'backfill',schedule_frequency:'daily',schedule_weekday:0,window_days:1,cursor_date:'',next_run_from_date:'',next_run_to_date:'',catchup_enabled:true,max_catchup_days:7,last_successful_to_date:'',last_failure_reason:'',last_deferral_reason:'',consecutive_failure_count:0,auto_advance_paused:false}},summary:{pending:0,running:0,attention:0,completed:0,cz_sync_failed:0},jobs:[],filter:{status:'',keyword:''},log:{name:'',content:''}},
+      answerHubMonitor: {loading:false,logsLoading:false,actionLoading:false,resumeLoading:false,resumeNotice:'',updatedAt:'-',page:1,pageSize:20,lastError:'',errorPinned:false,controlRollback:null,service:{status:'unknown',message:''},control:{enabled:false,schedule_enabled:false,schedule_time:'02:00',running:false,plan:{knowledge_settle_from_date:'',knowledge_settle_to_date:'',second_part_query_from_date:'',second_part_query_to_date:'',timezone:'Asia/Shanghai',run_mode:'backfill',schedule_frequency:'daily',schedule_weekday:0,window_days:1,cursor_date:'',next_run_from_date:'',next_run_to_date:'',catchup_enabled:true,max_catchup_days:7,last_successful_to_date:'',last_failure_reason:'',last_deferral_reason:'',consecutive_failure_count:0,auto_advance_paused:false}},summary:{pending:0,running:0,attention:0,completed:0,cz_sync_failed:0},jobs:[],filter:{status:'',keyword:''},log:{name:'',content:''}},
       highFrequency: {loading:false,syncing:false,sourceChecking:false,sourceCheckResult:'',exporting:false,showShadowComparison:false,error:'',updatedAt:'-',categories:[],business_theme_options:[],level1_options:[],level2_options:[],rows:[],pending_cases:[],trend:[],summary:{total_records:0,ready_record_count:0,queued_record_count:0,running_record_count:0,failed_record_count:0,review_record_count:0,atomic_issue_count:0,standard_question_count:0,high_frequency_count:0,single_occurrence_count:0,pending_split_records:0,missing_core_problem_records:0,categories:0},meta:{possibly_truncated:false,query_limit:0,source_request_count:0,grouping_mode:'same_category_persisted_standard_question',classification_pending:false,uncached_classification_count:0,uncached_split_count:0,split_pending:false,needs_manual_review:false,worker_state:'',worker_error:'',quality_status:'ready',high_frequency_only:true,last_sync_at:''},filters:{from_date:'',to_date:'',category:'',business_theme:'',level1:'',level2:'',high_frequency_only:true,period:'week'}},
       confidenceTraining: {tab:'overview',loading:false,connectionTesting:false,jobCreating:false,candidatePage:1,candidatePageSize:20,items:[],jobs:[],truthFilter:'',settings:{training_candidate_collection_enabled:true,training_snapshot_enabled:false,auto_training_job_enabled:false,production_auto_review_enabled:false},overview:{total:0,scored:0,training_candidate_count:0,model:'deepseek-flash'},modelConnection:{open:false,loading:false,saving:false,testing:false,base_url:'',model:'',timeout_seconds:60,api_key:'',clear_api_key:false,api_key_masked:'',api_key_source:'missing',source:'environment',updated_by:'',updated_at:'',environment:{base_url:'',model:'',timeout_seconds:60,api_key_configured:false},testResult:null}},
       confidenceTrainingTabs: [{key:'overview',label:'当前任务详情'},{key:'versions',label:'版本历史'},{key:'gold',label:'人工真值集'},{key:'regression',label:'回归错误集'}],
@@ -4988,17 +4996,38 @@ Vue.createApp({
     },
     runAutomationMonitorOnce: function(){this.runAutomationMonitorAction('run');},
     retryAutomationMonitor: function(){this.runAutomationMonitorAction('retry');},
-    resumeAutomationMonitor: function(){this.runAutomationMonitorAction('resume');},
+    resumeAutomationMonitor: function(){
+      if (this.automationMonitorActionDisabled('resume')) return;
+      return this.runAutomationMonitorAction('resume');
+    },
     runAutomationMonitorAction: function(action){
       var routes={run:'/automation-monitor/runs',retry:'/automation-monitor/retry-failed',resume:'/automation-monitor/resume'};
       var self=this, route=routes[action];
       if (!route) return;
-      self.answerHubMonitor.actionLoading=true;
-      fetch(API+route,{method:'POST',headers:self.authHeaders({'Content-Type':'application/json'})})
-        .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'操作失败');return d;});})
-        .then(function(){return self.loadAutomationMonitor();})
+      var m=self.answerHubMonitor;
+      m.actionLoading=true;
+      if (action==='resume') {
+        m.resumeLoading=true;
+        m.resumeNotice='';
+        m.lastError='';
+      }
+      return fetch(API+route,{method:'POST',headers:self.authHeaders({'Content-Type':'application/json'})})
+        .then(async function(r){
+          var d=await r.json().catch(function(){throw new Error('运行监管服务返回异常，请稍后重试。');});
+          if (!r.ok) throw new Error((d&&typeof d.detail==='string'&&d.detail)||'操作失败，请稍后重试。');
+          return d;
+        })
+        .then(function(d){
+          if (action!=='resume') return self.loadAutomationMonitor();
+          var plan=d&&d.control&&d.control.plan;
+          if (!d || d.status!=='resumed' || !plan || plan.auto_advance_paused!==false) {
+            throw new Error('未能确认恢复顺延，请刷新状态后重试。');
+          }
+          m.control.plan=Object.assign({},m.control.plan,plan);
+          m.resumeNotice='已恢复自动顺延。日期游标保持不变，此操作不会立即执行任务。';
+        })
         .catch(function(e){self.showAutomationMonitorError(e.message);})
-        .finally(function(){self.answerHubMonitor.actionLoading=false;});
+        .finally(function(){m.actionLoading=false;if(action==='resume')m.resumeLoading=false;});
     },
     automationMonitorServiceStatus: function(){
       return String((this.answerHubMonitor.service||{}).status||'unknown');
@@ -5010,7 +5039,7 @@ Vue.createApp({
     automationMonitorActionDisabled: function(action){
       var m=this.answerHubMonitor, control=m.control||{};
       if (m.actionLoading) return true;
-      if (!this.can('account:manage')) return true;
+      if (!this.can(action==='resume'?'automation:resume_schedule':'account:manage')) return true;
       if (['online','unknown'].indexOf(this.automationMonitorServiceStatus())===-1) return true;
       var started=!!control.enabled, running=!!control.running;
       if (action==='start') return started;
@@ -5020,17 +5049,17 @@ Vue.createApp({
       if (action==='run'||action==='retry') return !started||running||!this.automationMonitorTaskAvailable();
       // 「恢复自动顺延」只清计划里的失败/跳过记录，不碰队列和计划任务，所以不受
       // 「已开始」「运行中」「任务是否安装」约束；没有暂停时也不需要这个按钮。
-      if (action==='resume') return !control.plan||!control.plan.auto_advance_paused;
+      if (action==='resume') return m.loading||!control.plan||!control.plan.auto_advance_paused;
       return true;
     },
     automationMonitorActionTitle: function(action){
       var m=this.answerHubMonitor, control=m.control||{};
-      if (!this.can('account:manage')) return '当前账号没有「管理账号」权限，不能操作自动化流程。';
+      if (!this.can(action==='resume'?'automation:resume_schedule':'account:manage')) return action==='resume'?'当前账号无权恢复自动顺延。':'当前账号没有「管理账号」权限，不能操作自动化流程。';
       if (m.actionLoading) return '上一个操作还在处理中，请稍候。';
       if (['online','unknown'].indexOf(this.automationMonitorServiceStatus())===-1) return '运行监管服务当前不可用，请先点「重新拉取状态」。';
       // 「恢复自动顺延」不碰计划任务、也不依赖任务是否安装或是否正在运行，
       // 所以先于这两条返回，避免悬停提示讲了无关的原因。
-      if (action==='resume') return '处理完失败批次后，清除失败记录并恢复自动顺延（日期游标不动）。';
+      if (action==='resume') return m.loading?'正在刷新运行状态，请稍候。':'处理完失败批次后，清除失败记录并恢复自动顺延（不移动日期，也不立即执行）。';
       if (!this.automationMonitorTaskAvailable()) return '运行 Answer Hub 的电脑上自动化计划任务未安装或不可用。';
       if (control.running) return '已有自动化任务运行中，请等待当前任务完成。';
       if (action==='start') return control.enabled?'自动化已经开始，不需要重复开始。':'按当前日期范围开始自动化流程';
