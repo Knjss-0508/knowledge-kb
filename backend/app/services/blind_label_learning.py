@@ -106,7 +106,7 @@ def _preview_item(order, consensus, snapshots, knowledge_by_id):
         verdict = result["arbitrated_verdict"] or result["consensus_verdict"]
         verdict_source = None
         if verdict:
-            verdict_source = "arbitration" if result["arbitrated"] else "unanimous"
+            verdict_source = "arbitration" if result["arbitrated"] else result["status"]
         items.append({
             "candidate_ref": ref,
             "rank": result["rank"],
@@ -125,8 +125,13 @@ def _preview_item(order, consensus, snapshots, knowledge_by_id):
             "not_referable_count": result["not_referable_count"],
             "reason_counts": dict(reason_counts[ref]),
         })
-    if not items or not any(item["verdict"] for item in items):
+    if not items or (consensus["status"] != "majority" and not any(item["verdict"] for item in items)):
         return None
+    positive_without_candidate = (
+        consensus["status"] == "majority"
+        and consensus["verdict"] == "referable"
+        and not any(item["verdict"] == "referable" for item in items)
+    )
     evidence = {
         "work_order_id": order.id,
         "category_id": order.category_id,
@@ -136,8 +141,18 @@ def _preview_item(order, consensus, snapshots, knowledge_by_id):
         "required_annotators": consensus["required_annotators"],
         "task_reason_counts": dict(task_reasons),
         "candidates": items,
-        "suggested_track": _suggested_track(items, task_reasons, len(assignment_rows)),
+        "suggested_track": (
+            "evidence_review" if positive_without_candidate
+            else _suggested_track(items, task_reasons, len(assignment_rows))
+        ),
     }
+    if consensus["status"] == "majority":
+        # 只有新增的多数表决样本扩展证据结构，保持原有全员一致与历史仲裁的证据版本兼容。
+        evidence.update(
+            verdict=consensus["verdict"],
+            referable_count=consensus["referable_count"],
+            not_referable_count=consensus["not_referable_count"],
+        )
     return {
         **evidence,
         "evidence_version": _digest({
@@ -188,7 +203,7 @@ def _evidence_items(db, orders, *, extra_knowledge_ids=(), lock=False):
     knowledge_ids = {item for item in extra_knowledge_ids if item}
     for order in orders:
         consensus = consensus_for_work_order(db, order, order.assignments, order.arbitrations)
-        if consensus["status"] not in {"unanimous", "arbitrated"}:
+        if consensus["status"] not in {"unanimous", "majority", "arbitrated"}:
             continue
         snapshots = {
             str(item.get("candidate_ref") or ""): item

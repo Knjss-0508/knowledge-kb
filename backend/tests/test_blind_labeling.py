@@ -327,7 +327,9 @@ def test_learning_preview_is_bounded_and_distinguishes_missing_signals_from_proo
     assert page["items"][0]["suggested_track"] == "evidence_review"
     assert page["next_cursor"] == "learning-1"
     page = preview_learning_samples(db, cursor=page["next_cursor"])
-    assert [item["work_order_id"] for item in page["items"]] == ["learning-2"]
+    assert [item["work_order_id"] for item in page["items"]] == ["learning-2", "learning-4"]
+    assert page["items"][1]["consensus_status"] == "majority"
+    assert page["items"][1]["verdict"] == "not_referable"
     assert page["items"][0]["suggested_track"] == "knowledge_gap_review"
     assert page["items"][0]["review_status"] == "pending_review"
     assert page["next_cursor"] is None
@@ -340,7 +342,14 @@ def test_learning_preview_uses_arbitration_without_turning_unknowns_into_negativ
     votes = _finish_for_sample_preview(db, order, choice="c2")
     votes[0].candidate_ref = "c1"
     db.commit()
-    assert preview_learning_samples(db)["items"] == []
+    majority, = preview_learning_samples(db)["items"]
+    assert majority["consensus_status"] == "majority"
+    assert majority["verdict"] == "referable"
+    assert majority["review_status"] == "pending_review"
+    assert not majority["replay_eligible"]
+    assert [(row["verdict"], row["verdict_source"]) for row in majority["candidates"]] == [
+        (None, None), ("referable", "majority"), (None, None),
+    ]
 
     for ref, verdict in (("c1", "not_referable"), ("c2", "referable")):
         db.add(BlindLabelArbitration(
@@ -355,6 +364,24 @@ def test_learning_preview_uses_arbitration_without_turning_unknowns_into_negativ
     ]
     assert "仲裁原文" not in json.dumps(sample, ensure_ascii=False)
     assert "private-admin" not in json.dumps(sample)
+
+
+def test_learning_preview_does_not_nominate_candidate_when_votes_are_split(db):
+    from app.services.blind_label_learning import preview_learning_samples
+
+    order = _work_order_for_sample_preview(db, "learning-1")
+    votes = _finish_for_sample_preview(db, order, choice="c2")
+    votes[0].candidate_ref, votes[1].candidate_ref = "c1", "c3"
+    db.commit()
+
+    sample, = preview_learning_samples(db)["items"]
+    assert sample["consensus_status"] == "majority"
+    assert sample["verdict"] == "referable"
+    assert sample["referable_count"] == 3
+    assert sample["not_referable_count"] == 0
+    assert sample["suggested_track"] == "evidence_review"
+    assert all(item["verdict"] is None for item in sample["candidates"])
+    assert not sample["replay_eligible"]
 
 
 def test_learning_preview_http_denies_annotators_and_rejects_large_pages():
@@ -1097,14 +1124,15 @@ def test_claim_routes_reject_client_attempts_to_change_batch_size(db):
         app.dependency_overrides.pop(get_current_user, None)
 
 
-def test_five_users_are_capped_and_four_of_five_requires_arbitration_without_legacy_write(db):
+@pytest.mark.parametrize("positive_votes", [3, 4])
+def test_majority_of_five_auto_completes_without_legacy_write(db, positive_votes):
     ensure_work_orders(db, 1)
     assignments = []
     for user_id in ("u1", "u2", "u3", "u4", "u5"):
         _, rows = claim_batch(db, user_id, target_count=1)
         assignments.append(rows[0])
     for index, assignment in enumerate(assignments):
-        verdict = "referable" if index < 4 else "not_referable"
+        verdict = "referable" if index < positive_votes else "not_referable"
         submit_assignment(
             db,
             assignment,
@@ -1115,17 +1143,26 @@ def test_five_users_are_capped_and_four_of_five_requires_arbitration_without_leg
     work_order = assignments[0].work_order
     consensus = consensus_for_work_order(db, work_order)
     assert consensus["status"] == "majority"
-    assert consensus["needs_arbitration"] is True
+    assert consensus["needs_arbitration"] is False
     assert consensus["required_annotators"] == BLIND_LABEL_MAX_ASSIGNMENTS == 5
-    assert consensus["candidate_results"][0]["preliminary_verdict"] == "referable"
-    assert consensus["candidate_results"][0]["status"] == "needs_arbitration"
-    assert consensus["candidate_results"][0]["needs_arbitration"] is True
+    assert consensus["verdict"] == "referable"
+    assert (consensus["referable_count"], consensus["not_referable_count"]) == (positive_votes, 5 - positive_votes)
+    assert consensus["candidate_results"][0]["consensus_verdict"] == "referable"
+    assert consensus["candidate_results"][0]["status"] == "majority"
+    assert consensus["candidate_results"][0]["needs_arbitration"] is False
     assert db.query(RetrievalQualityEvent).filter_by(id="event-1").one().review_status == "unreviewed"
     assert db.query(BlindLabelAssignment).filter_by(work_order_id=work_order.id).count() == 5
-    consensus_overview = overview(db)
-    assert consensus_overview["summary"]["disputed"] == 1
-    assert consensus_overview["summary"]["unanimous_count"] == 0
+    assert db.query(BlindLabelArbitration).count() == 0
+    consensus_overview = overview(db, status_filter="completed", dimension="final_referable")
+    assert consensus_overview["summary"]["disputed"] == 0
+    assert consensus_overview["summary"]["majority_count"] == 1
+    assert consensus_overview["summary"]["completed"] == 1
+    assert consensus_overview["summary"]["resolution_rate"] == 1
     assert consensus_overview["summary"]["consensus_rate"] == 0
+    assert consensus_overview["work_orders"][0]["dimension"] == "referable"
+    assert overview(db, dimension="final_not_referable")["summary"]["total"] == 0
+    assert overview(db, status_filter="majority")["summary"]["total"] == 1
+    assert overview(db, status_filter="disputed")["summary"]["total"] == 0
 
     _, sixth_rows = claim_batch(db, "u6", target_count=1)
     assert sixth_rows == []
@@ -1153,7 +1190,8 @@ def test_five_of_five_same_choice_reaches_unanimous_consensus(db):
     )
 
 
-def test_single_choice_consensus_does_not_treat_omitted_candidates_as_negative_votes(db):
+@pytest.mark.parametrize("negative_vote", [False, True])
+def test_question_majority_does_not_require_a_candidate_majority(db, negative_vote):
     ensure_work_orders(db, 1)
     assignments = []
     for user_id in ("u1", "u2", "u3", "u4", "u5"):
@@ -1162,27 +1200,33 @@ def test_single_choice_consensus_does_not_treat_omitted_candidates_as_negative_v
 
     refs = _all_refs(assignments[0])
     for index, assignment in enumerate(assignments):
-        ref = refs[index % len(refs)]
-        submit_assignment(
-            db,
-            assignment,
-            [{"candidate_ref": ref, "verdict": "referable"}],
-        )
+        if index == 4 and negative_vote:
+            submit_assignment(db, assignment, _labels(assignment, "not_referable"))
+        else:
+            ref = refs[index % 2]
+            # 5 votes split 2:2:1; or 4 affirmative votes split 2:2 plus a negative.
+            if index == 4:
+                ref = refs[2]
+            submit_assignment(db, assignment, [{"candidate_ref": ref, "verdict": "referable"}])
     db.commit()
 
     consensus = consensus_for_work_order(db, assignments[0].work_order)
 
     assert consensus["status"] == "majority"
-    assert consensus["needs_arbitration"] is True
+    assert consensus["verdict"] == "referable"
+    assert consensus["referable_count"] == 5 - int(negative_vote)
+    assert consensus["not_referable_count"] == int(negative_vote)
+    assert consensus["needs_arbitration"] is False
+    assert [result["referable_count"] for result in consensus["candidate_results"]] == [2, 2, 1 - int(negative_vote)]
     assert all(
-        result["referable_count"] in {1, 2}
-        and result["not_referable_count"] == 0
-        and result["status"] == "needs_arbitration"
+        result["not_referable_count"] == int(negative_vote)
+        and result["consensus_verdict"] is None
+        and not result["needs_arbitration"]
         for result in consensus["candidate_results"]
     )
 
 
-def test_four_of_five_all_not_referable_requires_arbitration(db):
+def test_four_of_five_all_not_referable_auto_completes(db):
     ensure_work_orders(db, 1)
     assignments = []
     for user_id in ("u1", "u2", "u3", "u4", "u5"):
@@ -1202,13 +1246,59 @@ def test_four_of_five_all_not_referable_requires_arbitration(db):
     consensus = consensus_for_work_order(db, assignments[0].work_order)
 
     assert consensus["status"] == "majority"
-    assert consensus["needs_arbitration"] is True
-    assert consensus["candidate_results"][0]["status"] == "needs_arbitration"
-    assert consensus["candidate_results"][0]["consensus_verdict"] is None
+    assert consensus["verdict"] == "not_referable"
+    assert consensus["needs_arbitration"] is False
+    assert [r["not_referable_count"] for r in consensus["candidate_results"]] == [4, 4, 4]
     assert all(
-        result["status"] == "not_selected"
-        for result in consensus["candidate_results"][1:]
+        result["status"] == "majority" and result["consensus_verdict"] == "not_referable"
+        for result in consensus["candidate_results"]
     )
+    assert overview(db, dimension="final_not_referable")["summary"]["total"] == 1
+
+
+def test_votes_do_not_mix_different_questions_of_the_same_upstream_order(db):
+    ensure_work_orders(db, 1)
+    first = db.query(BlindLabelWorkOrder).one()
+    second = BlindLabelWorkOrder(
+        id="wo-other-question",
+        conversation_id="conversation-other-question",
+        question_form_id=first.question_form_id,
+        query_text="另一个问题",
+        candidate_snapshot=first.candidate_snapshot,
+        assignment_limit=5,
+    )
+    db.add(second)
+    db.flush()
+    for index in range(5):
+        user_id = f"u{index + 1}"
+        batch, rows = claim_batch(db, user_id, target_count=2)
+        assert {row.work_order_id for row in rows} == {first.id, second.id}
+        for row in rows:
+            referable = (row.work_order_id == first.id) == (index < 4)
+            submit_assignment(db, row, _labels(row, "referable" if referable else "not_referable"))
+    db.commit()
+
+    assert consensus_for_work_order(db, first)["verdict"] == "referable"
+    assert consensus_for_work_order(db, second)["verdict"] == "not_referable"
+
+
+def test_even_legacy_quorum_tie_completes_without_inventing_a_verdict(db):
+    ensure_work_orders(db, 1)
+    assignments = [claim_batch(db, f"u{i}", target_count=1)[1][0] for i in range(1, 5)]
+    work_order = assignments[0].work_order
+    work_order.assignment_limit = 4
+    for index, assignment in enumerate(assignments):
+        submit_assignment(db, assignment, _labels(assignment, "referable" if index < 2 else "not_referable"))
+    db.commit()
+
+    status, consensus = work_order_status(db, work_order)
+    assert status == "completed"
+    assert consensus["status"] == "no_majority"
+    assert consensus["verdict"] is None
+    assert not consensus["needs_arbitration"]
+    assert consensus["candidate_results"][0]["consensus_verdict"] is None
+    summary = overview(db, status_filter="no_majority")["summary"]
+    assert (summary["no_majority_count"], summary["completed"], summary["resolved_count"]) == (1, 1, 0)
 
 
 def test_fewer_than_five_completed_annotations_remain_pending(db):
@@ -1226,6 +1316,7 @@ def test_fewer_than_five_completed_annotations_remain_pending(db):
 
     assert consensus["status"] == "pending"
     assert consensus["completed_annotators"] == 3
+    assert consensus["verdict"] is None
     assert consensus["needs_arbitration"] is False
 
 
@@ -1306,7 +1397,7 @@ def test_public_detail_does_not_leak_ids_scores_or_other_annotations(db):
     assert "selected" not in detail["candidates"][0]
 
 
-def test_arbitration_resolves_disputed_consensus_and_overview_aliases(db):
+def test_historical_arbitration_keeps_its_verdict_and_is_read_only(db):
     ensure_work_orders(db, 1)
     assignments = []
     for user_id in ("u1", "u2", "u3", "u4", "u5"):
@@ -1324,7 +1415,8 @@ def test_arbitration_resolves_disputed_consensus_and_overview_aliases(db):
     work_order = assignments[0].work_order
     before_arbitration = consensus_for_work_order(db, work_order)
     assert before_arbitration["status"] == "majority"
-    assert before_arbitration["needs_arbitration"] is True
+    assert before_arbitration["verdict"] == "referable"
+    assert not before_arbitration["needs_arbitration"]
     for index, candidate in enumerate(work_order.candidate_snapshot, start=1):
         db.add(
             BlindLabelArbitration(
@@ -1337,7 +1429,13 @@ def test_arbitration_resolves_disputed_consensus_and_overview_aliases(db):
             )
         )
     db.commit()
-    assert consensus_for_work_order(db, work_order)["status"] == "arbitrated"
+    history = consensus_for_work_order(db, work_order)
+    assert history["status"] == "arbitrated"
+    assert history["verdict"] == "not_referable"
+    with pytest.raises(HTTPException) as disabled:
+        arbitrate_work_order(work_order.id, current_user=User(username="admin", role="super_admin"))
+    assert disabled.value.status_code == 410
+    assert {row.verdict for row in db.query(BlindLabelArbitration)} == {"not_referable"}
     assert all(
         result["status"] == "arbitrated"
         for result in consensus_for_work_order(db, work_order)["candidate_results"]
@@ -1346,7 +1444,26 @@ def test_arbitration_resolves_disputed_consensus_and_overview_aliases(db):
     assert result["summary"]["total"] == 0
 
 
-def test_legacy_multi_choice_keeps_unanimous_candidate_out_of_arbitration(db):
+def test_legacy_arbitration_http_endpoint_cannot_create_a_new_decision():
+    from app.main import app
+    from app.routes.auth import get_current_user
+
+    admin = User(id="admin", username="admin", role="super_admin", is_active=True)
+    app.dependency_overrides[get_current_user] = lambda: admin
+    client = TestClient(app)
+    try:
+        res = client.post(
+            "/api/v1/blind-labeling/work-orders/wo-example/arbitrate",
+            json={"decisions": [{"candidateRef": "ref1", "verdict": "referable"}]},
+        )
+        assert res.status_code == 410
+        assert "自动多数表决" in res.json()["detail"]
+    finally:
+        client.close()
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_legacy_multi_choice_counts_one_question_vote_per_user(db):
     ensure_work_orders(db, 1)
     assignments = []
     for user_id in ("u1", "u2", "u3"):
@@ -1378,11 +1495,14 @@ def test_legacy_multi_choice_keeps_unanimous_candidate_out_of_arbitration(db):
     results = {item["candidate_ref"]: item for item in consensus["candidate_results"]}
 
     assert consensus["status"] == "majority"
-    assert consensus["needs_arbitration"] is True
+    assert not consensus["needs_arbitration"]
+    assert consensus["verdict"] == "referable"
+    assert consensus["referable_count"] == 3
     assert results[first_ref]["status"] == "unanimous"
     assert results[first_ref]["needs_arbitration"] is False
-    assert results[second_ref]["status"] == "needs_arbitration"
-    assert results[second_ref]["needs_arbitration"] is True
+    assert results[second_ref]["status"] == "majority"
+    assert results[second_ref]["consensus_verdict"] == "referable"
+    assert not results[second_ref]["needs_arbitration"]
 
 
 def test_legacy_three_annotator_arbitration_remains_terminal_after_five_vote_upgrade(db):
