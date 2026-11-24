@@ -17,6 +17,7 @@ from app.models.blind_labeling import (
     BlindLabelArbitration,
     BlindLabelAssignment,
     BlindLabelBatch,
+    BlindLabelLearningReview,
     BlindLabelWorkOrder,
 )
 from app.models.integration import RetrievalQualityEvent
@@ -115,6 +116,7 @@ def db():
         BlindLabelAssignment.__table__,
         BlindLabelAnnotation.__table__,
         BlindLabelArbitration.__table__,
+        BlindLabelLearningReview.__table__,
     ]
     for table in tables:
         table.create(engine)
@@ -224,6 +226,292 @@ def db():
 
 def _all_refs(assignment):
     return [item["candidate_ref"] for item in assignment.work_order.candidate_snapshot]
+
+
+def _finish_for_sample_preview(db, work_order, *, choice=None, task_reasons=()):
+    annotations = []
+    for index, user_id in enumerate(("u1", "u2", "u3"), start=0):
+        assignment = BlindLabelAssignment(
+            id=f"{work_order.id}-assignment-{index}",
+            batch_id=f"{work_order.id}-batch-{index}",
+            work_order_id=work_order.id,
+            user_id=user_id,
+            status="completed",
+            task_reason_code=task_reasons[index] if index < len(task_reasons) else "",
+        )
+        db.add(BlindLabelBatch(id=assignment.batch_id, user_id=user_id, status="completed"))
+        db.add(assignment)
+        for candidate in work_order.candidate_snapshot:
+            if choice is not None and candidate["candidate_ref"] != choice:
+                continue
+            annotation = BlindLabelAnnotation(
+                id=f"{assignment.id}-{candidate['candidate_ref']}",
+                assignment_id=assignment.id,
+                work_order_id=work_order.id,
+                user_id=user_id,
+                candidate_ref=candidate["candidate_ref"],
+                verdict="referable" if choice else "not_referable",
+                reason_code="" if choice else "topic_irrelevant",
+                reason="私人标注说明",
+            )
+            db.add(annotation)
+            annotations.append(annotation)
+    return annotations
+
+
+def _work_order_for_sample_preview(db, identifier, *, pool_state=POOL_STATE_ACTIVE):
+    candidates = []
+    for index, knowledge_id in enumerate(("biz-1", "biz-2", "biz-3"), start=1):
+        knowledge = db.get(Knowledge, knowledge_id)
+        candidates.append({
+            "candidate_ref": f"c{index}",
+            "knowledge_id": knowledge.id,
+            "rank": index,
+            "title": knowledge.title,
+            "content": knowledge.content,
+        })
+    order = BlindLabelWorkOrder(
+        id=identifier,
+        conversation_id=f"private-conversation-{identifier}",
+        query_text="私人问题原文",
+        category_id="cat-phone",
+        assignment_limit=3,
+        candidate_snapshot=candidates,
+        pool_state=pool_state,
+    )
+    db.add(order)
+    return order
+
+
+def test_learning_preview_keeps_unselected_candidates_unknown_and_hides_raw_data(db):
+    from app.services.blind_label_learning import preview_learning_samples
+
+    order = _work_order_for_sample_preview(db, "learning-1")
+    _finish_for_sample_preview(db, order, choice="c2")
+    db.commit()
+    result = preview_learning_samples(db, category_id="cat-phone")
+    sample, = result["items"]
+    assert sample["suggested_track"] == "ranking_review"
+    assert sample["review_status"] == "pending_review"
+    assert [item["verdict"] for item in sample["candidates"]] == [None, "referable", None]
+    assert sample["candidates"][1]["knowledge_state"] == "snapshot_matches"
+    assert "私人" not in json.dumps(result, ensure_ascii=False)
+    assert "private-conversation" not in json.dumps(result)
+    assert "reason" not in sample["candidates"][0]
+
+    db.get(Knowledge, "biz-2").content = {"type": "text", "value": "新版本"}
+    db.commit()
+    changed, = preview_learning_samples(db)["items"]
+    assert changed["suggested_track"] == "knowledge_review"
+    assert changed["candidates"][1]["knowledge_state"] == "snapshot_differs"
+    assert changed["evidence_version"] != sample["evidence_version"]
+
+
+def test_learning_preview_is_bounded_and_distinguishes_missing_signals_from_proof(db):
+    from app.services.blind_label_learning import preview_learning_samples
+
+    first = _work_order_for_sample_preview(db, "learning-1")
+    second = _work_order_for_sample_preview(db, "learning-2")
+    third = _work_order_for_sample_preview(db, "learning-3", pool_state=POOL_STATE_RETIRED)
+    fourth = _work_order_for_sample_preview(db, "learning-4")
+    _finish_for_sample_preview(db, first)
+    _finish_for_sample_preview(db, second, task_reasons=["knowledge_missing"] * 3)
+    _finish_for_sample_preview(db, third, choice="c2")
+    fourth_votes = _finish_for_sample_preview(db, fourth, task_reasons=["knowledge_exists_not_recalled"] * 3)
+    # One annotator disagrees with the other two on the fourth order.
+    fourth_votes[0].verdict = "referable"
+    db.commit()
+
+    page = preview_learning_samples(db, scan_limit=1)
+    assert page["scanned"] == 1
+    assert page["items"][0]["suggested_track"] == "evidence_review"
+    assert page["next_cursor"] == "learning-1"
+    page = preview_learning_samples(db, cursor=page["next_cursor"])
+    assert [item["work_order_id"] for item in page["items"]] == ["learning-2", "learning-4"]
+    assert page["items"][1]["consensus_status"] == "majority"
+    assert page["items"][1]["verdict"] == "not_referable"
+    assert page["items"][0]["suggested_track"] == "knowledge_gap_review"
+    assert page["items"][0]["review_status"] == "pending_review"
+    assert page["next_cursor"] is None
+
+
+def test_learning_preview_uses_arbitration_without_turning_unknowns_into_negatives(db):
+    from app.services.blind_label_learning import preview_learning_samples
+
+    order = _work_order_for_sample_preview(db, "learning-1")
+    votes = _finish_for_sample_preview(db, order, choice="c2")
+    votes[0].candidate_ref = "c1"
+    db.commit()
+    majority, = preview_learning_samples(db)["items"]
+    assert majority["consensus_status"] == "majority"
+    assert majority["verdict"] == "referable"
+    assert majority["review_status"] == "pending_review"
+    assert not majority["replay_eligible"]
+    assert [(row["verdict"], row["verdict_source"]) for row in majority["candidates"]] == [
+        (None, None), ("referable", "majority"), (None, None),
+    ]
+
+    for ref, verdict in (("c1", "not_referable"), ("c2", "referable")):
+        db.add(BlindLabelArbitration(
+            id=f"arb-{ref}", work_order_id=order.id, candidate_ref=ref,
+            verdict=verdict, reason="仲裁原文", arbitrated_by="private-admin",
+        ))
+    db.commit()
+    sample, = preview_learning_samples(db)["items"]
+    assert sample["consensus_status"] == "arbitrated"
+    assert [(row["verdict"], row["verdict_source"]) for row in sample["candidates"]] == [
+        ("not_referable", "arbitration"), ("referable", "arbitration"), (None, None),
+    ]
+    assert "仲裁原文" not in json.dumps(sample, ensure_ascii=False)
+    assert "private-admin" not in json.dumps(sample)
+
+
+def test_learning_preview_does_not_nominate_candidate_when_votes_are_split(db):
+    from app.services.blind_label_learning import preview_learning_samples
+
+    order = _work_order_for_sample_preview(db, "learning-1")
+    votes = _finish_for_sample_preview(db, order, choice="c2")
+    votes[0].candidate_ref, votes[1].candidate_ref = "c1", "c3"
+    db.commit()
+
+    sample, = preview_learning_samples(db)["items"]
+    assert sample["consensus_status"] == "majority"
+    assert sample["verdict"] == "referable"
+    assert sample["referable_count"] == 3
+    assert sample["not_referable_count"] == 0
+    assert sample["suggested_track"] == "evidence_review"
+    assert all(item["verdict"] is None for item in sample["candidates"])
+    assert not sample["replay_eligible"]
+
+
+def test_learning_preview_http_denies_annotators_and_rejects_large_pages():
+    from fastapi import FastAPI
+
+    from app.routes.auth import get_current_user
+    from app.routes.blind_labeling import router
+
+    app = FastAPI()
+    app.include_router(router)
+    path = "/blind-labeling/learning-samples/preview"
+    app.dependency_overrides[get_current_user] = lambda: User(role="junior_support")
+    with TestClient(app) as client:
+        assert client.get(path).status_code == 403
+        assert client.put("/blind-labeling/learning-samples/wo-1/review", json={}).status_code == 403
+        app.dependency_overrides[get_current_user] = lambda: User(role="super_admin")
+        assert client.get(path, params={"scan_limit": 101}).status_code == 422
+
+
+def test_learning_review_saves_versioned_reference_and_invalidates_when_it_changes(db):
+    from app.routes.blind_labeling import get_learning_sample_review, put_learning_sample_review
+    from app.schemas.blind_labeling import BlindLabelLearningReviewInput
+    from app.services.blind_label_learning import preview_learning_samples
+
+    order = _work_order_for_sample_preview(db, "learning-review")
+    _finish_for_sample_preview(db, order, choice="c2")
+    external = Knowledge(
+        id="correct-outside-pool", title="漏召回知识", category_id="cat-phone",
+        content={"value": "原版"}, status=KnowledgeStatus.PUBLISHED, created_by="test",
+        knowledge_origin="business_accumulation", business_type="aggregated",
+    )
+    db.add(external)
+    db.commit()
+    actor = User(id="u1", role="super_admin")
+    preview, = preview_learning_samples(db)["items"]
+    body = BlindLabelLearningReviewInput(
+        issue_type="retrieval_missed", evidence_version=preview["evidence_version"],
+        previous_review_id=None, knowledge_id=external.id,
+    )
+    saved = put_learning_sample_review(order.id, body, db, actor)
+    assert saved["review_status"] == "confirmed"
+    assert saved["replay_eligible"] is True
+    assert get_learning_sample_review(order.id, db, actor)["review"]["knowledge_id"] == external.id
+    with pytest.raises(HTTPException) as exc:
+        put_learning_sample_review(order.id, body, db, actor)
+    assert exc.value.status_code == 409
+
+    external.content = {"value": "已修订"}
+    db.commit()
+    stale, = preview_learning_samples(db)["items"]
+    assert stale["review_status"] == "stale"
+    assert stale["replay_eligible"] is False
+    body = body.model_copy(update={"previous_review_id": saved["review"]["id"], "issue_type": "exclude", "knowledge_id": None})
+    assert put_learning_sample_review(order.id, body, db, actor)["review_status"] == "excluded"
+    assert db.query(BlindLabelLearningReview).count() == 2
+
+
+def test_learning_review_rejects_changed_evidence_and_retired_orders(db):
+    from app.routes.blind_labeling import put_learning_sample_review
+    from app.schemas.blind_labeling import BlindLabelLearningReviewInput
+    from app.services.blind_label_learning import preview_learning_samples
+
+    order = _work_order_for_sample_preview(db, "learning-review")
+    _finish_for_sample_preview(db, order, choice="c2")
+    db.commit()
+    preview, = preview_learning_samples(db)["items"]
+    actor = User(id="u1", role="super_admin")
+    body = BlindLabelLearningReviewInput(
+        issue_type="ranking", evidence_version=preview["evidence_version"],
+        previous_review_id=None, knowledge_id="biz-2",
+    )
+    db.get(Knowledge, "biz-2").content = {"value": "已修订"}
+    db.commit()
+    with pytest.raises(HTTPException) as exc:
+        put_learning_sample_review(order.id, body, db, actor)
+    assert exc.value.status_code == 409
+
+    order.pool_state = POOL_STATE_RETIRED
+    db.commit()
+    with pytest.raises(HTTPException) as exc:
+        put_learning_sample_review(order.id, body, db, actor)
+    assert exc.value.status_code == 409
+    assert db.query(BlindLabelLearningReview).count() == 0
+
+
+def test_learning_review_answer_points_stay_out_of_preview_and_require_source_query(db):
+    from app.routes.blind_labeling import put_learning_sample_review
+    from app.schemas.blind_labeling import BlindLabelLearningReviewInput
+    from app.services.blind_label_answer_replay import AnswerReplayManifest, build_review_references, run_answer_replay
+    from app.services.blind_label_learning import preview_learning_samples
+
+    order = _work_order_for_sample_preview(db, "learning-answer")
+    _finish_for_sample_preview(db, order, choice="c2")
+    db.commit()
+    preview, = preview_learning_samples(db)["items"]
+    fields = dict(
+        issue_type="answer_issue", evidence_version=preview["evidence_version"],
+        previous_review_id=None, knowledge_id="biz-2",
+    )
+    with pytest.raises(ValidationError):
+        BlindLabelLearningReviewInput(**fields)
+    actor = User(id="u1", role="super_admin")
+    body = BlindLabelLearningReviewInput(**fields, expected_answer="先说明适用条件")
+    saved = put_learning_sample_review(order.id, body, db, actor)
+    assert saved["review"]["expected_answer"] == "先说明适用条件"
+    assert "expected_answer" not in preview_learning_samples(db)["items"][0]["review"]
+    manifest = AnswerReplayManifest.model_validate({
+        "baseline_version": "v1", "candidate_version": "v2",
+        "cases": [{
+            "work_order_id": str(order.id), "review_id": saved["review"]["id"],
+            "baseline": {"generation": "answered", "answer": "直接处理。", "verdict": "incorrect"},
+            "candidate": {"generation": "answered", "answer": "先说明适用条件，再处理。", "verdict": "correct"},
+        }],
+    })
+    expected = build_review_references(db, manifest)["cases"][0]
+    assert expected["expected_answer"] == "先说明适用条件"
+    assert run_answer_replay(db, manifest)["summary"]["paired"]["improved"] == 1
+
+    order.query_text = ""
+    db.commit()
+    stale, = preview_learning_samples(db)["items"]
+    assert stale["review_status"] == "stale"
+    assert stale["replay_eligible"] is False
+    replay = run_answer_replay(db, manifest)
+    assert replay["cases"][0]["status"] == "review_changed_or_ineligible"
+    assert replay["summary"]["paired"]["evaluated"] == 0
+    body = body.model_copy(update={"evidence_version": stale["evidence_version"], "previous_review_id": saved["review"]["id"]})
+    with pytest.raises(HTTPException) as exc:
+        put_learning_sample_review(order.id, body, db, actor)
+    assert exc.value.status_code == 422
 
 
 def _seed_extra_business_events(db, count=2):

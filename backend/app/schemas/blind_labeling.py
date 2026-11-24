@@ -3,7 +3,32 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+REPLAY_ISSUE_TYPES = frozenset({"retrieval_missed", "ranking", "answer_issue"})
+
+
+class BlindLabelLearningReviewInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    evidence_version: str = Field(pattern=r"^[a-f0-9]{64}$")
+    previous_review_id: int | None = Field(ge=1)
+    issue_type: Literal["retrieval_missed", "ranking", "answer_issue", "knowledge_issue", "knowledge_gap", "exclude"]
+    knowledge_id: str | None = Field(None, min_length=1, max_length=64)
+    expected_answer: str = Field("", max_length=1000)
+
+    @model_validator(mode="after")
+    def require_review_evidence(self):
+        if self.issue_type in REPLAY_ISSUE_TYPES and not self.knowledge_id:
+            raise ValueError("回放样本必须关联正确且已发布的知识")
+        if self.issue_type not in REPLAY_ISSUE_TYPES and self.knowledge_id:
+            raise ValueError("仅可回放类型需要指定正确知识")
+        if self.issue_type == "answer_issue" and not self.expected_answer:
+            raise ValueError("答复问题必须填写脱敏后的预期答复要点")
+        if self.issue_type != "answer_issue" and self.expected_answer:
+            raise ValueError("只有答复问题可填写预期答复要点")
+        return self
 
 
 class BlindLabelAnnotationInput(BaseModel):

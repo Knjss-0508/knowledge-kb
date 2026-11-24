@@ -2114,6 +2114,65 @@ def search_standard_provider_knowledge(
             model_configuration=model_configuration,
         )
     runtime_config = get_active_runtime_values(db)
+    try:
+        ranked_by_origin, returned_by_origin, score_threshold = rank_standard_semantic_request(
+            db, body, runtime_config=runtime_config,
+        )
+    except EmbeddingServiceUnavailable as exc:
+        _record_standard_search_events(
+            db,
+            body=body,
+            candidates_by_origin={},
+            score_threshold=_retrieval_score_threshold(runtime_config),
+            request_status="error",
+            failure_reason="technical_failure",
+        )
+        logger.warning(
+            "Embedding unavailable during standard provider search: "
+            "conversation_id=%s request_id=%s error=%s",
+            body.conversation_id,
+            body.request_id,
+            exc,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "conversationId": body.conversation_id,
+                "requestId": body.request_id,
+                "code": "EMBEDDING_SERVICE_UNAVAILABLE",
+                "message": "Embedding 服务不可用，无法完成语义检索",
+            },
+        )
+
+    candidates = [
+        _to_standard_search_candidate(item, score)
+        for origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS
+        for item, score in returned_by_origin[origin]
+    ]
+    _record_standard_search_events(
+        db,
+        body=body,
+        candidates_by_origin=ranked_by_origin,
+        score_threshold=score_threshold,
+        request_status="success" if candidates else "no_match",
+    )
+    return IntegrationStandardSearchResponse(
+        conversation_id=body.conversation_id,
+        request_id=body.request_id,
+        provider="knowledge-kb",
+        status="success" if candidates else "no_match",
+        retrieval_mode="semantic_pgvector",
+        knowledge_version=settings.VERSION,
+        score_threshold=score_threshold,
+        candidates=candidates,
+        model_configuration=_to_model_configuration_result(None),
+    )
+
+
+def rank_standard_semantic_request(
+    db: Session, body: IntegrationStandardSearchRequest, *, runtime_config: dict[str, Any],
+) -> tuple[dict[str, list[tuple[Knowledge, float]]], dict[str, list[tuple[Knowledge, float]]], float]:
+    """Shared ranking and filtering only; never records retrieval events."""
     top_k_by_origin = _standard_search_top_k_by_origin(
         runtime_config,
         request_limit=body.limit,
@@ -2160,87 +2219,28 @@ def search_standard_provider_knowledge(
             body.order_info.model,
         ),
     )
-    # 机型配置已迁移到同一路径的独立 requestMode 请求。保留固定的
-    # no_match 字段兼容旧插件响应结构，但普通语义检索不再执行精确查询。
-    model_configuration = _to_model_configuration_result(None)
-    try:
-        ranked_by_origin = {
-            knowledge_origin: search_embeddings(
-                db,
-                query=body.normalized_question,
-                business_type=inferred_business_type,
-                knowledge_origin=knowledge_origin,
-                applicable_category_keys=applicability_scope["categories"],
-                applicable_brand_keys=applicability_scope["brands"],
-                applicable_model_keys=applicability_scope["models"],
-                top_k=top_k_by_origin[knowledge_origin],
-            )
-            for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS
-        }
-    except EmbeddingServiceUnavailable as exc:
-        _record_standard_search_events(
+    ranked_by_origin = {
+        origin: search_embeddings(
             db,
-            body=body,
-            candidates_by_origin={},
-            score_threshold=score_threshold,
-            request_status="error",
-            failure_reason="technical_failure",
+            query=body.normalized_question,
+            business_type=inferred_business_type,
+            knowledge_origin=origin,
+            applicable_category_keys=applicability_scope["categories"],
+            applicable_brand_keys=applicability_scope["brands"],
+            applicable_model_keys=applicability_scope["models"],
+            top_k=top_k_by_origin[origin],
         )
-        logger.warning(
-            "Embedding unavailable during standard provider search: "
-            "conversation_id=%s request_id=%s error=%s",
-            body.conversation_id,
-            body.request_id,
-            exc,
-        )
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={
-                "conversationId": body.conversation_id,
-                "requestId": body.request_id,
-                "code": "EMBEDDING_SERVICE_UNAVAILABLE",
-                "message": "Embedding 服务不可用，无法完成语义检索",
-            },
-        )
-
-    published_ranked: list[tuple[Knowledge, float]] = []
-    for knowledge_origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS:
-        published_ranked.extend(
-            [
-                (item, score)
-                for item, score in ranked_by_origin[knowledge_origin]
-                if (
-                    item.status == KnowledgeStatus.PUBLISHED
-                    and float(score) >= score_threshold
-                )
-            ][:top_k_by_origin[knowledge_origin]]
-        )
-    candidates = [
-        _to_standard_search_candidate(item, score)
-        for item, score in published_ranked
-    ]
-    _record_standard_search_events(
-        db,
-        body=body,
-        candidates_by_origin=ranked_by_origin,
-        score_threshold=score_threshold,
-        request_status="success" if candidates else "no_match",
-    )
-    return IntegrationStandardSearchResponse(
-        conversation_id=body.conversation_id,
-        request_id=body.request_id,
-        provider="knowledge-kb",
-        status=(
-            "success"
-            if candidates
-            else "no_match"
-        ),
-        retrieval_mode="semantic_pgvector",
-        knowledge_version=settings.VERSION,
-        score_threshold=score_threshold,
-        candidates=candidates,
-        model_configuration=model_configuration,
-    )
+        for origin in STANDARD_SEARCH_KNOWLEDGE_ORIGINS
+    }
+    returned_by_origin = {
+        origin: [
+            (item, score)
+            for item, score in ranked
+            if item.status == KnowledgeStatus.PUBLISHED and float(score) >= score_threshold
+        ][:top_k_by_origin[origin]]
+        for origin, ranked in ranked_by_origin.items()
+    }
+    return ranked_by_origin, returned_by_origin, score_threshold
 
 
 @router.post(
