@@ -327,7 +327,9 @@ def test_learning_preview_is_bounded_and_distinguishes_missing_signals_from_proo
     assert page["items"][0]["suggested_track"] == "evidence_review"
     assert page["next_cursor"] == "learning-1"
     page = preview_learning_samples(db, cursor=page["next_cursor"])
-    assert [item["work_order_id"] for item in page["items"]] == ["learning-2"]
+    assert [item["work_order_id"] for item in page["items"]] == ["learning-2", "learning-4"]
+    assert page["items"][1]["consensus_status"] == "majority"
+    assert page["items"][1]["verdict"] == "not_referable"
     assert page["items"][0]["suggested_track"] == "knowledge_gap_review"
     assert page["items"][0]["review_status"] == "pending_review"
     assert page["next_cursor"] is None
@@ -340,7 +342,14 @@ def test_learning_preview_uses_arbitration_without_turning_unknowns_into_negativ
     votes = _finish_for_sample_preview(db, order, choice="c2")
     votes[0].candidate_ref = "c1"
     db.commit()
-    assert preview_learning_samples(db)["items"] == []
+    majority, = preview_learning_samples(db)["items"]
+    assert majority["consensus_status"] == "majority"
+    assert majority["verdict"] == "referable"
+    assert majority["review_status"] == "pending_review"
+    assert not majority["replay_eligible"]
+    assert [(row["verdict"], row["verdict_source"]) for row in majority["candidates"]] == [
+        (None, None), ("referable", "majority"), (None, None),
+    ]
 
     for ref, verdict in (("c1", "not_referable"), ("c2", "referable")):
         db.add(BlindLabelArbitration(
@@ -355,6 +364,24 @@ def test_learning_preview_uses_arbitration_without_turning_unknowns_into_negativ
     ]
     assert "仲裁原文" not in json.dumps(sample, ensure_ascii=False)
     assert "private-admin" not in json.dumps(sample)
+
+
+def test_learning_preview_does_not_nominate_candidate_when_votes_are_split(db):
+    from app.services.blind_label_learning import preview_learning_samples
+
+    order = _work_order_for_sample_preview(db, "learning-1")
+    votes = _finish_for_sample_preview(db, order, choice="c2")
+    votes[0].candidate_ref, votes[1].candidate_ref = "c1", "c3"
+    db.commit()
+
+    sample, = preview_learning_samples(db)["items"]
+    assert sample["consensus_status"] == "majority"
+    assert sample["verdict"] == "referable"
+    assert sample["referable_count"] == 3
+    assert sample["not_referable_count"] == 0
+    assert sample["suggested_track"] == "evidence_review"
+    assert all(item["verdict"] is None for item in sample["candidates"])
+    assert not sample["replay_eligible"]
 
 
 def test_learning_preview_http_denies_annotators_and_rejects_large_pages():

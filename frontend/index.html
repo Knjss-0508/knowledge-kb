@@ -1659,7 +1659,7 @@
     </template>
       <section v-if="isBlindLabelAdmin() && blindLabeling.tab==='learning'" id="blind-label-learning-panel" role="tabpanel" aria-labelledby="blind-label-learning-tab" :aria-busy="blindLabeling.learning.loading">
         <div class="blind-label-section-head">
-          <div><h3>回流样本复核</h3><p>仅处理已达成共识或已仲裁的在池工单。复核记录可用于后续离线回放；不调用 AI、不启动训练，也不修改知识库。</p></div>
+          <div><h3>回流样本复核</h3><p>仅处理已出标注结论的在池工单（含自动多数表决）。复核记录可用于后续离线回放；不调用 AI、不启动训练，也不修改知识库。</p></div>
         </div>
         <div class="blind-label-ranking-toolbar">
           <label class="blind-label-month-field"><span>原候选品类</span><select class="inp" v-model="blindLabeling.learning.categoryId" @change="loadBlindLabelLearning()" :disabled="blindLabeling.learning.loading"><option value="">全部</option><option v-for="cat in cats" :key="cat.id" :value="cat.id">{{cat.name}}</option></select></label>
@@ -1715,7 +1715,7 @@
         <div class="tw">
           <table class="blind-label-ranking-table"><thead><tr><th>盲标记录</th><th>建议去向</th><th>候选结论</th><th>复核状态</th><th>操作</th></tr></thead><tbody>
             <tr v-for="sample in blindLabeling.learning.items" :key="sample.work_order_id">
-              <td>{{sample.consensus_status==='arbitrated'?'已仲裁':'全员一致'}}<div class="blind-label-subline">{{sample.completed_annotators}} / {{sample.required_annotators}} 人提交</div></td>
+              <td>{{blindLabelConsensusLabel(sample)}}<span v-if="sample.verdict"> · {{blindLabelChoiceLabel(sample.verdict)}}</span><div class="blind-label-subline">{{sample.completed_annotators}} / {{sample.required_annotators}} 人提交</div><div v-if="sample.consensus_status==='majority'" class="blind-label-subline">{{blindLabelVoteText(sample)}}</div></td>
               <td>{{blindLabelLearningTrackLabel(sample.suggested_track)}}</td>
               <td><div v-for="candidate in sample.candidates" :key="candidate.candidate_ref">候选 {{candidate.rank}} · {{candidate.verdict==='referable'?'可参考':candidate.verdict==='not_referable'?'不可参考':'未判定'}} · {{blindLabelLearningKnowledgeLabel(candidate.knowledge_state)}}</div></td>
               <td>{{blindLabelLearningReviewLabel(sample)}}</td>
