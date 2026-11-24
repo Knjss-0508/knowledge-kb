@@ -55,7 +55,7 @@ BLIND_LABEL_AUTO_RELEASE_REASON = "系统超时自动回收"
 # 退池原因：访问日志/上游证明这个号码只当过会话号。写入
 # ``BlindLabelWorkOrder.retire_reason``，也用作被释放派发的 ``release_reason``。
 BLIND_LABEL_SESSION_NUMBER_REASON = "session_number"
-# A verdict remains the only value used by consensus and arbitration.  These
+# A verdict remains the only value used by vote aggregation.  These
 # codes are structured diagnostic evidence for later retrieval/knowledge work.
 BLIND_LABEL_REFERABLE_REASON_CODES = {
     "needs_conditions",
@@ -1226,6 +1226,10 @@ def _completed_assignments(
     return completed
 
 
+def _strict_majority(counts: Counter[str], total: int) -> str | None:
+    return next((verdict for verdict, count in counts.items() if count * 2 > total), None)
+
+
 def consensus_for_work_order(
     db: Session,
     work_order: BlindLabelWorkOrder,
@@ -1237,165 +1241,101 @@ def consensus_for_work_order(
     assignment_limit = _work_order_assignment_limit(work_order)
     completed_count = len(assignments)
     fully_completed = completed_count >= assignment_limit
-    candidate_results: list[dict[str, Any]] = []
-    # 已由调用方预加载时不再逐工单查一次仲裁记录（总览列表的 N+1 就出在这里）。
+    # 从派发快照按问题计票，不合并同一上游工单中的不同问题。
+    candidate_votes: dict[str, Counter[str]] = {
+        str(item.get("candidate_ref") or ""): Counter() for item in candidates
+    }
+    selected_choice_counts: Counter[str] = Counter()
+    question_votes: Counter[str] = Counter()
+    for assignment in assignments:
+        positive_refs, negative_refs = set(), set()
+        for annotation in assignment.annotations:
+            ref, verdict = annotation.candidate_ref, annotation.verdict
+            if ref not in candidate_votes or verdict not in BLIND_LABEL_VERDICTS:
+                continue
+            candidate_votes[ref][verdict] += 1
+            (positive_refs if verdict == "referable" else negative_refs).add(ref)
+        if positive_refs:
+            # 历史多选也只能给问题投一票。选了别的候选不等于给本候选投反对票。
+            question_votes["referable"] += 1
+            if len(positive_refs) == 1:
+                selected_choice_counts[next(iter(positive_refs))] += 1
+        elif negative_refs and negative_refs == candidate_votes.keys():
+            question_votes["not_referable"] += 1
+
+    # 旧仲裁只读保留；总览调用方预加载以避免 N+1。
     arbitrations = (
-        list(loaded_arbitrations)
+        loaded_arbitrations
         if loaded_arbitrations is not None
-        else (
-            db.query(BlindLabelArbitration)
-            .filter(BlindLabelArbitration.work_order_id == work_order.id)
-            .all()
-        )
+        else db.query(BlindLabelArbitration)
+        .filter(BlindLabelArbitration.work_order_id == work_order.id)
+        .all()
     )
     arbitration_by_ref = {item.candidate_ref: item for item in arbitrations}
-    # 新版提交每人至多选择一个可参考候选。非选中的候选不会被伪造成负票；
-    # 只有全部标注员选择同一候选（或都选择均不可参考）才自动通过。对历史的
-    # 多候选可参考提交，仍按每个候选的显式正反票聚合，避免改变既有证据语义。
-    referable_refs_by_assignment = [
-        {
-            annotation.candidate_ref
-            for annotation in assignment.annotations
-            if annotation.verdict == "referable"
-        }
-        for assignment in assignments
-    ]
-    single_choice_mode = bool(assignments) and all(
-        len(refs) <= 1 for refs in referable_refs_by_assignment
-    )
-    selected_choice_by_assignment = [
-        next(iter(refs)) if len(refs) == 1 else None
-        for refs in referable_refs_by_assignment
-    ]
-    selected_choice_counts = Counter(selected_choice_by_assignment)
-    selected_refs = {
-        next(iter(refs))
-        for refs in referable_refs_by_assignment
-        if len(refs) == 1
-    }
-    choice_disagreement = (
-        single_choice_mode
-        and fully_completed
-        and len(selected_choice_counts) > 1
-    )
-
-    # 先收集每个候选的显式票数与全员一致结论。单选模式下，只有真正写入的
-    # ``not_referable`` 才是负票；选择另一个候选仅表示未把当前候选选为最佳。
-    candidate_vote_counts: dict[str, Counter[str]] = {}
-    candidate_unanimous_verdicts: dict[str, str] = {}
+    candidate_results = []
     for candidate in candidates:
         ref = str(candidate.get("candidate_ref") or "")
-        counts = Counter(
-            annotation.verdict
-            for assignment in assignments
-            for annotation in assignment.annotations
-            if annotation.candidate_ref == ref
-        )
-        candidate_vote_counts[ref] = counts
-        if (
-            fully_completed
-            and sum(counts.values()) >= assignment_limit
-            and len(counts) == 1
-        ):
-            candidate_unanimous_verdicts[ref] = next(iter(counts))
-
-    # 单选流程要求既定人数都选择完全一致；历史多选提交则要求每个候选均有
-    # 全员一致的显式结论。
-    if single_choice_mode:
-        automatic_consensus = fully_completed and len(selected_choice_counts) == 1
-    else:
-        automatic_consensus = (
-            fully_completed
-            and bool(candidates)
-            and len(candidate_unanimous_verdicts) == len(candidates)
-        )
-
-    for candidate in candidates:
-        ref = str(candidate.get("candidate_ref") or "")
-        counts = candidate_vote_counts[ref]
-        preliminary = None
-        if counts:
-            preliminary = counts.most_common(1)[0][0]
+        counts = candidate_votes[ref]
+        preliminary = _strict_majority(counts, completed_count)
         arbitration = arbitration_by_ref.get(ref)
-        split = (
-            counts.get("referable", 0) > 0
-            and counts.get("not_referable", 0) > 0
-        )
-        choice_split = choice_disagreement and ref in selected_refs
-        unanimous_verdict = candidate_unanimous_verdicts.get(ref)
+        verdict = None
         if arbitration is not None:
             candidate_status = "arbitrated"
-            needs_arbitration = False
         elif not fully_completed:
             candidate_status = "pending"
-            needs_arbitration = False
-        elif automatic_consensus:
-            if unanimous_verdict:
-                candidate_status = "unanimous"
-            else:
-                candidate_status = "not_selected"
-            needs_arbitration = False
-        elif unanimous_verdict:
-            # 历史多选工单可能只有部分候选存在分歧；已经全员一致的候选
-            # 保留结论，不应因其他候选待仲裁而被重复送审。
-            candidate_status = "unanimous"
-            needs_arbitration = False
-        elif single_choice_mode and ref not in selected_refs:
-            candidate_status = "not_selected"
-            needs_arbitration = False
-        elif split or choice_split or not single_choice_mode:
-            candidate_status = "needs_arbitration"
-            needs_arbitration = True
+        elif preliminary:
+            verdict = preliminary
+            candidate_status = "unanimous" if counts[verdict] == completed_count else "majority"
         else:
-            candidate_status = "needs_arbitration"
-            needs_arbitration = True
-        candidate_results.append(
-            {
-                "candidate_ref": ref,
-                "rank": int(candidate.get("rank") or 0),
-                "referable_count": int(counts.get("referable", 0)),
-                "not_referable_count": int(counts.get("not_referable", 0)),
-                "selected_count": int(selected_choice_counts.get(ref, 0)),
-                "selection_total": completed_count,
-                "preliminary_verdict": preliminary,
-                "status": candidate_status,
-                "consensus_verdict": (
-                    unanimous_verdict if candidate_status == "unanimous" else None
-                ),
-                "needs_arbitration": needs_arbitration,
-                "arbitrated_verdict": arbitration.verdict if arbitration else None,
-                "arbitrated_by": arbitration.arbitrated_by if arbitration else None,
-                "arbitration_reason": arbitration.reason if arbitration else "",
-                "arbitrated": arbitration is not None,
-            }
-        )
-    unresolved_split = any(
-        result["needs_arbitration"] for result in candidate_results
-    )
-    has_arbitration = any(result["arbitrated"] for result in candidate_results)
-    # 管理员已经完成的历史仲裁必须保持终态，不能因人数从 3 调整为 5
-    # 被重新打开为待标注；若仍有未解决的候选分歧，则继续要求补充仲裁。
-    if has_arbitration and not unresolved_split:
+            candidate_status = "no_majority" if counts["referable"] else "not_selected"
+        candidate_results.append({
+            "candidate_ref": ref,
+            "rank": int(candidate.get("rank") or 0),
+            "referable_count": counts["referable"],
+            "not_referable_count": counts["not_referable"],
+            "selected_count": selected_choice_counts[ref],
+            "selection_total": completed_count,
+            "preliminary_verdict": preliminary,
+            "status": candidate_status,
+            "consensus_verdict": verdict,
+            "needs_arbitration": False,
+            "arbitrated_verdict": arbitration.verdict if arbitration else None,
+            "arbitrated_by": arbitration.arbitrated_by if arbitration else None,
+            "arbitration_reason": arbitration.reason if arbitration else "",
+            "arbitrated": arbitration is not None,
+        })
+
+    question_verdict = None
+    if any(result["arbitrated"] for result in candidate_results):
+        # 保留历史终态和候选级人工结论，未仲裁的候选仍按票数计算。
         overall_status = "arbitrated"
-        needs_arbitration = False
+        question_verdict = (
+            "referable" if any(
+                (result["arbitrated_verdict"] or result["consensus_verdict"]) == "referable"
+                for result in candidate_results
+            ) else "not_referable"
+        )
     elif not fully_completed:
         overall_status = "pending"
-        needs_arbitration = False
-    elif unresolved_split:
-        overall_status = "majority"
-        needs_arbitration = True
-    elif automatic_consensus:
-        overall_status = "unanimous"
-        needs_arbitration = False
     else:
-        # 防御性兜底：既定人数都完成却无法形成全员一致时必须人工仲裁。
-        overall_status = "majority"
-        needs_arbitration = True
+        question_verdict = _strict_majority(question_votes, completed_count)
+        if question_verdict is None:
+            overall_status = "no_majority"
+        elif (
+            question_votes[question_verdict] == completed_count
+            and all(result["status"] in {"unanimous", "not_selected"} for result in candidate_results)
+        ):
+            overall_status = "unanimous"
+        else:
+            overall_status = "majority"
     return {
         "status": overall_status,
         "completed_annotators": completed_count,
         "required_annotators": assignment_limit,
-        "needs_arbitration": needs_arbitration,
+        "verdict": question_verdict,
+        "referable_count": question_votes["referable"],
+        "not_referable_count": question_votes["not_referable"],
+        "needs_arbitration": False,
         "candidate_results": candidate_results,
     }
 
@@ -1475,9 +1415,7 @@ def work_order_status(
         rows if loaded_assignments is not None else None,
         loaded_arbitrations,
     )
-    if consensus["status"] == "majority":
-        return "needs_arbitration", consensus
-    if consensus["status"] in {"consensus", "unanimous", "arbitrated"}:
+    if consensus["status"] in {"consensus", "unanimous", "majority", "no_majority", "arbitrated"}:
         if consensus["status"] == "arbitrated":
             return "arbitrated", consensus
         return "completed", consensus
@@ -1903,11 +1841,17 @@ def overview(
         )
         if dimension_status_filter == "disputed" and not consensus["needs_arbitration"]:
             continue
-        if dimension_status_filter == "consensus" and current_status not in {"completed", "arbitrated"}:
+        if dimension_status_filter == "consensus" and consensus["verdict"] is None:
             continue
+        if dimension_filter.startswith("final_"):
+            final_verdict = dimension_filter.removeprefix("final_")
+            if final_verdict in BLIND_LABEL_VERDICTS and consensus["verdict"] != final_verdict:
+                continue
         status_value = (status_filter or "").strip().lower()
-        if status_value in {"disputed", "争议", "majority"}:
+        if status_value in {"disputed", "争议", "needs_arbitration"}:
             status_matches = consensus["needs_arbitration"]
+        elif status_value in {"majority", "no_majority"}:
+            status_matches = consensus["status"] == status_value
         elif status_value in {"consensus", "已完成", "completed"}:
             status_matches = current_status in {"completed", "arbitrated"}
         elif status_value:
@@ -1945,11 +1889,8 @@ def overview(
                 "status": current_status,
                 "consensus_status": consensus["status"],
                 "needs_arbitration": consensus["needs_arbitration"],
-                "preliminary_verdict": (
-                    consensus["candidate_results"][0]["preliminary_verdict"]
-                    if consensus["candidate_results"]
-                    else None
-                ),
+                "verdict": consensus["verdict"],
+                "preliminary_verdict": consensus["verdict"],
                 "first_assigned_at": min(
                     (item.assigned_at for item in assignments if item.assigned_at),
                     default=None,
@@ -1963,11 +1904,7 @@ def overview(
                 "updated_at": last_activity or work_order.updated_at,
                 "max_annotators": _work_order_assignment_limit(work_order),
                 "assignment_limit": _work_order_assignment_limit(work_order),
-                "dimension": (
-                    consensus["candidate_results"][0]["preliminary_verdict"]
-                    if consensus["candidate_results"]
-                    else None
-                ),
+                "dimension": consensus["verdict"],
                 "consensus": consensus,
                 "assignments": [
                     {
@@ -2027,17 +1964,19 @@ def overview(
         "work_orders": total,
         "assigned_work_orders": sum(item["assignment_count"] > 0 for item in items),
         "completed_work_orders": sum(item["status"] in {"completed", "arbitrated"} for item in items),
-        "pending_work_orders": sum(item["status"] in {"pending", "in_progress", "partial", "needs_arbitration"} for item in items),
+        "pending_work_orders": sum(item["status"] in {"pending", "in_progress", "partial"} for item in items),
         "total_assignments": sum(item["assignment_count"] for item in items),
         "completed_assignments": sum(item["completed_assignments"] for item in items),
         "released_assignments": sum(item["released_assignments"] for item in items),
         "unanimous_count": sum(item["consensus_status"] == "unanimous" for item in items),
         "majority_count": sum(item["consensus_status"] == "majority" for item in items),
+        "no_majority_count": sum(item["consensus_status"] == "no_majority" for item in items),
         "arbitrated_count": sum(item["consensus_status"] == "arbitrated" for item in items),
         "pending_consensus_count": sum(item["consensus_status"] == "pending" for item in items),
         "needs_arbitration_count": sum(item["needs_arbitration"] for item in items),
         "active_annotators": len({assignment["user_id"] for item in items for assignment in item["assignments"] if assignment["status"] != "released"}),
     }
+    resolved_count = sum(item["verdict"] is not None for item in items)
     summary.update(
         {
             "total": summary["work_orders"],
@@ -2047,24 +1986,10 @@ def overview(
             "partial": sum(item["status"] == "partial" for item in items),
             "disputed": summary["needs_arbitration_count"],
             "annotations": sum(stat["annotation_count"] for stat in user_stats.values()),
-            # Pending and majority/disputed work orders are intentionally not
-            # included in the denominator.  The rate measures agreement only
-            # among resolved (unanimous or administrator-arbitrated) orders.
-            "resolved_count": summary["unanimous_count"] + summary["arbitrated_count"],
-            "consensus_rate": round(
-                summary["unanimous_count"]
-                / (summary["unanimous_count"] + summary["arbitrated_count"]),
-                4,
-            )
-            if (summary["unanimous_count"] + summary["arbitrated_count"])
-            else 0.0,
-            "resolution_rate": round(
-                (summary["unanimous_count"] + summary["arbitrated_count"])
-                / summary["work_orders"],
-                4,
-            )
-            if summary["work_orders"]
-            else 0.0,
+            # 一致率仍表示全员一致占已出最终结论的比例，不能把多数表决算成一致。
+            "resolved_count": resolved_count,
+            "consensus_rate": round(summary["unanimous_count"] / resolved_count, 4) if resolved_count else 0.0,
+            "resolution_rate": round(resolved_count / total, 4) if total else 0.0,
         }
     )
     people: list[dict[str, Any]] = []
