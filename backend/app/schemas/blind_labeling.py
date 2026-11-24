@@ -55,49 +55,6 @@ class BlindLabelClaimRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-class BlindLabelArbitrationInput(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    candidate_ref: str = Field(..., alias="candidateRef", min_length=1, max_length=64)
-    verdict: Literal["referable", "not_referable", "可参考", "不可参考"]
-    reason: str = Field("", max_length=2000)
-
-    @field_validator("verdict", mode="before")
-    @classmethod
-    def normalize_verdict(cls, value: Any) -> str:
-        return {
-            "可参考": "referable",
-            "不可参考": "not_referable",
-            "helpful": "referable",
-            "unhelpful": "not_referable",
-        }.get(str(value).strip(), str(value).strip())
-
-
-class BlindLabelArbitrationRequest(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    decisions: list[BlindLabelArbitrationInput] = Field(
-        default_factory=list,
-        min_length=0,
-        max_length=3,
-    )
-    candidate_ref: str | None = Field(default=None, alias="candidateRef", max_length=64)
-    verdict: Literal["referable", "not_referable", "可参考", "不可参考"] | None = None
-    reason: str = Field("", max_length=2000)
-
-    @field_validator("verdict", mode="before")
-    @classmethod
-    def normalize_optional_verdict(cls, value: Any) -> str | None:
-        if value is None:
-            return None
-        return {
-            "可参考": "referable",
-            "不可参考": "not_referable",
-            "helpful": "referable",
-            "unhelpful": "not_referable",
-        }.get(str(value).strip(), str(value).strip())
-
-
 class BlindLabelPublicCandidate(BaseModel):
     candidate_ref: str = Field(alias="candidateRef")
     rank: int
@@ -173,8 +130,11 @@ class BlindLabelSubmitResponse(BaseModel):
 
 
 class BlindLabelConsensus(BaseModel):
-    status: Literal["pending", "majority", "consensus", "unanimous", "arbitrated"]
+    status: Literal["pending", "majority", "no_majority", "consensus", "unanimous", "arbitrated"]
     completed_annotators: int = Field(alias="completedAnnotators")
+    verdict: Literal["referable", "not_referable"] | None = None
+    referable_count: int = Field(default=0, alias="referableCount")
+    not_referable_count: int = Field(default=0, alias="notReferableCount")
     needs_arbitration: bool = Field(alias="needsArbitration")
     candidate_results: list[dict[str, Any]] = Field(
         default_factory=list,

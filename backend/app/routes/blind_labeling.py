@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -10,7 +9,6 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
 from app.models.blind_labeling import (
-    BlindLabelArbitration,
     BlindLabelAssignment,
     BlindLabelBatch,
     BlindLabelWorkOrder,
@@ -18,8 +16,6 @@ from app.models.blind_labeling import (
 from app.models.user import User
 from app.routes.auth import get_current_user, has_permission, require_permission
 from app.schemas.blind_labeling import (
-    BlindLabelArbitrationInput,
-    BlindLabelArbitrationRequest,
     BlindLabelClaimRequest,
     BlindLabelReleaseRequest,
     BlindLabelSubmitRequest,
@@ -526,89 +522,10 @@ def get_work_order_detail(
     return private_work_order_detail(db, work_order)
 
 
-@router.post("/work-orders/{work_order_id}/arbitrate")
+@router.post("/work-orders/{work_order_id}/arbitrate", deprecated=True, status_code=410)
 def arbitrate_work_order(
     work_order_id: str,
-    body: BlindLabelArbitrationRequest | None = None,
-    candidate_ref: str | None = Query(None, alias="candidateRef"),
-    verdict: str | None = Query(None),
-    reason: str = Query(""),
-    db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("retrieval:label_arbitrate")),
 ):
-    """Persist administrator arbitration separately from retrieval telemetry."""
-
-    work_order = _get_work_order(db, work_order_id)
-    if not work_order:
-        raise HTTPException(status_code=404, detail="盲标工单不存在")
-
-    decisions = list(body.decisions) if body and body.decisions else []
-    if not decisions and body and body.candidate_ref and body.verdict:
-        decisions = [
-            BlindLabelArbitrationInput(
-                candidateRef=body.candidate_ref,
-                verdict=body.verdict,
-                reason=body.reason,
-            )
-        ]
-    if not decisions and candidate_ref and verdict:
-        try:
-            decisions = [
-                BlindLabelArbitrationInput(
-                    candidateRef=candidate_ref,
-                    verdict=verdict,
-                    reason=reason,
-                )
-            ]
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if not decisions:
-        raise HTTPException(status_code=422, detail="至少提供一个候选项的仲裁结论")
-    valid_refs = {
-        str(item.get("candidate_ref") or "")
-        for item in (work_order.candidate_snapshot or [])
-        if isinstance(item, dict)
-    }
-    seen_refs: set[str] = set()
-    recorded: list[dict[str, str]] = []
-    for decision in decisions:
-        ref = str(decision.candidate_ref).strip()
-        if ref not in valid_refs:
-            raise HTTPException(status_code=422, detail="仲裁候选项不属于当前工单")
-        if ref in seen_refs:
-            raise HTTPException(status_code=422, detail="同一候选项不能重复仲裁")
-        seen_refs.add(ref)
-        existing = (
-            db.query(BlindLabelArbitration)
-            .filter(
-                BlindLabelArbitration.work_order_id == work_order.id,
-                BlindLabelArbitration.candidate_ref == ref,
-            )
-            .with_for_update()
-            .first()
-        )
-        if existing is None:
-            existing = BlindLabelArbitration(
-                id=f"arb-{uuid.uuid4().hex[:24]}",
-                work_order_id=work_order.id,
-                candidate_ref=ref,
-            )
-            db.add(existing)
-        existing.verdict = decision.verdict
-        existing.reason = decision.reason.strip()
-        existing.arbitrated_by = current_user.username
-        existing.updated_at = datetime.utcnow()
-        recorded.append(
-            {
-                "candidate_ref": ref,
-                "verdict": decision.verdict,
-            }
-        )
-    db.commit()
-    return {
-        "status": "accepted",
-        "work_order_id": work_order.id,
-        "decisions": recorded,
-        "arbitrated_by": current_user.username,
-        "persisted": True,
-    }
+    """旧客户端得到明确提示；不再创建或改写历史仲裁。"""
+    raise HTTPException(status_code=410, detail="召回标注已改为自动多数表决，不再接受人工仲裁")

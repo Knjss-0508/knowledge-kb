@@ -36,12 +36,16 @@ def test_admin_blind_labeling_splits_people_and_work_order_views() -> None:
     assert "id=\"blind-label-work-orders-panel\"" in FRONTEND
 
 
-def test_blind_label_frontend_uses_five_annotators_and_unanimous_consensus() -> None:
-    assert "每工单最多 5 名标注员 · 全员一致自动通过" in FRONTEND
+def test_blind_label_frontend_shows_vote_totals_and_final_verdict_without_arbitration() -> None:
+    assert "每工单最多 5 名标注员 · 投满后自动按多数表决" in FRONTEND
     assert "Math.min(5, Math.max(1" in FRONTEND
-    assert "全员一致或已仲裁" in FRONTEND
-    assert "独立标注存在分歧" in FRONTEND
-    assert "待完成 ' + required + ' 人独立标注后计算共识。" in FRONTEND
+    assert "多数表决" in FRONTEND
+    assert "final_referable" in FRONTEND and "final_not_referable" in FRONTEND
+    assert "blindLabelVoteText(blindLabeling.adminDetail.consensus)" in FRONTEND
+    assert "blindLabelVoteText(candidate.blind_consensus)" in FRONTEND
+    assert "待仲裁" not in FRONTEND
+    assert "submitBlindLabelArbitration" not in FRONTEND
+    assert "待完成 ' + required + ' 人独立标注后计算结论" in FRONTEND
 
 
 def test_admin_blind_labeling_defaults_to_people_and_keeps_shared_filters() -> None:
