@@ -9,6 +9,7 @@ from app.services.blind_label_cycle import Diagnosis, EvaluatedCase, RankedCandi
 from app.services.blind_label_replay import ReplayManifest
 from app.services.embedding import EmbeddingServiceUnavailable
 from scripts import run_blind_learning_cycle as cli
+from scripts._blind_knowledge_inbox import open_inbox, sync_inbox
 
 
 def _preview(order="w1", state="pending_review", issue=None):
@@ -172,3 +173,20 @@ def test_local_ollama_ignores_free_text_and_rejects_remote_endpoints(monkeypatch
 
     with httpx.Client(transport=httpx.MockTransport(answer)) as client:
         assert cli._diagnose(client, endpoint, {"completed": 5}) is None
+
+
+def test_editor_inbox_is_persistent_idempotent_and_marks_stale(tmp_path, monkeypatch):
+    path = tmp_path / "editor.sqlite3"
+    _patch_preview(monkeypatch, [_preview("gap", "confirmed", "knowledge_gap"), _preview("unreviewed")])
+    report = cycle.run_learning_cycle(None, diagnose=lambda _: Diagnosis(issue="knowledge_gap"))
+    with open_inbox(path) as db:
+        assert sync_inbox(db, report) == {"inserted": 1, "superseded": 0}
+    with open_inbox(path) as db:
+        assert sync_inbox(db, report) == {"inserted": 0, "superseded": 0}
+        assert db.execute("select work_order_id, status from offline_knowledge_inbox").fetchall() == [
+            ("gap", "needs_editor"),
+        ]
+    _patch_preview(monkeypatch, [_preview("gap", "stale", "knowledge_gap")])
+    with open_inbox(path) as db:
+        assert sync_inbox(db, cycle.run_learning_cycle(None)) == {"inserted": 0, "superseded": 1}
+        assert db.execute("select status from offline_knowledge_inbox").fetchone() == ("superseded",)

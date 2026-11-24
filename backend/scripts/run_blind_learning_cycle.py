@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
+from contextlib import nullcontext
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -19,6 +21,7 @@ from app.services.blind_label_answer_replay import AnswerReplayManifest
 from app.services.blind_label_cycle import Diagnosis, run_learning_cycle
 from app.services.blind_label_replay import ReplayManifest
 from scripts._blind_replay_io import LOOPBACK_IPS, local_database, read_manifest, readonly_engine
+from scripts._blind_knowledge_inbox import open_inbox, sync_inbox
 from scripts.replay_blind_label_retrieval import _local_endpoints
 
 
@@ -72,6 +75,7 @@ def main() -> None:
     parser.add_argument("--cursor")
     parser.add_argument("--category-id")
     parser.add_argument("--out", type=Path, required=True, help="仓库外、受控且尚不存在的 JSON 文件")
+    parser.add_argument("--knowledge-inbox", type=Path, help="仓库外的隔离 SQLite 待编辑队列（可重复使用）")
     args = parser.parse_args()
     if not args.confirm_local_sanitized:
         parser.error("请确认是断网隔离副本（非生产隧道）且清单已脱敏，再传 --confirm-local-sanitized。")
@@ -80,6 +84,13 @@ def main() -> None:
             or any((ancestor / ".git").exists() for ancestor in output.parents)
             or not output.parent.is_dir()):
         parser.error("产物需写入仓库外、已存在的受控目录，且不得覆盖已有 JSON。")
+    inbox_path = args.knowledge_inbox.resolve() if args.knowledge_inbox else None
+    if inbox_path is not None and (
+        inbox_path.suffix.lower() != ".sqlite3" or not inbox_path.parent.is_dir()
+        or any((ancestor / ".git").exists() for ancestor in inbox_path.parents)
+        or (inbox_path.exists() and not inbox_path.is_file())
+    ):
+        parser.error("待编辑队列须为仓库外受控目录下的 .sqlite3 文件。")
     try:
         database = local_database()
         ollama = _local_ollama() if args.ai_limit else None
@@ -101,7 +112,8 @@ def main() -> None:
         inputs["diagnosis_model"] = ollama[1]
     engine = readonly_engine(database)
     try:
-        with engine.begin() as connection, httpx.Client(trust_env=False, timeout=60.0) as client:
+        with (open_inbox(inbox_path) if inbox_path else nullcontext()) as inbox, \
+                engine.begin() as connection, httpx.Client(trust_env=False, timeout=60.0) as client:
             connection.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
             # The online ranker closes its ORM session before embedding calls.
             # Keep the snapshot on this outer connection, not on that session.
@@ -111,8 +123,11 @@ def main() -> None:
                     scan_limit=args.scan_limit, cursor=args.cursor, category_id=args.category_id, ai_limit=args.ai_limit,
                     diagnose=(lambda evidence: _diagnose(client, ollama, evidence)) if ollama else None,
                 )
+            result["knowledge_inbox"] = sync_inbox(inbox, result) if inbox is not None else None
     except SQLAlchemyError:
         parser.error("隔离数据库连接或查询失败；未输出 SQL 或输入。")
+    except (sqlite3.Error, OSError):
+        parser.error("隔离待编辑队列不可写或忙；未输出样本内容。")
     finally:
         engine.dispose()
     try:
@@ -130,6 +145,7 @@ def main() -> None:
         "retrieval": result["validation"]["retrieval"]["summary"],
         "answers_configured": answers is not None, "training": result["training"]["status"],
         "knowledge_drafts": len(result["knowledge_drafts"]), "published": False,
+        "knowledge_inbox": result["knowledge_inbox"],
     }, ensure_ascii=True))
 
 
