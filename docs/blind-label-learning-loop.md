@@ -97,3 +97,15 @@ python -m scripts.run_blind_learning_cycle --confirm-local-sanitized `
 ### 合成端到端验收
 
 `backend/tests/fixtures/seed_blind_cycle_smoke.py` 仅适用于空的、独立的测试库 `blind_cycle_smoke_only`（回环端口 `55432`）；不得使用业务数据或生产隧道。运行需提供输出目录，及 `BLIND_REPLAY_DATABASE_URL`、`BLIND_REPLAY_EMBEDDING_URL`，使用专用初始化角色 `cycle_smoke_admin`。脚本生成合成复核、清单和只读角色 `cycle_smoke_ro`。用只读角色运行上述命令，同时指定合成清单和合成 SQLite 队列。向量由本地模型的查询向量和人为构造的夹角生成，以覆盖「本来排第四、训练后进前三」路径；该结果只验证流程，不代表真实模型效果。答复判定也为预先构造的测试数据。
+
+### 真实投票影子验证（不依赖原工单正文）
+
+```powershell
+python -m scripts.run_blind_vote_shadow --confirm-isolated-replica `
+  --out <仓库外受控目录>\frozen-vote.json `
+  --editor-inbox <仓库外受控目录>\editor.sqlite3
+```
+
+- 仅用于断网副本。使用已经投满、无历史人工仲裁的工单，候选必须仍已发布且标题和内容与冻结快照一致。只学习明确可参考或不可参考的绝对多数票；未点选不是反例。数据库内部用问题摘要去重，文件不带问题摘要、原文、知识内容或投票人。
+- 验证的是**冻结候选可参考概率**。分数校准在训练集拟合、验证集选参，测试集与训练集不共享规范化问题。与仅使用候选名次的基线比较 Brier 分数（越低越好）；验证集和测试集要改善，另外从未见文章切片不能退步，才登记离线候选。未通过不能复用同一测试集反复调到通过；需要另备未用过的独立数据。它不测线上召回、候选池外漏召回或最终答复。
+- 当同一候选有绝对多数明确标记内容错误、过时、缺条件或需合并，且知识仍为同版，生成带票数和知识版本的待编辑任务。SQLite 中 `offline_vote_editor_queue` 按知识、版本和原因去重；编辑前重新检查证据和当前版本。训练拒绝发布不妨碍证据独立成立的任务入队。队列不自动改写或发布知识。
