@@ -25,7 +25,7 @@ WITH completed AS (
     FROM blind_label_assignments
     WHERE status = 'completed' GROUP BY work_order_id
 ), orders AS (
-    SELECT w.id, w.assignment_limit, w.candidate_snapshot,
+    SELECT w.id, w.category_id, w.assignment_limit, w.candidate_snapshot,
            md5(lower(regexp_replace(trim(w.query_text), '[[:space:]]+', ' ', 'g'))) AS question_group
     FROM blind_label_work_orders w JOIN completed t ON t.work_order_id = w.id
     WHERE w.pool_state = 'active' AND w.assignment_limit IN (3,5)
@@ -46,7 +46,7 @@ WITH completed AS (
       AND t.status = 'completed' AND t.user_id = a.user_id
     GROUP BY a.work_order_id,a.candidate_ref
 )
-SELECT w.id AS work_order_id,w.question_group,w.assignment_limit,
+SELECT w.id AS work_order_id,w.question_group,w.category_id,w.assignment_limit,
        c->>'candidate_ref' AS candidate_ref,c->>'rank' AS rank,
        c->>'final_score' AS score,k.id AS knowledge_id,
        k.updated_at AS knowledge_updated_at,
