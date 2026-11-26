@@ -1669,9 +1669,13 @@
         </div>
         <div v-if="blindLabeling.learning.error" class="blind-label-error" role="alert">{{blindLabeling.learning.error}}</div>
         <p v-if="blindLabeling.learning.notice" class="hint" role="status">{{blindLabeling.learning.notice}}</p>
+        <form v-if="can('retrieval:label_arbitrate')" class="blind-label-ranking-toolbar" @submit.prevent="openBlindLabelLearningReview(blindLabeling.learning.workOrderLookup)">
+          <label class="blind-label-month-field"><span>内部盲标工单 ID（交接包 work_order_id）</span><input class="inp" type="text" required maxlength="64" autocomplete="off" v-model.trim="blindLabeling.learning.workOrderLookup"></label>
+          <button type="submit" class="btn bd bsm" :disabled="!blindLabeling.learning.workOrderLookup || blindLabeling.learning.loading || (blindLabeling.learning.editor && (blindLabeling.learning.editor.loading || blindLabeling.learning.editor.saving))">按工单打开复核</button>
+        </form>
         <section v-if="blindLabeling.learning.editor" class="blind-label-filter-card" :aria-busy="blindLabeling.learning.editor.loading || blindLabeling.learning.editor.saving">
           <div class="blind-label-filter-head">
-            <div><h3>确认回流样本</h3><p>先核对原盲标详情。复核会生成新版本，不覆盖历史记录。</p></div>
+            <div><h3>确认回流样本</h3><p>内部工单：{{blindLabeling.learning.editor.workOrderId}}。先核对原盲标详情；复核会生成新版本，不覆盖历史记录。</p></div>
             <button type="button" class="btn bd bsm" @click="blindLabeling.learning.editor=null" :disabled="blindLabeling.learning.editor.saving">关闭</button>
           </div>
           <p v-if="blindLabeling.learning.editor.loading" role="status">正在获取最新证据…</p>
@@ -2643,7 +2647,7 @@ Vue.createApp({
         current:{open:false,readOnly:false,assignment:null,detail:null,candidates:[],labels:{},reasonCodes:{},reasonNotes:{},allNotReferable:false,taskReasonCode:'',note:'',error:''},
         overview:{loading:false,error:'',summary:{total:0,pending:0,in_progress:0,partial:0,completed:0,majority_count:0,annotations:0,consensus_rate:0,active_annotators:0},cards:[],people:[],workOrders:[],updatedAt:'-',filters:{dateFrom:'',dateTo:'',status:'',dimension:'',annotator:'',keyword:''},datePicker:{kind:'',opening:false,openTimer:null,releaseTimer:null,startedAt:0},pagination:{page:1,size:20,total:0,totalPages:1}},
         adminDetail:{open:false,loading:false,error:'',item:null,workOrder:null,candidates:[],annotations:[],taskReasons:[],consensus:null},
-        learning:{loading:false,error:'',notice:'',categoryId:'',nextCursor:'',scanned:0,items:[],editor:null},
+        learning:{loading:false,error:'',notice:'',categoryId:'',nextCursor:'',scanned:0,items:[],editor:null,workOrderLookup:''},
         ranking:{loading:false,error:'',mode:'month',month:'',dateFrom:'',dateTo:'',updatedAt:'-',people:[],summary:{annotators:0,annotations:0,completed_work_orders:0,referable_count:0,not_referable_count:0,released_count:0}}
       },
       retrievalPeriodOptions:[
@@ -9493,7 +9497,9 @@ Vue.createApp({
     },
     openBlindLabelLearningReview: function(workOrderId) {
       var self = this, state = this.blindLabeling.learning;
-      if (!this.can('retrieval:label_arbitrate') || (state.editor && state.editor.saving)) return;
+      if (!this.can('retrieval:label_arbitrate') || state.loading || (state.editor && state.editor.saving)) return;
+      workOrderId = typeof workOrderId === 'string' ? workOrderId.trim() : '';
+      if (!workOrderId || workOrderId.length > 64) return;
       state.notice = '';
       state.editor = {workOrderId:workOrderId,loading:true,saving:false,error:'',sample:null,reviewId:null,issueType:'',knowledgeId:'',expectedAnswer:''};
       var editor = state.editor;

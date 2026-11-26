@@ -75,6 +75,14 @@ def test_learning_review_form_submits_expected_revision_after_human_action() -> 
     assert "正确知识 ID（原检索候选）" in FRONTEND
 
 
+def test_learning_review_can_open_exact_internal_order_without_paging() -> None:
+    assert '''<form v-if="can('retrieval:label_arbitrate')" class="blind-label-ranking-toolbar" @submit.prevent="openBlindLabelLearningReview(blindLabeling.learning.workOrderLookup)">''' in FRONTEND
+    assert "内部盲标工单 ID（交接包 work_order_id）" in FRONTEND
+    assert "if (!workOrderId || workOrderId.length > 64) return;" in FRONTEND
+    assert """return '/blind-labeling/learning-samples/' + encodeURIComponent(workOrderId) + '/review';""" in FRONTEND
+    assert "this.blindLabelApi(this.blindLabelLearningReviewPath(workOrderId), {method:'GET'})" in FRONTEND
+
+
 def test_blind_label_people_panel_only_shows_name_completed_annotations_and_last_activity() -> None:
     assert "查看每位标注员的完成标注量和最近活动" in FRONTEND
     assert "<th>标注员</th><th>总完成标注数</th><th>最后活动时间</th>" in FRONTEND
