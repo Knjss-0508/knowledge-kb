@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.services.blind_label_learning import preview_learning_samples
 from scripts._blind_knowledge_inbox import open_inbox
-from scripts._blind_replay_io import local_database, readonly_engine
+from scripts._blind_replay_io import controlled_artifact_path, local_database, readonly_engine
 from scripts._blind_review_inbox import sync_recall_review_inbox
 from scripts.run_blind_vote_shadow import EVIDENCE
 
@@ -126,15 +126,6 @@ def intake(items: list[dict], per_lane: int) -> dict:
     return {"eligible_by_lane": dict(eligible), "excluded": dict(missing), "lanes": lanes}
 
 
-def _controlled_path(path: Path, suffix: str, *, new=False) -> Path:
-    path = path.resolve()
-    if (path.suffix.lower() != suffix or not path.parent.is_dir()
-            or any((p / ".git").exists() for p in path.parents)
-            or (path.exists() and (new or not path.is_file()))):
-        raise ValueError("invalid output path")
-    return path
-
-
 def _scan(engine, args):
     cursor = None
     scanned = 0
@@ -178,8 +169,8 @@ def main() -> None:
     if args.review_inbox and not args.cross_order_hints:
         parser.error("登记待核验任务需要 --cross-order-hints。")
     try:
-        output = _controlled_path(args.out, ".json", new=True)
-        inbox = _controlled_path(args.review_inbox, ".sqlite3") if args.review_inbox else None
+        output = controlled_artifact_path(args.out, ".json", new=True)
+        inbox = controlled_artifact_path(args.review_inbox, ".sqlite3") if args.review_inbox else None
     except (OSError, ValueError):
         parser.error("产物须保存到仓库外受控目录，JSON 不能覆盖。")
     try:

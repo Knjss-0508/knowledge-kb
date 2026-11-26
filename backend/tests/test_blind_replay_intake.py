@@ -4,8 +4,9 @@ from datetime import datetime
 import pytest
 
 from scripts._blind_knowledge_inbox import open_inbox
+from scripts._blind_replay_io import controlled_artifact_path
 from scripts._blind_review_inbox import sync_recall_review_inbox
-from scripts.prepare_blind_replay_intake import _controlled_path, attach_cross_order_hints, intake
+from scripts.prepare_blind_replay_intake import attach_cross_order_hints, intake
 
 
 def _candidate(knowledge_id="in-pool", *, yes=0, no=4, state="snapshot_matches"):
@@ -125,9 +126,9 @@ def test_intake_artifacts_must_be_outside_git_and_report_cannot_be_overwritten(t
     repo.mkdir()
     (repo / ".git").touch()
     with pytest.raises(ValueError):
-        _controlled_path(repo / "queue.sqlite3", ".sqlite3")
+        controlled_artifact_path(repo / "queue.sqlite3", ".sqlite3")
     report = tmp_path / "report.json"
     report.touch()
     with pytest.raises(ValueError):
-        _controlled_path(report, ".json", new=True)
-    assert _controlled_path(tmp_path / "queue.sqlite3", ".sqlite3").parent == tmp_path.resolve()
+        controlled_artifact_path(report, ".json", new=True)
+    assert controlled_artifact_path(tmp_path / "queue.sqlite3", ".sqlite3").parent == tmp_path.resolve()

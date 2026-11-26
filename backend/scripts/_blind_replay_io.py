@@ -1,6 +1,7 @@
 """Local-only input and read-only connection for the blind-label replay CLIs."""
 
 import os
+from pathlib import Path
 
 from pydantic import ValidationError
 from sqlalchemy import create_engine
@@ -9,6 +10,15 @@ from sqlalchemy.engine import make_url
 
 LOOPBACK_IPS = {"127.0.0.1", "::1"}
 _MAX_MANIFEST_BYTES = 1_000_000
+
+
+def controlled_artifact_path(path: Path, suffix: str, *, new=False) -> Path:
+    path = path.resolve()
+    if (path.suffix.lower() != suffix or not path.parent.is_dir()
+            or any((p / ".git").exists() for p in path.parents)
+            or (path.exists() and (new or not path.is_file()))):
+        raise ValueError("invalid output path")
+    return path
 
 
 def local_database():
