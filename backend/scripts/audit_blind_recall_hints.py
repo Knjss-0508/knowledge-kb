@@ -18,6 +18,14 @@ _REPORT_FIELDS = (
     "work_order_id", "knowledge_id", "finding", "original_event_rank", "events_checked",
     "has_structured_scope_fields", "has_recorded_reply",
 )
+_NEXT_ACTIONS = {
+    "stale_hint": "refresh_evidence",
+    "already_in_frozen_candidates": "review_current_candidate_evidence",
+    "present_in_original_event": "review_ranking_and_candidate_window",
+    "present_in_same_request_event": "review_same_request_candidate_window",
+    "original_snapshot_unusable": "recover_original_event_evidence",
+    "not_seen_in_checked_events": "verify_applicability_and_prepare_sanitized_request",
+}
 
 
 AUDIT = text("""
@@ -103,6 +111,9 @@ def read_active_hints(inbox: Path, limit: int) -> tuple[list[dict], bool]:
 
 def describe(rows, has_more: bool) -> dict:
     rows = [{field: row[field] for field in _REPORT_FIELDS} for row in rows]
+    for row in rows:
+        row["next_action"] = _NEXT_ACTIONS[row["finding"]]
+        row["replay_blockers"] = ["needs_independent_applicability_review", "needs_reviewed_sanitized_request"]
     recorded_ranks = [
         row["original_event_rank"] for row in rows if row["finding"] == "present_in_original_event"
     ]
@@ -119,7 +130,7 @@ def describe(rows, has_more: bool) -> dict:
         "with_recorded_reply": sum(row["has_recorded_reply"] for row in rows),
     }
     return {
-        "schema_version": 1, "scope": "retained_event_candidate_presence_not_review",
+        "schema_version": 2, "scope": "retained_event_candidate_presence_not_review",
         "summary": summary, "hints": rows,
     }
 

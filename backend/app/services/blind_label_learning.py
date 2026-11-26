@@ -15,6 +15,7 @@ from app.models.blind_labeling import (
     BlindLabelLearningReview,
     BlindLabelWorkOrder,
 )
+from app.models.integration import RetrievalQualityEvent
 from app.models.knowledge import Knowledge, KnowledgeStatus
 from app.schemas.blind_labeling import REPLAY_ISSUE_TYPES, BlindLabelLearningReviewInput
 from app.services.blind_labeling import (
@@ -312,6 +313,22 @@ def load_learning_review(db: Session, work_order_id: str) -> dict:
     return _review_detail(*_review_context(db, work_order_id))
 
 
+def _original_retrieval_ids(db: Session, work_order_id: str) -> set[str]:
+    row = (
+        db.query(RetrievalQualityEvent.candidate_snapshot)
+        .join(BlindLabelWorkOrder, BlindLabelWorkOrder.source_event_id == RetrievalQualityEvent.id)
+        .filter(BlindLabelWorkOrder.id == work_order_id)
+        .one_or_none()
+    )
+    snapshot = row[0] if row else None
+    if not isinstance(snapshot, list):
+        return set()
+    return {
+        candidate["knowledge_id"] for candidate in snapshot
+        if isinstance(candidate, dict) and isinstance(candidate.get("knowledge_id"), str)
+    }
+
+
 def save_learning_review(db: Session, work_order_id: str, body: BlindLabelLearningReviewInput, reviewer_id: str) -> dict:
     evidence, previous, knowledge = _review_context(
         db, work_order_id, lock=True, selected_knowledge_id=body.knowledge_id,
@@ -323,10 +340,13 @@ def save_learning_review(db: Session, work_order_id: str, body: BlindLabelLearni
     version = _knowledge_version(knowledge.get(body.knowledge_id))
     if body.knowledge_id and not version:
         raise LearningReviewError(422, "指定的正确知识不存在或尚未发布。")
-    if body.issue_type == "ranking" and body.knowledge_id not in {
-        item["knowledge_id"] for item in evidence["candidates"]
-    }:
-        raise LearningReviewError(422, "排序问题请选择原盲标候选中的正确知识；候选未出现请选择漏召回。")
+    if body.issue_type in {"ranking", "retrieval_missed"}:
+        in_frozen = body.knowledge_id in {item["knowledge_id"] for item in evidence["candidates"]}
+        was_retrieved = in_frozen or body.knowledge_id in _original_retrieval_ids(db, work_order_id)
+        if body.issue_type == "ranking" and not was_retrieved:
+            raise LearningReviewError(422, "排序问题的正确知识必须出现在盲标候选或工单的原检索候选中。")
+        if body.issue_type == "retrieval_missed" and was_retrieved:
+            raise LearningReviewError(422, "正确知识已出现在原检索候选中，不能确认为漏召回。")
     review = BlindLabelLearningReview(
         work_order_id=work_order_id, evidence_version=evidence["evidence_version"],
         evidence_snapshot=evidence, issue_type=body.issue_type,

@@ -467,6 +467,48 @@ def test_learning_review_rejects_changed_evidence_and_retired_orders(db):
     assert db.query(BlindLabelLearningReview).count() == 0
 
 
+def test_learning_review_can_record_ranking_for_an_original_candidate_outside_frozen_three(db):
+    from app.routes.blind_labeling import put_learning_sample_review
+    from app.schemas.blind_labeling import BlindLabelLearningReviewInput
+    from app.services.blind_label_learning import preview_learning_samples
+
+    order = _work_order_for_sample_preview(db, "learning-original-window")
+    _finish_for_sample_preview(db, order, choice="c2")
+    for knowledge_id in ("ranked-fourth", "different-request"):
+        db.add(Knowledge(
+            id=knowledge_id, title=knowledge_id, category_id="cat-phone",
+            content={}, status=KnowledgeStatus.PUBLISHED, created_by="test",
+            knowledge_origin="business_accumulation", business_type="aggregated",
+        ))
+        event = _build_threshold_event(
+            event_id=knowledge_id, conversation_id=order.conversation_id, source_kind="reply",
+            top_rerank_score=0.7, candidate_snapshot=[{"knowledge_id": knowledge_id, "rank": 4}],
+            candidate_origins=["business_accumulation"],
+        )
+        db.add(event)
+    db.flush()
+    order.source_event_id = "ranked-fourth"
+    db.commit()
+    preview, = preview_learning_samples(db)["items"]
+    body = BlindLabelLearningReviewInput(
+        issue_type="ranking", evidence_version=preview["evidence_version"],
+        previous_review_id=None, knowledge_id="ranked-fourth",
+    )
+    actor = User(id="u1", role="super_admin")
+    for change in (
+        {"knowledge_id": "different-request"},
+        {"issue_type": "retrieval_missed"},
+        {"issue_type": "retrieval_missed", "knowledge_id": "biz-2"},
+    ):
+        with pytest.raises(HTTPException) as exc:
+            put_learning_sample_review(order.id, body.model_copy(update=change), db, actor)
+        assert exc.value.status_code == 422
+    saved = put_learning_sample_review(order.id, body, db, actor)
+    assert saved["review"]["issue_type"] == "ranking"
+    assert saved["review"]["knowledge_id"] == "ranked-fourth"
+    assert saved["replay_eligible"] is True
+
+
 def test_learning_review_answer_points_stay_out_of_preview_and_require_source_query(db):
     from app.routes.blind_labeling import put_learning_sample_review
     from app.schemas.blind_labeling import BlindLabelLearningReviewInput

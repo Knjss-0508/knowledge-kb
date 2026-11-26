@@ -48,3 +48,7 @@ def test_recall_audit_keeps_candidate_presence_separate_from_truth_and_exports_n
         "with_structured_scope_fields": 1, "with_recorded_reply": 0,
     }
     assert "do not export" not in json.dumps(report)
+    assert [row["next_action"] for row in report["hints"]] == [
+        "review_ranking_and_candidate_window", "verify_applicability_and_prepare_sanitized_request",
+    ]
+    assert all("needs_reviewed_sanitized_request" in row["replay_blockers"] for row in report["hints"])

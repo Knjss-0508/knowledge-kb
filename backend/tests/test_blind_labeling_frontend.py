@@ -71,6 +71,8 @@ def test_learning_review_form_submits_expected_revision_after_human_action() -> 
     assert "evidence_version:editor.sample.evidence_version, previous_review_id:editor.reviewId" in FRONTEND
     assert "method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)" in FRONTEND
     assert "证据有变 · 待重新确认" in FRONTEND
+    assert 'list="blind-learning-ranking-candidates"' in FRONTEND
+    assert "正确知识 ID（原检索候选）" in FRONTEND
 
 
 def test_blind_label_people_panel_only_shows_name_completed_annotations_and_last_activity() -> None:

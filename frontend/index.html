@@ -1690,11 +1690,11 @@
                     <option value="exclude">不纳入回流</option>
                   </select>
                 </label>
-                <label v-if="blindLabeling.learning.editor.issueType==='ranking'"><span>正确知识（原候选）</span>
-                  <select class="inp" required v-model="blindLabeling.learning.editor.knowledgeId">
-                    <option disabled value="">请选择</option>
-                    <option v-for="candidate in blindLabeling.learning.editor.sample.candidates.filter(function(row){return row.knowledge_id && row.knowledge_state!=='not_published';})" :key="candidate.candidate_ref" :value="candidate.knowledge_id">候选 {{candidate.rank}} · {{candidate.knowledge_id}}</option>
-                  </select>
+                <label v-if="blindLabeling.learning.editor.issueType==='ranking'"><span>正确知识 ID（原检索候选）</span>
+                  <input class="inp" required maxlength="64" list="blind-learning-ranking-candidates" v-model.trim="blindLabeling.learning.editor.knowledgeId">
+                  <datalist id="blind-learning-ranking-candidates">
+                    <option v-for="candidate in blindLabeling.learning.editor.sample.candidates.filter(function(row){return row.knowledge_id && row.knowledge_state!=='not_published';})" :key="candidate.candidate_ref" :value="candidate.knowledge_id">盲标候选 {{candidate.rank}}</option>
+                  </datalist>
                 </label>
                 <label v-else-if="['retrieval_missed','answer_issue'].indexOf(blindLabeling.learning.editor.issueType)!==-1"><span>正确知识 ID（已发布）</span>
                   <input class="inp" required maxlength="64" v-model.trim="blindLabeling.learning.editor.knowledgeId">
