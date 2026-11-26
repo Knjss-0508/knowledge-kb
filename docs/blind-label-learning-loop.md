@@ -155,3 +155,14 @@ python -m scripts.prepare_blind_replay_review_packet <仓库外受控目录>\rec
 - 独立的回放只读账号需能查询 `knowledge_search_embeddings` 的 `knowledge_id`、`embedding_model`、`embedding_vector` 三列。若副本恢复后尚未授权，由副本管理员核对库名、容器断网且未映射端口后，仅向该副本的回放角色授予上述列的 `SELECT`，不授予 `source_text` 或写权限。
 - 本批已按此修复隔离副本的权限。用一条**合成问题**走同一个语义排序函数，确认 Qwen3-Embedding-0.6B（1,024 维）可用，两类知识各返回 3 条。9 条线索对应的知识均有匹配当前模型、维度及现行分块内容摘要的向量；不需为本批重建索引。这是连接、权限和当前索引检查，不是历史事件复现或真实样本基线。
 - 补查全库历史检索反馈，仅 1 条人工确认事件带正确知识引用；知识已废弃，对应训练样本已排除，不能补入基线。盲标复核表仍为 0 条。缺少有效复核和脱敏输入时，不把合成探针或历史反馈当作验收结果。
+
+在启动模型前，可以用预检命令看交接包里哪些工单仍缺复核、清单或匹配的证据版本：
+
+```powershell
+python -m scripts.check_blind_replay_readiness <受控目录>\recall-review-handoff-01.json `
+  --confirm-isolated-replica
+```
+
+有已复核脱敏清单时，再加 `--manifest <受控目录>\retrieval-manifest.json --confirm-local-sanitized`。使用现有只读数据库连接；不调用模型、不写数据库，终端只输出计数和状态。仅当所提交清单的所有工单均在交接包内、且问题类型、目标知识与最新有效复核以及清单复核版本匹配时退出码为 `0`，可再执行离线检索；可先跑已就绪的子集。退出码 `1` 表示未就绪或未提供清单，不是检索失败。预检验证结构和引用，不替代人工脱敏或适用性确认，也不是基线。
+
+一键试点命令 `run_blind_learning_cycle` 可在 `--retrieval-manifest` 之外添加 `--review-handoff <交接包.json>`。这会在同一只读快照内先执行上述匹配；不通过则退出，不调用模型、不训练、不新增队列任务。

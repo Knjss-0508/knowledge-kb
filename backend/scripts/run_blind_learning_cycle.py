@@ -20,8 +20,9 @@ from app.core.config import settings
 from app.services.blind_label_answer_replay import AnswerReplayManifest
 from app.services.blind_label_cycle import Diagnosis, run_learning_cycle
 from app.services.blind_label_replay import ReplayManifest
-from scripts._blind_replay_io import LOOPBACK_IPS, local_database, read_manifest, readonly_engine
+from scripts._blind_replay_io import LOOPBACK_IPS, controlled_artifact_path, local_database, read_manifest, readonly_engine
 from scripts._blind_knowledge_inbox import open_inbox, sync_inbox
+from scripts.check_blind_replay_readiness import ReviewHandoff, check_readiness
 from scripts.replay_blind_label_retrieval import _local_endpoints
 
 
@@ -69,6 +70,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--confirm-local-sanitized", action="store_true")
     parser.add_argument("--retrieval-manifest", type=Path)
+    parser.add_argument("--review-handoff", type=Path, help="回放前在同一只读快照核对交接包和检索清单")
     parser.add_argument("--answer-manifest", type=Path)
     parser.add_argument("--scan-limit", type=int, choices=range(1, 101), default=50, metavar="1..100")
     parser.add_argument("--ai-limit", type=int, choices=range(0, 21), default=5, metavar="0..20")
@@ -79,6 +81,8 @@ def main() -> None:
     args = parser.parse_args()
     if not args.confirm_local_sanitized:
         parser.error("请确认是断网隔离副本（非生产隧道）且清单已脱敏，再传 --confirm-local-sanitized。")
+    if args.review_handoff and not args.retrieval_manifest:
+        parser.error("--review-handoff 需与已复核脱敏的 --retrieval-manifest 一起使用。")
     output = args.out.resolve()
     if (output.suffix.lower() != ".json" or output.exists()
             or any((ancestor / ".git").exists() for ancestor in output.parents)
@@ -100,7 +104,15 @@ def main() -> None:
     except (ArgumentError, ValueError):
         parser.error("数据库和模型均须显式配置有效的回环地址。")
     os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,::1"
-    retrieval, answers, inputs = None, None, {}
+    retrieval, answers, handoff, inputs = None, None, None, {}
+    if args.review_handoff:
+        try:
+            handoff_path = controlled_artifact_path(args.review_handoff, ".json")
+            controlled_artifact_path(args.retrieval_manifest, ".json")
+        except (OSError, ValueError):
+            parser.error("交接包和脱敏清单须位于仓库外的受控目录。")
+        payload, handoff = read_manifest(parser, handoff_path, ReviewHandoff)
+        inputs["review_handoff_sha256"] = hashlib.sha256(payload).hexdigest()
     if args.retrieval_manifest:
         payload, retrieval = read_manifest(parser, args.retrieval_manifest, ReplayManifest)
         inputs["retrieval_manifest_sha256"] = hashlib.sha256(payload).hexdigest()
@@ -118,6 +130,11 @@ def main() -> None:
             # The online ranker closes its ORM session before embedding calls.
             # Keep the snapshot on this outer connection, not on that session.
             with Session(bind=connection, autoflush=False, join_transaction_mode="create_savepoint") as db:
+                if handoff is not None:
+                    readiness = check_readiness(db, handoff, retrieval)
+                    if not readiness["manifest_ready"]:
+                        print(json.dumps(readiness, ensure_ascii=True))
+                        raise SystemExit(1)
                 result = run_learning_cycle(
                     db, retrieval_manifest=retrieval, answer_manifest=answers,
                     scan_limit=args.scan_limit, cursor=args.cursor, category_id=args.category_id, ai_limit=args.ai_limit,
