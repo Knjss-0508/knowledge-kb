@@ -17,8 +17,15 @@ from app.models.user import User
 from app.routes.auth import get_current_user, has_permission, require_permission
 from app.schemas.blind_labeling import (
     BlindLabelClaimRequest,
+    BlindLabelLearningReviewInput,
     BlindLabelReleaseRequest,
     BlindLabelSubmitRequest,
+)
+from app.services.blind_label_learning import (
+    LearningReviewError,
+    load_learning_review,
+    preview_learning_samples,
+    save_learning_review,
 )
 from app.services.blind_labeling import (
     BLIND_LABEL_BATCH_SIZE,
@@ -143,21 +150,18 @@ def _get_assignment(db: Session, assignment_id: str) -> BlindLabelAssignment:
     return assignment
 
 
-def _get_work_order(db: Session, identifier: str) -> BlindLabelWorkOrder | None:
+def _get_work_order(db: Session, identifier: str, *, lock: bool = False) -> BlindLabelWorkOrder | None:
     """Resolve the internal ID, the upstream work-order ID, or the conversation ID."""
 
     identifier = str(identifier or "").strip()
     if not identifier:
         return None
-    return (
-        db.query(BlindLabelWorkOrder)
-        .filter(
-            (BlindLabelWorkOrder.id == identifier)
-            | (BlindLabelWorkOrder.question_form_id == identifier)
-            | (BlindLabelWorkOrder.conversation_id == identifier)
-        )
-        .first()
+    query = db.query(BlindLabelWorkOrder).filter(
+        (BlindLabelWorkOrder.id == identifier)
+        | (BlindLabelWorkOrder.question_form_id == identifier)
+        | (BlindLabelWorkOrder.conversation_id == identifier)
     )
+    return (query.with_for_update() if lock else query).first()
 
 
 def _claim_response(db: Session, user_id: str):
@@ -507,6 +511,45 @@ def get_blind_label_overview(
         page_size=page_size,
         include_retired=include_retired,
     )
+
+
+@router.get("/learning-samples/preview")
+def get_learning_sample_preview(
+    cursor: str | None = Query(None, min_length=1, max_length=64),
+    scan_limit: int = Query(50, ge=1, le=100),
+    category_id: str | None = Query(None, min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("retrieval:label_overview")),
+):
+    return preview_learning_samples(db, cursor=cursor, scan_limit=scan_limit, category_id=category_id)
+
+
+@router.get("/learning-samples/{work_order_id}/review")
+def get_learning_sample_review(
+    work_order_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("retrieval:label_arbitrate")),
+):
+    try:
+        return load_learning_review(db, work_order_id)
+    except LearningReviewError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@router.put("/learning-samples/{work_order_id}/review")
+def put_learning_sample_review(
+    work_order_id: str,
+    body: BlindLabelLearningReviewInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("retrieval:label_arbitrate")),
+):
+    try:
+        result = save_learning_review(db, work_order_id, body, current_user.id)
+        db.commit()
+    except LearningReviewError as exc:
+        db.rollback()
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    return result
 
 
 @router.get("/work-orders/{work_order_id}")

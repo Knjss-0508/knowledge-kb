@@ -134,6 +134,7 @@ def validate_schema() -> None:
         "blind_label_arbitrations",
         "blind_label_assignments",
         "blind_label_batches",
+        "blind_label_learning_reviews",
         "blind_label_work_orders",
         "categories",
         "high_frequency_atomic_questions",
@@ -165,6 +166,7 @@ def validate_schema() -> None:
         "blind_label_arbitrations_pkey",
         "blind_label_assignments_pkey",
         "blind_label_batches_pkey",
+        "blind_label_learning_reviews_pkey",
         "blind_label_work_orders_pkey",
         "ck_blind_label_annotation_verdict",
         "ck_blind_label_arbitration_verdict",
@@ -313,6 +315,7 @@ def validate_schema() -> None:
         "ix_blind_label_annotations_created_at",
         "ix_blind_label_annotations_work_order_candidate",
         "ix_blind_label_arbitrations_work_order_id",
+        "ix_blind_label_learning_reviews_order_rev",
     }
     required_columns = {
         ("knowledge_vector_tasks", "id"),
